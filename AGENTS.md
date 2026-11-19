@@ -41,8 +41,9 @@ Spec first: a new phase starts with an ADR or spec, not code.
 - format: `cargo fmt` to apply, `cargo fmt --all --check` to check
 - licences: `reuse lint` and `cargo deny check`
 - automation: `cargo xtask check` runs the local checks.
-  `cargo xtask hooks install` opts in to running them before each push.
-  `cargo xtask hooks uninstall` removes the managed hook. Keep repository
+  `cargo xtask hooks install` opts in to running them before each push and
+  checking branch commit trailers with the `commit-msg` hook.
+  `cargo xtask hooks uninstall` removes the managed hooks. Keep repository
   automation in `xtask`.
 
 ## Hard rules

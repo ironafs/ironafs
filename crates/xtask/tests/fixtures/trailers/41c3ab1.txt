@@ -1,0 +1,37 @@
+ci: github actions workflow and xtask checks
+
+Adds continuous integration and local checks:
+
+- .github/workflows/ci.yml, on pull requests and pushes to main:
+  - lint: cargo fmt, REUSE (the fsfe/reuse image pinned by digest) and
+    cargo-deny;
+  - test, on Linux: Clippy with warnings denied for Linux and, from Linux,
+    the Windows and macOS targets; nextest with no retries; doc-tests under
+    a deadline;
+  - ci-ok, the single check a ruleset can require.
+  Hardening: one action (actions/checkout, pinned to a commit SHA, without
+  persisted credentials), no other action, permissions {} with read-only
+  jobs, no untrusted text in scripts, and tools downloaded at pinned
+  versions and verified by SHA-256 before use.
+- crates/xtask, with no dependencies: cargo xtask check runs the same
+  checks locally across the workspace; cargo xtask hooks install adds an
+  opt-in pre-push hook, never replaces a hook it did not write unless
+  --force is given, and then keeps a backup.
+- The README, CONTRIBUTING.md, AGENTS.md, LICENSING.md, ADR 0001 and the
+  coding standards describe the checks that now exist. Tests run on Linux
+  only until the first OS-specific code (coding standards rule 15).
+
+Reviewed by GLM in three rounds, all passed; the five minor findings were
+fixed (docs/reviews/2026-11-19-ci-and-xtask.md). A deliberately broken pull
+request (#9) failed in fmt, Clippy and ci-ok, as it should.
+
+Closes #1
+
+Branch commits were written by codex (gpt-6.2-sol) and Claude Code
+(claude-opus-5-5); this description by Claude Code, for the maintainer.
+
+Class: I
+Assisted-by: codex:gpt-6.2-sol
+Assisted-by: claude-code:claude-opus-5-5
+AI-Reviewed-by: glm:glm-5.3
+Signed-off-by: Adrian Ana <adrian@adrianana.com>

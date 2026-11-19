@@ -5,7 +5,7 @@
 
 use std::ffi::OsString;
 
-use super::{Task, UsageError, parse};
+use super::{Task, TrailerMode, UsageError, parse};
 
 #[test]
 fn parse_rejects_unknown_command() {
@@ -41,4 +41,54 @@ fn parse_accepts_force_only_for_install() {
         ),
         Err(UsageError::UnexpectedArgument("--force".into()))
     );
+}
+
+#[test]
+fn parse_routes_each_trailer_mode_and_message_path() {
+    for (args, mode) in [
+        (&["trailers", "pr"][..], TrailerMode::Pr),
+        (
+            &["trailers", "commit", "commit message"][..],
+            TrailerMode::Commit("commit message".into()),
+        ),
+        (&["trailers", "main"][..], TrailerMode::Main(None)),
+        (
+            &["trailers", "main", "commit message"][..],
+            TrailerMode::Main(Some("commit message".into())),
+        ),
+    ] {
+        assert_eq!(
+            parse(args.iter().map(OsString::from)),
+            Ok(Task::Trailers(mode))
+        );
+    }
+}
+
+#[test]
+fn parse_rejects_missing_unknown_and_extra_trailer_arguments() {
+    for (args, error) in [
+        (&["trailers"][..], UsageError::MissingTrailerMode),
+        (
+            &["trailers", "commit"][..],
+            UsageError::MissingCommitMessagePath,
+        ),
+        (
+            &["trailers", "test"][..],
+            UsageError::UnknownTrailerMode("test".into()),
+        ),
+        (
+            &["trailers", "pr", "file"][..],
+            UsageError::UnexpectedArgument("file".into()),
+        ),
+        (
+            &["trailers", "main", "file", "extra"][..],
+            UsageError::UnexpectedArgument("extra".into()),
+        ),
+        (
+            &["trailers", "commit", "file", "extra"][..],
+            UsageError::UnexpectedArgument("extra".into()),
+        ),
+    ] {
+        assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
+    }
 }

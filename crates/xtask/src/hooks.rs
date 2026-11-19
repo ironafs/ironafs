@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Management of the opt-in Git pre-push hook.
+//! Management of the opt-in Git hooks.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -20,39 +20,97 @@ const HOOK_HEADER: &str = "\
 # Managed by IronAFS cargo xtask
 ";
 
-/// Installs the pre-push hook in the directory Git reports.
+struct Hook {
+    name: &'static str,
+    command: &'static str,
+}
+
+const HOOKS: [Hook; 2] = [
+    Hook {
+        name: "pre-push",
+        command: "exec cargo xtask check\n",
+    },
+    Hook {
+        name: "commit-msg",
+        command: "exec cargo xtask trailers commit \"$1\"\n",
+    },
+];
+
+const RESERVE_BACKUP: &str =
+    "reserve hook backup (inspect the backup and remove it if no longer needed)";
+
+/// Installs the pre-push and commit-msg hooks in the directory Git reports.
 ///
 /// # Errors
 ///
 /// Returns an error if Git, filesystem access or backup reporting fails.
 /// Replacing a foreign hook requires `force` and an unused backup path.
-pub(super) fn install(force: bool) -> Result<(), Error> {
-    let directory = hooks_directory()?;
-    let path = directory.join("pre-push");
-    if !force && managed_hook_exists(&path)? {
-        return Ok(());
-    }
+pub(super) fn install(force: bool, output: &mut impl Write) -> Result<(), Error> {
+    install_in(&hooks_directory()?, force, output)
+}
 
-    fs::create_dir_all(&directory).map_err(Error::io("create hooks directory"))?;
-    let staged = directory.join(format!(".ironafs-pre-push-{}", process::id()));
+fn install_in(directory: &Path, force: bool, output: &mut impl Write) -> Result<(), Error> {
+    let mut pending = Vec::new();
+    // Check both destinations before changing either hook.
+    for hook in HOOKS {
+        let path = directory.join(hook.name);
+        if needs_install(&path, force)? {
+            pending.push((hook, path));
+        }
+    }
+    if !pending.is_empty() {
+        fs::create_dir_all(directory).map_err(Error::io("create hooks directory"))?;
+        for (hook, path) in pending {
+            install_hook(&hook, directory, &path, force, output)?;
+        }
+    }
+    Ok(())
+}
+
+fn needs_install(path: &Path, force: bool) -> Result<bool, Error> {
+    match managed_hook_exists(path) {
+        Ok(managed) => Ok(force || !managed),
+        Err(Error::ForeignHook(_)) if force => {
+            let backup = path.with_extension("xtask-backup");
+            let error = match fs::symlink_metadata(&backup) {
+                Ok(_) => io::ErrorKind::AlreadyExists.into(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
+                Err(error) => error,
+            };
+            Err(Error::hook_io(RESERVE_BACKUP, &backup)(error))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn install_hook(
+    hook: &Hook,
+    directory: &Path,
+    path: &Path,
+    force: bool,
+    output: &mut impl Write,
+) -> Result<(), Error> {
+    let staged = directory.join(format!(".ironafs-{}-{}", hook.name, process::id()));
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
         .open(&staged)
-        .map_err(Error::io("create temporary pre-push hook"))?;
-    let written = write_hook(&mut file).map_err(Error::io("write pre-push hook"));
+        .map_err(Error::hook_io("create temporary hook", &staged))?;
+    let written =
+        write_hook(&mut file, hook.command).map_err(Error::hook_io("write hook", &staged));
     drop(file);
-    let installed = written.and_then(|()| publish_hook(&staged, &path, force));
+    let installed = written.and_then(|()| publish_hook(&staged, path, force, output));
     if force && installed.is_ok() {
         return Ok(());
     }
-    let cleaned = fs::remove_file(staged).map_err(Error::io("remove temporary pre-push hook"));
+    let cleaned =
+        fs::remove_file(&staged).map_err(Error::hook_io("remove temporary hook", &staged));
     installed.and(cleaned)
 }
 
-fn write_hook(file: &mut File) -> io::Result<()> {
+fn write_hook(file: &mut File, command: &str) -> io::Result<()> {
     file.write_all(HOOK_HEADER.as_bytes())?;
-    file.write_all(b"exec cargo xtask check\n")?;
+    file.write_all(command.as_bytes())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -62,17 +120,18 @@ fn write_hook(file: &mut File) -> io::Result<()> {
     Ok(())
 }
 
-fn publish_hook(staged: &Path, path: &Path, force: bool) -> Result<(), Error> {
+fn publish_hook(
+    staged: &Path,
+    path: &Path,
+    force: bool,
+    output: &mut impl Write,
+) -> Result<(), Error> {
     if force {
         let backup = backup_foreign_hook(path)?;
-        let replaced = fs::rename(staged, path).map_err(Error::io("replace pre-push hook"));
+        let replaced = fs::rename(staged, path).map_err(Error::hook_io("replace hook", path));
         if let Some(backup) = backup {
-            let reported = writeln!(
-                io::stdout(),
-                "moved existing pre-push hook to {}",
-                backup.display()
-            )
-            .map_err(Error::io("report pre-push hook backup"));
+            let reported = writeln!(output, "moved existing hook to {}", backup.display())
+                .map_err(Error::io("report hook backup"));
             return replaced.and(reported);
         }
         return replaced;
@@ -85,7 +144,7 @@ fn publish_hook(staged: &Path, path: &Path, force: bool) -> Result<(), Error> {
         {
             Ok(())
         }
-        result => result.map_err(Error::io("install pre-push hook")),
+        result => result.map_err(Error::hook_io("install hook", path)),
     }
 }
 
@@ -97,34 +156,39 @@ fn backup_foreign_hook(path: &Path) -> Result<Option<PathBuf>, Error> {
         Err(error) => return Err(error),
     }
 
-    let backup = path.with_file_name("pre-push.xtask-backup");
+    let backup = path.with_extension("xtask-backup");
     // Reserve the name atomically so rename can only replace our own file.
     let reservation = OpenOptions::new()
         .create_new(true)
         .write(true)
         .open(&backup)
-        .map_err(Error::io(
-            "pre-push.xtask-backup is in use; inspect it, and remove it if it is empty or no longer needed",
-        ))?;
+        .map_err(Error::hook_io(RESERVE_BACKUP, &backup))?;
     drop(reservation);
     if let Err(error) = fs::rename(path, &backup) {
         let _ = fs::remove_file(&backup);
-        return Err(Error::io("move pre-push hook to pre-push.xtask-backup")(
-            error,
-        ));
+        return Err(Error::hook_io("move hook to backup", &backup)(error));
     }
     Ok(Some(backup))
 }
 
-/// Removes a managed pre-push hook. An absent hook is already uninstalled.
+/// Removes the managed hooks. An absent hook is already uninstalled.
 ///
 /// # Errors
 ///
 /// Returns an error if Git or the filesystem fails, or the hook is foreign.
 pub(super) fn uninstall() -> Result<(), Error> {
-    let path = hooks_directory()?.join("pre-push");
-    if managed_hook_exists(&path)? {
-        fs::remove_file(path).map_err(Error::io("remove pre-push hook"))?;
+    uninstall_in(&hooks_directory()?)
+}
+
+fn uninstall_in(directory: &Path) -> Result<(), Error> {
+    let paths = HOOKS.map(|hook| directory.join(hook.name));
+    for path in &paths {
+        managed_hook_exists(path)?;
+    }
+    for path in paths {
+        if managed_hook_exists(&path)? {
+            fs::remove_file(&path).map_err(Error::hook_io("remove hook", &path))?;
+        }
     }
     Ok(())
 }
@@ -133,17 +197,17 @@ fn managed_hook_exists(path: &Path) -> Result<bool, Error> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => {
             let mut header = [0; HOOK_HEADER.len()];
-            let mut file = File::open(path).map_err(Error::io("open pre-push hook"))?;
+            let mut file = File::open(path).map_err(Error::hook_io("open hook", path))?;
             match file.read_exact(&mut header) {
                 Ok(()) if is_managed_hook(&header) => return Ok(true),
                 Ok(()) => (),
                 Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => (),
-                Err(error) => return Err(Error::io("read pre-push hook")(error)),
+                Err(error) => return Err(Error::hook_io("read hook", path)(error)),
             }
         }
         Ok(_) => (),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(Error::io("inspect pre-push hook")(error)),
+        Err(error) => return Err(Error::hook_io("inspect hook", path)(error)),
     }
     Err(Error::ForeignHook(path.to_path_buf()))
 }
