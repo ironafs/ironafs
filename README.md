@@ -34,7 +34,8 @@ harder to ship everywhere.
 
 All three systems now offer a supported way to expose files without
 third-party kernel code: FUSE and FSKit as filesystems, and Cloud Files as
-a sync provider. IronAFS is a client built for that world. The background is in the
+a sync provider. IronAFS is a client built for that world. The background
+is in the
 [research notes](docs/research/2026-11-18-driverless-afs-clients.md).
 
 ## Goals
@@ -154,7 +155,8 @@ directory and prints the backup path. The command refuses if that path is
 already in use.
 
 To run checks individually, use `cargo fmt --all --check`,
-`cargo clippy --all-targets`, `cargo nextest run --retries 0`,
+`cargo clippy --all-targets --workspace`,
+`cargo nextest run --workspace --retries 0 --no-tests fail`,
 `cargo test --doc --workspace`, `reuse lint` and `cargo deny check`.
 The local batch reports `reuse` and `cargo-deny` as skipped if they are
 absent. CI requires both and runs Clippy and tests on Linux, macOS and Windows.

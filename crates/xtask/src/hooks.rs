@@ -103,7 +103,9 @@ fn backup_foreign_hook(path: &Path) -> Result<Option<PathBuf>, Error> {
         .create_new(true)
         .write(true)
         .open(&backup)
-        .map_err(Error::io("reserve pre-push.xtask-backup"))?;
+        .map_err(Error::io(
+            "pre-push.xtask-backup is in use; inspect it, and remove it if it is empty or no longer needed",
+        ))?;
     drop(reservation);
     if let Err(error) = fs::rename(path, &backup) {
         let _ = fs::remove_file(&backup);

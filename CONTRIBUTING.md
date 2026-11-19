@@ -45,10 +45,11 @@ already in use. Use
 To run the checks individually, use the following commands.
 
 - `cargo fmt` to apply formatting, or `cargo fmt --all --check` to check it.
-- `cargo clippy --all-targets`, with `CARGO_BUILD_WARNINGS=deny`. If you
-  touched code behind an OS `cfg`, run clippy with `--target` for Linux,
-  macOS and Windows too.
-- `cargo nextest run --retries 0` and `cargo test --doc --workspace`.
+- `cargo clippy --all-targets --workspace`, with
+  `CARGO_BUILD_WARNINGS=deny`. If you touched code behind an OS `cfg`, run
+  clippy with `--target` for Linux, macOS and Windows too.
+- `cargo nextest run --workspace --retries 0 --no-tests fail` and
+  `cargo test --doc --workspace`.
 - `reuse lint` and `cargo deny check`. The local batch reports missing
   optional tools by name. CI requires both checks.
   A new dependency needs the owner's decision first (ADR 0001).
