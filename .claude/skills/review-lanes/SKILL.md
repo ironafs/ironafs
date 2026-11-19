@@ -34,25 +34,31 @@ self-check, never a required seat.
 
 ## Model pins and effort
 
-| Lane | Model | Effort |
-|---|---|---|
-| codex (GPT) | `gpt-6.2-sol`; `gpt-6.2-astra` for the strongest-tier seats and promoted seats | `high` for I/P and docs; `xhigh` for S/R, security and every Astra run |
-| gemini | `gemini-4-carbon-medium`; `gemini-4-carbon-high` for S/R (its standard there), strongest-tier seats and promoted seats | in the id |
-| glm | `glm-5.3` | `high`; `max` for the strongest-tier seats and promoted seats |
-| deepseek | `deepseek-flash` | per its skill, `max` for the strongest-tier seats and promoted seats; off-peak only |
-| Claude | Opus 5.5 by default; Mythos 5.2 (`fable` alias, serves `claude-mythos-5-2`) for the strongest-tier seats (every Claude security review among them) and under the promotion rule | default |
+The model and effort for every seat come from the routing table in
+`docs/workflow.md` §2, "Model routing", after the seat's family is chosen.
+In short:
 
-Check `agy models` before pinning a Gemini id; ids change.
+| Lane | Light | Standard | Class S and R reviews | Strongest |
+|---|---|---|---|---|
+| codex (GPT) | `gpt-6.2-sol` medium | `gpt-6.2-sol` high | `gpt-6.2-sol` xhigh | `gpt-6.2-astra` xhigh |
+| gemini | `gemini-3.8-flash-medium`, `gemini-4-argon-medium` | `gemini-4-carbon-medium` | `gemini-4-carbon-high` | `gemini-4-carbon-high` |
+| glm | `glm-5.3-flash` | `glm-5.3` high | `glm-5.3` high | `glm-5.3` max |
+| deepseek | `deepseek-flash` default | `deepseek-flash` default | `deepseek-flash` default | `deepseek-flash` max |
+| Claude | Haiku or Sonnet subagents | Opus 5.5 | Opus 5.5 | Mythos 5.2 (`fable` alias, serves `claude-mythos-5-2`) |
 
-**Strongest-tier seats** (`docs/workflow.md` §2, "Strongest tiers"): the
-judgement seat, security reviews, class R designs, format freezes and
-architecture ADRs. They use each family's strongest tier from the start, and
-that table wins over the pins above. A family whose strongest tier is
-unavailable is skipped for the seat, never run lower. Routine seats stay on
-the standard tiers; the promotion rule there (a standard tier failing the
-same problem twice, or a hard problem the controller records) moves a seat
-to the strongest-tier pins above. A resumed codex session does not keep its
-model: pass `-m` and the effort again on every `codex exec resume`.
+- Light models never hold a required review seat. Fix verification uses the
+  pin of the seat whose finding it verifies.
+- Research gathering stays light or standard; a strongest model may then
+  read the gathered dossier inlined, without web access. Claude Code
+  subagents for gathering pass a lighter `model` explicitly instead of
+  inheriting the session's.
+- Promotion only for implementation, after two recorded failures on the
+  same defect at the seat's pin.
+- DeepSeek runs off-peak only. Check `agy models` before pinning a Gemini
+  id; ids change.
+- A resumed codex session does not keep its model: pass `-m` and the effort
+  again on every `codex exec resume`, and read the served model from the
+  lane's log.
 
 ## Judgement seat
 
