@@ -47,9 +47,9 @@ INFERRED, and both families agree:
   both caller identity and a proactive purge of the kernel's data,
   attribute and name caches. Loopback NFS stays as the comparison path.
   Its range locks (NLM for NFSv3, `LOCK` for NFSv4) reach only IronAFS's
-  own loopback server; whether and how that server maps them to AFS locks,
-  which other AFS clients would see, is a separate open question (§3,
-  Locks).
+  own loopback server; IronAFS must decide whether and how to map those
+  byte-range requests onto the whole-file locks AFS servers support, which
+  other AFS clients would see (§3, Locks).
 - **File Provider** is at most a Finder companion: it cannot give a shared
   `/afs`.
 
@@ -284,10 +284,11 @@ mount it.
   must do on a recall, and how long an AFS client elsewhere can go without
   seeing the lock, are open (INFERRED).
 - **Three different things** are easy to conflate: delivery of a lock to
-  IronAFS's loopback server; coordination among NFS clients of that server
-  (only the Mac's own processes here); and visibility to separate AFS
-  clients, which needs IronAFS to map the lock to AFS's own locking, whose
-  granularity (whole-file server locks) is a design decision (INFERRED).
+  IronAFS's loopback server; coordination among the Mac's own processes,
+  which are local lock owners of that one NFS client; and visibility to
+  separate AFS clients, for which IronAFS must decide whether and how to map
+  byte-range requests onto the whole-file locks AFS servers support
+  (INFERRED).
 - Both versions use 64-bit sizes and offsets, and a file unlinked while
   open may be renamed to `.nfs*` (INSPECTED, same man page and source).
   Hard mounts can hang while the server does not answer (INSPECTED, one

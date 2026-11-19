@@ -324,3 +324,12 @@ limited to those five items, with the claim ledger split out:
   themselves, and macOS 15 and 26 are spike-only candidates outside the
   proposed matrix.
 
+The verification of that round (`0899bad..4562289`, same seat, pinned)
+**passed with 2 minor findings**, both fixed and checked by the controller:
+the Mac's processes are local lock owners, and IronAFS decides how to map
+byte-range requests onto AFS's whole-file server locks; the platform note
+applies RELAYED to the imported kernel facts wherever they recur, uses the
+review vocabulary in every verdict row, and puts macOS 15 and 26 in one
+"Spike only" row outside the release tiers. The review stops here: no
+blocker or major remains.
+

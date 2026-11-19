@@ -15,7 +15,7 @@
   on a real kernel (update, 2026-11-19). Facts cited to Red Hat directly
   keep their own label.
 - Nothing was run on a real 3.10 kernel. The containers used shared a newer
-  host kernel, so every kernel-behaviour claim for RHEL 7 is INSPECTED at
+  host kernel, so every kernel-behaviour claim for RHEL 7 is RELAYED at
   best.
 - Verdicts are against `docs/research/2026-11-18-driverless-afs-clients.md`.
 - The note has not been cross-checked by a second model family.
@@ -34,7 +34,8 @@ recommends tier 2 rather than tier 1.
   a CentOS 7.9 userland (EXECUTED, aarch64 image).
 - **FUSE:** the RHEL 7.9 kernel exposes FUSE protocol 7.23, with the
   writeback cache backported, and it has the invalidation notifications that
-  AFS callback breaks need (INSPECTED). It lacks everything from 7.24 up:
+  AFS callback breaks need (RELAYED: the third-party kernel import). It
+  lacks everything from 7.24 up:
   larger requests, per-thread device file descriptors, parallel directory
   operations, directory and symlink caching, passthrough and io_uring.
 - **Costs:** an end-of-life build image, a virtual machine for any real
@@ -61,7 +62,7 @@ and review RHEL 7 no later than the end of Red Hat's extended support on
 | 10 | A pure-Rust client can speak `/dev/fuse` directly | CONFIRMED. Mounting still goes through the `fusermount` helper. | "on Linux these calls to libfuse are optional." | https://github.com/cberner/fuser/blob/master/README.md |
 | 11 | CentOS 7 is end of life | CONFIRMED | "After June 30, 2024, there will be no updates published for CentOS Linux 7." | https://blog.centos.org/2023/04/end-dates-are-coming-for-centos-stream-8-and-centos-linux-7/ |
 | 12 | RHEL 7 paid extended support ends in 2028 | AMEND: 2029-05-31 | "This add-on is available from July 1, 2024 through May 31, 2029." | https://access.redhat.com/articles/7060360 |
-| 13 | FSKit: macOS 15.4+, URL resources from macOS 26, handler APIs in macOS 27 | CONFIRM, from Apple's documentation data | FSKit `introducedAt` 15.4; `FSGenericURLResource` 26.0; `FSVolume.DataCacheHandler` 27.0 | https://developer.apple.com/documentation/fskit |
+| 13 | FSKit: macOS 15.4+, URL resources from macOS 26, handler APIs in macOS 27 | CONFIRMED, from Apple's documentation data | FSKit `introducedAt` 15.4; `FSGenericURLResource` 26.0; `FSVolume.DataCacheHandler` 27.0 | https://developer.apple.com/documentation/fskit |
 | 14 | Cloud Files API: Windows 10 1709+ | CONFIRMED | "Minimum supported client: Windows 10, version 1709 [desktop apps only]" | https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfregistersyncroot |
 | 15 | FreeBSD comes nearly free with FUSE | AMEND: the FUSE layer does; the rest does not (B3) | "Tested under Linux and FreeBSD using stable Rust" | https://github.com/cberner/fuser/blob/master/README.md |
 
@@ -144,7 +145,7 @@ for RHEL 8, 9 and 10.
 
 ### A4. FUSE on RHEL 7
 
-INSPECTED from the `linux-3.10.0-1160.el7` import. The protocol minor is 23,
+RELAYED from the third-party `linux-3.10.0-1160.el7` import. The protocol minor is 23,
 and the INIT handshake offers the writeback cache.
 
 | Feature IronAFS would want | Upstream protocol / kernel | RHEL 7.9 |
@@ -269,16 +270,14 @@ follows from which layer is built.
 
 ### Proposed support matrix
 
-The macOS entries assume FSKit for 27. macOS 26 and 15 are spike-only
-candidates for a loopback NFS layer, outside the proposed release matrix
-until that spike reports; the "Out of scope" row's macOS 15 entry stands
-until then (update, 2026-11-19).
+The macOS entries assume FSKit for 27 (update, 2026-11-19).
 
 | Tier | Platforms | Meaning |
 |---|---|---|
 | 1, tested in CI | Linux x86_64 and aarch64, glibc: RHEL 9 and 10 (or rebuilds), Debian 13, Ubuntu 24.04 and 26.04. macOS 27 on Apple silicon. Windows 11 x86_64. | Every change is tested. Releases are blocked on failures. |
-| 2, best effort | RHEL 7.9 / CentOS 7.9 x86_64. RHEL 8. Debian 12, Ubuntu 22.04. Static musl builds. FreeBSD 14 and 15. macOS 26. | Builds and a smoke test per release. Bugs fixed when the fix is cheap. No performance promise. |
-| Out of scope | RHEL 6 and older. Kernels below 3.10. RHEL 7 on aarch64 or POWER. 32-bit targets. macOS 15 and older. Windows 10 and Windows Server. macFUSE. | Not built, not tested. |
+| 2, best effort | RHEL 7.9 / CentOS 7.9 x86_64. RHEL 8. Debian 12, Ubuntu 22.04. Static musl builds. FreeBSD 14 and 15. | Builds and a smoke test per release. Bugs fixed when the fix is cheap. No performance promise. |
+| Spike only | macOS 15 and 26, as candidates for a loopback NFS layer (the [macOS options note](2026-11-19-macos-options.md)). | Outside the release tiers until that spike reports. |
+| Out of scope | RHEL 6 and older. Kernels below 3.10. RHEL 7 on aarch64 or POWER. 32-bit targets. macOS 14 and older. Windows 10 and Windows Server. macFUSE. | Not built, not tested. |
 
 Update, 2026-11-19: Windows 10 22H2 was out of scope with the support floor
 set at Windows 11 for its end of support (B2). The SMB route's transport
@@ -323,8 +322,8 @@ This placement is a judgement, not a measured result.
 8. **Kernel test strategy:** which kernels get a virtual-machine job?
 9. **macOS floor:** macOS 27 only, or a reduced mode on 26? (Update,
     2026-11-19: the FSKit floor is 27; a loopback NFS layer, a spike
-    candidate for 15 and 26, would have its own floor. The macOS 26 and 15
-    entries in the matrix are proposals that depend on that spike.)
+    candidate for 15 and 26, would have its own floor; both sit in the
+    matrix's "Spike only" row.)
 10. **Windows floor:** Windows 11 only, and which Cloud Files features?
     (Update, 2026-11-19: reopened by the SMB route, whose transport reached
     a probe listener, to the client's first packet, on Windows 10 22H2 and
