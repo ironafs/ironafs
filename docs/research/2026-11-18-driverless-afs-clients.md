@@ -58,8 +58,13 @@
   Microsoft's minifilter `cldflt.sys`, which supports NTFS volumes only; the
   provider is a user-mode desktop application (INSPECTED,
   [Build a cloud sync engine](https://learn.microsoft.com/en-us/windows/win32/cfapi/build-a-cloud-file-sync-engine)).
+  The other driverless route is an online `\\afs` path: Windows' own SMB
+  client talking to an SMB 3.1.1 server of IronAFS's own on the loopback
+  address, which keeps every request in an authenticated session. On
+  Windows 10 and 11 it can run beside Windows' own file sharing (MEASURED,
+  [Windows UNC note](2026-11-19-windows-unc-without-a-driver.md)).
 
-All three let IronAFS ship no kernel code of its own. Only FSKit and FUSE are
+All of these let IronAFS ship no kernel code of its own. Only FSKit and FUSE are
 filesystem interfaces, though. Cloud Files is a sync-engine API: hydrated
 files are ordinary NTFS files that are served without calling the provider,
 and its callbacks cover placeholders only (INSPECTED,

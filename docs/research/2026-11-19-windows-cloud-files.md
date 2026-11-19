@@ -21,10 +21,11 @@
 
 ## Answer
 
-Cloud Files is the Windows layer, and ProjFS is not. Neither is a filesystem
-interface: both keep file data as ordinary NTFS files and call the provider
-only to fill them. So the Windows layer is a sync engine with its own
-authorisation, write and coherency design, built around five constraints:
+Of the two NTFS-backed APIs, Cloud Files is the one to use, and ProjFS is
+not. Neither is a filesystem interface: both keep file data as ordinary
+NTFS files and call the provider only to fill them. So a Cloud Files layer
+is a sync engine with its own authorisation, write and coherency design,
+built around five constraints:
 
 1. No callback carries the caller's user or token.
 2. Hydrated data is served by NTFS without the provider, so NTFS DACLs, not
@@ -34,9 +35,12 @@ authorisation, write and coherency design, built around five constraints:
    reboot.
 5. Antivirus scanning, memory maps and first writes hydrate whole files.
 
-For an online `\\afs` path through IronAFS's own SMB server instead, and
-the measurement that keeps Windows' own file sharing working on Windows 10
-and 11, see [the UNC note](2026-11-19-windows-unc-without-a-driver.md).
+Constraints 1 and 2 are why an online `\\afs` path, through IronAFS's own
+SMB server with every request in an authenticated session, is the
+alternative to compare against; it keeps Windows' own file sharing working
+on Windows 10 and 11 ([the UNC note](2026-11-19-windows-unc-without-a-driver.md)).
+Which one IronAFS builds first is decided in the architecture ADR, not
+here.
 
 ## 1. The API model
 
