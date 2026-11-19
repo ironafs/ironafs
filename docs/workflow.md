@@ -167,7 +167,10 @@ Disagreements are settled on evidence, never by counting.
   brief, and anything it points to, carries nothing that shows who took
   either position: no family, model or lane name used that way, and no
   trailer, transcript or review record of the dispute; the controller checks
-  it before sending. Names that are the subject of the dispute stay. The seat checks each
+  it before sending. A technical name stays only when it does not reveal
+  who took a side; otherwise a neutral label and a source excerpt replace
+  it. If the evidence cannot be shared anonymously, the judgement stays
+  pending. The seat checks each
   disputed fact at a primary source and labels it CONFIRMED, with the link,
   or UNVERIFIED. A seat without tools (Gemini) gets the primary-source
   passages inlined with their citations; when they cannot be inlined, another
@@ -180,7 +183,10 @@ Disagreements are settled on evidence, never by counting.
   them. While a factual dispute stays open, the owner may choose a course
   of action within the owner's authority, such as changing the work so it
   no longer depends on the fact; the owner also decides when the ruling is
-  itself contested, or when the question is the owner's to decide.
+  itself contested, or when the question is the owner's to decide. When
+  the work changes so that it no longer depends on the disputed fact, the
+  controller checks that and records the judgement as moot; every other
+  review and merge gate still applies.
 - **The record** (§4, "After the run") gives both positions, the seat, the
   served model and effort, the deciding facts with their sources, and the
   controller's check.
@@ -246,7 +252,8 @@ authoritative.
    only the fix's changes. After two fix rounds on one change, stop patching:
    split it, redesign it, or record the blocker.
 8. **Merge** when the class's checks are met, no confirmed correctness or
-   contract finding is open, and no judgement is pending or inconclusive: a pull request, squash-merged after the owner's
+   contract finding is open, and no judgement is pending or inconclusive
+   (one recorded as moot is closed): a pull request, squash-merged after the owner's
    approval, with the trailer block and sign-off of ADR 0002 (the root commit
    of the public history is the one exception; ADR 0002 gives its checklist). R also needs the owner's
    decision.
