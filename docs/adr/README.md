@@ -11,7 +11,8 @@ decides anything that is hard to change later.
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-licence-and-dont-copy.md) | Licence and the don't-copy rule: GPL-3.0-or-later, no code from other AFS implementations | accepted |
-| [0002](0002-ai-use-and-attribution.md) | AI use, commit attribution and working in the open | accepted |
+| [0002](0002-ai-use-and-attribution.md) | AI use, commit attribution and working in the open | accepted; partly superseded by 0003 |
+| [0003](0003-branch-work-and-ai-disclosure.md) | Branch work and AI disclosure | proposed |
 
 ## How an ADR is made
 

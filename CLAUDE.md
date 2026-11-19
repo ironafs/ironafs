@@ -15,9 +15,10 @@ The rules for every agent are in AGENTS.md:
   - `add-dependency`: use it before adding or upgrading any crate.
   - `wire-format`: use it for any wire message or on-disk format.
   - `phase-lifecycle`: use it at the start and exit of a phase of work.
-  - `land-change`: use it before every commit or merge. It presents the change
-    and its exact message to the human you work for, and waits for their
-    approval.
+  - `land-change`: use it before every commit, push or merge. Branch work
+    follows its rules without asking; a merge to `main` is presented, with
+    its exact message, to the human you work for, and waits for their
+    approval (ADR 0003).
   - `review-lanes`: for the maintainer's controller session only. It needs
     the maintainer's local review tooling.
 - `.claude/settings.json` blocks common credential commands. Its patterns

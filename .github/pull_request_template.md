@@ -7,7 +7,10 @@
 <!-- Last paragraph: the trailer block. No blank lines inside it. See AI.md. -->
 <!-- Class: one of E I P S R -->
 <!-- Assisted-by: <agent>:<served model id>, one per model, or "none" -->
-<!-- AI-Reviewed-by: <agent>:<served model id>, reviews covering the final tree -->
+<!-- AI-Reviewed-by: <agent>:<served model id>, only reviews whose final -->
+<!-- verdict covers this change as submitted -->
+<!-- If a model wrote this description, end it, above the trailers, with: -->
+<!-- "Written by <agent>:<model>." (ADR 0003) -->
 <!-- Signed-off-by: your own line; the owner adds theirs at merge -->
 <!-- For code changes: say that the code was written from your own -->
 <!-- understanding and the specs, with nothing ported or translated from -->

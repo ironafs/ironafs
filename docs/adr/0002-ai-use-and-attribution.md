@@ -4,7 +4,8 @@
 # 0002: AI use, commit attribution and working in the open
 
 Status: accepted (2026-11-18), by the owner, after the review rounds recorded
-below.
+below. Partly superseded by [ADR 0003](0003-branch-work-and-ai-disclosure.md)
+(branch work, branch-commit trailers, and disclosure beyond commits).
 
 ## Context
 
@@ -48,7 +49,8 @@ below.
 - Each change is worked on its own branch, with as many commits as it needs.
   Branch commits are working state, not the record. They carry no trailers
   and no sign-off; those go only on commits that land on `main`. Who approves
-  a commit before it is made:
+  a commit before it is made (superseded by ADR 0003: branch commits need no
+  approval and carry `Assisted-by:`):
   - the owner, for the maintainer's own branch commits, every squash merge,
     and the root commit;
   - a contributor, for their own branch commits.
@@ -116,6 +118,7 @@ Signed-off-by: Adrian Ana <adrian@adrianana.com>
 - **`Signed-off-by:`** (DCO 1.1) is a human's certification.
   - **The owner's:** every commit the maintainer's session makes, and every
     commit that lands on `main`, is presented to the owner before it is made
+    (since ADR 0003: every commit that lands on `main`, and the root commit)
     (contributors approve their own branch commits; see "Shape of history").
     The presentation shows the diff summary, the full final message including
     the owner's `Signed-off-by:` line, and, for a merge, the PR's head commit.
