@@ -203,11 +203,12 @@ other model pin in this file, `AI.md` and the skills.
 
 | Seat | GPT | Claude | Gemini | GLM | DeepSeek |
 |---|---|---|---|---|---|
-| **Light:** optional helpers; research gathering | `gpt-6.2-sol`, medium | Haiku or Sonnet subagents | `gemini-3.8-flash-medium`, `gemini-4-argon-medium` | `glm-5.3-flash` | `deepseek-flash`, default |
-| Mechanical class I and P implementation | `gpt-6.2-sol`, medium | Opus (work only the controller can run) | `gemini-4-carbon-medium` (when codex is out of quota) | — | — |
-| Class I and P required reviews, P contracts | `gpt-6.2-sol`, high | Opus | `gemini-4-carbon-medium` | `glm-5.3`, high | `deepseek-flash`, default |
+| **Light:** optional helpers | `gpt-6.2-sol`, medium | Haiku (`claude-haiku-5-5`) | `gemini-3.8-flash-medium` | `glm-5.3-flash` | `deepseek-flash`, default |
+| **Light:** research gathering | `gpt-6.2-sol`, medium | Sonnet (`claude-sonnet-5-5`) | `gemini-4-argon-medium` | `glm-5.3`, high | `deepseek-flash`, default |
+| Class I and P implementation (`high` where it is not mechanical) | `gpt-6.2-sol`, medium | Opus (work only the controller can run) | `gemini-4-carbon-medium` (when codex is out of quota) | — | — |
+| Class I and P required reviews, P contracts, refutations and verifications on I and P work, research synthesis that is not load-bearing | `gpt-6.2-sol`, high | Opus (`claude-opus-5-5`) | `gemini-4-carbon-medium` | `glm-5.3`, high | `deepseek-flash`, default |
 | Class S and R implementation | `gpt-6.2-sol`, high | Opus (controller-only work) | `gemini-4-carbon-high` (when codex is out of quota) | — | — |
-| Ordinary class S and R reviews, S design review before code, reproduction, the consistency pass | `gpt-6.2-sol`, xhigh | Opus | `gemini-4-carbon-high` | `glm-5.3`, high | `deepseek-flash`, default |
+| Ordinary class S and R reviews, S design review before code, refutations on S and R work, reproduction, the consistency pass | `gpt-6.2-sol`, xhigh | Opus (`claude-opus-5-5`) | `gemini-4-carbon-high` | `glm-5.3`, high | `deepseek-flash`, default |
 | **Strongest:** the judgement seat, security reviews, class R designs, format freezes, architecture ADRs, promoted implementation, synthesis of a load-bearing research question | `gpt-6.2-astra`, xhigh | Mythos 5.2 (`claude-mythos-5-2`) | `gemini-4-carbon-high`, where eligible | `glm-5.3`, max | `deepseek-flash`, max, where eligible |
 
 - **Precedence.** A seat in the strongest row never runs on a lower tier; if
@@ -219,8 +220,10 @@ other model pin in this file, `AI.md` and the skills.
 - **Research has two steps.** Gathering (web searches, reading sources,
   collecting facts) runs on a light or standard tier and ends in a dossier
   that gives, for each claim, its source, a short excerpt, its uncertainty
-  and any counter-evidence found. Forming a view may use a strongest tier,
-  reading the dossier inlined, without web access. Refute and
+  and any counter-evidence found. Forming a view on a **load-bearing**
+  question (one an ADR, a class S or R design or a format freeze will rest
+  on) runs on the strongest tier, reading the dossier inlined, without web
+  access; any other view-forming runs on the standard tier. Refute and
   source-verification seats keep web access, since checking sources is
   their job; a seat without tools (Gemini) gets the primary excerpts
   inlined; embargoed work keeps its limits on the brief, the dossier, the
@@ -233,6 +236,8 @@ other model pin in this file, `AI.md` and the skills.
   cases, misses, false findings, refusals and cost, a pass threshold, and a
   comparison with the current pin. Check `agy models` and the other lanes'
   model lists before pinning; ids change.
+- **Claude seats** run at the lane's default effort, which is recorded with
+  the served model; the other lanes pass their effort as pinned.
 - **Every dispatch and resume** passes the model and effort explicitly, and
   the served model and effort are read from the lane's own log.
 

@@ -109,9 +109,9 @@ its exact commit message, and nothing lands without their approval.
 | Model (family) | Controller | Writes code | Design and research | Reviews others' code | Security review |
 |---|---|---|---|---|---|
 | Claude Opus 5.5 (Anthropic) | yes | only work only it can run | yes | yes (default Claude seat) | no: Mythos takes Claude's security seats |
-| Claude Mythos 5.2 (Anthropic) | | | hard problems, judgements, class R designs and architecture ADRs | hard problems and judgements | yes, every Claude security review |
+| Claude Mythos 5.2 (Anthropic) | | promoted implementation only, for work only the controller can run | the strongest seats: judgements, class R designs, architecture ADRs, load-bearing research synthesis | judgements | yes, every Claude security review |
 | GPT-6.2 Sol (OpenAI, via codex) | | yes (main implementer) | yes, read-only | yes, read-only, never codex's own work | no: Astra takes GPT's security seats |
-| GPT-6.2 Astra (OpenAI, via codex) | | after two recorded failures on the same defect | hard problems, judgements, class R designs and architecture ADRs | judgements | yes, the default GPT security seat |
+| GPT-6.2 Astra (OpenAI, via codex) | | after two recorded failures on the same defect | the strongest seats: judgements, class R designs, architecture ADRs, load-bearing research synthesis | judgements | yes, the default GPT security seat |
 | Gemini 4 Carbon (Google, via agy) | | when codex is out of quota | | yes, second family | no: it declined security-framed briefs in our runs |
 | GLM 5.3 (Zhipu) | | | second view | yes, first reviewer of codex's work | yes, when it wrote neither the design nor the code |
 | DeepSeek V4.1 Flash (DeepSeek) | | | research | yes, second family, off-peak (paid) | |

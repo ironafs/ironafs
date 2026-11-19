@@ -41,15 +41,16 @@ In short:
 | Lane | Light | Standard | Class S and R reviews | Strongest |
 |---|---|---|---|---|
 | codex (GPT) | `gpt-6.2-sol` medium | `gpt-6.2-sol` high | `gpt-6.2-sol` xhigh | `gpt-6.2-astra` xhigh |
-| gemini | `gemini-3.8-flash-medium`, `gemini-4-argon-medium` | `gemini-4-carbon-medium` | `gemini-4-carbon-high` | `gemini-4-carbon-high` |
+| gemini | `gemini-3.8-flash-medium` (helpers), `gemini-4-argon-medium` (gathering) | `gemini-4-carbon-medium` | `gemini-4-carbon-high` | `gemini-4-carbon-high` |
 | glm | `glm-5.3-flash` | `glm-5.3` high | `glm-5.3` high | `glm-5.3` max |
 | deepseek | `deepseek-flash` default | `deepseek-flash` default | `deepseek-flash` default | `deepseek-flash` max |
-| Claude | Haiku or Sonnet subagents | Opus 5.5 | Opus 5.5 | Mythos 5.2 (`fable` alias, serves `claude-mythos-5-2`) |
+| Claude | Haiku (helpers), Sonnet (gathering) | Opus 5.5 | Opus 5.5 | Mythos 5.2 (`fable` alias, serves `claude-mythos-5-2`) |
 
 - Light models never hold a required review seat. Fix verification uses the
   pin of the seat whose finding it verifies.
-- Research gathering stays light or standard; a strongest model may then
-  read the gathered dossier inlined, without web access. Claude Code
+- Research gathering stays light or standard; a load-bearing question's
+  view is formed on the strongest tier, reading the gathered dossier
+  inlined, without web access; any other view on the standard tier. Claude Code
   subagents for gathering pass a lighter `model` explicitly instead of
   inheriting the session's.
 - Promotion only for implementation, after two recorded failures on the
