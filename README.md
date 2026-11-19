@@ -79,7 +79,7 @@ Windows) sit on one shared Rust core, which the `afs` command line uses too:
 ```
 
 This is the intended shape, not code that exists. The architecture decision
-(ADR 0003) is the next design step.
+is the next design step.
 
 ## Compatibility
 

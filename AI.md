@@ -134,11 +134,12 @@ Signed-off-by: Adrian Ana <adrian@adrianana.com>
 - `Assisted-by:` names a model whose writing remains in the change: code,
   tests, docs or the message. The id is the model that actually served the
   request. `Assisted-by: none` means no model wrote any of it.
-- `AI-Reviewed-by:` names a review whose final verdict covers the code as it
-  landed.
+- `AI-Reviewed-by:` names a review whose final verdict covers the change as
+  it landed: what it reviewed, plus verified fixes or recorded fixes of its
+  own minor findings. Earlier rounds are in the review record.
 - `Signed-off-by:` is the human's [Developer Certificate of
   Origin](https://developercertificate.org/) sign-off. The owner sees every
-  commit's diff and exact message before it is made. Only after approving it
+  merge's diff and exact message before it lands. Only after approving it
   is their sign-off added, so the certification is always the human's.
   Outside contributors write their own.
 - Models never get `Co-authored-by:`. That trailer is for people.
@@ -148,6 +149,13 @@ To list the models behind each commit:
 ```sh
 git log --format='%h %s%n  %(trailers:key=Assisted-by,valueonly,separator=%x2C )'
 ```
+
+Working commits on a branch carry `Assisted-by:` too. Issues, pull request
+descriptions, comments and reviews written by a model end with a line naming
+it, such as `Written by codex:gpt-6.2-sol.`, adding for whom when it is
+written for someone else's account
+(`Written by claude-code:claude-opus-5-5 for the maintainer.`)
+([ADR 0003](docs/adr/0003-branch-work-and-ai-disclosure.md)).
 
 The pull request behind each commit keeps the full story: the working commits,
 each review verdict and the fix rounds. Review records are also kept in

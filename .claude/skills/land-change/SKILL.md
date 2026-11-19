@@ -1,22 +1,46 @@
 ---
 name: land-change
-description: Use before EVERY git commit or merge in this repository — branch commits, squash merges and the root commit. Presents the change and its exact final message to the human you work for, waits for their approval, then commits or merges exactly what was approved (ADR 0002). Triggers on "commit", "merge", "land", "push", "open a PR", or any step that would create a commit.
+description: Use before EVERY git commit, push or merge in this repository — branch commits, squash merges and the root commit. The maintainer's branch work follows its rules without asking (ADR 0003); a squash merge or the root commit is presented, with its exact final message, to the human you work for, who must approve it before it is made (ADR 0002). Triggers on "commit", "merge", "land", "push", "open a PR", or any step that would create a commit.
 ---
 
 # Landing a change
 
-The human you work for approves every commit before it is made (ADR 0002).
-For the maintainer that is the owner; for a contributor, it is the
-contributor. The only `Signed-off-by:` an agent ever writes is the owner's,
-in the maintainer's session, after the owner approves the exact final
-message of a squash merge or the root commit. A contributor's line is only
-ever copied, unchanged, from what they wrote themselves. This procedure makes
-sure that what lands is exactly what was approved.
+The human you work for approves every merge to `main` and the root commit
+before it is made (ADR 0002). The maintainer's branch work needs no approval
+(ADR 0003, and section 0 below). For the maintainer the human is the owner; for a
+contributor, it is the contributor. The only `Signed-off-by:` an agent ever
+writes is the owner's, in the maintainer's session, after the owner approves
+the exact final message of a squash merge or the root commit. A
+contributor's line is only ever copied, unchanged, from what they wrote
+themselves. This procedure makes sure that what lands is exactly what was
+approved.
 
 "The human" below means that person. Their sign-off uses their own identity
 (`git config user.name` and `user.email`), never anyone else's.
 
-## 1. Checks before presenting
+## 0. Branch work (the maintainer's session needs no approval)
+
+**The maintainer's session**, on a task branch and never on `main`, commits,
+pushes and opens draft pull requests without asking (ADR 0003). A
+contributor's agent follows its contributor's own approval, as in section 1
+("A contributor's pull request"). For both:
+
+- Commit before each review round, and cite the commit range in the review
+  record.
+- Once a commit is under review or pushed, it is frozen: fixes go on top as
+  new commits. Never amend, rebase or force-push it.
+- Before every push, scan the commits that are not yet pushed, and their
+  messages, for secrets (`gitleaks git --log-opts="@{upstream}..HEAD" --redact .`,
+  or `origin/main..HEAD` before the first push). Do not push if it finds one
+  or cannot complete.
+- A secret found in a pushed commit: revoke it first; then replace the branch
+  with a new one built from before that commit, delete the old branch, and
+  record why. The frozen-commit rule does not stop this; nothing is pushed on
+  top of a leaked secret.
+- Mark the pull request ready for review once the reviews its class requires
+  are recorded.
+
+## 1. Checks before committing or presenting
 
 **Every commit, branch commits included:**
 
@@ -64,7 +88,9 @@ not apply to the scaffold.
 ## 2. The message
 
 - **A branch commit:** a short, lowercase, casual subject and an optional
-  body. No trailers and no sign-off.
+  body, then `Assisted-by:` lines for each model whose writing remains in it
+  (or `Assisted-by: none`). Never `Signed-off-by:`, `Class:` or
+  `AI-Reviewed-by:`.
 - **A squash merge or the root commit:** a subject, then what changed and why,
   including findings refuted with their evidence. Then one trailer block as
   the last paragraph, with no blank lines inside it:
@@ -100,24 +126,28 @@ Show the human, in one message:
   - for an outside contributor, confirmation that their sign-off line in the
     body is unchanged and matches the PR author.
 
-Then stop. Do not commit, push or merge until the human approves exactly
-that. If anything changes after approval, present it again: the tree, the
-base, the head, or a single character of the message.
+Then stop. Do not merge, make the root commit, or (for a contributor's PR)
+push, until the human approves exactly that. If anything changes after
+approval, present it again: the tree, the base, the head, or a single
+character of the message.
 
 ## 4. Do exactly what was approved
 
 Write the approved message to a file once and use that file. Before acting,
 re-check that the tree id (or the base and head) is still the approved one.
 
-- **A branch commit:** `git commit --cleanup=verbatim -F <message file>`, so
-  git does not alter the approved text. Then confirm that
-  `git rev-parse HEAD^{tree}` equals the approved tree id.
 - **A contributor's PR:** push the branch and open the PR with the approved
   title and description (`gh pr create --title ... --body-file ...`).
-- **A squash merge** (maintainer only; contributors open a PR instead),
-  while `main` is still at the approved base:
-  `gh pr merge <n> --squash --match-head-commit <approved head> --subject "<approved subject>" --body-file <approved body file>`.
-  Merge one PR at a time while the checks are manual.
+- **A squash merge** (maintainer only; contributors open a PR instead):
+  immediately before merging, check again that `main` is at the approved base,
+  the PR head is the approved head, and the message file's SHA-256 is the
+  approved one. Then:
+  `gh pr merge <n> --squash --match-head-commit <approved head> --subject "<approved subject>" --body-file <approved body file>`,
+  adding `--author-email <the owner's public address>` only for the
+  maintainer's own pull requests (a contributor's keeps its author).
+  Merge one PR at a time. After the read-back (section 5), post a comment on
+  the PR logging the approval: the head, the base and the message's SHA-256,
+  with the disclosure line.
 - **The root commit** (maintainer only, once; no `main` exists yet):
   1. On an orphan branch, start from an empty index (`git rm -r --cached .`).
   2. Add exactly the reviewed files, by explicit path list.
@@ -165,5 +195,6 @@ issue or PR before disclosure.
   maintainer's session after their approval of the exact message. Never
   write a contributor's line for them.
 - Push to `main` directly. The root commit is the only exception.
-- Amend, rebase or force-push anything already approved and pushed without a
-  new approval.
+- Amend, rebase or force-push a commit that is pushed or under review.
+- Post an issue, pull request description, comment or review written by a
+  model without its disclosure line (ADR 0003).
