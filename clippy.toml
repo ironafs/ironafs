@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# The workspace denies unwrap/expect/panic/indexing (Cargo.toml). Tests may
+# use them: a test that panics is a failing test, not a crash on bad input.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+# Proper nouns that pedantic's doc_markdown would otherwise ask to backtick.
+doc-valid-idents = ["IronAFS", "OpenAFS", "AuriStor", "FSKit", "macOS", ".."]

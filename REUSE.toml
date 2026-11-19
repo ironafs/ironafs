@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+version = 1
+
+# Files whose format cannot carry a header (generated, JSON, or front matter
+# that must come first).
+[[annotations]]
+path = [
+  "Cargo.lock",
+  ".claude/settings.json",
+  ".claude/skills/**/SKILL.md",
+  ".github/pull_request_template.md",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Adrian Ana <adrian@adrianana.com>"
+SPDX-License-Identifier = "GPL-3.0-or-later"

@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Exact pin: toolchain bumps are deliberate changes.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy", "rust-src"]
+# The platforms IronAFS targets, so `cargo clippy --target <triple>` works on
+# any development machine (AGENTS.md, "Commands").
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+]

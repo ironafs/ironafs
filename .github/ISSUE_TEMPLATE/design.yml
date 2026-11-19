@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: Design question or proposal
+description: A question about a decision, or a proposal for one.
+labels: ["type:design"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: The question or proposal
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Which ADR, rule or document it concerns, and why it matters.
+  - type: textarea
+    id: exposure
+    attributes:
+      label: Sources
+      description: >-
+        Where your facts come from (specifications, documentation, observed
+        behaviour). Please do not paste code from other AFS implementations
+        (ADR 0001).

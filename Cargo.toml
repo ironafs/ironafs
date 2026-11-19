@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.100"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/ironafs/ironafs"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+elided_lifetimes_in_paths = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+mod_module_files = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+# The other ways code can panic or slice out of bounds (AGENTS.md,
+# "Untrusted input").
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+string_slice = "deny"
+dbg_macro = "deny"
+allow_attributes = "deny"
+
+[profile.release]
+overflow-checks = true

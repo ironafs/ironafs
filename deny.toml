@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Dependency policy from ADR 0001. Exceptions need the owner's decision and
+# name the crate, version and reason.
+
+[graph]
+all-features = true
+
+[licenses]
+# IronAFS's own crates are GPL-3.0-or-later and unpublished (publish =
+# false); the allowlist below governs dependencies only (ADR 0001).
+private = { ignore = true }
+# Dev-dependencies are checked too (ADR 0001).
+include-dev = true
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "BSL-1.0",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+]
+# Owner decisions per package (ADR 0001) go in `exceptions`: CC0-1.0 and
+# CDLA-Permissive-2.0 for data only, MPL-2.0, OpenSSL, Unlicense, others.
+confidence-threshold = 0.93
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+# Crates that run a build script or bundle C are allowlisted one by one
+# (ADR 0001); bundled C sources are checked by hand.
+[bans.build]
+include-workspace = true
+allow-build-scripts = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[advisories]
+yanked = "deny"

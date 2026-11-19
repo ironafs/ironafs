@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/ironafs/ironafs/blob/main/SECURITY.md
+    about: Never in a public issue. Follow SECURITY.md to report privately.

@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+target/
+*.code-workspace
+.claude/worktrees/
+__pycache__/
+.DS_Store
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Never commit secrets or raw test material (ADR 0001, ADR 0002).
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.keytab
+krb5cc_*
+KeyFile*
+*.pcap
+*.pcapng
+*.cap
+
+# Editors and tool scratch.
+.idea/
+.vscode/
+*.swp
+*~
+*.orig
+*.rej
+
+# More secrets and local credentials.
+!.env.example
+.envrc
+.direnv/
+.cargo/credentials.toml
+id_rsa*
+id_ed25519*
+id_ecdsa*
+*.crt
+*.der
+*.jks
+*.ccache
+
+# Local AFS and Kerberos configuration at the top level (fixtures live in
+# test directories and are synthetic).
+/ThisCell
+/CellServDB*
+/krb5.conf
+
+# Agent and tool state.
+.mcp.json
+.codex/
+.gemini/
+.cursor/
+/scratch/
+
+# Rust tooling output.
+*.profraw
+*.profdata
+lcov.info
+fuzz/artifacts/
+fuzz/corpus/
+mutants.out*/
+*.pending-snap
+/core
+/core.[0-9]*
+
+# Apple and Windows build output.
+.build/
+.swiftpm/
+xcuserdata/
+DerivedData/
+*.dSYM/
+.vs/
+*.pdb
+Thumbs.db
+
+# The maintainer's private skills and notes (loaded locally, never published).
+.claude/skills/local-*/
+.claude/local/

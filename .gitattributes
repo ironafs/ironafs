@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Text files are stored and checked out with LF line endings on every
+# platform, Windows included (.editorconfig sets the same).
+* text=auto eol=lf
+
+# Generated; collapsed in GitHub diffs.
+Cargo.lock linguist-generated=true

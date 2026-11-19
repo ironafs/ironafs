@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: Task
+description: A unit of work, written as a brief (docs/workflow.md §3).
+labels: ["type:task"]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: What is true when it is done.
+    validations:
+      required: true
+  - type: textarea
+    id: contracts
+    attributes:
+      label: Contracts, class and files
+      description: >-
+        Which contracts it touches, its proposed class (E, I, P, S or R) and
+        the files. The maintainer confirms the class and applies its label.
+    validations:
+      required: true
+  - type: textarea
+    id: failure
+    attributes:
+      label: Failure cases
+      description: At least one plausible wrong implementation the work must avoid.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Acceptance evidence
+      description: The commands and results that prove it.
+    validations:
+      required: true
