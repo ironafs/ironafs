@@ -207,7 +207,7 @@ this.
 A network filesystem needs macOS 26 at least; correct cache invalidation and
 caller identity need macOS 27. The practical floor is macOS 27.
 
-### B2. Windows (Cloud Files)
+### B2. Windows
 
 - The Cloud Files API arrived in Windows 10 version 1709 and Windows Server
   2016.
@@ -216,6 +216,12 @@ caller identity need macOS 27. The practical floor is macOS 27.
 - "Windows 10 will reach end of support on October 14, 2025." The API floor
   (1709) and a sensible support floor (Windows 11) differ.
 - Which build each needed feature arrived in is work for the Windows spike.
+- Update, 2026-11-19: a second Windows route now exists, an online `\\afs`
+  path through Windows' own SMB client and an SMB server of IronAFS's own.
+  It was measured working beside Windows' own file sharing on Windows 10
+  22H2, Windows 11 24H2 and Windows 11 26H2 (MEASURED,
+  [UNC note](2026-11-19-windows-unc-without-a-driver.md)). The Cloud Files
+  points above apply to the offline companion.
 
 ### B3. FreeBSD and other FUSE systems
 
@@ -261,6 +267,11 @@ caller identity need macOS 27. The practical floor is macOS 27.
 | 2, best effort | RHEL 7.9 / CentOS 7.9 x86_64. RHEL 8. Debian 12, Ubuntu 22.04. Static musl builds. FreeBSD 14 and 15. macOS 26. | Builds and a smoke test per release. Bugs fixed when the fix is cheap. No performance promise. |
 | Out of scope | RHEL 6 and older. Kernels below 3.10. RHEL 7 on aarch64 or POWER. 32-bit targets. macOS 15 and older. Windows 10 and Windows Server. macFUSE. | Not built, not tested. |
 
+Update, 2026-11-19: Windows 10 22H2 was out of scope because of the Cloud
+Files route. The SMB route was since measured working on it (B2), so its
+tier is reopened, to be settled with the platform floors in the
+architecture ADR.
+
 **RHEL 7 placement and justification:**
 
 - **Tier 2, not tier 1.** It cannot be tested on real kernels in ordinary CI,
@@ -298,6 +309,8 @@ This placement is a judgement, not a measured result.
 8. **Kernel test strategy:** which kernels get a virtual-machine job?
 9. **macOS floor:** macOS 27 only, or a reduced mode on 26?
 10. **Windows floor:** Windows 11 only, and which Cloud Files features?
+    (Update, 2026-11-19: reopened by the SMB route, measured on Windows 10
+    22H2 and 11; see B2.)
 11. **FUSE layer:** decided after this research. IronAFS writes its own
     `/dev/fuse` layer (rule 21), negotiating at run time.
 12. **RHEL backports:** what FUSE level the RHEL 8, 9 and 10 kernels really

@@ -123,7 +123,8 @@ replaced by documented statements.
 - Whether the macOS `access(2)` cache's three-user capacity and the 60-second
   lifetime in `nfs.conf(5)` describe the same cache.
 - The corrections were written by Claude Code (`claude-opus-5-5`), the
-  note's own family. They have not been reviewed by another family.
+  note's own family. (Since reviewed by GLM: see "Review of the corrected
+  notes" below.)
 
 ## Second round: macOS options with only what Apple ships
 
