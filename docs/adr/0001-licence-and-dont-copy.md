@@ -58,7 +58,7 @@ below.
 - Every file declares its licence and copyright: an SPDX header where the
   format has comments, and a `REUSE.toml` entry for the rest. Every licence
   used has its text in `LICENSES/`. The repository follows the REUSE
-  specification. `reuse lint` passes, by hand until CI exists and then in CI.
+  specification. `reuse lint` must pass in CI.
 - A crate made only of IronAFS's own code has `license = "GPL-3.0-or-later"`.
   A crate that contains copied third-party material declares the combined
   expression (for example `GPL-3.0-or-later AND MIT`). Each published crate includes every
@@ -260,8 +260,7 @@ later" already lets IronAFS follow future GPL versions without asking anyone.
   installed and loaded outside the store is assumed until a separate check
   does exactly that with a minimal first-party extension (planned before the
   macOS layer is designed).
-- `cargo-deny`, the build-script allowlist and `reuse lint` run before the
-  first dependency or release: by hand until CI exists, then in CI.
+- CI runs `cargo-deny`, including the build-script allowlist, and `reuse lint`.
 - The first public push grants GPL-3.0-or-later rights that a later
   relicensing cannot withdraw. The going-public conditions in ADR 0002 apply.
 

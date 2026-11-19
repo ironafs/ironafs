@@ -140,12 +140,20 @@ cargo build
 cargo run --bin afs
 ```
 
-Today this builds a placeholder `afs` binary that prints its version. Once
-there are tests, they run with [cargo-nextest](https://nexte.st/)
-(`cargo nextest run --retries 0`, a separate install) and `cargo test --doc`.
+Today this builds a placeholder `afs` binary that prints its version.
 Development uses the exact toolchain pinned in `rust-toolchain.toml`
-(1.100.0, the current stable release). `rust-version` in `Cargo.toml`
-(1.100) is the minimum; a lower one is set only once CI tests it.
+(1.100.0). `rust-version` in `Cargo.toml` (1.100) is the minimum. A lower
+minimum is set only once CI tests it.
+
+Run `cargo xtask check` for the local checks. Install
+[cargo-nextest](https://nexte.st/) separately. Run `cargo xtask hooks install`
+to opt in to running the same checks before each push.
+
+To run checks individually, use `cargo fmt --all --check`,
+`cargo clippy --all-targets`, `cargo nextest run --retries 0`,
+`cargo test --doc --workspace`, `reuse lint` and `cargo deny check`.
+The local batch reports `reuse` and `cargo-deny` as skipped if they are
+absent. CI requires both and runs Clippy and tests on Linux, macOS and Windows.
 
 ## Contributing
 

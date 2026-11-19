@@ -51,10 +51,9 @@ number and is marked retired; new rules are appended.
      is denied.
    - A Miri job is added with the first such crate.
 
-6. **Warnings are errors in CI, not in source.** CI (planned) sets
-   `CARGO_BUILD_WARNINGS=deny`; until it exists, `cargo clippy` with no
-   warnings is checked by hand before every commit. Source never says `#![deny(warnings)]`, which
-   breaks builds on every new compiler lint.
+6. **Warnings are errors in CI, not in source.** CI and `cargo xtask check`
+   set `CARGO_BUILD_WARNINGS=deny` for Clippy. Source never says
+   `#![deny(warnings)]`, which breaks builds on every new compiler lint.
 
 7. **Time and randomness go through a seam.** No direct `Instant::now`,
    `SystemTime::now` or random-number calls outside an injected clock and
@@ -219,10 +218,10 @@ number and is marked retired; new rules are appended.
         profile.
       - Nextest terminates a test that runs too long, so a deadlock fails
         instead of hanging (`.config/nextest.toml`).
-      - Doc-tests run outside nextest. They get a deadline from the CI job;
+      - Doc-tests run outside nextest. They get a deadline from their CI step;
         by hand, a run that does not finish is a failure.
-    - **Platforms.** Code behind an OS `cfg` is tested on that OS: by hand
-      until CI exists, then in CI. The evidence names the machine.
+    - **Platforms.** CI tests code behind an OS `cfg` on Linux, macOS and
+      Windows. The evidence names the machine.
     - **Evidence** (`docs/workflow.md` §3b, §3c). Record:
       - the tests expected to run, by name or filter, and check they ran;
       - the result and the command's exit status;
@@ -233,8 +232,7 @@ number and is marked retired; new rules are appended.
       build, setup or infrastructure failure that stopped tests running, is
       *missing evidence*, never a pass.
     - **The runner** is `cargo nextest run --retries 0` (CI uses
-      `--profile ci`) from the first real crate; doc-tests run with
-      `cargo test --doc`.
+      `--profile ci`). Doc-tests run with `cargo test --doc --workspace`.
 
 16. **Checks pass only on proof of success** (`docs/workflow.md` §3b).
 

@@ -33,14 +33,20 @@ Security problems go to [SECURITY.md](SECURITY.md), not to public issues.
 ## Before you open a pull request
 
 `rustup` installs the pinned toolchain and targets from
-`rust-toolchain.toml` on first use. Then run:
+`rust-toolchain.toml` on first use. Install [cargo-nextest](https://nexte.st/)
+separately, then run `cargo xtask check`. Run `cargo xtask hooks install` to
+opt in to running the checks before each push. Use
+`cargo xtask hooks uninstall` to remove the managed hook.
 
-- `cargo fmt` and `cargo clippy --all-targets`, with no warnings. If you
+To run the checks individually, use the following commands.
+
+- `cargo fmt` to apply formatting, or `cargo fmt --all --check` to check it.
+- `cargo clippy --all-targets`, with `CARGO_BUILD_WARNINGS=deny`. If you
   touched code behind an OS `cfg`, run clippy with `--target` for Linux,
   macOS and Windows too.
-- `cargo nextest run --retries 0` ([cargo-nextest](https://nexte.st/) is a
-  separate install) and `cargo test --doc`.
-- `reuse lint` and `cargo deny check`, if you added files or dependencies.
+- `cargo nextest run --retries 0` and `cargo test --doc --workspace`.
+- `reuse lint` and `cargo deny check`. The local batch reports missing
+  optional tools by name. CI requires both checks.
   A new dependency needs the owner's decision first (ADR 0001).
 
 ## AI-assisted contributions

@@ -1,0 +1,132 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Check REUSE headers
+        run: docker run --rm --volume "$PWD:/data" fsfe/reuse:6.2.0@sha256:85462a75c0f8efda09ddd190b92816b70e7662577c8427429e11e1b9f25a992e lint
+      - name: Install cargo-deny
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          archive=cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/$archive"
+          printf '%s  %s\n' 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 "${archive%.tar.gz}/cargo-deny" "$cargo_bin/cargo-deny"
+      - name: Check dependencies
+        run: cargo deny --locked check
+
+  test:
+    name: test (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            nextest-archive: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+            nextest-sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+          - runner: macos-15
+            nextest-archive: cargo-nextest-0.9.151-universal-apple-darwin.tar.gz
+            nextest-sha256: d1d7d025d4bfc9fb154cd76aea3949bd78534829a0589abefa6e5dd4edb135dd
+          - runner: windows-2025
+            nextest-archive: cargo-nextest-0.9.151-x86_64-pc-windows-msvc.zip
+            nextest-sha256: ba35ee0ce14ace65cd8c7aaa9613adb7d2644b0fe3866e85131eb4c269786efb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Run Clippy
+        env:
+          CARGO_BUILD_WARNINGS: deny
+        run: cargo clippy --all-targets --locked
+      - name: Install cargo-nextest
+        env:
+          ARCHIVE: ${{ matrix.nextest-archive }}
+          SHA256: ${{ matrix.nextest-sha256 }}
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          curl --fail --silent --show-error --location --output "$ARCHIVE" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/$ARCHIVE"
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            printf '%s  %s\n' "$SHA256" "$ARCHIVE" | shasum -a 256 -c -
+          else
+            printf '%s  %s\n' "$SHA256" "$ARCHIVE" | sha256sum -c -
+          fi
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            unzip -q "$ARCHIVE"
+            install -m 0755 cargo-nextest.exe "$cargo_bin/cargo-nextest.exe"
+          else
+            tar -xzf "$ARCHIVE"
+            install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+          fi
+      - name: Run tests
+        run: cargo nextest run --profile ci --retries 0 --no-tests fail --locked
+      - name: Run doc-tests
+        timeout-minutes: 5
+        run: cargo test --doc --workspace --locked
+
+  ci-ok:
+    name: ci-ok
+    needs: [lint, test]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require lint and test success
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          printf 'lint: %s\ntest: %s\n' "$LINT_RESULT" "$TEST_RESULT"
+          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success ]]

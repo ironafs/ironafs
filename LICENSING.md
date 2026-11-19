@@ -47,8 +47,9 @@ the file, one tag per line, in the file's own comment syntax:
 - **Licence texts** are in `LICENSES/`, named by their SPDX identifier.
 - **Third-party material** keeps its original header and licence, and gets a
   `docs/provenance.md` row.
-- **Checked by** `reuse lint`, which must pass before any change lands. It
-  runs by hand until CI and the repository's git hooks exist, then in both.
+- **Checked by** `reuse lint`, which must pass before any change lands. CI
+  runs it on pull requests. The opt-in pre-push hook runs it if `reuse` is
+  installed.
 
 ## Where the code comes from
 
@@ -61,4 +62,4 @@ Third-party material copied into the repository, if any, keeps its own
 licence and notices and is listed in [docs/provenance.md](docs/provenance.md).
 Dependency licences follow ADR 0001: an allowlist in `deny.toml`, checked
 with `cargo-deny`, plus per-package exceptions the owner decides. The checks
-run by hand until CI exists, then in CI.
+run in CI.
