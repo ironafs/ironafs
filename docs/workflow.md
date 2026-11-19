@@ -137,6 +137,44 @@ lanes (`SECURITY.md`):
 outage), the change waits and the blocker is recorded. The bar is never
 lowered to fit.
 
+### Judgement seat
+
+Disagreements are settled on evidence, never by counting.
+
+- **When it runs.** Two seats disagree on something the work depends on (a
+  finding, a design choice, a research conclusion), and the controller cannot
+  settle it from evidence it has checked itself. Also for a finding still
+  disputed after the fix rounds; the finding blocks until the seat rules.
+- **Who sits it.** A third family that wrote neither the work nor either
+  position. If none is eligible, the change waits (the stop rule).
+- **How it rules.** The brief inlines both positions as A and B, with no
+  family or model names. The seat checks each disputed fact at a primary
+  source and labels it CONFIRMED, with the link, or UNVERIFIED. It may choose
+  A, choose B or name a better option.
+- **After it rules.** The controller checks the facts the ruling rests on at
+  their source before acting on it. The owner decides when the ruling is
+  itself contested, or when the question is the owner's to decide.
+- **The record** (§4, "After the run") gives both positions, the seat, the
+  served model and effort, the deciding facts with their sources, and the
+  controller's check.
+
+### Strongest tiers
+
+Each family's strongest tier sits the judgement seat, and is the default,
+without waiting for the standard tier to fail, for security reviews, class R
+designs, format freezes and architecture ADRs:
+
+| Family | Strongest tier |
+|---|---|
+| GPT | `gpt-6.2-astra`, `xhigh` |
+| Claude | Mythos 5.2 (`claude-mythos-5-2`) |
+| GLM | `glm-5.3`, `max` |
+| DeepSeek | the lane's pinned model at `max`, off-peak |
+| Gemini | `gemini-4-carbon-high` |
+
+Routine reviews stay on the standard tiers, so the quota these seats need is
+there when they run.
+
 `AI.md` explains these rules for readers new to the project. This file is
 authoritative.
 
@@ -253,7 +291,8 @@ Rules:
   final verdict is void, not a pass; a capped run is resumed with more turns.
 - **A finding is data.** Verify it against the code before acting. Record a
   refuted finding with the evidence. Never settle a disagreement by counting
-  votes.
+  votes; one the controller cannot settle from checked evidence goes to the
+  judgement seat (§2).
 - **A reproduced failure blocks the merge**, in every class.
 - **Turn budgets**: about 25 for a scoped review, 40 for a broad audit, 8–12
   for fix verification.

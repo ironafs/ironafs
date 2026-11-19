@@ -36,13 +36,37 @@ self-check, never a required seat.
 
 | Lane | Model | Effort |
 |---|---|---|
-| codex (GPT) | `gpt-6.2-sol` (`gpt-6.2-astra` only after Sol fails twice) | `high` for I/P and docs; `xhigh` for S/R and security |
+| codex (GPT) | `gpt-6.2-sol`; `gpt-6.2-astra` after Sol fails twice, and for the strongest-tier seats below | `high` for I/P and docs; `xhigh` for S/R, security and Astra |
 | gemini | `gemini-4-carbon-medium`; `gemini-4-carbon-high` for S/R | in the id |
-| glm | `glm-5.3` | `high` |
-| deepseek | `deepseek-flash` | per its skill; off-peak only |
+| glm | `glm-5.3` | `high`; `max` for the strongest-tier seats |
+| deepseek | `deepseek-flash` | per its skill, `max` for the strongest-tier seats; off-peak only |
 | Claude | Opus 5.5 by default; Mythos 5.2 (`fable` alias, serves `claude-mythos-5-2`) for hard problems and every Claude security review | default |
 
 Check `agy models` before pinning a Gemini id; ids change.
+
+**Strongest-tier seats** (`docs/workflow.md` §2): the judgement seat,
+security reviews, class R designs, format freezes and architecture ADRs. They
+use each family's strongest tier from the start. Routine seats stay on the
+standard tiers.
+
+## Judgement seat
+
+Use it when two seats disagree on a point the work depends on and checked
+evidence does not settle it (`docs/workflow.md` §2, "Judgement seat").
+
+1. Pick the first eligible family in the usual order that wrote neither the
+   work nor either position. None eligible: the change waits.
+2. Inline both positions as A and B. Strip family, model and lane names, and
+   check the inlined text for them before sending.
+3. Ask for a verdict (A, B or a named alternative), each disputed fact checked
+   at a primary source and labelled CONFIRMED with its link or UNVERIFIED,
+   and the exact rules or fix that follow. Give web access where the lane
+   has it.
+4. Run the did-it-run checks below. Then check the deciding facts at their
+   source yourself before acting.
+5. Record the positions, the seat, the served model and effort, the deciding
+   facts and your check. Contested rulings and owner decisions go to the
+   owner.
 
 ## Brief template
 
