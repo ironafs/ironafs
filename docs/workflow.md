@@ -59,12 +59,12 @@ lanes are not used.
 | Role | Who | How |
 |---|---|---|
 | **Controller** | the maintainer's Claude Code session (following the maintainer's private instructions) | Plans, briefs, routes, verifies findings, lands changes after the owner's approval. Writes code only for work only it can run. |
-| **Implementer** | codex CLI, `gpt-6.2-sol` | `codex exec` with a written brief; `high` effort for S, `medium` for I/P mechanical work. `gpt-6.2-astra` only after sol fails the same problem twice. |
+| **Implementer** | codex CLI, `gpt-6.2-sol` | `codex exec` with a written brief; `high` effort for S, `medium` for I/P mechanical work. `gpt-6.2-astra` only under the promotion rule (§2, "Strongest tiers"). |
 | **Implementer when codex is out of quota** | agy CLI (Gemini) | Same brief; a session allowlist that denies git. Brief paths must sit inside `--add-dir`. |
 | **First reviewer of codex-written code** | GLM 5.3 (`glm-review`) | Headless Claude Code on Z.ai's endpoint, read-only. |
 | **Second family when the class needs two** | Gemini Carbon via agy (`gemini-review`), or DeepSeek (`deepseek-review`) | DeepSeek off-peak only (not Mon–Fri 01–04 or 06–10 UTC). |
 | **Design, rulings, research, refutations on work codex did not write** | GPT read-only: `codex exec -s read-only -m gpt-6.2-sol - < brief.md`; `-m gpt-6.2-astra -c model_reasoning_effort=xhigh` for the strongest-tier seats (§2, "Strongest tiers") | GLM second when a second view is needed. |
-| **Claude seats** (review, reproduction, hard judgement, security) | Claude Code subagents: Opus by default; Mythos 5.2 (`claude-mythos-5-2`, Claude Code's `fable` alias) for hard problems and for every Claude security review | Never a required seat on Claude-written work. |
+| **Claude seats** (review, reproduction, hard judgement, security) | Claude Code subagents: Opus by default; Mythos 5.2 (`claude-mythos-5-2`, Claude Code's `fable` alias) for the strongest-tier seats, including every Claude security review, and under the promotion rule (§2, "Strongest tiers") | Never a required seat on Claude-written work. |
 
 **A family never reviews its own work.** Codex is OpenAI-family, so a GPT
 seat never reviews codex-written code. A same-family review (for example
@@ -150,9 +150,9 @@ Disagreements are settled on evidence, never by counting.
 - **Who sits it.** A family that is independent of the dispute: it wrote
   neither the work nor either position, and has not taken a side in it. The
   controller's family is excluded when the controller argued a position.
-  Among the independent families, the first available at its strongest tier
-  in this order: GLM, GPT read-only, DeepSeek, Gemini, a Claude seat. Then
-  two filters:
+  Filter every family first, then take the first that remains in this
+  order: GLM, GPT read-only, DeepSeek, Gemini, a Claude seat. The filters
+  are independence (above), availability at its strongest tier, and:
   - **Security disputes** (whether a security finding holds, or anything
     that would overturn part of a security review): only the
     security-review families (GPT read-only, a Claude seat, GLM), never
@@ -160,13 +160,14 @@ Disagreements are settled on evidence, never by counting.
   - **Embargoed work:** only the Anthropic and OpenAI lanes, and nothing
     about the dispute leaves them (brief, source lookups, record).
 
-  If no family passes, the owner rules, and the record says so; under an
-  embargo that record stays private until disclosure. A ruling never removes
-  a seat the class requires.
+  If no family passes, the change waits (the stop rule), and the blocker is
+  recorded, privately under an embargo. A ruling never removes a seat the
+  class requires.
 - **How it rules.** The brief inlines both positions as A and B. The whole
-  brief, and anything it points to, carries no family, model or lane name
-  and no trailer, transcript or review record of the dispute; the
-  controller checks it for them before sending. The seat checks each
+  brief, and anything it points to, carries nothing that shows who took
+  either position: no family, model or lane name used that way, and no
+  trailer, transcript or review record of the dispute; the controller checks
+  it before sending. Names that are the subject of the dispute stay. The seat checks each
   disputed fact at a primary source and labels it CONFIRMED, with the link,
   or UNVERIFIED. A seat without tools (Gemini) gets the primary-source
   passages inlined with their citations; when they cannot be inlined, another
@@ -174,8 +175,11 @@ Disagreements are settled on evidence, never by counting.
   INCONCLUSIVE.
 - **After it rules.** The controller confirms every factual premise the
   ruling rests on at its source before acting on it. A premise that fails
-  or stays UNVERIFIED leaves the dispute open: it goes back to the seat with
-  the evidence, or to the owner. The owner also decides when the ruling is
+  or stays UNVERIFIED leaves the dispute open, and it goes back to the seat
+  with the evidence. Facts are settled only by evidence, whoever settles
+  them. While a factual dispute stays open, the owner may choose a course
+  of action within the owner's authority, such as changing the work so it
+  no longer depends on the fact; the owner also decides when the ruling is
   itself contested, or when the question is the owner's to decide.
 - **The record** (§4, "After the run") gives both positions, the seat, the
   served model and effort, the deciding facts with their sources, and the
@@ -198,9 +202,13 @@ that family is skipped for the seat; the seat is never run on a lower tier.
 | DeepSeek | the lane's pinned model at `max`, off-peak |
 | Gemini | `gemini-4-carbon-high` |
 
-Every other seat stays on the standard tier. A standard seat moves up to the
-strongest tier only after it fails the same problem twice (the implementer's
-rule, above), so the quota these seats need is there when they run.
+Every other seat stays on its standard tier, with one promotion rule for
+every family: a seat moves up to the strongest tier after its standard tier
+fails the same problem twice, or when the controller records why the
+problem is hard enough to need it. Gemini's standard tier for class S and R
+seats is `gemini-4-carbon-high`; that is a class rule, not a promotion.
+Keeping routine seats on standard tiers leaves the quota these seats need
+for when they run.
 
 `AI.md` explains these rules for readers new to the project. This file is
 authoritative.

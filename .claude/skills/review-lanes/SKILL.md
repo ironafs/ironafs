@@ -40,7 +40,7 @@ self-check, never a required seat.
 | gemini | `gemini-4-carbon-medium`; `gemini-4-carbon-high` for S/R and strongest-tier seats | in the id |
 | glm | `glm-5.3` | `high`; `max` for the strongest-tier seats |
 | deepseek | `deepseek-flash` | per its skill, `max` for the strongest-tier seats; off-peak only |
-| Claude | Opus 5.5 by default; Mythos 5.2 (`fable` alias, serves `claude-mythos-5-2`) for hard problems and every Claude security review | default |
+| Claude | Opus 5.5 by default; Mythos 5.2 (`fable` alias, serves `claude-mythos-5-2`) for the strongest-tier seats (every Claude security review among them) and under the promotion rule | default |
 
 Check `agy models` before pinning a Gemini id; ids change.
 
@@ -59,13 +59,17 @@ settle it, and for any finding still disputed after the fix rounds.
 
 1. **Choose the seat.** Exclude the work's authors, both disputing
    families, any family that took a side, and the controller's family if
-   the controller argued a position. Take the first available in the order
-   GLM, GPT read-only, DeepSeek, Gemini, Claude. Security disputes: only
-   GPT read-only, Claude or GLM. Embargoed work: only Anthropic and OpenAI,
-   and nothing about the dispute goes elsewhere. None left: the owner rules.
+   the controller argued a position, and any family unavailable at its
+   strongest tier. Security disputes: only GPT read-only, Claude or GLM.
+   Embargoed work: only Anthropic and OpenAI, and nothing about the dispute
+   goes elsewhere. Then take the first remaining in the order GLM, GPT
+   read-only, DeepSeek, Gemini, Claude. None left: the change waits and the
+   blocker is recorded.
 2. **Write the brief.** Inline both positions as A and B. Check the whole
-   brief, and anything it points to, for family, model and lane names,
-   trailers, transcripts and review records of the dispute; send none.
+   brief, and anything it points to, for anything that shows who took
+   either position (family, model or lane names used that way, trailers,
+   transcripts, review records of the dispute); send none. Names that are
+   the subject of the dispute stay.
 3. **Give it the evidence path.** Ask for each disputed fact checked at a
    primary source and labelled CONFIRMED with its link or UNVERIFIED. Give
    web access where the lane has it. For Gemini, inline the primary-source
@@ -76,7 +80,8 @@ settle it, and for any finding still disputed after the fix rounds.
 5. **Check it.** Run the did-it-run checks below. Confirm every factual
    premise of the ruling at its source yourself. A premise that fails or
    stays UNVERIFIED keeps the dispute open: back to the seat with the
-   evidence, or to the owner.
+   evidence. Meanwhile the owner may choose a course of action, never a
+   fact.
 6. **Record** the positions, the seat, the served model and effort, the
    deciding facts and your check. Contested rulings and owner decisions go
    to the owner. Until the dispute is settled, the merge waits.

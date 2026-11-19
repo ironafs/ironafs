@@ -43,8 +43,8 @@ required review of its own family's work.
 
 | Family | Models used here (id as recorded in trailers) | Reached through | Agent ids |
 |---|---|---|---|
-| Anthropic (Claude) | Claude Opus 5.5 (`claude-opus-5-5`), default; Claude Mythos 5.2 (`claude-mythos-5-2`, what Claude Code's `fable` alias serves) for hard problems, security reviews and the judgement seat; Claude Haiku 5.5 (`claude-haiku-5-5`) for Claude Code's own background steps | Claude Code CLI, Claude subscription | `claude-code` |
-| OpenAI (GPT) | GPT-6.2 Sol (`gpt-6.2-sol`), default; GPT-6.2 Astra (`gpt-6.2-astra`) after Sol fails the same problem twice, and for the judgement seat, security reviews, class R designs, format freezes and architecture ADRs | codex CLI, ChatGPT subscription | `codex` |
+| Anthropic (Claude) | Claude Opus 5.5 (`claude-opus-5-5`), default; Claude Mythos 5.2 (`claude-mythos-5-2`, what Claude Code's `fable` alias serves) for the strongest-tier seats (judgements, security reviews, class R designs, format freezes, architecture ADRs) and under the promotion rule; Claude Haiku 5.5 (`claude-haiku-5-5`) for Claude Code's own background steps | Claude Code CLI, Claude subscription | `claude-code` |
+| OpenAI (GPT) | GPT-6.2 Sol (`gpt-6.2-sol`), default; GPT-6.2 Astra (`gpt-6.2-astra`) for the same strongest-tier seats and under the promotion rule | codex CLI, ChatGPT subscription | `codex` |
 | Google (Gemini) | Gemini 4 Carbon (`gemini-4-carbon-medium`, `gemini-4-carbon-high` for class S and R and the strongest-tier seats) | Antigravity CLI (`agy`) | `gemini`, `agy` |
 | Zhipu / Z.ai (GLM) | GLM 5.3 (`glm-5.3`); GLM 5.3 Flash (`glm-5.3-flash`) for small helper steps | Claude Code CLI on Z.ai's endpoint, GLM Coding Plan | `glm` |
 | DeepSeek | DeepSeek V4.1 Flash (`deepseek-flash`) | Claude Code CLI on DeepSeek's endpoint, DeepSeek API | `deepseek` |
@@ -106,7 +106,7 @@ its exact commit message, and nothing lands without their approval.
 | Claude Opus 5.5 (Anthropic) | yes | only work only it can run | yes | yes (default Claude seat) | no: Mythos takes Claude's security seats |
 | Claude Mythos 5.2 (Anthropic) | | | hard problems, judgements, class R designs and architecture ADRs | hard problems and judgements | yes, every Claude security review |
 | GPT-6.2 Sol (OpenAI, via codex) | | yes (main implementer) | yes, read-only | yes, read-only, never codex's own work | no: Astra takes GPT's security seats |
-| GPT-6.2 Astra (OpenAI, via codex) | | after Sol fails the same problem twice | hard problems, judgements, class R designs and architecture ADRs | judgements | yes, the default GPT security seat |
+| GPT-6.2 Astra (OpenAI, via codex) | | under the promotion rule | hard problems, judgements, class R designs and architecture ADRs | judgements | yes, the default GPT security seat |
 | Gemini 4 Carbon (Google, via agy) | | when codex is out of quota | | yes, second family | no: it declined security-framed briefs in our runs |
 | GLM 5.3 (Zhipu) | | | second view | yes, first reviewer of codex's work | yes, when it wrote neither the design nor the code |
 | DeepSeek V4.1 Flash (DeepSeek) | | | research | yes, second family, off-peak (paid) | |
