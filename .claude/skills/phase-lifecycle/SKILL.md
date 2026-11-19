@@ -1,6 +1,6 @@
 ---
 name: phase-lifecycle
-description: Use at the start of any phase or milestone of IronAFS work (a new ADR, a spike, a protocol layer, a platform layer) and at its exit — how a phase runs from definition of done through research, design, plan, execution by class and exit. Triggers on "start the next phase", "what's next", "plan the spike", "start ADR 0003", "milestone".
+description: Use at the start of any phase or milestone of IronAFS work (a new ADR, a spike, a protocol layer, a platform layer) and at its exit — how a phase runs from definition of done through research, design, plan, execution by class and exit. Triggers on "start the next phase", "what's next", "plan the spike", "start the architecture ADR", "milestone".
 ---
 
 # Running a phase

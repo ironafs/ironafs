@@ -105,4 +105,12 @@ Spec first: a new phase starts with an ADR or spec, not code.
   approves the exact final message of a squash merge, or of the root commit
   of the public history (the one commit made without a PR), their session
   adds the owner's line (ADR 0002).
+- **Branch commits** carry `Assisted-by:` (or `Assisted-by: none`), never
+  `Signed-off-by:`, `Class:` or `AI-Reviewed-by:`. Never rewrite a commit
+  once it is pushed or under review; scan outgoing commits for secrets
+  before pushing (ADR 0003).
+- **Disclose model writing beyond commits.** An issue, pull request
+  description, comment or review written by a model ends with a line such as
+  `Written by <agent>:<model>.`, adding for whom when it writes for someone
+  else's account (ADR 0003).
 - Never add `Co-authored-by:` for a model.
