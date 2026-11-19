@@ -19,6 +19,8 @@ the evidence that refutes it.
 | [2026-11-19-ci-and-xtask](2026-11-19-ci-and-xtask.md) | Issue #1: the CI workflow and the `xtask` checks |
 | [2026-11-19-trailer-checks](2026-11-19-trailer-checks.md) | Issue #2: commit trailer checks in CI and the `commit-msg` hook |
 | [2026-11-19-research-refute-check](2026-11-19-research-refute-check.md) | Issue #16: the refute check of the driverless-clients research note (three families and an adjudicator), the macOS options note, and the reviews of the Windows Cloud Files and UNC notes |
+| [2026-11-19-judgement-seat](2026-11-19-judgement-seat.md) | Issue #14: the judgement seat and the strongest tiers |
+| [2026-11-19-model-routing](2026-11-19-model-routing.md) | Issue #17: model routing by seat, class and role |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).

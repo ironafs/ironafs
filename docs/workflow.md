@@ -59,12 +59,12 @@ lanes are not used.
 | Role | Who | How |
 |---|---|---|
 | **Controller** | the maintainer's Claude Code session (following the maintainer's private instructions) | Plans, briefs, routes, verifies findings, lands changes after the owner's approval. Writes code only for work only it can run. |
-| **Implementer** | codex CLI, `gpt-6.2-sol` | `codex exec` with a written brief; `high` effort for S, `medium` for I/P mechanical work. `gpt-6.2-astra` only under the promotion rule (§2, "Strongest tiers"). |
+| **Implementer** | codex CLI, `gpt-6.2-sol` | `codex exec` with a written brief; `medium` effort for mechanical I/P work, `high` for S and R; the model routing table governs (§2, "Model routing"). |
 | **Implementer when codex is out of quota** | agy CLI (Gemini) | Same brief; a session allowlist that denies git. Brief paths must sit inside `--add-dir`. |
 | **First reviewer of codex-written code** | GLM 5.3 (`glm-review`) | Headless Claude Code on Z.ai's endpoint, read-only. |
 | **Second family when the class needs two** | Gemini Carbon via agy (`gemini-review`), or DeepSeek (`deepseek-review`) | DeepSeek off-peak only (not Mon–Fri 01–04 or 06–10 UTC). |
-| **Design, rulings, research, refutations on work codex did not write** | GPT read-only: `codex exec -s read-only -m gpt-6.2-sol - < brief.md`; `-m gpt-6.2-astra -c model_reasoning_effort=xhigh` for the strongest-tier seats (§2, "Strongest tiers") | GLM second when a second view is needed. |
-| **Claude seats** (review, reproduction, hard judgement, security) | Claude Code subagents: Opus by default; Mythos 5.2 (`claude-mythos-5-2`, Claude Code's `fable` alias) for the strongest-tier seats, including every Claude security review, and under the promotion rule (§2, "Strongest tiers") | Never a required seat on Claude-written work. |
+| **Design, rulings, research, refutations on work codex did not write** | GPT read-only: `codex exec -s read-only -m gpt-6.2-sol - < brief.md`; `-m gpt-6.2-astra -c model_reasoning_effort=xhigh` for the strongest row (§2, "Model routing") | GLM second when a second view is needed. |
+| **Claude seats** (review, reproduction, hard judgement, security) | Claude Code subagents: Opus by default; Mythos 5.2 (`claude-mythos-5-2`, Claude Code's `fable` alias) for the strongest row of §2's "Model routing", including every Claude security review | Never a required seat on Claude-written work. |
 
 **A family never reviews its own work.** Codex is OpenAI-family, so a GPT
 seat never reviews codex-written code. A same-family review (for example
@@ -192,30 +192,54 @@ Disagreements are settled on evidence, never by counting.
   served model and effort, the deciding facts with their sources, and the
   controller's check.
 
-### Strongest tiers
+### Model routing
 
-Each family's strongest tier is the default, without waiting for the
-standard tier to fail, for five kinds of seat: the judgement seat, security
-reviews, class R designs, format freezes and architecture ADRs. This table
-governs the model for those seats over every other table and command in this
-file, `AI.md` and the skills. If a family's strongest tier is unavailable,
-that family is skipped for the seat; the seat is never run on a lower tier.
+**Seat first, then model.** The family for a seat comes from the rules
+above: who wrote the work, the first-reviewer order, the security-review
+families (GPT read-only, a Claude seat, GLM; never Gemini or DeepSeek),
+embargoed work (Anthropic and OpenAI only) and the judgement seat's order.
+Only then does this table give the model and effort. It governs over every
+other model pin in this file, `AI.md` and the skills.
 
-| Family | Strongest tier |
-|---|---|
-| GPT | `gpt-6.2-astra`, `xhigh` |
-| Claude | Mythos 5.2 (`claude-mythos-5-2`) |
-| GLM | `glm-5.3`, `max` |
-| DeepSeek | the lane's pinned model at `max`, off-peak |
-| Gemini | `gemini-4-carbon-high` |
+| Seat | GPT | Claude | Gemini | GLM | DeepSeek |
+|---|---|---|---|---|---|
+| **Light:** optional helpers | `gpt-6.2-sol`, medium | Haiku (`claude-haiku-5-5`) | `gemini-3.8-flash-medium` | `glm-5.3-flash` | `deepseek-flash`, default |
+| **Light:** research gathering | `gpt-6.2-sol`, medium | Sonnet (`claude-sonnet-5-5`) | `gemini-4-argon-medium` | `glm-5.3`, high | `deepseek-flash`, default |
+| Class I and P implementation (`high` where it is not mechanical) | `gpt-6.2-sol`, medium | Opus (work only the controller can run) | `gemini-4-carbon-medium` (when codex is out of quota) | — | — |
+| Class I and P required reviews, P contracts, refutations and verifications on I and P work, research synthesis that is not load-bearing | `gpt-6.2-sol`, high | Opus (`claude-opus-5-5`) | `gemini-4-carbon-medium` | `glm-5.3`, high | `deepseek-flash`, default |
+| Class S and R implementation | `gpt-6.2-sol`, high | Opus (controller-only work) | `gemini-4-carbon-high` (when codex is out of quota) | — | — |
+| Ordinary class S and R reviews, S design review before code, refutations on S and R work, reproduction, the consistency pass | `gpt-6.2-sol`, xhigh | Opus (`claude-opus-5-5`) | `gemini-4-carbon-high` | `glm-5.3`, high | `deepseek-flash`, default |
+| **Strongest:** the judgement seat, security reviews, class R designs, format freezes, architecture ADRs, promoted implementation, synthesis of a load-bearing research question | `gpt-6.2-astra`, xhigh | Mythos 5.2 (`claude-mythos-5-2`) | `gemini-4-carbon-high`, where eligible | `glm-5.3`, max | `deepseek-flash`, max, where eligible |
 
-Every other seat stays on its standard tier, with one promotion rule for
-every family: a seat moves up to the strongest tier after its standard tier
-fails the same problem twice, or when the controller records why the
-problem is hard enough to need it. Gemini's standard tier for class S and R
-seats is `gemini-4-carbon-high`; that is a class rule, not a promotion.
-Keeping routine seats on standard tiers leaves the quota these seats need
-for when they run.
+- **Precedence.** A seat in the strongest row never runs on a lower tier; if
+  no eligible family is available at that tier, the change waits (the stop
+  rule). Every required review starts at the standard tier or above. Light
+  models only take optional helper seats and research gathering.
+- **Fix verification** runs at the pin of the seat whose finding it
+  verifies, scoped to the fix's diff.
+- **Research has two steps.** Gathering (web searches, reading sources,
+  collecting facts) runs on a light or standard tier and ends in a dossier
+  that gives, for each claim, its source, a short excerpt, its uncertainty
+  and any counter-evidence found. Forming a view on a **load-bearing**
+  question (one an ADR, a class S or R design or a format freeze will rest
+  on) runs on the strongest tier, reading the dossier inlined, without web
+  access; any other view-forming runs on the standard tier. Refute and
+  source-verification seats keep web access, since checking sources is
+  their job; a seat without tools (Gemini) gets the primary excerpts
+  inlined; embargoed work keeps its limits on the brief, the dossier, the
+  lookups and the record. The controller checks the deciding facts at their
+  sources before a design relies on them.
+- **Promotion** outside the strongest row: only for implementation, after
+  two completed attempts on the same defect fail at the seat's pinned tier,
+  each recorded. Nothing else promotes a seat.
+- **Changing a pin** needs a recorded benchmark: known defects and clean
+  cases, misses, false findings, refusals and cost, a pass threshold, and a
+  comparison with the current pin. Check `agy models` and the other lanes'
+  model lists before pinning; ids change.
+- **Claude seats** run at the lane's default effort, which is recorded with
+  the served model; the other lanes pass their effort as pinned.
+- **Every dispatch and resume** passes the model and effort explicitly, and
+  the served model and effort are read from the lane's own log.
 
 `AI.md` explains these rules for readers new to the project. This file is
 authoritative.
