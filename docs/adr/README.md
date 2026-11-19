@@ -28,7 +28,8 @@ decides anything that is hard to change later.
 
 Start from [template.md](template.md).
 
-- **Status:** `proposed`, `accepted`, or `superseded by NNNN`, with dates.
+- **Status:** `proposed`, `accepted`, `partly superseded by NNNN` or
+  `superseded by NNNN`, with dates.
 - **Context:** the facts the decision rests on, with sources.
 - **Decision:** what is decided, stated so it can be checked.
 - **Consequences:** what changes because of it, and what it costs.
@@ -38,5 +39,13 @@ Start from [template.md](template.md).
 ## Changing a decision
 
 An accepted ADR is not rewritten. A later ADR supersedes it, and the old one's
-status says `superseded by NNNN`. Small corrections that change no decision,
+status says `superseded by NNNN` (or `partly superseded by NNNN`).
+
+A superseding ADR comes with a **supersession sweep**:
+
+- search the whole repository for each superseded rule, its key wording and
+  the old ADR's number, and update or annotate every hit;
+- check each changed rule separately for each actor it applies to: the
+  maintainer's session, contributors and their agents, and bots;
+- list the sweep in the new ADR's Review section, so a reviewer can check it. Small corrections that change no decision,
 such as fixing a link, are made in place and noted in its Review section.

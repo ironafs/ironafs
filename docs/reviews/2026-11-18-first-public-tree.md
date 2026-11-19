@@ -594,9 +594,10 @@ All findings are fixed:
 - **Quotations:** short, cited quotations in research notes and review
   records are not incorporated third-party material (ADR 0001).
 - **FUSE caller identity:** both research notes say delayed writeback
-  writes carry no valid caller identity. ADR 0003 must show how authorisation
+  writes carry no valid caller identity. The architecture ADR (planned as ADR
+  0003 then; now ADR 0004 or later) must show how authorisation
   survives deferred I/O; writeback stays off until then
-  (tracked for ADR 0003).
+  (tracked for the architecture ADR).
 - **Tests in `land-change`:** the suites apply where tests of that kind exist;
   nextest's "no tests" exit is recorded as such, not as a pass or failure.
 - **This record:** rounds 12 to 14 give their tree ids, or say they are not

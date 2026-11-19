@@ -27,7 +27,8 @@ Security problems go to [SECURITY.md](SECURITY.md), not to public issues.
   contract review before code is written.
 - End the description with the trailer block from the PR template: `Class:`,
   `Assisted-by:` and `AI-Reviewed-by:` for each model review whose final
-  verdict covers the change as submitted. [AI.md](AI.md) explains each one.
+  verdict covers the change as it lands (ADR 0003, point 7).
+  [AI.md](AI.md) explains each one.
 - Put `Assisted-by:` on your branch commits too, and never
   `Signed-off-by:`: your sign-off goes in the description. If a model wrote
   an issue, a comment or a review you post, say so in a last line, such as

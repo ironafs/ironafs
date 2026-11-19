@@ -8,7 +8,7 @@
 <!-- Class: one of E I P S R -->
 <!-- Assisted-by: <agent>:<served model id>, one per model, or "none" -->
 <!-- AI-Reviewed-by: <agent>:<served model id>, only reviews whose final -->
-<!-- verdict covers this change as submitted -->
+<!-- verdict covers the change as it lands (ADR 0003, point 7) -->
 <!-- If a model wrote this description, end it, above the trailers, with: -->
 <!-- "Written by <agent>:<model>." (ADR 0003) -->
 <!-- Signed-off-by: your own line; the owner adds theirs at merge -->

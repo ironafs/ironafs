@@ -3,7 +3,9 @@
 
 # 0003: Branch work and AI disclosure
 
-Status: proposed (2026-11-19). Raised in issue #7. Supersedes the parts of
+Status: proposed (2026-11-19). Raised in issue #7. It becomes accepted when
+the owner approves its merge; until then the owner's decision of 2026-11-19
+is applied by hand. Supersedes the parts of
 [ADR 0002](0002-ai-use-and-attribution.md) named under "What it supersedes".
 
 ## Context
@@ -43,7 +45,9 @@ Status: proposed (2026-11-19). Raised in issue #7. Supersedes the parts of
      any change to either, or to the message, needs a new approval;
    - the `main` ruleset requires a pull request to be up to date with its
      base before it can merge, so GitHub refuses a stale base (#3);
-   - the merge sets the author email to the owner's public address;
+   - for the maintainer's own pull requests, the merge sets the author email
+     to the owner's public address; a contributor's pull request keeps the
+     author GitHub attributes (ADR 0002, "Commit identity");
    - after the merge, a comment on the pull request logs the approval: the
      head, the base and the SHA-256 of the approved message.
 3. **History is pinned and never rewritten.**
@@ -51,11 +55,13 @@ Status: proposed (2026-11-19). Raised in issue #7. Supersedes the parts of
      cites the commit range it read.
    - A commit is frozen once it is submitted for review or pushed. Fixes go
      on top as new commits.
-   - Before each push, every outgoing commit and its message are scanned for
-     secrets. The push is refused if the scan finds one or cannot complete.
-   - A secret in a frozen commit that was never pushed: the commit stays
-     unpushed, and the branch is rebuilt from before it, with the reason
-     recorded. A secret that was pushed is revoked first, then removed.
+   - Before each push, every commit not yet pushed, and its message, is
+     scanned for secrets. The push is refused if the scan finds one or cannot
+     complete.
+   - A secret in a frozen commit: it is revoked first if it was pushed. The
+     branch is then replaced by a new one built from before that commit, the
+     old branch is deleted, and the reason is recorded. This is the one
+     exception to "never rewritten": nothing is built on a leaked secret.
 4. **Branch commits carry `Assisted-by:`**, with the same ids as the squash
    (`AI.md`): one line per model whose writing remains in that commit, or
    `Assisted-by: none`. They never carry `Signed-off-by:`, `Class:` or
@@ -73,8 +79,10 @@ Status: proposed (2026-11-19). Raised in issue #7. Supersedes the parts of
    - in issues (title and body), pull request descriptions, comments, review
      summaries and inline review comments, release notes, and substantive
      edits of any of these;
-   - in the form `Written by <agent>:<model> for the maintainer.`, using the
-     ids of `AI.md`, and naming each role when there is more than one:
+   - in the form `Written by <agent>:<model>.`, using the ids of `AI.md`.
+     When a model writes for someone else's account, it adds for whom
+     (`Written by claude-code:claude-opus-5-5 for the maintainer.`). When
+     there is more than one role, it names each:
      `Review by glm:glm-5.3, relayed by claude-code:claude-opus-5-5.`, or
      `Drafted with codex:gpt-6.2-sol, edited by <name>.`;
    - kept accurate when the text is edited.
@@ -102,7 +110,9 @@ In ADR 0002: the rule that the owner approves the maintainer's branch
 commits; the rule that branch commits carry no trailers; and, under
 `Signed-off-by:`, "every commit the maintainer's session makes … is presented
 to the owner before it is made", which now applies to merges and the root
-commit only. Everything else in ADR 0002 stands, including the merge
+commit only. Under `AI-Reviewed-by:`, it adds that a recorded fix of the
+seat's own minor findings keeps the seat's credit (point 7). Everything else
+in ADR 0002 stands, including the merge
 approval, contributors' own sign-offs, the root-commit procedure and the
 embargo rules of `docs/workflow.md` §2.
 
@@ -157,3 +167,46 @@ All were accepted and are part of this ADR:
   (point 5).
 - *(minor)* **Triage:** labels need no line; judgements are attributed
   (point 6).
+
+Round 2, 2026-11-19, review of the drafted change (`41c3ab1..bf7f65d`).
+
+| Seat | Served model | Effort | Verdict |
+|---|---|---|---|
+| glm | glm-5.3 | high | FAIL: 4 major, 4 minor |
+
+All were accepted and fixed:
+
+- **Who it applies to** (major): branch work without approval was written
+  for every session; it is the maintainer's session's. A contributor's agent
+  still follows its contributor's approval (`land-change` section 0).
+- **ADR 0002's notes** (major): its annotations now say, at each place, that
+  only the maintainer's branch commits changed, including its owner
+  decision 3.
+- **Secrets** (major): the scan before a push covers only commits not yet
+  pushed, and a pushed secret is revoked and its branch replaced (point 3),
+  so the rules no longer block each other.
+- **Author email** (major): only on the maintainer's own merges; a
+  contributor's pull request keeps its author (point 2).
+- *(minor)* **`AI-Reviewed-by:`**: one standard everywhere, "covers the
+  change as it lands" (point 7), recorded as a change to ADR 0002.
+- *(minor)* **ADR numbers**: references to "ADR 0003" as the architecture
+  decision now say "the architecture ADR".
+- *(minor)* **Status**: this ADR is accepted when the owner approves its
+  merge; the status values now include `partly superseded by NNNN`.
+- *(minor)* **Disclosure form**: `Written by <agent>:<model>.`, adding for
+  whom when written for someone else's account (point 6).
+
+The findings came from rules updated in one file and missed in another, and
+from rules written for one actor that read as applying to all. So the ADR
+process now requires a **supersession sweep** (`docs/adr/README.md`). For
+this ADR it was:
+
+- searched for each superseded rule ("branch commits carry", "no trailers",
+  "every commit the maintainer's session makes", "approves every commit",
+  "before it is made", "as submitted", "for the maintainer") and for "ADR
+  0003" across the repository;
+- every hit is updated, annotated as superseded, still true (approval of
+  every commit that lands on `main`), or review history;
+- each rule checked for the maintainer's session, contributors and their
+  agents, and bots.
+

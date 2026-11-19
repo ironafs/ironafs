@@ -110,5 +110,6 @@ Spec first: a new phase starts with an ADR or spec, not code.
   before pushing (ADR 0003).
 - **Disclose model writing beyond commits.** An issue, pull request
   description, comment or review written by a model ends with a line such as
-  `Written by <agent>:<model> for the maintainer.` (ADR 0003).
+  `Written by <agent>:<model>.`, adding for whom when it writes for someone
+  else's account (ADR 0003).
 - Never add `Co-authored-by:` for a model.

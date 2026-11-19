@@ -49,8 +49,9 @@ below. Partly superseded by [ADR 0003](0003-branch-work-and-ai-disclosure.md)
 - Each change is worked on its own branch, with as many commits as it needs.
   Branch commits are working state, not the record. They carry no trailers
   and no sign-off; those go only on commits that land on `main`. Who approves
-  a commit before it is made (superseded by ADR 0003: branch commits need no
-  approval and carry `Assisted-by:`):
+  a commit before it is made (for the maintainer's session, superseded by ADR
+  0003: its branch commits need no approval; all branch commits carry
+  `Assisted-by:`):
   - the owner, for the maintainer's own branch commits, every squash merge,
     and the root commit;
   - a contributor, for their own branch commits.
@@ -111,7 +112,8 @@ Signed-off-by: Adrian Ana <adrian@adrianana.com>
   a missing trailer is an error, never "no AI".
 - **`AI-Reviewed-by: <agent>:<model-id>`** for each review seat whose final
   verdict covers the landed tree. The seat reviewed the substantive files at a
-  pinned revision, and every change after it was a verified fix. A seat that
+  pinned revision, and every change after it was a verified fix (since ADR
+  0003: or a recorded fix of that seat's own minor findings). A seat that
   only reviewed an earlier revision is not credited here. Adding the review
   record itself, or other review-only bookkeeping, does not need a new
   review. `Reviewed-by:` is kept for humans.
@@ -332,8 +334,9 @@ The repository becomes public only when all of these hold:
    `AI.md` names each lane's service and plan type instead.
 3. Every commit the maintainer's session makes, and every commit that lands on
    `main`, is presented to the owner (diff summary, full message) and made
-   only after approval; the approval is what lets the controller add the
-   owner's `Signed-off-by:`. Contributors approve their own branch commits.
+   only after approval (since ADR 0003: every commit that lands on `main`, and
+   the root commit; the session's branch commits need no approval); the
+   approval is what lets the controller add the owner's `Signed-off-by:`. Contributors approve their own branch commits.
 
 ## Sources
 

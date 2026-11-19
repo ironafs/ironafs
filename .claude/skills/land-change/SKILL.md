@@ -20,16 +20,23 @@ approved.
 
 ## 0. Branch work (no approval needed)
 
-On a task branch, never on `main`, commit, push and open a draft pull request
-without asking (ADR 0003):
+**The maintainer's session**, on a task branch and never on `main`, commits,
+pushes and opens draft pull requests without asking (ADR 0003). A
+contributor's agent follows its contributor's own approval, as in section 1
+("A contributor's pull request"). For both:
 
 - Commit before each review round, and cite the commit range in the review
   record.
 - Once a commit is under review or pushed, it is frozen: fixes go on top as
   new commits. Never amend, rebase or force-push it.
-- Before every push, scan every outgoing commit and its message for secrets
-  (`gitleaks git --log-opts="origin/main..HEAD" --redact .`). Do not push if
-  it finds one or cannot complete.
+- Before every push, scan the commits that are not yet pushed, and their
+  messages, for secrets (`gitleaks git --log-opts="@{upstream}..HEAD" --redact .`,
+  or `origin/main..HEAD` before the first push). Do not push if it finds one
+  or cannot complete.
+- A secret found in a pushed commit: revoke it first; then replace the branch
+  with a new one built from before that commit, delete the old branch, and
+  record why. The frozen-commit rule does not stop this; nothing is pushed on
+  top of a leaked secret.
 - Mark the pull request ready for review once the reviews its class requires
   are recorded.
 
@@ -135,7 +142,9 @@ re-check that the tree id (or the base and head) is still the approved one.
   immediately before merging, check again that `main` is at the approved base,
   the PR head is the approved head, and the message file's SHA-256 is the
   approved one. Then:
-  `gh pr merge <n> --squash --match-head-commit <approved head> --author-email <the owner's public address> --subject "<approved subject>" --body-file <approved body file>`.
+  `gh pr merge <n> --squash --match-head-commit <approved head> --subject "<approved subject>" --body-file <approved body file>`,
+  adding `--author-email <the owner's public address>` only for the
+  maintainer's own pull requests (a contributor's keeps its author).
   Merge one PR at a time. After the read-back (section 5), post a comment on
   the PR logging the approval: the head, the base and the message's SHA-256,
   with the disclosure line.
