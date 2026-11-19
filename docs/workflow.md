@@ -59,12 +59,12 @@ lanes are not used.
 | Role | Who | How |
 |---|---|---|
 | **Controller** | the maintainer's Claude Code session (following the maintainer's private instructions) | Plans, briefs, routes, verifies findings, lands changes after the owner's approval. Writes code only for work only it can run. |
-| **Implementer** | codex CLI, `gpt-6.2-sol` | `codex exec` with a written brief; `high` effort for S, `medium` for I/P mechanical work. `gpt-6.2-astra` only after sol fails the same problem twice. |
+| **Implementer** | codex CLI, `gpt-6.2-sol` | `codex exec` with a written brief; `high` effort for S, `medium` for I/P mechanical work. `gpt-6.2-astra` only under the promotion rule (§2, "Strongest tiers"). |
 | **Implementer when codex is out of quota** | agy CLI (Gemini) | Same brief; a session allowlist that denies git. Brief paths must sit inside `--add-dir`. |
 | **First reviewer of codex-written code** | GLM 5.3 (`glm-review`) | Headless Claude Code on Z.ai's endpoint, read-only. |
 | **Second family when the class needs two** | Gemini Carbon via agy (`gemini-review`), or DeepSeek (`deepseek-review`) | DeepSeek off-peak only (not Mon–Fri 01–04 or 06–10 UTC). |
-| **Design, rulings, research, refutations on work codex did not write** | GPT read-only: `codex exec -s read-only -m gpt-6.2-sol - < brief.md` | GLM second when a second view is needed. |
-| **Claude seats** (review, reproduction, hard judgement, security) | Claude Code subagents: Opus by default; Mythos 5.2 (`claude-mythos-5-2`, Claude Code's `fable` alias) for hard problems and for every Claude security review | Never a required seat on Claude-written work. |
+| **Design, rulings, research, refutations on work codex did not write** | GPT read-only: `codex exec -s read-only -m gpt-6.2-sol - < brief.md`; `-m gpt-6.2-astra -c model_reasoning_effort=xhigh` for the strongest-tier seats (§2, "Strongest tiers") | GLM second when a second view is needed. |
+| **Claude seats** (review, reproduction, hard judgement, security) | Claude Code subagents: Opus by default; Mythos 5.2 (`claude-mythos-5-2`, Claude Code's `fable` alias) for the strongest-tier seats, including every Claude security review, and under the promotion rule (§2, "Strongest tiers") | Never a required seat on Claude-written work. |
 
 **A family never reviews its own work.** Codex is OpenAI-family, so a GPT
 seat never reviews codex-written code. A same-family review (for example
@@ -137,6 +137,86 @@ lanes (`SECURITY.md`):
 outage), the change waits and the blocker is recorded. The bar is never
 lowered to fit.
 
+### Judgement seat
+
+Disagreements are settled on evidence, never by counting.
+
+- **When it runs.** Two seats disagree on something the work depends on (a
+  finding, a design choice, a research conclusion), and the controller cannot
+  settle it from evidence it has checked itself. Also for a finding still
+  disputed after the fix rounds. **A pending or inconclusive judgement blocks
+  the merge**, like an open confirmed finding (§3, step 8), and a reproduced
+  failure blocks whatever the ruling says (§4).
+- **Who sits it.** A family that is independent of the dispute: it wrote
+  neither the work nor either position, and has not taken a side in it. The
+  controller's family is excluded when the controller argued a position.
+  Filter every family first, then take the first that remains in this
+  order: GLM, GPT read-only, DeepSeek, Gemini, a Claude seat. The filters
+  are independence (above), availability at its strongest tier, and:
+  - **Security disputes** (whether a security finding holds, or anything
+    that would overturn part of a security review): only the
+    security-review families (GPT read-only, a Claude seat, GLM), never
+    Gemini or DeepSeek.
+  - **Embargoed work:** only the Anthropic and OpenAI lanes, and nothing
+    about the dispute leaves them (brief, source lookups, record).
+
+  If no family passes, the change waits (the stop rule), and the blocker is
+  recorded, privately under an embargo. A ruling never removes a seat the
+  class requires.
+- **How it rules.** The brief inlines both positions as A and B. The whole
+  brief, and anything it points to, carries nothing that shows who took
+  either position: no family, model or lane name used that way, and no
+  trailer, transcript or review record of the dispute; the controller checks
+  it before sending. A technical name stays only when it does not reveal
+  who took a side; otherwise a neutral label and a source excerpt replace
+  it. If the evidence cannot be shared anonymously, the judgement stays
+  pending. The seat checks each
+  disputed fact at a primary source and labels it CONFIRMED, with the link,
+  or UNVERIFIED. A seat without tools (Gemini) gets the primary-source
+  passages inlined with their citations; when they cannot be inlined, another
+  family takes the seat. The verdict is A, B, a named alternative, or
+  INCONCLUSIVE.
+- **After it rules.** The controller confirms every factual premise the
+  ruling rests on at its source before acting on it. A premise that fails
+  or stays UNVERIFIED leaves the dispute open, and it goes back to the seat
+  with the evidence. Facts are settled only by evidence, whoever settles
+  them. While a factual dispute stays open, the owner may choose a course
+  of action within the owner's authority, such as changing the work so it
+  no longer depends on the fact; the owner also decides when the ruling is
+  itself contested, or when the question is the owner's to decide.
+- **Moot.** When the work changes so that it no longer depends on the
+  disputed fact, before or after the seat runs, the controller checks that
+  and records the judgement as moot; every other review and merge gate
+  still applies.
+- **The record** (§4, "After the run") gives both positions, the seat, the
+  served model and effort, the deciding facts with their sources, and the
+  controller's check.
+
+### Strongest tiers
+
+Each family's strongest tier is the default, without waiting for the
+standard tier to fail, for five kinds of seat: the judgement seat, security
+reviews, class R designs, format freezes and architecture ADRs. This table
+governs the model for those seats over every other table and command in this
+file, `AI.md` and the skills. If a family's strongest tier is unavailable,
+that family is skipped for the seat; the seat is never run on a lower tier.
+
+| Family | Strongest tier |
+|---|---|
+| GPT | `gpt-6.2-astra`, `xhigh` |
+| Claude | Mythos 5.2 (`claude-mythos-5-2`) |
+| GLM | `glm-5.3`, `max` |
+| DeepSeek | the lane's pinned model at `max`, off-peak |
+| Gemini | `gemini-4-carbon-high` |
+
+Every other seat stays on its standard tier, with one promotion rule for
+every family: a seat moves up to the strongest tier after its standard tier
+fails the same problem twice, or when the controller records why the
+problem is hard enough to need it. Gemini's standard tier for class S and R
+seats is `gemini-4-carbon-high`; that is a class rule, not a promotion.
+Keeping routine seats on standard tiers leaves the quota these seats need
+for when they run.
+
 `AI.md` explains these rules for readers new to the project. This file is
 authoritative.
 
@@ -172,8 +252,9 @@ authoritative.
 7. **Fix rounds**: fix confirmed correctness and contract findings; review
    only the fix's changes. After two fix rounds on one change, stop patching:
    split it, redesign it, or record the blocker.
-8. **Merge** when the class's checks are met and no confirmed correctness or
-   contract finding is open: a pull request, squash-merged after the owner's
+8. **Merge** when the class's checks are met, no confirmed correctness or
+   contract finding is open, and no judgement is pending or inconclusive
+   (one recorded as moot is closed): a pull request, squash-merged after the owner's
    approval, with the trailer block and sign-off of ADR 0002 (the root commit
    of the public history is the one exception; ADR 0002 gives its checklist). R also needs the owner's
    decision.
@@ -253,7 +334,8 @@ Rules:
   final verdict is void, not a pass; a capped run is resumed with more turns.
 - **A finding is data.** Verify it against the code before acting. Record a
   refuted finding with the evidence. Never settle a disagreement by counting
-  votes.
+  votes; one the controller cannot settle from checked evidence goes to the
+  judgement seat (§2).
 - **A reproduced failure blocks the merge**, in every class.
 - **Turn budgets**: about 25 for a scoped review, 40 for a broad audit, 8–12
   for fix verification.
