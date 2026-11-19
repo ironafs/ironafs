@@ -62,7 +62,7 @@ Across the three checking seats the 75 claims fell into:
 | "One report" of no cross-uid cache isolation in FSKit | AMEND | An unevidenced maintainer assertion whose cited issue does not discuss it; an untested hypothesis |
 | macFUSE documents an FSKit data-corruption workaround | CONFIRMED | True in 5.5.0, not the cited 5.4.0, whose item fixes macFUSE's own bug; the citation was fixed. Claude's REFUTED held only against 5.4.0 |
 | OpenAFS for Windows "mode" with whole-file server locks | AMEND | The 1.5+ CIFS-AFS gateway's behaviour, not a mode; `EnableServerLocks` only stops server locks. GPT's "historic" and "URL does not load" refuted |
-| `fuser` is pure Rust and speaks `/dev/fuse` directly | AMEND | Its own protocol I/O, but libfuse mounts by default; pure Rust only without the `libfuse` feature. GLM's "libfuse required" refuted |
+| `fuser` is pure Rust and speaks `/dev/fuse` directly | AMEND | Its own protocol I/O, but libfuse mounts by default; pure Rust only without the `libfuse` feature. GLM's "libfuse required" refuted (superseded 2026-11-19: 0.18.0's manifest has `default = []`, so libfuse is opt-in) |
 | Writeback: no caller identity, maybe another file handle | CONFIRMED | Both halves are in libfuse's `fuse_file_info` documentation |
 | 2005: FUSE passed uid/gid, not the group list, where PAGs lived | AMEND | The FUSE half is exact; the thread does not mention PAGs |
 | Rust bindings exist | AMEND | All exist, but `objc2-fs-kit` 0.3.2 has none of the macOS 27 APIs |
@@ -230,10 +230,11 @@ says to read and restore it.
 
 ## Review by GPT, 2026-11-19
 
-The pull request's changes, against its merge base with `main` (the eight
-research and review files; a two-dot range against a newer `main` also
-shows `main`'s own later changes, which are not part of this pull request),
-reviewed together with GLM's last three minor findings.
+The pull request's changes against its merge base with `main`
+(`41c3ab1..6a7b6f7`, the eight research and review files), reviewed
+together with GLM's last three minor findings. The fix verification covered
+`6a7b6f7..62bab2b`, and the second fix round's verification the range
+after it (below).
 
 | Seat | Served model | Effort | Verdict |
 |---|---|---|---|
@@ -274,10 +275,30 @@ Fixed, and checked by the controller:
 Not changed, with reasons:
 
 - **The 75-claim matrix** stays a private working file, because it quotes
-  the owner's private measurements; the note carries each claim's label
-  and source, and the method's limit is stated above.
+  the owner's private measurements. A redacted ledger is public:
+  [claim ledger](2026-11-19-research-refute-check-ledger.md), with each
+  seat's verdict, how they related and the source cited, and the limit
+  stated above (no row re-checked at source by the controller).
 - **An acceptance baseline for the platforms** (a real x86-64 EL7 kernel
   probe, interoperability for the first authenticated protocol, two-user
   cache and revocation tests, callback loss) belongs to the architecture
   ADR's test plan, not to these notes.
 
+
+### Second fix round (the last under the stop rule)
+
+The verification of `6a7b6f7..62bab2b` (same seat, pinned) found 7 majors
+and 3 minors, narrower than the first round. Fixed, and checked by the
+controller: the redacted [claim ledger](2026-11-19-research-refute-check-ledger.md)
+and the pinned ranges above; "probe listener" and the first-packet limit in
+every summary, with ADR 0004 named as the decision record; route 1's
+documented and measured floors separated; WebDAV qualified by provider
+order; per-machine coverage of the route 3 checks; boot order, back-end
+ownership and fail-closed behaviour made spike gates, with the persistent
+reservation's documented limit; the reproduction's startup trigger,
+PowerShell syntax, bounded read and post-undo check; the Cloud Files
+placeholder rule stated as the measured default, and the ProjFS comparison
+without the shared per-write gap; the macOS answer and floors stated as
+spike candidates, with the on-wire credential qualified; the durability
+acceptance case recording each result; the superseded `fuser` row; and the
+platform note's verdict words and third-party kernel facts.

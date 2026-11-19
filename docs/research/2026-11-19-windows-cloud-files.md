@@ -39,9 +39,9 @@ Constraints 1 and 2 are why an online `\\afs` path, through IronAFS's own
 SMB server with every request in an authenticated session, is the
 alternative; its transport was measured beside Windows' own file sharing
 on Windows 10 and 11 ([the UNC note](2026-11-19-windows-unc-without-a-driver.md)).
-The owner chose that path first on 2026-11-19, and the architecture ADR
-will record it; this note's evidence serves Cloud Files as a possible
-offline companion.
+The owner chose that path first on 2026-11-19, to be recorded in ADR 0004
+(the architecture decision); this note's evidence serves Cloud Files as a
+possible offline companion.
 
 ## 1. The API model
 
@@ -67,9 +67,15 @@ offline companion.
   - Callbacks run concurrently on a thread pool.
 - **Responses.** The provider answers through `CfExecute` (INSPECTED,
   [CfExecute](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfexecute)).
-  Creating and updating placeholders works only from the process holding
-  the sync root's connection; from any other process it fails with
-  `0x8007018B` (MEASURED).
+  In the configuration measured (the default policies, with the root
+  connected), creating and updating placeholders worked only from the
+  process holding the sync root's connection, and from any other process
+  failed with `0x8007018B` (MEASURED). Microsoft documents placeholder
+  management policies a provider can opt into at registration, and
+  different rules for a root with no active connection
+  ([CfRegisterSyncRoot](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfregistersyncroot)),
+  so this is the default behaviour, not a fixed rule (NOT VERIFIED beyond
+  the measured case).
 - **Placement.** A sync root must be on a fixed NTFS volume, not a volume
   root, and not inside a connected root (MEASURED, refused with distinct
   errors; INSPECTED for NTFS). Registration above another root was allowed
@@ -359,16 +365,18 @@ ProjFS also projects a backing store into NTFS through a user-mode provider
   and an optional cancellation callback
   ([PRJ_CANCEL_COMMAND_CB](https://learn.microsoft.com/en-us/windows/win32/api/projectedfslib/nc-projectedfslib-prj_cancel_command_cb))
   (INSPECTED by a research pass). Whole-file hydration and missing
-  cancellation are therefore NOT VERIFIED as limits of ProjFS. The choice
-  rests on the documented gaps: no write callback, optional installation,
-  and Microsoft's own advice to use Cloud Files for slow stores.
+  cancellation are therefore NOT VERIFIED as limits of ProjFS.
 
-Both share the structural gaps: no caller identity, no byte-range locks, no
-UNC namespace. Cloud Files won, as measured, on progressive hydration, cancellation, loud
-failures when the provider is down, refused offline deletes, the in-sync
-guards, and being on by default. A working write path was built on Cloud
-Files with platform workarounds only (MEASURED); ProjFS has no write
-callback to build one on.
+Both share the structural gaps: no caller identity, no per-write callback,
+no byte-range locks, no UNC namespace. On the evidence available, Cloud
+Files is the better-supported candidate: Microsoft recommends it over ProjFS
+for slow stores and ProjFS is an optional component, and in the
+configurations measured Cloud Files was better on progressive hydration,
+cancellation, loud failures when the provider is down, refused offline
+deletes and the in-sync guards. A working write path was built on Cloud
+Files with a change watcher and scans (MEASURED). Whether ProjFS's
+notifications support an equivalent write recovery was not tested in a
+comparable configuration, so it stays open.
 
 ## 8. Open problems
 

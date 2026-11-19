@@ -61,8 +61,8 @@
   The other driverless route is an online `\\afs` path: Windows' own SMB
   client talking to an SMB 3.1.1 server of IronAFS's own on the loopback
   address, which keeps every request in an authenticated session. On
-  Windows 10 and 11, the client's traffic reached such a server's listener
-  beside Windows' own file sharing; a full SMB session through that path is
+  Windows 10 and 11, the client's traffic reached a probe listener on that
+  path beside Windows' own file sharing; a full SMB session through it is
   not yet measured (MEASURED,
   [Windows UNC note](2026-11-19-windows-unc-without-a-driver.md)).
 

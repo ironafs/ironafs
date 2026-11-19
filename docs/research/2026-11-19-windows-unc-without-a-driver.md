@@ -32,18 +32,20 @@ means Windows' own SMB client talking to an SMB 3.1.1 server that IronAFS
 runs on the same machine. The problem is the port: Windows 10's SMB client
 connects only to port 445, and Windows' own SMB server already holds 445.
 
-**Route 3 gets Windows' SMB client to IronAFS on Windows 10 and 11 without
-giving up Windows' own file sharing (MEASURED, section 3, to the client's
-first packet; a full SMB session through it is not yet measured).**
+**Route 3 gets Windows' SMB client's traffic to a listener on the loopback
+address on Windows 10 and 11 without giving up Windows' own file sharing
+(MEASURED, section 3, with a probe listener, to the client's first packet;
+a full SMB session through it is not yet measured).**
 Windows' built-in port proxy listens on
 `127.0.0.1:445` and copies bytes to IronAFS's server on a high loopback
 port, while Windows' own SMB server keeps `0.0.0.0:445` and `[::]:445`. A
 hosts entry sends `afs` to `127.0.0.1`. The proxy must bind before Windows'
-kernel listener, which one service dependency arranges at every boot.
+kernel listener; one service dependency kept that order across a reboot in
+the tests, and whether it survives updates is a spike gate.
 
 | Route | Windows versions | Windows' own file sharing | Status |
 |---|---|---|---|
-| 1. Our server on another port; a machine policy ("Alternative Port Mappings") sends `\\afs` there | 11 24H2 and later | kept | MEASURED (maintainer's earlier work, 26H2 only). Microsoft Learn documents alternative ports only for elevated, per-mapping commands; the policy is known from a third-party copy of Microsoft's policy template |
+| 1. Our server on another port; a machine policy ("Alternative Port Mappings") sends `\\afs` there | per-mapping alternative ports: 11 24H2 and later (Microsoft Learn); the machine policy: measured on 26H2 only | kept | MEASURED (maintainer's earlier work, 26H2 only). The policy was known from a third-party copy of Microsoft's administrative template; Microsoft's own template for 24H2 was not checked, so 24H2 is to be measured |
 | 2. Our server on `127.0.0.1:445` with Windows' SMB server disabled | 10 and 11 | **lost**: no inbound sharing, no `C$` or `ADMIN$` | MEASURED (maintainer's earlier work); now a fallback only |
 | **3. Port proxy on `127.0.0.1:445` beside Windows' SMB server** | **10 22H2, 11 24H2, 11 26H2** | **kept** | **MEASURED (this note)** |
 
@@ -88,7 +90,7 @@ Route 3's side effects:
 | Our server terminating SMB on 445 and passing other shares on to Windows' server | Ruled out: the share name arrives only after authentication, so passing a session on means relaying the user's authentication. | NOT VERIFIED as a measurement; follows from the protocol order |
 | Windows' own SMB server sharing a local folder that IronAFS fills | Ruled out: requests reach the filesystem as the System account, so the caller's identity is lost. | MEASURED (maintainer's earlier work) |
 | Windows' own NFS client | Ruled out as measured: in the configuration tried (anonymous UID mapping), every Windows user reached the server with the same identity. Per-user identity mapping was not tested. | MEASURED (maintainer's earlier work), for that configuration only |
-| WebDAV redirector | The WebDAV path syntax takes an optional port (`\\afs@port\...`); a plain `\\afs\...` reaches WebDAV only if no SMB provider claims the name first. Microsoft has deprecated the WebClient service. | The path syntax INSPECTED by a research pass: [DavGetHTTPFromUNCPath](https://learn.microsoft.com/en-us/windows/win32/api/davclnt/nf-davclnt-davgethttpfromuncpath); the deprecation: [deprecated features](https://learn.microsoft.com/en-us/windows/whats-new/deprecated-features) |
+| WebDAV redirector | The WebDAV path syntax takes an optional port (`\\afs@port\...`); a plain `\\afs\...` reaches WebDAV only if no provider ahead of it in the network provider order (SMB by default) claims the name ([UNC naming and MUP](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/support-for-unc-naming-and-mup)). Microsoft has deprecated the WebClient service. | The path syntax INSPECTED by a research pass: [DavGetHTTPFromUNCPath](https://learn.microsoft.com/en-us/windows/win32/api/davclnt/nf-davclnt-davgethttpfromuncpath); the deprecation: [deprecated features](https://learn.microsoft.com/en-us/windows/whats-new/deprecated-features) |
 | A loopback adapter or a Hyper-V switch for a separate address | Not needed, and each installs a device. | NOT VERIFIED |
 
 ## 3. Route 3, measured
@@ -106,14 +108,17 @@ bytes of each connection. It speaks no SMB, so the client's attempt ends
 with "The specified network name is no longer available"; the recorded
 bytes are the evidence. The full steps are in the appendix.
 
-**Results, the same on all three machines:**
+**Results.** All checks ran on all three machines, except SMB from
+another machine, which ran on the ARM machine only. Builds are recorded as
+Windows reported them (major version only); exact revisions were not
+captured.
 
 | Check | Result |
 |---|---|
 | With `srvnet` stopped first, the port proxy binds `127.0.0.1:445`; Windows' stack then binds `0.0.0.0:445` and `[::]:445` beside it | yes |
 | `\\afs\test` from the interactive desktop session reaches our listener | yes: an SMB1 multi-protocol negotiate (`ff 53 4d 42 72`), Windows' usual first packet. The listener then closed the connection, so the client reported "The specified network name is no longer available"; no SMB session was established |
 | `\\<computer name>\C$`, `\\<own LAN address>\C$`, `\\localhost\C$` | still served by Windows' own server |
-| SMB from another machine to the LAN address | still answered by Windows' own server (tested on the ARM machine) |
+| SMB from another machine to the LAN address (ARM machine only) | still answered by Windows' own server |
 | With `LanmanServer` depending on `iphlpsvc`, after a reboot | the same listeners, in the same order, both services running |
 
 **Why this is not a relay.** The port proxy copies bytes, so negotiation,
@@ -127,9 +132,13 @@ first packet.
 - the caller's identity, dialect and signing through the proxy, with a real
   SMB 3.1.1 server running SSPI; expected unchanged, since the bytes are;
 - protection of the high back-end port from other local processes while
-  IronAFS is stopped (a persistent TCP port reservation, or a Windows
-  Filtering Platform bind rule);
-- whether a Windows feature update resets the `LanmanServer` dependency;
+  IronAFS is stopped. A persistent TCP port reservation is a candidate, but
+  Microsoft documents that it gives no security between components able to
+  obtain reservations, so a Windows Filtering Platform bind rule is the
+  other candidate; the spike shows which holds, and that `\\afs` fails
+  closed while IronAFS is stopped;
+- the boot order across restarts, feature updates and an uninstall, and
+  Windows' own sharing after each;
 - Kerberos on a domain-joined machine and on Entra; NTLM local mode with
   SMB client NTLM blocking on, and without `BackConnectionHostNames`;
 - remote administration of the machine (`ADMIN$`, `IPC$` named pipes) from
@@ -164,8 +173,8 @@ $log = 'C:\test\logger.txt'
 while ($true) {
   $c = $l.AcceptTcpClient()
   $s = $c.GetStream(); $s.ReadTimeout = 3000
-  $buf = New-Object byte[] 256
-  try { $n = $s.Read($buf, 0, 256) } catch { $n = 0 }
+  $buf = New-Object byte[] 256; $n = 0
+  try { while ($n -lt 256) { $r = $s.Read($buf, $n, 256 - $n); if ($r -le 0) { break }; $n += $r; if ($n -ge 9) { break } } } catch { }
   $hex = ($buf[0..([Math]::Max($n,1)-1)] | ForEach-Object { $_.ToString('x2') }) -join ''
   "conn from $($c.Client.RemoteEndPoint) bytes=$n first=$($hex.Substring(0,[Math]::Min(48,$hex.Length))) $(Get-Date -Format o)" | Out-File $log -Append
   $c.Close()
@@ -174,8 +183,10 @@ while ($true) {
 
 ```powershell
 $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\test\logger.ps1'
-Register-ScheduledTask -TaskName test-logger -Action $a -User SYSTEM -RunLevel Highest
+$t = New-ScheduledTaskTrigger -AtStartup
+Register-ScheduledTask -TaskName test-logger -Action $a -Trigger $t -User SYSTEM -RunLevel Highest
 Start-ScheduledTask test-logger
+netstat -ano | Select-String '127.0.0.1:1445 '   # confirm it is listening, again after any reboot
 ```
 
 **2. Record the originals.**
@@ -204,14 +215,16 @@ repeat the `netstat` check.
 `C:\Windows\System32\drivers\etc\hosts`, then `ipconfig /flushdns`.
 
 **6. Test from an ordinary desktop session**, not over SSH, whose network
-logon behaves differently: `dir \\afs\test` (expected to fail after the
-listener records a negotiate), `dir \\%COMPUTERNAME%\C$`,
-`dir \\localhost\C$` and `dir \\<own LAN address>\C$` (expected to
-succeed, served by Windows), then read `C:\test\logger.txt`.
+logon behaves differently, in PowerShell: `Get-ChildItem \\afs\test`
+(expected to fail after the listener records a negotiate),
+`Get-ChildItem "\\$env:COMPUTERNAME\C$"`, `Get-ChildItem \\localhost\C$`
+and `Get-ChildItem \\<own LAN address>\C$` (expected to succeed, served by
+Windows), then read `C:\test\logger.txt`.
 
 **Undo:** `netsh interface portproxy delete v4tov4 listenaddress=127.0.0.1
 listenport=445`; restore the recorded `LanmanServer` dependencies; remove
-the hosts line; unregister the task and delete `C:\test`.
+the hosts line; unregister the task and delete `C:\test`; reboot, and
+check Windows' own shares again.
 
 ## Sources
 

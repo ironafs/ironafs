@@ -10,7 +10,14 @@
 - Each claim is marked EXECUTED (run in a scratch directory outside the
   repository), INSPECTED (read in the cited source), or NOT VERIFIED.
 - The RHEL 7 kernel facts come from a public third-party import of the
-  `3.10.0-1160.el7` source, not from Red Hat's own documentation.
+  `3.10.0-1160.el7` source, not from Red Hat's own documentation. Under the
+  research index's definition they are RELAYED, not INSPECTED, until they
+  are matched to Red Hat's material or measured on a real kernel; where the
+  tables below say INSPECTED for a kernel fact, read RELAYED (update,
+  2026-11-19).
+- The verdict column uses this note's own words: CONFIRM means CONFIRMED,
+  REJECT means REFUTED, and "Not found" means NOT VERIFIED, in the review
+  vocabulary of the index (update, 2026-11-19).
 - Nothing was run on a real 3.10 kernel. The containers used shared a newer
   host kernel, so every kernel-behaviour claim for RHEL 7 is INSPECTED at
   best.
@@ -221,7 +228,8 @@ follows from which layer is built.
 - Which build each needed feature arrived in is work for the Windows spike.
 - Update, 2026-11-19: a second Windows route now exists, an online `\\afs`
   path through Windows' own SMB client and an SMB server of IronAFS's own.
-  The client's traffic was measured reaching such a listener beside
+  The client's traffic was measured reaching a probe listener on that path
+  beside
   Windows' own file sharing on Windows 10 22H2, Windows 11 24H2 and
   Windows 11 26H2; a full SMB session is not yet measured (MEASURED,
   [UNC note](2026-11-19-windows-unc-without-a-driver.md)). The Cloud Files
@@ -265,6 +273,9 @@ follows from which layer is built.
 
 ### Proposed support matrix
 
+The macOS entries assume FSKit for 27 and a loopback NFS layer, still a
+spike candidate, for anything older (update, 2026-11-19).
+
 | Tier | Platforms | Meaning |
 |---|---|---|
 | 1, tested in CI | Linux x86_64 and aarch64, glibc: RHEL 9 and 10 (or rebuilds), Debian 13, Ubuntu 24.04 and 26.04. macOS 27 on Apple silicon. Windows 11 x86_64. | Every change is tested. Releases are blocked on failures. |
@@ -273,8 +284,8 @@ follows from which layer is built.
 
 Update, 2026-11-19: Windows 10 22H2 was out of scope with the support floor
 set at Windows 11 for its end of support (B2). The SMB route's transport
-was since measured reaching IronAFS's listener on it (B2), so its tier is
-reopened, to be settled with the platform floors in the
+was since measured reaching a probe listener on it, to the client's first
+packet (B2), so its tier is reopened, to be settled with the platform floors in the
 architecture ADR.
 
 **RHEL 7 placement and justification:**
@@ -312,7 +323,10 @@ This placement is a judgement, not a measured result.
    per-user mounts?
 7. **Rust version policy** when Rust raises its Linux floor.
 8. **Kernel test strategy:** which kernels get a virtual-machine job?
-9. **macOS floor:** macOS 27 only, or a reduced mode on 26?
+9. **macOS floor:** macOS 27 only, or a reduced mode on 26? (Update,
+    2026-11-19: the FSKit floor is 27; a loopback NFS layer, a spike
+    candidate for 15 and 26, would have its own floor. The macOS 26 and 15
+    entries in the matrix are proposals that depend on that spike.)
 10. **Windows floor:** Windows 11 only, and which Cloud Files features?
     (Update, 2026-11-19: reopened by the SMB route, measured on Windows 10
     22H2 and 11; see B2.)
