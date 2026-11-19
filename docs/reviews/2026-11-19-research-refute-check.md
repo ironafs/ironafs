@@ -41,7 +41,10 @@ Across the three checking seats the 75 claims fell into:
 
 - An adjudicated conflict takes the adjudicator's verdict, checked against
   the source it quotes.
-- An agreed claim takes the agreed correction.
+- An agreed claim takes the agreed correction. Each agreeing seat quoted
+  its source, but the controller did not re-check every agreed claim at its
+  source. That is a limit of this round: every claim the architecture ADR
+  relies on is re-checked at its source when the ADR is written.
 - A single-seat claim takes that seat's verdict, and the note says "one
   family".
 - A label-only disagreement was decided on the claim's text, not by votes:
@@ -72,7 +75,7 @@ Across the three checking seats the 75 claims fell into:
 | CONFIRMED | 39 (several with an added caveat or a corrected citation) |
 | AMEND | 30, corrected in place |
 | REFUTED | 0 |
-| NOT VERIFIED | 6: the method claim, older systems keeping the kernel module, `libuafs`'s lock and the line counts (from source), the causes of FUSE's low adoption, and Rust's costs |
+| NOT VERIFIED | 6: the method claim, older systems keeping the kernel module, `libuafs`'s lock and the line counts (from source; both removed from the note on 2026-11-19, ADR 0001), the causes of FUSE's low adoption, and Rust's costs |
 
 No claim was refuted outright. One citation was (macFUSE 5.4.0), and one
 "from source" claim (OpenAFS Unix clients and byte-range locks) was
@@ -94,7 +97,7 @@ replaced by documented statements.
   is an untested hypothesis; the macFUSE workaround cites 5.5.0; the
   `fskitd` leak is one report on macOS 27.0.1; the lock paragraph rests on
   documentation instead of source.
-- **§3:** `fuser` mounts through libfuse unless built without it; Rust's
+- **§3:** `fuser` mounts through libfuse only when built with its opt-in `libfuse` feature (0.18.0's manifest: `default = []`, checked 2026-11-19); Rust's
   floors are per target; FUSE's pid is a thread id and it sends no group
   list.
 - **§4:** dates and packaging made current; the PAG link and Arla described
@@ -119,7 +122,6 @@ replaced by documented statements.
 
 - Whether a `synthetic.conf` `/afs` works as an FSKit mount target.
 - Whether IBM published anything on 2025-02-05.
-- Which features `fuser` 0.18.0 enables by default.
 - Whether the macOS `access(2)` cache's three-user capacity and the 60-second
   lifetime in `nfs.conf(5)` describe the same cache.
 - The corrections were written by Claude Code (`claude-opus-5-5`), the
@@ -225,3 +227,57 @@ It also asked whether the appendix's undo restores the original service
 dependencies. The original was read on the 26H2 machine (SamSS and Srv2)
 but not on the two x86 machines before the change, and the appendix now
 says to read and restore it.
+
+## Review by GPT, 2026-11-19
+
+The pull request's changes, against its merge base with `main` (the eight
+research and review files; a two-dot range against a newer `main` also
+shows `main`'s own later changes, which are not part of this pull request),
+reviewed together with GLM's last three minor findings.
+
+| Seat | Served model | Effort | Verdict |
+|---|---|---|---|
+| codex | gpt-6.2-sol | high | FAIL: 13 major, 3 minor |
+
+Fixed, and checked by the controller:
+
+- **Source-derived items removed.** Two items in the driverless note came
+  from another implementation's source (a locking claim and line counts).
+  They were marked as background, but a note is sent to review lanes, so
+  both were removed (ADR 0001).
+- **Route 3 stated exactly.** The measurement reached the client's first
+  packet; no SMB session was established. Every summary now says so, and
+  a full session is listed as still to measure.
+- **The Windows options made precise:** route 1's policy is known from a
+  third-party copy of Microsoft's template, not Microsoft Learn; port 445
+  is the default direct-TCP port; SMB over QUIC is listed; the NFS
+  exclusion is limited to the configuration measured; WebDAV's port is
+  optional.
+- **The reproduction appendix** now has the complete listener, the
+  originals to record and a full undo.
+- **Cloud Files and ProjFS:** the documented rule that sync roots must not
+  overlap, the conflict between Microsoft's two descriptions of the
+  partial hydration policy, and ProjFS's documented ranged requests and
+  cancellation; whole-file hydration and missing cancellation are no longer
+  stated as ProjFS limits.
+- **macOS:** the NFS answer no longer promises the caller's uid on every
+  request (cached data and saved credentials), compares NLM with NFSv4
+  locks, and separates the FSKit floor from a loopback NFS floor; FSKit's
+  two close contracts are distinguished, with an acceptance case for
+  errors on `write`, `fsync` and `close`.
+- **`fuser` 0.18.0** declares `default = []` (checked in its manifest), so
+  the open question is closed.
+- **Labels:** the index's MEASURED covers measurements made for a note.
+- **GLM's three minors:** the platform-support reason for Windows 10's
+  tier, the MEASURED definition, and the driverless note's preamble.
+
+Not changed, with reasons:
+
+- **The 75-claim matrix** stays a private working file, because it quotes
+  the owner's private measurements; the note carries each claim's label
+  and source, and the method's limit is stated above.
+- **An acceptance baseline for the platforms** (a real x86-64 EL7 kernel
+  probe, interoperability for the first authenticated protocol, two-user
+  cache and revocation tests, callback loss) belongs to the architecture
+  ADR's test plan, not to these notes.
+

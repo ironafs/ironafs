@@ -11,9 +11,10 @@ sources, and marks how each claim is known:
   specifications, release notes, licence texts);
 - **RELAYED:** read only in a secondary source, such as a forum post, an
   issue on a third-party tracker or a mailing-list post;
-- **MEASURED:** measured outside this repository, in the owner's earlier
-  work, with the conditions stated; evidence for design, not proof that
-  IronAFS works;
+- **MEASURED:** measured outside IronAFS's code, either in the owner's
+  earlier work or on disposable machines for the note itself, with the
+  conditions and date stated (and, for a note's own measurements, steps to
+  repeat them); evidence for design, not proof that IronAFS works;
 - **INFERRED:** a design conclusion drawn from labelled facts;
 - **NOT VERIFIED:** stated, but not checked.
 

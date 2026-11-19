@@ -34,10 +34,14 @@
 
 INFERRED, and both families agree:
 
-- **macOS 15 and 26:** a loopback NFSv4 server, mounted at a
+- **macOS 15 and 26:** a loopback NFS server, mounted at a
   `synthetic.conf` `/afs` by Apple's NFS client, is the only Apple-shipped
-  route with a machine-wide mount, the caller's uid on every request, and
-  byte-range locks that reach the server.
+  route with a machine-wide mount. Requests that reach the server carry the
+  caller's uid, but cached data is served with no request and buffered I/O
+  may reuse a saved credential (§3), so cross-uid isolation needs the
+  acceptance cases. Range locks reach the server through NLM (NFSv3) or
+  `LOCK` (NFSv4), except that NFSv4 grants locks locally while the Mac
+  holds a write delegation (§3, Locks).
 - **macOS 27:** FSKit 27 leads, because it is the first Apple interface with
   both caller identity and a proactive purge of the kernel's data,
   attribute and name caches. NFSv4 stays as the comparison path, and the
@@ -363,7 +367,11 @@ Production use of any option hinges on these, run on the same `/afs` mount
 3. A callback break refreshes the file's bytes, its attributes and directory
    lookups, including for an open and a mapped file.
 4. Two applications contend for overlapping `fcntl` ranges, distinguishing
-   locks local to the Mac from locks visible to other AFS clients.
+   locks local to the Mac from locks visible to other AFS clients, with NLM
+   (NFSv3) and `LOCK` (NFSv4) compared.
+5. After a server failure, an application sees the error from `write`,
+   `fsync` and `close`, with and without kernel data caching (for FSKit,
+   through both close contracts).
 
 The checking family adds, for NFSv4: the same lock contention while the Mac
 holds a write delegation (§3, Locks).

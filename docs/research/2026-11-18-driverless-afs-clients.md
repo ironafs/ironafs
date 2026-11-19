@@ -6,7 +6,10 @@
 **How this note was made.**
 
 - Web research, checked claim by claim against primary sources (see
-  "Checked" at the end). Nothing was executed.
+  "Checked" at the end). Nothing was executed for this note; its one
+  MEASURED Windows claim is carried over from the
+  [Windows UNC note](2026-11-19-windows-unc-without-a-driver.md), which
+  describes how it was measured.
 - Each claim carries an evidence label (`docs/workflow.md` §3c and the
   [research index](README.md)):
   - **INSPECTED:** read in the primary source linked with it: vendor
@@ -15,19 +18,16 @@
   - **RELAYED:** read only in a secondary source: a forum post (including
     replies from Apple's Developer Technical Support, DTS), an issue on a
     third-party tracker, a mailing-list post, or a third-party summary;
-  - **NOT VERIFIED:** no source found either way.
+  - **NOT VERIFIED:** no source found either way;
+  - **MEASURED:** carried over from another note, as above.
 
   "One family" means that only one of the model families that checked the
   note reached a verdict on that claim.
-- Two items came from reading OpenAFS source, and are marked "(from
-  source)". Under ADR 0001 they are background only, never an input for
-  writing IronAFS code. They cannot be checked without reading that source,
-  so both stay NOT VERIFIED:
-  - `libuafs`'s single lock;
-  - the line counts in §5.
-
-  Everything else is from public documentation and discussion, which ADR 0001
-  allows as input.
+- Nothing in this note comes from reading another AFS implementation's
+  source. Two earlier items that did (a locking claim and line counts)
+  were removed on 2026-11-19, because a note is sent to review lanes and
+  ADR 0001 keeps source-derived material out of them. Everything here is
+  from public documentation and discussion, which ADR 0001 allows as input.
 
 ## 1. Why now
 
@@ -61,7 +61,9 @@
   The other driverless route is an online `\\afs` path: Windows' own SMB
   client talking to an SMB 3.1.1 server of IronAFS's own on the loopback
   address, which keeps every request in an authenticated session. On
-  Windows 10 and 11 it can run beside Windows' own file sharing (MEASURED,
+  Windows 10 and 11, the client's traffic reached such a server's listener
+  beside Windows' own file sharing; a full SMB session through that path is
+  not yet measured (MEASURED,
   [Windows UNC note](2026-11-19-windows-unc-without-a-driver.md)).
 
 All of these let IronAFS ship no kernel code of its own. Only FSKit and FUSE are
@@ -157,9 +159,12 @@ Locks remain an open question for the spike.
   on the `/dev/fuse` descriptor. It calls libfuse only to mount and unmount;
   on Linux that is optional, and only a build without the `libfuse` feature
   is pure Rust (INSPECTED, [fuser](https://docs.rs/fuser/latest/fuser/),
-  [crate page](https://docs.rs/crate/fuser/latest)). Whether 0.18.0 enables
-  that feature by default is NOT VERIFIED: docs.rs lists no default features,
-  while the README describes libfuse mounting as the default. IronAFS writes
+  [crate page](https://docs.rs/crate/fuser/latest)). Version 0.18.0's
+  manifest declares `default = []`, so the `libfuse` feature is opt-in and
+  a default build is pure Rust (INSPECTED,
+  [Cargo.toml at v0.18.0](https://raw.githubusercontent.com/cberner/fuser/v0.18.0/Cargo.toml));
+  how the mount is then performed without libfuse is a separate question,
+  not checked here. IronAFS writes
   its own `/dev/fuse` layer (coding standards rule 21), so `fuser` is prior
   art, not a dependency.
 - Rust's standard library needs kernel 3.2+ and glibc 2.17+ on
@@ -195,8 +200,6 @@ Locks remain an open question for the spike.
   Debian still packages it as experimental, read-only and without init
   scripts (INSPECTED,
   [openafs-fuse](https://packages.debian.org/sid/openafs-fuse)).
-- `libuafs` serialises everything under a single global lock (from source;
-  NOT VERIFIED).
 - 2005: FUSE passed the caller's uid and gid but not the group list (RELAYED,
   [linux-kernel archive](https://linux-kernel.vger.kernel.narkive.com/GytY698E/using-fuse-for-afs-dfs-was-re-openafs-devel-openafs-opendfs-collaboration)).
   OpenAFS tracks PAGs through artificial groups "on some platforms"
@@ -216,17 +219,10 @@ Locks remain an open question for the spike.
 - This note's reading of the rest, NOT VERIFIED: FUSE was slow then, it did
   not help Windows, and the kernel module already worked.
 
-## 5. Size of what exists (OpenAFS tree, approximate lines of C)
+## 5. Size of what exists (removed)
 
-From source; NOT VERIFIED. Counted from an OpenAFS checkout whose revision
-was not recorded; treat the figures as orders of magnitude.
-
-| Part | Lines |
-|---|---|
-| Unix cache manager | ~49k (+ ~10k vnode operations, ~5k macOS glue) |
-| Windows cache manager | ~47k |
-| Rx | ~29k |
-| rxkad / rxgk | ~16k / ~3.5k |
+This section gave approximate line counts from another implementation's
+source tree. It was removed on 2026-11-19 (ADR 0001; see the preamble).
 
 ## 6. Language
 
@@ -396,9 +392,14 @@ these in full, with measurements.
   the kernel caches as it sees fit, and returning `.noCache` disables it
   (INSPECTED,
   [DataCacheHandler](https://developer.apple.com/documentation/fskit/fsvolume/datacachehandler)).
-- **Write errors on close.** AFS stores a file back on close, but the
-  macOS 27 close callback has no error result and may be deferred; only
-  volume-level `synchronize` exists (INSPECTED, one family,
+- **Write errors on close.** AFS stores a file back on close. FSKit has two
+  close contracts: the `DataCacheHandler` close takes no error, while the
+  `OpenCloseHandler` close replies with one (INSPECTED by a research pass,
+  [DataCacheHandler close](https://developer.apple.com/documentation/fskit/fsvolume/datacachehandler/close%28_%3Acontext%3Areplyhandler%3A%29),
+  [OpenCloseHandler](https://developer.apple.com/documentation/fskit/fsvolume/openclosehandler)).
+  Whether an application then sees that error from `close`, and how a
+  deferred close behaves, is NOT VERIFIED; volume-level `synchronize` also
+  exists (INSPECTED, one family,
   [synchronize](https://developer.apple.com/documentation/fskit/fsvolume/commonoperations/synchronize(flags:replyhandler:))).
 - **Deployment:** the extension needs its entitlements, and the user enables
   it in System Settings (INSPECTED,

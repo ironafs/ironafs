@@ -37,10 +37,11 @@ built around five constraints:
 
 Constraints 1 and 2 are why an online `\\afs` path, through IronAFS's own
 SMB server with every request in an authenticated session, is the
-alternative to compare against; it keeps Windows' own file sharing working
+alternative; its transport was measured beside Windows' own file sharing
 on Windows 10 and 11 ([the UNC note](2026-11-19-windows-unc-without-a-driver.md)).
-Which one IronAFS builds first is decided in the architecture ADR, not
-here.
+The owner chose that path first on 2026-11-19, and the architecture ADR
+will record it; this note's evidence serves Cloud Files as a possible
+offline companion.
 
 ## 1. The API model
 
@@ -72,7 +73,10 @@ here.
 - **Placement.** A sync root must be on a fixed NTFS volume, not a volume
   root, and not inside a connected root (MEASURED, refused with distinct
   errors; INSPECTED for NTFS). Registration above another root was allowed
-  (MEASURED). The filter attaches to a volume only at the first registration
+  (MEASURED), but Microsoft documents that sync root trees must not overlap
+  (INSPECTED,
+  [CfRegisterSyncRoot](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfregistersyncroot)),
+  so that observation is unsupported behaviour, not something to rely on. The filter attaches to a volume only at the first registration
   there, so tests need fresh machines (MEASURED).
 - **Namespace.** A root is a local directory, not a `\\server` path. A
   per-session drive letter over a root works for Explorer, `cmd` and Win32
@@ -172,7 +176,9 @@ provider acts for that pair only.
   [Build a cloud sync engine](https://learn.microsoft.com/en-us/windows/win32/cfapi/build-a-cloud-file-sync-engine)).
   `CF_HYDRATION_POLICY_PARTIAL` "is not currently supported" (INSPECTED,
   [CF_HYDRATION_POLICY_PRIMARY](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/ne-cfapi-cf_hydration_policy_primary);
-  MEASURED).
+  MEASURED). Microsoft's sync-engine overview lists it among the policies
+  without that caveat, so the two references disagree; the enum's caveat
+  and the measurement agree.
 - **Progressive fetches** ask for a small required range plus an optional
   range to the end of the file, and "may not assume that hydration callbacks
   arrive sequentially from offset 0" (INSPECTED, same page). A superseded
@@ -339,7 +345,7 @@ ProjFS also projects a backing store into NTFS through a user-mode provider
 - It has no callback per write and no lock notification; it reports a
   modification only when a handle closes (INSPECTED,
   [PRJ_NOTIFICATION](https://learn.microsoft.com/en-us/windows/win32/api/projectedfslib/ne-projectedfslib-prj_notification)).
-- Measured against Cloud Files (MEASURED):
+- Measured against Cloud Files, in one provider configuration (MEASURED):
   - open handles kept serving stale bytes after a server change;
   - there was no way to take a server change while keeping local edits;
   - hydration was whole-file, with no dehydration;
@@ -347,9 +353,18 @@ ProjFS also projects a backing store into NTFS through a user-mode provider
   - no cancellation was delivered;
   - with the provider down, a short listing was returned as complete, and
     offline changes to full files went unnoticed.
+- Two of those observations are about that configuration, not the API:
+  Microsoft documents ranged data requests
+  ([PRJ_GET_FILE_DATA_CB](https://learn.microsoft.com/en-us/windows/win32/api/projectedfslib/nc-projectedfslib-prj_get_file_data_cb))
+  and an optional cancellation callback
+  ([PRJ_CANCEL_COMMAND_CB](https://learn.microsoft.com/en-us/windows/win32/api/projectedfslib/nc-projectedfslib-prj_cancel_command_cb))
+  (INSPECTED by a research pass). Whole-file hydration and missing
+  cancellation are therefore NOT VERIFIED as limits of ProjFS. The choice
+  rests on the documented gaps: no write callback, optional installation,
+  and Microsoft's own advice to use Cloud Files for slow stores.
 
 Both share the structural gaps: no caller identity, no byte-range locks, no
-UNC namespace. Cloud Files won on progressive hydration, cancellation, loud
+UNC namespace. Cloud Files won, as measured, on progressive hydration, cancellation, loud
 failures when the provider is down, refused offline deletes, the in-sync
 guards, and being on by default. A working write path was built on Cloud
 Files with platform workarounds only (MEASURED); ProjFS has no write

@@ -204,8 +204,11 @@ this.
 | `setCacheState(...)` | macOS 27.0 | Callback breaks |
 | `FSContext` | macOS 27.0 | Caller identity |
 
-A network filesystem needs macOS 26 at least; correct cache invalidation and
-caller identity need macOS 27. The practical floor is macOS 27.
+For an FSKit layer, a network filesystem needs macOS 26 at least, and
+correct cache invalidation and caller identity need macOS 27, so the FSKit
+floor is macOS 27. A loopback NFS layer has a different, lower floor (the
+[macOS options note](2026-11-19-macos-options.md)); the overall macOS floor
+follows from which layer is built.
 
 ### B2. Windows
 
@@ -218,8 +221,9 @@ caller identity need macOS 27. The practical floor is macOS 27.
 - Which build each needed feature arrived in is work for the Windows spike.
 - Update, 2026-11-19: a second Windows route now exists, an online `\\afs`
   path through Windows' own SMB client and an SMB server of IronAFS's own.
-  It was measured working beside Windows' own file sharing on Windows 10
-  22H2, Windows 11 24H2 and Windows 11 26H2 (MEASURED,
+  The client's traffic was measured reaching such a listener beside
+  Windows' own file sharing on Windows 10 22H2, Windows 11 24H2 and
+  Windows 11 26H2; a full SMB session is not yet measured (MEASURED,
   [UNC note](2026-11-19-windows-unc-without-a-driver.md)). The Cloud Files
   points above apply to the offline companion.
 
@@ -267,9 +271,10 @@ caller identity need macOS 27. The practical floor is macOS 27.
 | 2, best effort | RHEL 7.9 / CentOS 7.9 x86_64. RHEL 8. Debian 12, Ubuntu 22.04. Static musl builds. FreeBSD 14 and 15. macOS 26. | Builds and a smoke test per release. Bugs fixed when the fix is cheap. No performance promise. |
 | Out of scope | RHEL 6 and older. Kernels below 3.10. RHEL 7 on aarch64 or POWER. 32-bit targets. macOS 15 and older. Windows 10 and Windows Server. macFUSE. | Not built, not tested. |
 
-Update, 2026-11-19: Windows 10 22H2 was out of scope because of the Cloud
-Files route. The SMB route was since measured working on it (B2), so its
-tier is reopened, to be settled with the platform floors in the
+Update, 2026-11-19: Windows 10 22H2 was out of scope with the support floor
+set at Windows 11 for its end of support (B2). The SMB route's transport
+was since measured reaching IronAFS's listener on it (B2), so its tier is
+reopened, to be settled with the platform floors in the
 architecture ADR.
 
 **RHEL 7 placement and justification:**
