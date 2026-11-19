@@ -10,9 +10,12 @@
     by a research pass; the three pages the answer rests on (alternative
     ports, the SMB2 transports, `netsh portproxy`) were re-read by the
     maintainer's session, and are marked so under Sources;
-  - **MEASURED:** measured for this note on disposable virtual machines, as
-    described in section 3, or (where marked) in the maintainer's earlier
-    Windows work, whose raw results are private;
+  - **MEASURED:** as in the research index, measured outside IronAFS code:
+    here, either on disposable virtual machines for this note (section 3;
+    the steps are in the appendix, so anyone can repeat them), or, where
+    marked, in the maintainer's earlier Windows work, whose raw results are
+    private. These are evidence for design, not proof that IronAFS works
+    (EXECUTED in the sense of `docs/workflow.md` §3c, but not on IronAFS);
   - **NOT VERIFIED:** reasoned or reported by others, not measured or read
     in a primary source.
 - Two research passes from different model families (Claude, GPT) listed the
@@ -41,9 +44,15 @@ kernel listener, which one service dependency arranges at every boot.
 | 2. Our server on `127.0.0.1:445` with Windows' SMB server disabled | 10 and 11 | **lost**: no inbound sharing, no `C$` or `ADMIN$` | MEASURED (maintainer's earlier work); now a fallback only |
 | **3. Port proxy on `127.0.0.1:445` beside Windows' SMB server** | **10 22H2, 11 24H2, 11 26H2** | **kept** | **MEASURED (this note)** |
 
-The only side effect of route 3: a literal `\\127.0.0.1\...` reaches
-IronAFS instead of Windows. `\\localhost` still reaches Windows, because it
-resolves to `::1` first.
+Route 3's side effects:
+
+- a literal `\\127.0.0.1\...` reaches IronAFS instead of Windows, and fails
+  outright while IronAFS is stopped; `\\localhost` still reaches Windows,
+  because it resolves to `::1` first;
+- the hosts entry sends the name `afs` to `127.0.0.1` for every program,
+  not only for SMB;
+- while IronAFS is stopped, its back-end port is free for another local
+  process to take (section 3, still to measure).
 
 ## 1. Why port 445 is the constraint
 
@@ -65,11 +74,12 @@ resolves to `::1` first.
 |---|---|---|
 | Our server on a second loopback address (`127.0.0.2:445`) | The port binds, but **Windows' SMB client refuses** `\\127.0.0.2\...` at once, with no connection attempt ("The network location cannot be reached"), and `\\afs` mapped to `127.0.0.2` fails the same way. | MEASURED |
 | Port proxy on `127.0.0.1:445`, bound before `srvnet` (route 3) | Works. | MEASURED, section 3 |
+| IronAFS's own service binding `127.0.0.1:445` before `srvnet` (route 3 without the proxy) | Expected to work the same way, since the proxy's listener is an ordinary socket; it would remove the back-end port. But `LanmanServer` would then depend on IronAFS's service, so Windows' own file sharing would wait for, or fail with, IronAFS at boot. | NOT VERIFIED; to measure in the spike |
 | NetBIOS over TCP, port 139 | Ruled out: NetBIOS carries SMB dialects 2.0.2 to 3.0.2 only, not 3.1.1. | INSPECTED: [MS-SMB2 Transport](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/1dfacde4-b5c7-4494-8a14-a09d3ab4cc83) |
 | Our server terminating SMB on 445 and passing other shares on to Windows' server | Ruled out: the share name arrives only after authentication, so passing a session on means relaying the user's authentication. | NOT VERIFIED as a measurement; follows from the protocol order |
 | Windows' own SMB server sharing a local folder that IronAFS fills | Ruled out: requests reach the filesystem as the System account, so the caller's identity is lost. | MEASURED (maintainer's earlier work) |
 | Windows' own NFS client | Ruled out: one anonymous identity for every Windows user. | MEASURED (maintainer's earlier work) |
-| WebDAV redirector | Only with explicit `\\afs@port\...` paths; Microsoft has deprecated the WebClient service. | INSPECTED: [deprecated features](https://learn.microsoft.com/en-us/windows/whats-new/deprecated-features) |
+| WebDAV redirector | Only with explicit `\\afs@port\...` paths, and Microsoft has deprecated the WebClient service. | The path syntax INSPECTED by a research pass: [DavGetHTTPFromUNCPath](https://learn.microsoft.com/en-us/windows/win32/api/davclnt/nf-davclnt-davgethttpfromuncpath); the deprecation: [deprecated features](https://learn.microsoft.com/en-us/windows/whats-new/deprecated-features) |
 | A loopback adapter or a Hyper-V switch for a separate address | Not needed, and each installs a device. | NOT VERIFIED |
 
 ## 3. Route 3, measured
@@ -144,7 +154,8 @@ Restart-Service iphlpsvc -Force
 sc.exe start srvnet; sc.exe start srv2; net start server
 netstat -ano | Select-String ':445 '   # expect 0.0.0.0:445, 127.0.0.1:445 and [::]:445
 
-# 4. Keep that order at boot.                  Undo: sc.exe config LanmanServer depend= SamSS/Srv2
+# 4. Keep that order at boot. Read the original first (sc.exe qc LanmanServer);
+#    on the 26H2 machine it was SamSS and Srv2.  Undo: restore that list.
 sc.exe config LanmanServer depend= SamSS/Srv2/iphlpsvc
 
 # 5. Send the name to the proxy.               Undo: remove the line

@@ -195,3 +195,32 @@ joined the three-user `access(2)` cache and the 60-second lifetime as one
 fact, although whether they are the same cache is still open; they are now
 stated separately.
 
+
+## Review of the Windows UNC note
+
+`docs/research/2026-11-19-windows-unc-without-a-driver.md`, its index row
+and a cross-reference in the Cloud Files note were written by a Claude
+model (`cd8731f..d766bb7`). The note's measurements were made for it on
+disposable virtual machines; its steps are in its appendix.
+
+| Seat | Served model | Effort | Verdict |
+|---|---|---|---|
+| glm | glm-5.3 | high | PASS: 4 minor |
+
+All four minor findings were fixed and checked by the controller:
+
+- the MEASURED label now follows the research index's definition
+  (outside IronAFS code; evidence for design, not proof);
+- route 3's side effects are listed in full: `\\127.0.0.1` fails while
+  IronAFS is stopped, the hosts entry applies to every program, and the
+  back-end port is free while IronAFS is stopped;
+- the direct-bind variant (IronAFS's own service on `127.0.0.1:445`, no
+  proxy) is listed as a candidate, NOT VERIFIED, with its cost: Windows'
+  file sharing would depend on IronAFS at boot;
+- the WebDAV row cites the page for its path syntax, as well as the
+  deprecation.
+
+It also asked whether the appendix's undo restores the original service
+dependencies. The original was read on the 26H2 machine (SamSS and Srv2)
+but not on the two x86 machines before the change, and the appendix now
+says to read and restore it.
