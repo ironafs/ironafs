@@ -40,3 +40,7 @@ Round 2, verification of those fixes (`291dd57..b041cde`).
 - `cargo xtask trailers main` passes on each historical message, and a
   branch message with `Class:` is refused with its line number (EXECUTED).
 - `actionlint` and `zizmor`: no findings (EXECUTED).
+- After `main` (ADR 0003, `796ab3f`) was merged in at `58942c9`, with no
+  conflicts: fmt, clippy, the 29 tests, doc-tests, `reuse lint` and
+  `cargo deny check` pass, and `cargo xtask trailers main` passes on
+  `796ab3f`'s message (EXECUTED, macOS).
