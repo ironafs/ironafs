@@ -186,8 +186,7 @@ back and compared with what was approved.
   I, P, S and R. A failure there is fixed by a revert or a follow-up commit,
   never by rewriting `main`.
 - **The opt-in `commit-msg` hook**, installed by `cargo xtask hooks install`,
-  checks that the branch commit's trailer block contains valid `Assisted-by:`
-  entries and rejects squash-only trailers.
+  checks the branch-commit rules of [ADR 0003](0003-branch-work-and-ai-disclosure.md).
 - **Honest limit:** CI can check that a sign-off is present, not that the
   owner approved it. "No commit without the owner's approval of its message"
   is a rule the controller follows, backed by the maintainer's instructions to

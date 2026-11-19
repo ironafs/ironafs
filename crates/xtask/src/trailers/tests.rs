@@ -194,6 +194,66 @@ fn pr_validates_optional_review_trailers() {
 }
 
 #[test]
+fn trailers_accepts_human_credit_in_every_mode() {
+    for (rules, required) in [
+        (Rules::MaintainerPr, EDITORIAL.to_owned()),
+        (Rules::ContributorPr, format!("{EDITORIAL}\n{CONTRIBUTOR}")),
+        (
+            Rules::Main,
+            format!("Class: I\nAssisted-by: none\n{REVIEW}\n{MAINTAINER}"),
+        ),
+        (Rules::Commit, "Assisted-by: none".to_owned()),
+    ] {
+        assert_eq!(
+            validate(
+                &format!(
+                    "{required}\nCo-authored-by: Zoë Example <zoe+dev@example.org>\nReviewed-by: Taylor Example <taylor@example.org>"
+                ),
+                rules,
+            ),
+            Ok(()),
+            "{rules:?}"
+        );
+    }
+}
+
+#[test]
+fn trailers_rejects_malformed_human_credit() {
+    for key in ["Co-authored-by", "Reviewed-by"] {
+        for (rules, required, line) in [
+            (Rules::MaintainerPr, EDITORIAL.to_owned(), 3),
+            (Rules::Main, format!("{EDITORIAL}\n{MAINTAINER}"), 4),
+            (Rules::Commit, "Assisted-by: none".to_owned(), 2),
+        ] {
+            assert_violation(
+                &format!("{required}\n{key}: Zoë Example <zoe>"),
+                rules,
+                line,
+                &format!("use {key}: Name <email>"),
+            );
+        }
+    }
+}
+
+#[test]
+fn human_credit_does_not_satisfy_signoff_or_ai_review_requirements() {
+    assert_violation(
+        &format!("{EDITORIAL}\nCo-authored-by: Adrian Ana <adrian@adrianana.com>"),
+        Rules::Main,
+        1,
+        "add a Signed-off-by: with a maintainer email address",
+    );
+    assert_violation(
+        &format!(
+            "Class: I\nAssisted-by: none\n{MAINTAINER}\nReviewed-by: Taylor Example <taylor@example.org>"
+        ),
+        Rules::Main,
+        1,
+        "add an AI-Reviewed-by:",
+    );
+}
+
+#[test]
 fn pr_requires_a_well_formed_signoff_for_outside_contributors() {
     assert_eq!(
         validate(&format!("{EDITORIAL}\n{CONTRIBUTOR}"), Rules::ContributorPr),

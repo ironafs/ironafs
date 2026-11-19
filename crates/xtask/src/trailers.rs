@@ -221,15 +221,24 @@ impl<'a> Trailers<'a> {
                 if rules == Rules::Commit {
                     return Err(at_line("remove Signed-off-by: from the branch commit"));
                 }
-                let email = signoff_email(value).ok_or_else(|| {
+                let email = trailer_email(value).ok_or_else(|| {
                     at_line("use Signed-off-by: Name <email> with a nonempty name and a valid email address")
                 })?;
                 self.signed |= rules != Rules::Main
                     || MAINTAINERS.iter().any(|(_, address)| *address == email);
             }
+            "Co-authored-by" | "Reviewed-by" => {
+                trailer_email(value).ok_or_else(|| {
+                    at_line(if key == "Co-authored-by" {
+                        "use Co-authored-by: Name <email> with a nonempty name and a valid email address"
+                    } else {
+                        "use Reviewed-by: Name <email> with a nonempty name and a valid email address"
+                    })
+                })?;
+            }
             _ => {
                 return Err(at_line(
-                    "unknown trailer key. Use Class:, Assisted-by:, AI-Reviewed-by: or Signed-off-by: as allowed by the mode",
+                    "unknown trailer key. Use Class:, Assisted-by:, AI-Reviewed-by:, Signed-off-by:, Co-authored-by: or Reviewed-by: as allowed by the mode",
                 ));
             }
         }
@@ -274,8 +283,8 @@ fn valid_model_id(value: &str) -> bool {
     })
 }
 
-/// Extracts the address from a sign-off with an unquoted mailbox.
-fn signoff_email(value: &str) -> Option<&str> {
+/// Extracts the address from a name and an unquoted mailbox in angle brackets.
+fn trailer_email(value: &str) -> Option<&str> {
     let (name, email) = value.strip_suffix('>')?.rsplit_once(" <")?;
     let (local, domain) = email.split_once('@')?;
     let valid_name = !name.trim().is_empty()
