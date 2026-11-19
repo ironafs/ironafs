@@ -9,10 +9,13 @@
   exist.
 - Each claim is marked EXECUTED (run in a scratch directory outside the
   repository), INSPECTED (read in the cited source), or NOT VERIFIED.
-- The RHEL 7 kernel facts come from a public third-party import of the
-  `3.10.0-1160.el7` source, not from Red Hat's own documentation.
+- The RHEL 7 kernel facts that come from a public third-party import of the
+  `3.10.0-1160.el7` source, not from Red Hat's own documentation, are
+  marked RELAYED until they are matched to Red Hat's material or measured
+  on a real kernel (update, 2026-11-19). Facts cited to Red Hat directly
+  keep their own label.
 - Nothing was run on a real 3.10 kernel. The containers used shared a newer
-  host kernel, so every kernel-behaviour claim for RHEL 7 is INSPECTED at
+  host kernel, so every kernel-behaviour claim for RHEL 7 is RELAYED at
   best.
 - Verdicts are against `docs/research/2026-11-18-driverless-afs-clients.md`.
 - The note has not been cross-checked by a second model family.
@@ -31,7 +34,8 @@ recommends tier 2 rather than tier 1.
   a CentOS 7.9 userland (EXECUTED, aarch64 image).
 - **FUSE:** the RHEL 7.9 kernel exposes FUSE protocol 7.23, with the
   writeback cache backported, and it has the invalidation notifications that
-  AFS callback breaks need (INSPECTED). It lacks everything from 7.24 up:
+  AFS callback breaks need (RELAYED: the third-party kernel import). It
+  lacks everything from 7.24 up:
   larger requests, per-thread device file descriptors, parallel directory
   operations, directory and symlink caching, passthrough and io_uring.
 - **Costs:** an end-of-life build image, a virtual machine for any real
@@ -44,22 +48,22 @@ and review RHEL 7 no later than the end of Red Hat's extended support on
 
 ## Verdict table
 
-| # | Claim | Verdict | Quoted source | URL |
+| # | Claim | Verdict (review vocabulary) | Quoted source | URL |
 |---|---|---|---|---|
-| 1 | Rust std needs kernel 3.2+ and glibc 2.17+ | CONFIRM for x86_64; AMEND for aarch64, which needs kernel 4.1+ | "x86_64-unknown-linux-gnu: 64-bit Linux (kernel 3.2+, glibc 2.17+)"; "aarch64-unknown-linux-gnu: ARM64 Linux (kernel 4.1+, glibc 2.17+)" | https://doc.rust-lang.org/1.97.1/rustc/platform-support.html |
-| 2 | The 2022 baseline has not been raised | CONFIRM. The 1.97.1, stable and nightly pages give the same figures. | "glibc >= 2.17 (previously glibc >= 2.11)"; "kernel >= 3.2 (previously kernel >= 2.6.32)" | https://blog.rust-lang.org/2022/08/01/Increasing-glibc-kernel-requirements/ |
-| 3 | A future raise is announced | Not found. The stated rationale has expired (A1). | "The new baseline requirements were picked as the least common denominator among long-term-support distributions that still have active support. This is currently RHEL 7" | same |
-| 4 | A static musl binary sidesteps glibc on RHEL 7 | CONFIRM (EXECUTED). The kernel floor still applies. | "`*-linux-musl*` targets are only affected by the kernel requirements, not the glibc requirements." | same |
-| 5 | "Roughly the RHEL 7 floor" | CONFIRM | "RHEL 7 (glibc 2.17, kernel 3.10)" listed as still supported | same |
-| 6 | RHEL 7.9 kernel is 3.10.0-1160 | CONFIRM | "RHEL 7.9, 2020-09-29, 3.10.0-1160" | https://access.redhat.com/articles/3078 |
-| 7 | RHEL 7 kernel speaks upstream 3.10's FUSE 7.22 | REJECT: it is 7.23, with the writeback cache backported | `#define FUSE_KERNEL_MINOR_VERSION 23`; `#define FUSE_WRITEBACK_CACHE (1 << 16)` | https://git.zx2c4.com/rhel7-kernel-misery/plain/include/uapi/linux/fuse.h |
-| 8 | Writeback cache arrived in 3.15, passthrough in 6.9, io_uring in 6.14 | CONFIRM | "7.23 - add FUSE_WRITEBACK_CACHE"; "7.40 ... add FUSE_PASSTHROUGH init flag"; "7.42 - Add FUSE_OVER_IO_URING" | https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/include/uapi/linux/fuse.h |
-| 9 | A FUSE client needs a recent kernel | REJECT. The `fuser` crate's floor is protocol 7.6, and capabilities are negotiated at run time. | "We don't support ABI versions before 7.6" (`src/session.rs`, v0.18.0) | https://github.com/cberner/fuser/blob/v0.18.0/src/session.rs |
-| 10 | A pure-Rust client can speak `/dev/fuse` directly | CONFIRM. Mounting still goes through the `fusermount` helper. | "on Linux these calls to libfuse are optional." | https://github.com/cberner/fuser/blob/master/README.md |
-| 11 | CentOS 7 is end of life | CONFIRM | "After June 30, 2024, there will be no updates published for CentOS Linux 7." | https://blog.centos.org/2023/04/end-dates-are-coming-for-centos-stream-8-and-centos-linux-7/ |
+| 1 | Rust std needs kernel 3.2+ and glibc 2.17+ | CONFIRMED for x86_64; AMEND for aarch64, which needs kernel 4.1+ | "x86_64-unknown-linux-gnu: 64-bit Linux (kernel 3.2+, glibc 2.17+)"; "aarch64-unknown-linux-gnu: ARM64 Linux (kernel 4.1+, glibc 2.17+)" | https://doc.rust-lang.org/1.97.1/rustc/platform-support.html |
+| 2 | The 2022 baseline has not been raised | CONFIRMED. The 1.97.1, stable and nightly pages give the same figures. | "glibc >= 2.17 (previously glibc >= 2.11)"; "kernel >= 3.2 (previously kernel >= 2.6.32)" | https://blog.rust-lang.org/2022/08/01/Increasing-glibc-kernel-requirements/ |
+| 3 | A future raise is announced | NOT VERIFIED (not found). The stated rationale has expired (A1). | "The new baseline requirements were picked as the least common denominator among long-term-support distributions that still have active support. This is currently RHEL 7" | same |
+| 4 | A static musl binary sidesteps glibc on RHEL 7 | CONFIRMED (EXECUTED). The kernel floor still applies. | "`*-linux-musl*` targets are only affected by the kernel requirements, not the glibc requirements." | same |
+| 5 | "Roughly the RHEL 7 floor" | CONFIRMED | "RHEL 7 (glibc 2.17, kernel 3.10)" listed as still supported | same |
+| 6 | RHEL 7.9 kernel is 3.10.0-1160 | CONFIRMED | "RHEL 7.9, 2020-09-29, 3.10.0-1160" | https://access.redhat.com/articles/3078 |
+| 7 | RHEL 7 kernel speaks upstream 3.10's FUSE 7.22 | REFUTED: it is 7.23, with the writeback cache backported (RELAYED: third-party import of the RHEL 7 kernel source) | `#define FUSE_KERNEL_MINOR_VERSION 23`; `#define FUSE_WRITEBACK_CACHE (1 << 16)` | https://git.zx2c4.com/rhel7-kernel-misery/plain/include/uapi/linux/fuse.h |
+| 8 | Writeback cache arrived in 3.15, passthrough in 6.9, io_uring in 6.14 | CONFIRMED | "7.23 - add FUSE_WRITEBACK_CACHE"; "7.40 ... add FUSE_PASSTHROUGH init flag"; "7.42 - Add FUSE_OVER_IO_URING" | https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/include/uapi/linux/fuse.h |
+| 9 | A FUSE client needs a recent kernel | REFUTED. The `fuser` crate's floor is protocol 7.6, and capabilities are negotiated at run time. | "We don't support ABI versions before 7.6" (`src/session.rs`, v0.18.0) | https://github.com/cberner/fuser/blob/v0.18.0/src/session.rs |
+| 10 | A pure-Rust client can speak `/dev/fuse` directly | CONFIRMED. Mounting still goes through the `fusermount` helper. | "on Linux these calls to libfuse are optional." | https://github.com/cberner/fuser/blob/master/README.md |
+| 11 | CentOS 7 is end of life | CONFIRMED | "After June 30, 2024, there will be no updates published for CentOS Linux 7." | https://blog.centos.org/2023/04/end-dates-are-coming-for-centos-stream-8-and-centos-linux-7/ |
 | 12 | RHEL 7 paid extended support ends in 2028 | AMEND: 2029-05-31 | "This add-on is available from July 1, 2024 through May 31, 2029." | https://access.redhat.com/articles/7060360 |
-| 13 | FSKit: macOS 15.4+, URL resources from macOS 26, handler APIs in macOS 27 | CONFIRM, from Apple's documentation data | FSKit `introducedAt` 15.4; `FSGenericURLResource` 26.0; `FSVolume.DataCacheHandler` 27.0 | https://developer.apple.com/documentation/fskit |
-| 14 | Cloud Files API: Windows 10 1709+ | CONFIRM | "Minimum supported client: Windows 10, version 1709 [desktop apps only]" | https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfregistersyncroot |
+| 13 | FSKit: macOS 15.4+, URL resources from macOS 26, handler APIs in macOS 27 | CONFIRMED, from Apple's documentation data | FSKit `introducedAt` 15.4; `FSGenericURLResource` 26.0; `FSVolume.DataCacheHandler` 27.0 | https://developer.apple.com/documentation/fskit |
+| 14 | Cloud Files API: Windows 10 1709+ | CONFIRMED | "Minimum supported client: Windows 10, version 1709 [desktop apps only]" | https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfregistersyncroot |
 | 15 | FreeBSD comes nearly free with FUSE | AMEND: the FUSE layer does; the rest does not (B3) | "Tested under Linux and FreeBSD using stable Rust" | https://github.com/cberner/fuser/blob/master/README.md |
 
 ## A. Linux
@@ -141,7 +145,7 @@ for RHEL 8, 9 and 10.
 
 ### A4. FUSE on RHEL 7
 
-INSPECTED from the `linux-3.10.0-1160.el7` import. The protocol minor is 23,
+RELAYED from the third-party `linux-3.10.0-1160.el7` import. The protocol minor is 23,
 and the INIT handshake offers the writeback cache.
 
 | Feature IronAFS would want | Upstream protocol / kernel | RHEL 7.9 |
@@ -204,10 +208,13 @@ this.
 | `setCacheState(...)` | macOS 27.0 | Callback breaks |
 | `FSContext` | macOS 27.0 | Caller identity |
 
-A network filesystem needs macOS 26 at least; correct cache invalidation and
-caller identity need macOS 27. The practical floor is macOS 27.
+For an FSKit layer, a network filesystem needs macOS 26 at least, and
+correct cache invalidation and caller identity need macOS 27, so the FSKit
+floor is macOS 27. A loopback NFS layer has a different, lower floor (the
+[macOS options note](2026-11-19-macos-options.md)); the overall macOS floor
+follows from which layer is built.
 
-### B2. Windows (Cloud Files)
+### B2. Windows
 
 - The Cloud Files API arrived in Windows 10 version 1709 and Windows Server
   2016.
@@ -216,6 +223,14 @@ caller identity need macOS 27. The practical floor is macOS 27.
 - "Windows 10 will reach end of support on October 14, 2025." The API floor
   (1709) and a sensible support floor (Windows 11) differ.
 - Which build each needed feature arrived in is work for the Windows spike.
+- Update, 2026-11-19: a second Windows route now exists, an online `\\afs`
+  path through Windows' own SMB client and an SMB server of IronAFS's own.
+  The client's traffic was measured reaching a probe listener on that path
+  beside
+  Windows' own file sharing on Windows 10 22H2, Windows 11 24H2 and
+  Windows 11 26H2; a full SMB session is not yet measured (MEASURED,
+  [UNC note](2026-11-19-windows-unc-without-a-driver.md)). The Cloud Files
+  points above apply to the offline companion.
 
 ### B3. FreeBSD and other FUSE systems
 
@@ -255,11 +270,20 @@ caller identity need macOS 27. The practical floor is macOS 27.
 
 ### Proposed support matrix
 
+The macOS entries assume FSKit for 27 (update, 2026-11-19).
+
 | Tier | Platforms | Meaning |
 |---|---|---|
 | 1, tested in CI | Linux x86_64 and aarch64, glibc: RHEL 9 and 10 (or rebuilds), Debian 13, Ubuntu 24.04 and 26.04. macOS 27 on Apple silicon. Windows 11 x86_64. | Every change is tested. Releases are blocked on failures. |
-| 2, best effort | RHEL 7.9 / CentOS 7.9 x86_64. RHEL 8. Debian 12, Ubuntu 22.04. Static musl builds. FreeBSD 14 and 15. macOS 26. | Builds and a smoke test per release. Bugs fixed when the fix is cheap. No performance promise. |
-| Out of scope | RHEL 6 and older. Kernels below 3.10. RHEL 7 on aarch64 or POWER. 32-bit targets. macOS 15 and older. Windows 10 and Windows Server. macFUSE. | Not built, not tested. |
+| 2, best effort | RHEL 7.9 / CentOS 7.9 x86_64. RHEL 8. Debian 12, Ubuntu 22.04. Static musl builds. FreeBSD 14 and 15. | Builds and a smoke test per release. Bugs fixed when the fix is cheap. No performance promise. |
+| Spike only | macOS 15 and 26, as candidates for a loopback NFS layer (the [macOS options note](2026-11-19-macos-options.md)). | Outside the release tiers until that spike reports. |
+| Out of scope | RHEL 6 and older. Kernels below 3.10. RHEL 7 on aarch64 or POWER. 32-bit targets. macOS 14 and older. Windows 10 and Windows Server. macFUSE. | Not built, not tested. |
+
+Update, 2026-11-19: Windows 10 22H2 was out of scope with the support floor
+set at Windows 11 for its end of support (B2). The SMB route's transport
+was since measured reaching a probe listener on it, to the client's first
+packet (B2), so its tier is reopened, to be settled with the platform floors in the
+architecture ADR.
 
 **RHEL 7 placement and justification:**
 
@@ -296,8 +320,14 @@ This placement is a judgement, not a measured result.
    per-user mounts?
 7. **Rust version policy** when Rust raises its Linux floor.
 8. **Kernel test strategy:** which kernels get a virtual-machine job?
-9. **macOS floor:** macOS 27 only, or a reduced mode on 26?
+9. **macOS floor:** macOS 27 only, or a reduced mode on 26? (Update,
+    2026-11-19: the FSKit floor is 27; a loopback NFS layer, a spike
+    candidate for 15 and 26, would have its own floor; both sit in the
+    matrix's "Spike only" row.)
 10. **Windows floor:** Windows 11 only, and which Cloud Files features?
+    (Update, 2026-11-19: reopened by the SMB route, whose transport reached
+    a probe listener, to the client's first packet, on Windows 10 22H2 and
+    11; see B2.)
 11. **FUSE layer:** decided after this research. IronAFS writes its own
     `/dev/fuse` layer (rule 21), negotiating at run time.
 12. **RHEL backports:** what FUSE level the RHEL 8, 9 and 10 kernels really
