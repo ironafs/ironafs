@@ -210,3 +210,24 @@ this ADR it was:
 - each rule checked for the maintainer's session, contributors and their
   agents, and bots.
 
+Round 3, 2026-11-19, verification of those fixes (`bf7f65d..22b19c2`).
+
+| Seat | Served model | Effort | Verdict |
+|---|---|---|---|
+| glm | glm-5.3 | high | FAIL: 5 minor |
+
+All eight round-2 fixes were confirmed. Its five minor findings were places
+the sweep had missed, all fixed and checked by the controller, and the review
+stopped (no blocker or major):
+
+- `AI.md` still showed only the "for the maintainer" form;
+- ADR 0002's "Honest limit" and its "carry no trailers" clause lacked their
+  supersession notes;
+- the `land-change` description, introduction and heading, and `CLAUDE.md`,
+  did not say "the maintainer's";
+- the sweep list in `docs/adr/README.md` had absorbed the paragraph after it.
+
+The sweep missed them because it searched for exact phrases. A sweep also
+reads each file that states the old rule in full, not only the matching
+lines.
+

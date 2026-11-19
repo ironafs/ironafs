@@ -1,13 +1,13 @@
 ---
 name: land-change
-description: Use before EVERY git commit, push or merge in this repository — branch commits, squash merges and the root commit. Branch work follows its rules without asking (ADR 0003); a squash merge or the root commit is presented, with its exact final message, to the human you work for, who must approve it before it is made (ADR 0002). Triggers on "commit", "merge", "land", "push", "open a PR", or any step that would create a commit.
+description: Use before EVERY git commit, push or merge in this repository — branch commits, squash merges and the root commit. The maintainer's branch work follows its rules without asking (ADR 0003); a squash merge or the root commit is presented, with its exact final message, to the human you work for, who must approve it before it is made (ADR 0002). Triggers on "commit", "merge", "land", "push", "open a PR", or any step that would create a commit.
 ---
 
 # Landing a change
 
 The human you work for approves every merge to `main` and the root commit
-before it is made (ADR 0002). Branch work needs no approval (ADR 0003, and
-section 0 below). For the maintainer the human is the owner; for a
+before it is made (ADR 0002). The maintainer's branch work needs no approval
+(ADR 0003, and section 0 below). For the maintainer the human is the owner; for a
 contributor, it is the contributor. The only `Signed-off-by:` an agent ever
 writes is the owner's, in the maintainer's session, after the owner approves
 the exact final message of a squash merge or the root commit. A
@@ -18,7 +18,7 @@ approved.
 "The human" below means that person. Their sign-off uses their own identity
 (`git config user.name` and `user.email`), never anyone else's.
 
-## 0. Branch work (no approval needed)
+## 0. Branch work (the maintainer's session needs no approval)
 
 **The maintainer's session**, on a task branch and never on `main`, commits,
 pushes and opens draft pull requests without asking (ADR 0003). A

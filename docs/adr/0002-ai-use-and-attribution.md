@@ -48,7 +48,8 @@ below. Partly superseded by [ADR 0003](0003-branch-work-and-ai-disclosure.md)
 
 - Each change is worked on its own branch, with as many commits as it needs.
   Branch commits are working state, not the record. They carry no trailers
-  and no sign-off; those go only on commits that land on `main`. Who approves
+  (superseded by ADR 0003: they carry `Assisted-by:`) and no sign-off; the
+  full trailer block goes only on commits that land on `main`. Who approves
   a commit before it is made (for the maintainer's session, superseded by ADR
   0003: its branch commits need no approval; all branch commits carry
   `Assisted-by:`):
@@ -195,7 +196,8 @@ approving.
   by a revert or a follow-up commit, never by rewriting `main`.
 - **Honest limit:** CI can check that a sign-off is present, not that the
   owner approved it. "No commit without the owner's approval of its message"
-  is a rule the controller follows, backed by the maintainer's instructions to
+  (since ADR 0003: no merge to `main`, and no root commit) is a rule the
+  controller follows, backed by the maintainer's instructions to
   their session and the `land-change` skill, not a technical control.
 
 ### Review records

@@ -44,8 +44,12 @@ status says `superseded by NNNN` (or `partly superseded by NNNN`).
 A superseding ADR comes with a **supersession sweep**:
 
 - search the whole repository for each superseded rule, its key wording and
-  the old ADR's number, and update or annotate every hit;
+  the old ADR's number, and update or annotate every hit; then read every
+  file that states an old rule in full, since a phrase search misses
+  paraphrases;
 - check each changed rule separately for each actor it applies to: the
   maintainer's session, contributors and their agents, and bots;
-- list the sweep in the new ADR's Review section, so a reviewer can check it. Small corrections that change no decision,
-such as fixing a link, are made in place and noted in its Review section.
+- list the sweep in the new ADR's Review section, so a reviewer can check it.
+
+Small corrections that change no decision, such as fixing a link, are made in
+place and noted in that ADR's Review section.

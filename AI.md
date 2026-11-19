@@ -152,7 +152,9 @@ git log --format='%h %s%n  %(trailers:key=Assisted-by,valueonly,separator=%x2C )
 
 Working commits on a branch carry `Assisted-by:` too. Issues, pull request
 descriptions, comments and reviews written by a model end with a line naming
-it, such as `Written by claude-code:claude-opus-5-5 for the maintainer.`
+it, such as `Written by codex:gpt-6.2-sol.`, adding for whom when it is
+written for someone else's account
+(`Written by claude-code:claude-opus-5-5 for the maintainer.`)
 ([ADR 0003](docs/adr/0003-branch-work-and-ai-disclosure.md)).
 
 The pull request behind each commit keeps the full story: the working commits,
