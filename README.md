@@ -159,7 +159,8 @@ To run checks individually, use `cargo fmt --all --check`,
 `cargo nextest run --workspace --retries 0 --no-tests fail`,
 `cargo test --doc --workspace`, `reuse lint` and `cargo deny check`.
 The local batch reports `reuse` and `cargo-deny` as skipped if they are
-absent. CI requires both and runs Clippy and tests on Linux, macOS and Windows.
+absent. CI requires both, runs the tests on Linux, and runs Clippy for
+Linux, Windows and macOS.
 
 ## Contributing
 

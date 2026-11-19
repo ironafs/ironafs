@@ -220,8 +220,10 @@ number and is marked retired; new rules are appended.
         instead of hanging (`.config/nextest.toml`).
       - Doc-tests run outside nextest. They get a deadline from their CI step;
         by hand, a run that does not finish is a failure.
-    - **Platforms.** CI tests code behind an OS `cfg` on Linux, macOS and
-      Windows. The evidence names the machine.
+    - **Platforms.** Code behind an OS `cfg` is tested on that OS. CI runs
+      the tests on Linux and lints the Windows and macOS targets from Linux;
+      the change that adds the first code behind a Windows or macOS `cfg`
+      adds that system's runner to CI. The evidence names the machine.
     - **Evidence** (`docs/workflow.md` §3b, §3c). Record:
       - the tests expected to run, by name or filter, and check they ran;
       - the result and the command's exit status;
