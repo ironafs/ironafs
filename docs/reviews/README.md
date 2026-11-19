@@ -15,6 +15,7 @@ the evidence that refutes it.
 | Record | What was reviewed |
 |---|---|
 | [2026-11-18-first-public-tree](2026-11-18-first-public-tree.md) | The first commit of the public history: mechanical checks, an independent pre-publication audit, and every review round |
+| [2026-11-19-workflow-pr-limits](2026-11-19-workflow-pr-limits.md) | Issue #4: the limit on open pull requests, and settling and closing issues |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).

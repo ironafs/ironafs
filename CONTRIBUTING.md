@@ -17,6 +17,8 @@ Security problems go to [SECURITY.md](SECURITY.md), not to public issues.
 
 ## Pull requests
 
+- Before you start on an issue, say so in a comment, so nobody else picks it
+  up (`docs/workflow.md` §6). If you stop, comment again so it is free.
 - One change per pull request. It is squash-merged: the PR title becomes the
   commit subject (short, lowercase), and the PR description becomes the
   commit body (what changed and why).
