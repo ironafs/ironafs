@@ -23,15 +23,21 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     )?;
     run_command(
         Command::new("cargo")
-            .args(["clippy", "--all-targets"])
+            .args(["clippy", "--all-targets", "--workspace"])
             .env("CARGO_BUILD_WARNINGS", "deny"),
-        "cargo clippy --all-targets",
+        "cargo clippy --all-targets --workspace",
     )?;
     run_command(
-        Command::new("cargo")
-            .args(["nextest", "run", "--retries", "0"])
-            .env("NEXTEST_NO_TESTS", "fail"),
-        "cargo nextest run --retries 0",
+        Command::new("cargo").args([
+            "nextest",
+            "run",
+            "--workspace",
+            "--retries",
+            "0",
+            "--no-tests",
+            "fail",
+        ]),
+        "cargo nextest run --workspace --retries 0 --no-tests fail",
     )?;
     run_command(
         Command::new("cargo").args(["test", "--doc", "--workspace"]),

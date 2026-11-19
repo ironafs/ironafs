@@ -147,7 +147,11 @@ minimum is set only once CI tests it.
 
 Run `cargo xtask check` for the local checks. Install
 [cargo-nextest](https://nexte.st/) separately. Run `cargo xtask hooks install`
-to opt in to running the same checks before each push.
+to opt in to running the same checks before each push. Use
+`cargo xtask hooks install --force` to replace a hook that xtask did not
+install. This moves the existing hook to `pre-push.xtask-backup` in the hooks
+directory and prints the backup path. The command refuses if that path is
+already in use.
 
 To run checks individually, use `cargo fmt --all --check`,
 `cargo clippy --all-targets`, `cargo nextest run --retries 0`,

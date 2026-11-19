@@ -36,6 +36,10 @@ Security problems go to [SECURITY.md](SECURITY.md), not to public issues.
 `rust-toolchain.toml` on first use. Install [cargo-nextest](https://nexte.st/)
 separately, then run `cargo xtask check`. Run `cargo xtask hooks install` to
 opt in to running the checks before each push. Use
+`cargo xtask hooks install --force` to replace a hook that xtask did not
+install. This moves the existing hook to `pre-push.xtask-backup` in the hooks
+directory and prints the backup path. The command refuses if that path is
+already in use. Use
 `cargo xtask hooks uninstall` to remove the managed hook.
 
 To run the checks individually, use the following commands.

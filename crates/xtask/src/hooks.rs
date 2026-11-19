@@ -24,8 +24,8 @@ const HOOK_HEADER: &str = "\
 ///
 /// # Errors
 ///
-/// Returns an error if Git or the filesystem fails, or a foreign hook exists
-/// and `force` is false.
+/// Returns an error if Git, filesystem access or backup reporting fails.
+/// Replacing a foreign hook requires `force` and an unused backup path.
 pub(super) fn install(force: bool) -> Result<(), Error> {
     let directory = hooks_directory()?;
     let path = directory.join("pre-push");
@@ -64,7 +64,18 @@ fn write_hook(file: &mut File) -> io::Result<()> {
 
 fn publish_hook(staged: &Path, path: &Path, force: bool) -> Result<(), Error> {
     if force {
-        return fs::rename(staged, path).map_err(Error::io("replace pre-push hook"));
+        let backup = backup_foreign_hook(path)?;
+        let replaced = fs::rename(staged, path).map_err(Error::io("replace pre-push hook"));
+        if let Some(backup) = backup {
+            let reported = writeln!(
+                io::stdout(),
+                "moved existing pre-push hook to {}",
+                backup.display()
+            )
+            .map_err(Error::io("report pre-push hook backup"));
+            return replaced.and(reported);
+        }
+        return replaced;
     }
 
     // A hard link publishes the complete hook and fails if another hook took the path.
@@ -76,6 +87,31 @@ fn publish_hook(staged: &Path, path: &Path, force: bool) -> Result<(), Error> {
         }
         result => result.map_err(Error::io("install pre-push hook")),
     }
+}
+
+/// Moves a foreign hook to its backup path, which must be unused.
+fn backup_foreign_hook(path: &Path) -> Result<Option<PathBuf>, Error> {
+    match managed_hook_exists(path) {
+        Ok(_) => return Ok(None),
+        Err(Error::ForeignHook(_)) => (),
+        Err(error) => return Err(error),
+    }
+
+    let backup = path.with_file_name("pre-push.xtask-backup");
+    // Reserve the name atomically so rename can only replace our own file.
+    let reservation = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&backup)
+        .map_err(Error::io("reserve pre-push.xtask-backup"))?;
+    drop(reservation);
+    if let Err(error) = fs::rename(path, &backup) {
+        let _ = fs::remove_file(&backup);
+        return Err(Error::io("move pre-push hook to pre-push.xtask-backup")(
+            error,
+        ));
+    }
+    Ok(Some(backup))
 }
 
 /// Removes a managed pre-push hook. An absent hook is already uninstalled.
