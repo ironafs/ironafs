@@ -5,6 +5,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::path::PathBuf;
 
 #[cfg(test)]
 mod tests;
@@ -14,14 +15,26 @@ pub(super) enum Task {
     Check,
     InstallHook { force: bool },
     UninstallHook,
+    Trailers(TrailerMode),
+}
+
+/// Selects the trailer rules and where to read the message.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum TrailerMode {
+    Pr,
+    Commit(PathBuf),
+    Main(Option<PathBuf>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum UsageError {
     MissingCommand,
     MissingHookSubcommand,
+    MissingTrailerMode,
+    MissingCommitMessagePath,
     UnknownCommand(OsString),
     UnknownHookSubcommand(OsString),
+    UnknownTrailerMode(OsString),
     UnexpectedArgument(OsString),
 }
 
@@ -30,11 +43,16 @@ impl fmt::Display for UsageError {
         match self {
             Self::MissingCommand => write!(formatter, "missing command"),
             Self::MissingHookSubcommand => write!(formatter, "missing hooks subcommand"),
+            Self::MissingTrailerMode => write!(formatter, "missing trailers mode"),
+            Self::MissingCommitMessagePath => write!(formatter, "missing commit message file path"),
             Self::UnknownCommand(command) => {
                 write!(formatter, "unknown command {}", command.display())
             }
             Self::UnknownHookSubcommand(command) => {
                 write!(formatter, "unknown hooks subcommand {}", command.display())
+            }
+            Self::UnknownTrailerMode(mode) => {
+                write!(formatter, "unknown trailers mode {}", mode.display())
             }
             Self::UnexpectedArgument(argument) => {
                 write!(formatter, "unexpected argument {}", argument.display())
@@ -42,12 +60,12 @@ impl fmt::Display for UsageError {
         }?;
         write!(
             formatter,
-            "\nusage: cargo xtask check | hooks install [--force] | hooks uninstall"
+            "\nusage: cargo xtask check | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
         )
     }
 }
 
-/// Parses one command, rejecting options outside `hooks install`.
+/// Parses one command and rejects extra arguments.
 ///
 /// # Errors
 ///
@@ -57,12 +75,28 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
     let task = match command.to_str() {
         Some("check") => Task::Check,
         Some("hooks") => parse_hooks(&mut arguments)?,
+        Some("trailers") => Task::Trailers(parse_trailers(&mut arguments)?),
         _ => return Err(UsageError::UnknownCommand(command)),
     };
     if let Some(argument) = arguments.next() {
         return Err(UsageError::UnexpectedArgument(argument));
     }
     Ok(task)
+}
+
+fn parse_trailers(
+    arguments: &mut impl Iterator<Item = OsString>,
+) -> Result<TrailerMode, UsageError> {
+    let mode = arguments.next().ok_or(UsageError::MissingTrailerMode)?;
+    match mode.to_str() {
+        Some("pr") => Ok(TrailerMode::Pr),
+        Some("commit") => arguments
+            .next()
+            .map(|path| TrailerMode::Commit(path.into()))
+            .ok_or(UsageError::MissingCommitMessagePath),
+        Some("main") => Ok(TrailerMode::Main(arguments.next().map(PathBuf::from))),
+        _ => Err(UsageError::UnknownTrailerMode(mode)),
+    }
 }
 
 fn parse_hooks(arguments: &mut impl Iterator<Item = OsString>) -> Result<Task, UsageError> {

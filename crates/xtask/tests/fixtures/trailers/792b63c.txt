@@ -1,0 +1,32 @@
+workflow: limit open PRs, and settle and close issues
+
+Adds rules to docs/workflow.md §6 so that work moves through issues and
+pull requests without being left open and forgotten:
+
+- picking a task: only a ready issue (triaged, not owner-decision, not an
+  option unless the owner asks, blockers closed), claimed with a comment,
+  and released with a comment if work stops;
+- at most two active pull requests per author; Dependabot's and parked
+  ones do not count, and the limit never blocks finishing work;
+- parking only with a Blocker: and a Recheck: line;
+- no silent abandonment: after 14 days without the author's activity, the
+  author is asked and has seven days before the pull request is parked or
+  closed;
+- settling: Closes #N or Part of #N, a closing-keyword check before every
+  merge, every mentioned issue checked after it, and closing a pull request
+  unmerged never closes its task;
+- cleanup after merge, and a queue review every 30 days.
+
+CONTRIBUTING.md asks contributors to claim an issue before starting.
+
+Reviewed by GLM in two rounds (docs/reviews/2026-11-19-workflow-pr-limits.md):
+both passed; the eight minor findings were fixed.
+
+Closes #4
+
+Written by Claude Code (claude-opus-5-5) for the maintainer.
+
+Class: I
+Assisted-by: claude-code:claude-opus-5-5
+AI-Reviewed-by: glm:glm-5.3
+Signed-off-by: Adrian Ana <adrian@adrianana.com>

@@ -174,20 +174,20 @@ back and compared with what was approved.
 
 ### Enforcement
 
-The checks below are **planned**. Until they exist, the controller runs them
-by hand before presenting a commit, and the owner checks them before
-approving.
-
-- **CI on every pull request**, rerun when the description is edited, checks
-  the PR description:
-  - exactly one `Class:`, and at least one `Assisted-by:`;
-  - well-formed ids;
-  - `AI-Reviewed-by:` seats that fit the class;
-  - for an outside contributor, their own `Signed-off-by:`.
+- **CI on pull requests**, including description edits, checks the final
+  trailer block for one valid `Class:`, at least one valid `Assisted-by:`,
+  well-formed `AI-Reviewed-by:` values when present, and a well-formed
+  `Signed-off-by:` for outside contributors. Dependabot proposals pass
+  with a notice that CI checks the maintainer's squash message on `main`.
   The owner's sign-off is checked at merge.
-- **CI on every push to `main`** checks the landed commit: the same rules,
-  plus a `Signed-off-by:` from a maintainer address. A failure there is fixed
-  by a revert or a follow-up commit, never by rewriting `main`.
+- **CI on every push to `main`** checks the landed commit's trailer block.
+  It applies the same trailer format rules and requires a `Signed-off-by:`
+  with a maintainer address and at least one `AI-Reviewed-by:` for classes
+  I, P, S and R. A failure there is fixed by a revert or a follow-up commit,
+  never by rewriting `main`.
+- **The opt-in `commit-msg` hook**, installed by `cargo xtask hooks install`,
+  checks that the branch commit's trailer block contains valid `Assisted-by:`
+  entries and rejects squash-only trailers.
 - **Honest limit:** CI can check that a sign-off is present, not that the
   owner approved it. "No commit without the owner's approval of its message"
   is a rule the controller follows, backed by the maintainer's instructions to

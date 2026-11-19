@@ -5,6 +5,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, edited, synchronize, reopened]
   push:
     branches: [main]
 
@@ -95,19 +96,45 @@ jobs:
         timeout-minutes: 5
         run: cargo test --doc --workspace --locked
 
+  trailers:
+    name: trailers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Check pull request trailers
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: cargo --locked xtask trailers pr
+      - name: Check landed commit trailers
+        if: github.event_name == 'push'
+        run: cargo --locked xtask trailers main
+
   ci-ok:
     name: ci-ok
-    needs: [lint, test]
+    needs: [lint, test, trailers]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - name: Require lint and test success
+      - name: Require lint, test and trailer check success
         env:
           LINT_RESULT: ${{ needs.lint.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          TRAILERS_RESULT: ${{ needs.trailers.result }}
         run: |
-          printf 'lint: %s\ntest: %s\n' "$LINT_RESULT" "$TEST_RESULT"
-          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success ]]
+          printf 'lint: %s\ntest: %s\ntrailers: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$TRAILERS_RESULT"
+          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$TRAILERS_RESULT" == success ]]
