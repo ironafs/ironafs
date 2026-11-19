@@ -63,7 +63,7 @@ lanes are not used.
 | **Implementer when codex is out of quota** | agy CLI (Gemini) | Same brief; a session allowlist that denies git. Brief paths must sit inside `--add-dir`. |
 | **First reviewer of codex-written code** | GLM 5.3 (`glm-review`) | Headless Claude Code on Z.ai's endpoint, read-only. |
 | **Second family when the class needs two** | Gemini Carbon via agy (`gemini-review`), or DeepSeek (`deepseek-review`) | DeepSeek off-peak only (not Mon–Fri 01–04 or 06–10 UTC). |
-| **Design, rulings, research, refutations on work codex did not write** | GPT read-only: `codex exec -s read-only -m gpt-6.2-sol - < brief.md` | GLM second when a second view is needed. |
+| **Design, rulings, research, refutations on work codex did not write** | GPT read-only: `codex exec -s read-only -m gpt-6.2-sol - < brief.md`; `-m gpt-6.2-astra -c model_reasoning_effort=xhigh` for the strongest-tier seats (§2, "Strongest tiers") | GLM second when a second view is needed. |
 | **Claude seats** (review, reproduction, hard judgement, security) | Claude Code subagents: Opus by default; Mythos 5.2 (`claude-mythos-5-2`, Claude Code's `fable` alias) for hard problems and for every Claude security review | Never a required seat on Claude-written work. |
 
 **A family never reviews its own work.** Codex is OpenAI-family, so a GPT
@@ -144,15 +144,38 @@ Disagreements are settled on evidence, never by counting.
 - **When it runs.** Two seats disagree on something the work depends on (a
   finding, a design choice, a research conclusion), and the controller cannot
   settle it from evidence it has checked itself. Also for a finding still
-  disputed after the fix rounds; the finding blocks until the seat rules.
-- **Who sits it.** A third family that wrote neither the work nor either
-  position. If none is eligible, the change waits (the stop rule).
-- **How it rules.** The brief inlines both positions as A and B, with no
-  family or model names. The seat checks each disputed fact at a primary
-  source and labels it CONFIRMED, with the link, or UNVERIFIED. It may choose
-  A, choose B or name a better option.
-- **After it rules.** The controller checks the facts the ruling rests on at
-  their source before acting on it. The owner decides when the ruling is
+  disputed after the fix rounds. **A pending or inconclusive judgement blocks
+  the merge**, like an open confirmed finding (§3, step 8), and a reproduced
+  failure blocks whatever the ruling says (§4).
+- **Who sits it.** A family that is independent of the dispute: it wrote
+  neither the work nor either position, and has not taken a side in it. The
+  controller's family is excluded when the controller argued a position.
+  Among the independent families, the first available at its strongest tier
+  in this order: GLM, GPT read-only, DeepSeek, Gemini, a Claude seat. Then
+  two filters:
+  - **Security disputes** (whether a security finding holds, or anything
+    that would overturn part of a security review): only the
+    security-review families (GPT read-only, a Claude seat, GLM), never
+    Gemini or DeepSeek.
+  - **Embargoed work:** only the Anthropic and OpenAI lanes, and nothing
+    about the dispute leaves them (brief, source lookups, record).
+
+  If no family passes, the owner rules, and the record says so; under an
+  embargo that record stays private until disclosure. A ruling never removes
+  a seat the class requires.
+- **How it rules.** The brief inlines both positions as A and B. The whole
+  brief, and anything it points to, carries no family, model or lane name
+  and no trailer, transcript or review record of the dispute; the
+  controller checks it for them before sending. The seat checks each
+  disputed fact at a primary source and labels it CONFIRMED, with the link,
+  or UNVERIFIED. A seat without tools (Gemini) gets the primary-source
+  passages inlined with their citations; when they cannot be inlined, another
+  family takes the seat. The verdict is A, B, a named alternative, or
+  INCONCLUSIVE.
+- **After it rules.** The controller confirms every factual premise the
+  ruling rests on at its source before acting on it. A premise that fails
+  or stays UNVERIFIED leaves the dispute open: it goes back to the seat with
+  the evidence, or to the owner. The owner also decides when the ruling is
   itself contested, or when the question is the owner's to decide.
 - **The record** (§4, "After the run") gives both positions, the seat, the
   served model and effort, the deciding facts with their sources, and the
@@ -160,9 +183,12 @@ Disagreements are settled on evidence, never by counting.
 
 ### Strongest tiers
 
-Each family's strongest tier sits the judgement seat, and is the default,
-without waiting for the standard tier to fail, for security reviews, class R
-designs, format freezes and architecture ADRs:
+Each family's strongest tier is the default, without waiting for the
+standard tier to fail, for five kinds of seat: the judgement seat, security
+reviews, class R designs, format freezes and architecture ADRs. This table
+governs the model for those seats over every other table and command in this
+file, `AI.md` and the skills. If a family's strongest tier is unavailable,
+that family is skipped for the seat; the seat is never run on a lower tier.
 
 | Family | Strongest tier |
 |---|---|
@@ -172,8 +198,9 @@ designs, format freezes and architecture ADRs:
 | DeepSeek | the lane's pinned model at `max`, off-peak |
 | Gemini | `gemini-4-carbon-high` |
 
-Routine reviews stay on the standard tiers, so the quota these seats need is
-there when they run.
+Every other seat stays on the standard tier. A standard seat moves up to the
+strongest tier only after it fails the same problem twice (the implementer's
+rule, above), so the quota these seats need is there when they run.
 
 `AI.md` explains these rules for readers new to the project. This file is
 authoritative.
@@ -210,8 +237,8 @@ authoritative.
 7. **Fix rounds**: fix confirmed correctness and contract findings; review
    only the fix's changes. After two fix rounds on one change, stop patching:
    split it, redesign it, or record the blocker.
-8. **Merge** when the class's checks are met and no confirmed correctness or
-   contract finding is open: a pull request, squash-merged after the owner's
+8. **Merge** when the class's checks are met, no confirmed correctness or
+   contract finding is open, and no judgement is pending or inconclusive: a pull request, squash-merged after the owner's
    approval, with the trailer block and sign-off of ADR 0002 (the root commit
    of the public history is the one exception; ADR 0002 gives its checklist). R also needs the owner's
    decision.
