@@ -87,8 +87,8 @@ settle it, and for any finding still disputed after the fix rounds.
    stays UNVERIFIED keeps the dispute open: back to the seat with the
    evidence. Meanwhile the owner may choose a course of action, never a
    fact. If the work is changed so it no longer depends on the disputed
-   fact, record the judgement as moot once you have checked that, and
-   keep every other review and merge gate.
+   fact, before or after the seat runs, record the judgement as moot once
+   you have checked that, and keep every other review and merge gate.
 6. **Record** the positions, the seat, the served model and effort, the
    deciding facts and your check. Contested rulings and owner decisions go
    to the owner. Until the dispute is settled, the merge waits.

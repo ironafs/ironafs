@@ -183,10 +183,11 @@ Disagreements are settled on evidence, never by counting.
   them. While a factual dispute stays open, the owner may choose a course
   of action within the owner's authority, such as changing the work so it
   no longer depends on the fact; the owner also decides when the ruling is
-  itself contested, or when the question is the owner's to decide. When
-  the work changes so that it no longer depends on the disputed fact, the
-  controller checks that and records the judgement as moot; every other
-  review and merge gate still applies.
+  itself contested, or when the question is the owner's to decide.
+- **Moot.** When the work changes so that it no longer depends on the
+  disputed fact, before or after the seat runs, the controller checks that
+  and records the judgement as moot; every other review and merge gate
+  still applies.
 - **The record** (§4, "After the run") gives both positions, the seat, the
   served model and effort, the deciding facts with their sources, and the
   controller's check.
