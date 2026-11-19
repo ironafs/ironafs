@@ -116,3 +116,6 @@ pub fn run(
         }
     }
 }
+
+#[cfg(test)]
+mod unused_warning { fn unused() { let x = 1; } }

@@ -6,3 +6,5 @@
 fn main() {
     println!("afs {}", env!("CARGO_PKG_VERSION"));
 }
+
+fn  badly_formatted ( ) {}
