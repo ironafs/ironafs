@@ -275,10 +275,11 @@ Fixed, and checked by the controller:
 Not changed, with reasons:
 
 - **The 75-claim matrix** stays a private working file, because it quotes
-  the owner's private measurements. A redacted ledger is public:
-  [claim ledger](2026-11-19-research-refute-check-ledger.md), with each
-  seat's verdict, how they related and the source cited, and the limit
-  stated above (no row re-checked at source by the controller).
+  the owner's private measurements. A public, per-claim record with each
+  claim's final disposition, evidence label and checked source is **open**:
+  it is the first task of the architecture ADR (0004), which re-checks at
+  its source every claim it relies on. Until then, the note's own labels
+  are the per-claim record, with the limit stated above.
 - **An acceptance baseline for the platforms** (a real x86-64 EL7 kernel
   probe, interoperability for the first authenticated protocol, two-user
   cache and revocation tests, callback loss) belongs to the architecture
@@ -289,8 +290,7 @@ Not changed, with reasons:
 
 The verification of `6a7b6f7..62bab2b` (same seat, pinned) found 7 majors
 and 3 minors, narrower than the first round. Fixed, and checked by the
-controller: the redacted [claim ledger](2026-11-19-research-refute-check-ledger.md)
-and the pinned ranges above; "probe listener" and the first-packet limit in
+controller: the pinned ranges above; "probe listener" and the first-packet limit in
 every summary, with ADR 0004 named as the decision record; route 1's
 documented and measured floors separated; WebDAV qualified by provider
 order; per-machine coverage of the route 3 checks; boot order, back-end
@@ -302,3 +302,25 @@ without the shared per-write gap; the macOS answer and floors stated as
 spike candidates, with the on-wire credential qualified; the durability
 acceptance case recording each result; the superseded `fuser` row; and the
 platform note's verdict words and third-party kernel facts.
+
+### Third round, scoped (owner's approval, 2026-11-19)
+
+The verification of the second round (`62bab2b..0899bad`, same seat,
+pinned) found 2 majors and 3 minors. The owner approved one more round,
+limited to those five items, with the claim ledger split out:
+
+- **The claim ledger** was removed from this pull request. The public
+  per-claim record, with checked sources, is open and moves to ADR 0004
+  (above).
+- **macOS locks:** NLM and NFSv4 `LOCK` reach only IronAFS's loopback
+  server; mapping them to AFS locks is separate and open; NFSv4's
+  delegation recall returns lock state to the server, so the note no
+  longer says cross-client locking is lost; delivery, NFS-peer
+  coordination and AFS visibility are now distinguished.
+- **Minors:** the policy template's version is stated as unrecorded, with
+  Microsoft's own templates linked as unchecked; WebDAV's provider order
+  is Microsoft's example; the Cloud Files note names ADR 0004 as the
+  decision's record; the platform note's labels are corrected in the rows
+  themselves, and macOS 15 and 26 are spike-only candidates outside the
+  proposed matrix.
+

@@ -39,9 +39,9 @@ Constraints 1 and 2 are why an online `\\afs` path, through IronAFS's own
 SMB server with every request in an authenticated session, is the
 alternative; its transport was measured beside Windows' own file sharing
 on Windows 10 and 11 ([the UNC note](2026-11-19-windows-unc-without-a-driver.md)).
-The owner chose that path first on 2026-11-19, to be recorded in ADR 0004
-(the architecture decision); this note's evidence serves Cloud Files as a
-possible offline companion.
+The owner decided on 2026-11-19 to build that path first; ADR 0004 (the
+architecture decision) is its record. This note's evidence serves Cloud
+Files as a possible offline companion.
 
 ## 1. The API model
 

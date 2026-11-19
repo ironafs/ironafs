@@ -9,15 +9,11 @@
   exist.
 - Each claim is marked EXECUTED (run in a scratch directory outside the
   repository), INSPECTED (read in the cited source), or NOT VERIFIED.
-- The RHEL 7 kernel facts come from a public third-party import of the
-  `3.10.0-1160.el7` source, not from Red Hat's own documentation. Under the
-  research index's definition they are RELAYED, not INSPECTED, until they
-  are matched to Red Hat's material or measured on a real kernel; where the
-  tables below say INSPECTED for a kernel fact, read RELAYED (update,
-  2026-11-19).
-- The verdict column uses this note's own words: CONFIRM means CONFIRMED,
-  REJECT means REFUTED, and "Not found" means NOT VERIFIED, in the review
-  vocabulary of the index (update, 2026-11-19).
+- The RHEL 7 kernel facts that come from a public third-party import of the
+  `3.10.0-1160.el7` source, not from Red Hat's own documentation, are
+  marked RELAYED until they are matched to Red Hat's material or measured
+  on a real kernel (update, 2026-11-19). Facts cited to Red Hat directly
+  keep their own label.
 - Nothing was run on a real 3.10 kernel. The containers used shared a newer
   host kernel, so every kernel-behaviour claim for RHEL 7 is INSPECTED at
   best.
@@ -51,22 +47,22 @@ and review RHEL 7 no later than the end of Red Hat's extended support on
 
 ## Verdict table
 
-| # | Claim | Verdict | Quoted source | URL |
+| # | Claim | Verdict (review vocabulary) | Quoted source | URL |
 |---|---|---|---|---|
-| 1 | Rust std needs kernel 3.2+ and glibc 2.17+ | CONFIRM for x86_64; AMEND for aarch64, which needs kernel 4.1+ | "x86_64-unknown-linux-gnu: 64-bit Linux (kernel 3.2+, glibc 2.17+)"; "aarch64-unknown-linux-gnu: ARM64 Linux (kernel 4.1+, glibc 2.17+)" | https://doc.rust-lang.org/1.97.1/rustc/platform-support.html |
-| 2 | The 2022 baseline has not been raised | CONFIRM. The 1.97.1, stable and nightly pages give the same figures. | "glibc >= 2.17 (previously glibc >= 2.11)"; "kernel >= 3.2 (previously kernel >= 2.6.32)" | https://blog.rust-lang.org/2022/08/01/Increasing-glibc-kernel-requirements/ |
-| 3 | A future raise is announced | Not found. The stated rationale has expired (A1). | "The new baseline requirements were picked as the least common denominator among long-term-support distributions that still have active support. This is currently RHEL 7" | same |
-| 4 | A static musl binary sidesteps glibc on RHEL 7 | CONFIRM (EXECUTED). The kernel floor still applies. | "`*-linux-musl*` targets are only affected by the kernel requirements, not the glibc requirements." | same |
-| 5 | "Roughly the RHEL 7 floor" | CONFIRM | "RHEL 7 (glibc 2.17, kernel 3.10)" listed as still supported | same |
-| 6 | RHEL 7.9 kernel is 3.10.0-1160 | CONFIRM | "RHEL 7.9, 2020-09-29, 3.10.0-1160" | https://access.redhat.com/articles/3078 |
-| 7 | RHEL 7 kernel speaks upstream 3.10's FUSE 7.22 | REJECT: it is 7.23, with the writeback cache backported | `#define FUSE_KERNEL_MINOR_VERSION 23`; `#define FUSE_WRITEBACK_CACHE (1 << 16)` | https://git.zx2c4.com/rhel7-kernel-misery/plain/include/uapi/linux/fuse.h |
-| 8 | Writeback cache arrived in 3.15, passthrough in 6.9, io_uring in 6.14 | CONFIRM | "7.23 - add FUSE_WRITEBACK_CACHE"; "7.40 ... add FUSE_PASSTHROUGH init flag"; "7.42 - Add FUSE_OVER_IO_URING" | https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/include/uapi/linux/fuse.h |
-| 9 | A FUSE client needs a recent kernel | REJECT. The `fuser` crate's floor is protocol 7.6, and capabilities are negotiated at run time. | "We don't support ABI versions before 7.6" (`src/session.rs`, v0.18.0) | https://github.com/cberner/fuser/blob/v0.18.0/src/session.rs |
-| 10 | A pure-Rust client can speak `/dev/fuse` directly | CONFIRM. Mounting still goes through the `fusermount` helper. | "on Linux these calls to libfuse are optional." | https://github.com/cberner/fuser/blob/master/README.md |
-| 11 | CentOS 7 is end of life | CONFIRM | "After June 30, 2024, there will be no updates published for CentOS Linux 7." | https://blog.centos.org/2023/04/end-dates-are-coming-for-centos-stream-8-and-centos-linux-7/ |
+| 1 | Rust std needs kernel 3.2+ and glibc 2.17+ | CONFIRMED for x86_64; AMEND for aarch64, which needs kernel 4.1+ | "x86_64-unknown-linux-gnu: 64-bit Linux (kernel 3.2+, glibc 2.17+)"; "aarch64-unknown-linux-gnu: ARM64 Linux (kernel 4.1+, glibc 2.17+)" | https://doc.rust-lang.org/1.97.1/rustc/platform-support.html |
+| 2 | The 2022 baseline has not been raised | CONFIRMED. The 1.97.1, stable and nightly pages give the same figures. | "glibc >= 2.17 (previously glibc >= 2.11)"; "kernel >= 3.2 (previously kernel >= 2.6.32)" | https://blog.rust-lang.org/2022/08/01/Increasing-glibc-kernel-requirements/ |
+| 3 | A future raise is announced | NOT VERIFIED (not found). The stated rationale has expired (A1). | "The new baseline requirements were picked as the least common denominator among long-term-support distributions that still have active support. This is currently RHEL 7" | same |
+| 4 | A static musl binary sidesteps glibc on RHEL 7 | CONFIRMED (EXECUTED). The kernel floor still applies. | "`*-linux-musl*` targets are only affected by the kernel requirements, not the glibc requirements." | same |
+| 5 | "Roughly the RHEL 7 floor" | CONFIRMED | "RHEL 7 (glibc 2.17, kernel 3.10)" listed as still supported | same |
+| 6 | RHEL 7.9 kernel is 3.10.0-1160 | CONFIRMED | "RHEL 7.9, 2020-09-29, 3.10.0-1160" | https://access.redhat.com/articles/3078 |
+| 7 | RHEL 7 kernel speaks upstream 3.10's FUSE 7.22 | REFUTED: it is 7.23, with the writeback cache backported (RELAYED: third-party import of the RHEL 7 kernel source) | `#define FUSE_KERNEL_MINOR_VERSION 23`; `#define FUSE_WRITEBACK_CACHE (1 << 16)` | https://git.zx2c4.com/rhel7-kernel-misery/plain/include/uapi/linux/fuse.h |
+| 8 | Writeback cache arrived in 3.15, passthrough in 6.9, io_uring in 6.14 | CONFIRMED | "7.23 - add FUSE_WRITEBACK_CACHE"; "7.40 ... add FUSE_PASSTHROUGH init flag"; "7.42 - Add FUSE_OVER_IO_URING" | https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/include/uapi/linux/fuse.h |
+| 9 | A FUSE client needs a recent kernel | REFUTED. The `fuser` crate's floor is protocol 7.6, and capabilities are negotiated at run time. | "We don't support ABI versions before 7.6" (`src/session.rs`, v0.18.0) | https://github.com/cberner/fuser/blob/v0.18.0/src/session.rs |
+| 10 | A pure-Rust client can speak `/dev/fuse` directly | CONFIRMED. Mounting still goes through the `fusermount` helper. | "on Linux these calls to libfuse are optional." | https://github.com/cberner/fuser/blob/master/README.md |
+| 11 | CentOS 7 is end of life | CONFIRMED | "After June 30, 2024, there will be no updates published for CentOS Linux 7." | https://blog.centos.org/2023/04/end-dates-are-coming-for-centos-stream-8-and-centos-linux-7/ |
 | 12 | RHEL 7 paid extended support ends in 2028 | AMEND: 2029-05-31 | "This add-on is available from July 1, 2024 through May 31, 2029." | https://access.redhat.com/articles/7060360 |
 | 13 | FSKit: macOS 15.4+, URL resources from macOS 26, handler APIs in macOS 27 | CONFIRM, from Apple's documentation data | FSKit `introducedAt` 15.4; `FSGenericURLResource` 26.0; `FSVolume.DataCacheHandler` 27.0 | https://developer.apple.com/documentation/fskit |
-| 14 | Cloud Files API: Windows 10 1709+ | CONFIRM | "Minimum supported client: Windows 10, version 1709 [desktop apps only]" | https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfregistersyncroot |
+| 14 | Cloud Files API: Windows 10 1709+ | CONFIRMED | "Minimum supported client: Windows 10, version 1709 [desktop apps only]" | https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfregistersyncroot |
 | 15 | FreeBSD comes nearly free with FUSE | AMEND: the FUSE layer does; the rest does not (B3) | "Tested under Linux and FreeBSD using stable Rust" | https://github.com/cberner/fuser/blob/master/README.md |
 
 ## A. Linux
@@ -273,8 +269,10 @@ follows from which layer is built.
 
 ### Proposed support matrix
 
-The macOS entries assume FSKit for 27 and a loopback NFS layer, still a
-spike candidate, for anything older (update, 2026-11-19).
+The macOS entries assume FSKit for 27. macOS 26 and 15 are spike-only
+candidates for a loopback NFS layer, outside the proposed release matrix
+until that spike reports; the "Out of scope" row's macOS 15 entry stands
+until then (update, 2026-11-19).
 
 | Tier | Platforms | Meaning |
 |---|---|---|
@@ -328,8 +326,9 @@ This placement is a judgement, not a measured result.
     candidate for 15 and 26, would have its own floor. The macOS 26 and 15
     entries in the matrix are proposals that depend on that spike.)
 10. **Windows floor:** Windows 11 only, and which Cloud Files features?
-    (Update, 2026-11-19: reopened by the SMB route, measured on Windows 10
-    22H2 and 11; see B2.)
+    (Update, 2026-11-19: reopened by the SMB route, whose transport reached
+    a probe listener, to the client's first packet, on Windows 10 22H2 and
+    11; see B2.)
 11. **FUSE layer:** decided after this research. IronAFS writes its own
     `/dev/fuse` layer (rule 21), negotiating at run time.
 12. **RHEL backports:** what FUSE level the RHEL 8, 9 and 10 kernels really

@@ -45,9 +45,11 @@ INFERRED, and both families agree:
   holds a write delegation (§3, Locks).
 - **macOS 27:** FSKit 27 leads, because it is the first Apple interface with
   both caller identity and a proactive purge of the kernel's data,
-  attribute and name caches. Loopback NFS stays as the comparison path,
-  and the candidate if byte-range locks must reach AFS, through NLM
-  (NFSv3) or `LOCK` (NFSv4) except under a write delegation (§3, Locks).
+  attribute and name caches. Loopback NFS stays as the comparison path.
+  Its range locks (NLM for NFSv3, `LOCK` for NFSv4) reach only IronAFS's
+  own loopback server; whether and how that server maps them to AFS locks,
+  which other AFS clients would see, is a separate open question (§3,
+  Locks).
 - **File Provider** is at most a Finder companion: it cannot give a shared
   `/afs`.
 
@@ -275,9 +277,17 @@ mount it.
   [NFSv4 locks](https://github.com/apple-oss-distributions/NFS/blob/main/kext/nfs4_vnops.c)).
 - **While it holds a write delegation, Apple's NFSv4 client grants locks
   locally and sends no `LOCK` to the server** (INSPECTED, found by the
-  checking family, same source). A design that grants write delegations to
-  get recall-driven purges therefore loses cross-client locking on the Mac
-  while the delegation is held (INFERRED).
+  checking family, same source). NFSv4 requires the client to send its
+  lock state to the server before it returns a recalled delegation
+  ([RFC 7530](https://www.rfc-editor.org/rfc/rfc7530)), so other NFS
+  clients are protected through the recall; what IronAFS's loopback server
+  must do on a recall, and how long an AFS client elsewhere can go without
+  seeing the lock, are open (INFERRED).
+- **Three different things** are easy to conflate: delivery of a lock to
+  IronAFS's loopback server; coordination among NFS clients of that server
+  (only the Mac's own processes here); and visibility to separate AFS
+  clients, which needs IronAFS to map the lock to AFS's own locking, whose
+  granularity (whole-file server locks) is a design decision (INFERRED).
 - Both versions use 64-bit sizes and offsets, and a file unlinked while
   open may be renamed to `.nfs*` (INSPECTED, same man page and source).
   Hard mounts can hang while the server does not answer (INSPECTED, one
