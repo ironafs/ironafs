@@ -17,6 +17,7 @@ the evidence that refutes it.
 | [2026-11-18-first-public-tree](2026-11-18-first-public-tree.md) | The first commit of the public history: mechanical checks, an independent pre-publication audit, and every review round |
 | [2026-11-19-workflow-pr-limits](2026-11-19-workflow-pr-limits.md) | Issue #4: the limit on open pull requests, and settling and closing issues |
 | [2026-11-19-ci-and-xtask](2026-11-19-ci-and-xtask.md) | Issue #1: the CI workflow and the `xtask` checks |
+| [2026-11-19-trailer-checks](2026-11-19-trailer-checks.md) | Issue #2: commit trailer checks in CI and the `commit-msg` hook |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
