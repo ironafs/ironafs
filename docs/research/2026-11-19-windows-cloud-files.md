@@ -34,6 +34,10 @@ authorisation, write and coherency design, built around five constraints:
    reboot.
 5. Antivirus scanning, memory maps and first writes hydrate whole files.
 
+For an online `\\afs` path through IronAFS's own SMB server instead, and
+the measurement that keeps Windows' own file sharing working on Windows 10
+and 11, see [the UNC note](2026-11-19-windows-unc-without-a-driver.md).
+
 ## 1. The API model
 
 - **Components.** A minifilter, `cldflt.sys`, sits between applications and
