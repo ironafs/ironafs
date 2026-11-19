@@ -180,3 +180,18 @@ and File Provider as a Finder companion at most. It is marked INFERRED.
   (macOS 26.0), the directory name-cache purge and `mount -F`: read in
   Apple's published `mount_nfs(8)`, the macOS 27.2 SDK headers and the man
   pages shipped with macOS 27.2 (INSPECTED, 2026-11-19).
+
+## Review of the corrected notes
+
+The corrections and the two new notes were written by a Claude model, so a
+second family reviewed them before landing (`origin/main..392d76c`).
+
+| Seat | Served model | Effort | Verdict |
+|---|---|---|---|
+| glm | glm-5.3 | high | PASS: 1 minor |
+
+The minor finding was fixed and checked by the controller: the macOS note
+joined the three-user `access(2)` cache and the 60-second lifetime as one
+fact, although whether they are the same cache is still open; they are now
+stated separately.
+

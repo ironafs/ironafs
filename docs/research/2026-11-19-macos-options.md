@@ -233,9 +233,10 @@ mount it.
   [`mount_nfs(8)`](https://raw.githubusercontent.com/apple-oss-distributions/NFS/main/mount_nfs/mount_nfs.8)).
 - The `access(2)` cache holds three users by default (`accesscache=`), in
   first-in, first-out order (INSPECTED, `mount_nfs(8)`, Apple's source and
-  the page shipped with macOS 27.2). Its entries live 60 s by default
-  (INSPECTED,
-  [`nfs.conf(5)`](https://raw.githubusercontent.com/apple-oss-distributions/NFS/main/files/nfs.conf.5)).
+  the page shipped with macOS 27.2). Separately, `nfs.conf(5)` gives access
+  cache entries a 60 s lifetime by default (INSPECTED,
+  [`nfs.conf(5)`](https://raw.githubusercontent.com/apple-oss-distributions/NFS/main/files/nfs.conf.5));
+  whether the two pages describe the same cache is NOT VERIFIED.
   With `nfs.client.access_cache_timeout` at zero no entry is ever fresh,
   so each check goes to the server, except on soft mounts, which can still
   use cached results (INSPECTED,
