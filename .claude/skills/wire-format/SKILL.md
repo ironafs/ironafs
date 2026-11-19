@@ -52,9 +52,10 @@ follows this skill. Coding standards rules 1–3 and 9 apply too.
    or from captures reduced to what the test needs, with synthetic identities
    and keys, inspected before they are added (ADR 0001). Never from another
    implementation's test files. Snapshots made by IronAFS's own encoder are
-   regression tests only, never evidence of interoperability. CI (planned)
-   checks the vectors on Linux, macOS and Windows; until then they run by hand
-   on every OS a change touches.
+   regression tests only, never evidence of interoperability. CI checks the
+   vectors on Linux, and on Windows and macOS once those runners are added
+   (coding standards rule 15); until then they run by hand on every other OS
+   a change touches.
 
 ## Formats IronAFS promises to keep
 

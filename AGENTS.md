@@ -30,17 +30,20 @@ Spec first: a new phase starts with an ADR or spec, not code.
 ## Commands
 
 - build: `cargo build`
-- test: `cargo nextest run --retries 0` (nextest terminates hung tests; see
-  `.config/nextest.toml`), plus `cargo test --doc` for doc-tests, which run
-  outside nextest under the CI job's deadline (by hand, a run that does not
-  finish is a failure)
-- lint: `cargo clippy --all-targets` (no warnings). When a change touches code
-  behind an OS `cfg`, also run it with `--target` for Linux, macOS and
-  Windows.
-- format: `cargo fmt`
+- test: `cargo nextest run --workspace --retries 0 --no-tests fail`
+  (nextest terminates hung tests; see `.config/nextest.toml`), plus
+  `cargo test --doc --workspace` for doc-tests, which run outside nextest
+  under a CI step deadline (by hand, a run that does not finish is a
+  failure)
+- lint: `cargo clippy --all-targets --workspace` (no warnings). When a
+  change touches code behind an OS `cfg`, also run it with `--target` for
+  Linux, macOS and Windows.
+- format: `cargo fmt` to apply, `cargo fmt --all --check` to check
 - licences: `reuse lint` and `cargo deny check`
-- automation: `cargo xtask <command>` once `crates/xtask` exists; never shell
-  scripts
+- automation: `cargo xtask check` runs the local checks.
+  `cargo xtask hooks install` opts in to running them before each push.
+  `cargo xtask hooks uninstall` removes the managed hook. Keep repository
+  automation in `xtask`.
 
 ## Hard rules
 

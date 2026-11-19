@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "xtask"
+description = "IronAFS repository automation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "xtask"
+path = "src/bin/xtask/main.rs"
+test = false
+
+[lints]
+workspace = true

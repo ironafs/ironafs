@@ -34,7 +34,8 @@ harder to ship everywhere.
 
 All three systems now offer a supported way to expose files without
 third-party kernel code: FUSE and FSKit as filesystems, and Cloud Files as
-a sync provider. IronAFS is a client built for that world. The background is in the
+a sync provider. IronAFS is a client built for that world. The background
+is in the
 [research notes](docs/research/2026-11-18-driverless-afs-clients.md).
 
 ## Goals
@@ -140,12 +141,26 @@ cargo build
 cargo run --bin afs
 ```
 
-Today this builds a placeholder `afs` binary that prints its version. Once
-there are tests, they run with [cargo-nextest](https://nexte.st/)
-(`cargo nextest run --retries 0`, a separate install) and `cargo test --doc`.
+Today this builds a placeholder `afs` binary that prints its version.
 Development uses the exact toolchain pinned in `rust-toolchain.toml`
-(1.100.0, the current stable release). `rust-version` in `Cargo.toml`
-(1.100) is the minimum; a lower one is set only once CI tests it.
+(1.100.0). `rust-version` in `Cargo.toml` (1.100) is the minimum. A lower
+minimum is set only once CI tests it.
+
+Run `cargo xtask check` for the local checks. Install
+[cargo-nextest](https://nexte.st/) separately. Run `cargo xtask hooks install`
+to opt in to running the same checks before each push. Use
+`cargo xtask hooks install --force` to replace a hook that xtask did not
+install. This moves the existing hook to `pre-push.xtask-backup` in the hooks
+directory and prints the backup path. The command refuses if that path is
+already in use.
+
+To run checks individually, use `cargo fmt --all --check`,
+`cargo clippy --all-targets --workspace`,
+`cargo nextest run --workspace --retries 0 --no-tests fail`,
+`cargo test --doc --workspace`, `reuse lint` and `cargo deny check`.
+The local batch reports `reuse` and `cargo-deny` as skipped if they are
+absent. CI requires both, runs the tests on Linux, and runs Clippy for
+Linux, Windows and macOS.
 
 ## Contributing
 
