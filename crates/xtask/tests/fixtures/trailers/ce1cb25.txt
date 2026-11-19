@@ -1,0 +1,35 @@
+Start IronAFS: licence, decisions, workflow and scaffold
+
+IronAFS is a modern AFS client in Rust, meant to work with existing AFS
+cells through one shared core and thin per-OS layers (macOS FSKit,
+Windows Cloud Files, Linux FUSE), with no kernel extensions of its own.
+This first commit holds no client code yet. It sets out how the project
+is licensed, decided, built and reviewed:
+
+- Licence: GPL-3.0-or-later for all of IronAFS's own material, with
+  REUSE-compliant SPDX headers, and DCO sign-offs for contributions.
+- ADR 0001: the licence, and the don't-copy rule: no code from OpenAFS,
+  AuriStor or the Linux kernel's AFS and Rx implementations; IronAFS is
+  written from published specifications and observed behaviour.
+- ADR 0002: how AI models are used, how commits credit them, and how
+  the work is done in the open.
+- The workflow (change classes E/I/P/S/R and their review seats), the
+  coding standards, the dependency policy, and the research the
+  decisions rest on.
+- A Cargo workspace with a placeholder `afs` binary, pinned toolchain,
+  clippy, nextest and cargo-deny configuration, GitHub issue forms,
+  Dependabot and CODEOWNERS.
+
+The tree was reviewed in seventeen rounds by models from five families
+(GPT, GLM, Gemini, DeepSeek and Claude); every finding and its
+disposition is in docs/reviews/2026-11-18-first-public-tree.md and in
+each ADR's Review section. The final full-tree review (GPT, round 14)
+and the verifications of every change made since (GLM, rounds 15 to
+17) found nothing left open.
+
+Class: R
+Assisted-by: claude-code:claude-opus-5-5
+Assisted-by: claude-code:claude-mythos-5-2
+AI-Reviewed-by: codex:gpt-6.2-sol
+AI-Reviewed-by: glm:glm-5.3
+Signed-off-by: Adrian Ana <adrian@adrianana.com>

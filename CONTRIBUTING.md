@@ -26,8 +26,13 @@ Security problems go to [SECURITY.md](SECURITY.md), not to public issues.
   spec-only draft PR first. The maintainer arranges the required design or
   contract review before code is written.
 - End the description with the trailer block from the PR template: `Class:`,
-  `Assisted-by:` and, if a model reviewed it, `AI-Reviewed-by:`.
+  `Assisted-by:` and `AI-Reviewed-by:` for each model review whose final
+  verdict covers the change as it lands (ADR 0003, point 7).
   [AI.md](AI.md) explains each one.
+- Put `Assisted-by:` on your branch commits too, and never
+  `Signed-off-by:`: your sign-off goes in the description. If a model wrote
+  an issue, a comment or a review you post, say so in a last line, such as
+  `Written by <agent>:<model>.` (ADR 0003).
 - Sign off with your own `Signed-off-by: Your Name <email>` line. It
   certifies the [Developer Certificate of Origin 1.1](https://developercertificate.org/)
   for your change. The owner's sign-off is added after yours at merge.
@@ -37,12 +42,13 @@ Security problems go to [SECURITY.md](SECURITY.md), not to public issues.
 `rustup` installs the pinned toolchain and targets from
 `rust-toolchain.toml` on first use. Install [cargo-nextest](https://nexte.st/)
 separately, then run `cargo xtask check`. Run `cargo xtask hooks install` to
-opt in to running the checks before each push. Use
+opt in to the `pre-push` hook for local checks and the `commit-msg` hook for
+branch commit trailers. Use
 `cargo xtask hooks install --force` to replace a hook that xtask did not
-install. This moves the existing hook to `pre-push.xtask-backup` in the hooks
-directory and prints the backup path. The command refuses if that path is
-already in use. Use
-`cargo xtask hooks uninstall` to remove the managed hook.
+install. This moves the existing hook to `pre-push.xtask-backup` or
+`commit-msg.xtask-backup` in the hooks directory and prints the backup path.
+The command refuses if that path is already in use. Use
+`cargo xtask hooks uninstall` to remove the managed hooks.
 
 To run the checks individually, use the following commands.
 

@@ -11,7 +11,8 @@ decides anything that is hard to change later.
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-licence-and-dont-copy.md) | Licence and the don't-copy rule: GPL-3.0-or-later, no code from other AFS implementations | accepted |
-| [0002](0002-ai-use-and-attribution.md) | AI use, commit attribution and working in the open | accepted |
+| [0002](0002-ai-use-and-attribution.md) | AI use, commit attribution and working in the open | accepted; partly superseded by 0003 |
+| [0003](0003-branch-work-and-ai-disclosure.md) | Branch work and AI disclosure | proposed |
 
 ## How an ADR is made
 
@@ -27,7 +28,8 @@ decides anything that is hard to change later.
 
 Start from [template.md](template.md).
 
-- **Status:** `proposed`, `accepted`, or `superseded by NNNN`, with dates.
+- **Status:** `proposed`, `accepted`, `partly superseded by NNNN` or
+  `superseded by NNNN`, with dates.
 - **Context:** the facts the decision rests on, with sources.
 - **Decision:** what is decided, stated so it can be checked.
 - **Consequences:** what changes because of it, and what it costs.
@@ -37,5 +39,17 @@ Start from [template.md](template.md).
 ## Changing a decision
 
 An accepted ADR is not rewritten. A later ADR supersedes it, and the old one's
-status says `superseded by NNNN`. Small corrections that change no decision,
-such as fixing a link, are made in place and noted in its Review section.
+status says `superseded by NNNN` (or `partly superseded by NNNN`).
+
+A superseding ADR comes with a **supersession sweep**:
+
+- search the whole repository for each superseded rule, its key wording and
+  the old ADR's number, and update or annotate every hit; then read every
+  file that states an old rule in full, since a phrase search misses
+  paraphrases;
+- check each changed rule separately for each actor it applies to: the
+  maintainer's session, contributors and their agents, and bots;
+- list the sweep in the new ADR's Review section, so a reviewer can check it.
+
+Small corrections that change no decision, such as fixing a link, are made in
+place and noted in that ADR's Review section.

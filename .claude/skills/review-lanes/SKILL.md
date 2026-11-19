@@ -36,13 +36,62 @@ self-check, never a required seat.
 
 | Lane | Model | Effort |
 |---|---|---|
-| codex (GPT) | `gpt-6.2-sol` (`gpt-6.2-astra` only after Sol fails twice) | `high` for I/P and docs; `xhigh` for S/R and security |
-| gemini | `gemini-4-carbon-medium`; `gemini-4-carbon-high` for S/R | in the id |
-| glm | `glm-5.3` | `high` |
-| deepseek | `deepseek-flash` | per its skill; off-peak only |
-| Claude | Opus 5.5 by default; Mythos 5.2 (`fable` alias, serves `claude-mythos-5-2`) for hard problems and every Claude security review | default |
+| codex (GPT) | `gpt-6.2-sol`; `gpt-6.2-astra` for the strongest-tier seats and promoted seats | `high` for I/P and docs; `xhigh` for S/R, security and every Astra run |
+| gemini | `gemini-4-carbon-medium`; `gemini-4-carbon-high` for S/R (its standard there), strongest-tier seats and promoted seats | in the id |
+| glm | `glm-5.3` | `high`; `max` for the strongest-tier seats and promoted seats |
+| deepseek | `deepseek-flash` | per its skill, `max` for the strongest-tier seats and promoted seats; off-peak only |
+| Claude | Opus 5.5 by default; Mythos 5.2 (`fable` alias, serves `claude-mythos-5-2`) for the strongest-tier seats (every Claude security review among them) and under the promotion rule | default |
 
 Check `agy models` before pinning a Gemini id; ids change.
+
+**Strongest-tier seats** (`docs/workflow.md` §2, "Strongest tiers"): the
+judgement seat, security reviews, class R designs, format freezes and
+architecture ADRs. They use each family's strongest tier from the start, and
+that table wins over the pins above. A family whose strongest tier is
+unavailable is skipped for the seat, never run lower. Routine seats stay on
+the standard tiers; the promotion rule there (a standard tier failing the
+same problem twice, or a hard problem the controller records) moves a seat
+to the strongest-tier pins above. A resumed codex session does not keep its
+model: pass `-m` and the effort again on every `codex exec resume`.
+
+## Judgement seat
+
+The rules are in `docs/workflow.md` §2, "Judgement seat". Use it when two
+seats disagree on a point the work depends on and checked evidence does not
+settle it, and for any finding still disputed after the fix rounds.
+
+1. **Choose the seat.** Exclude the work's authors, both disputing
+   families, any family that took a side, and the controller's family if
+   the controller argued a position, and any family unavailable at its
+   strongest tier. Security disputes: only GPT read-only, Claude or GLM.
+   Embargoed work: only Anthropic and OpenAI, and nothing about the dispute
+   goes elsewhere. Then take the first remaining in the order GLM, GPT
+   read-only, DeepSeek, Gemini, Claude. None left: the change waits and the
+   blocker is recorded.
+2. **Write the brief.** Inline both positions as A and B. Check the whole
+   brief, and anything it points to, for anything that shows who took
+   either position (family, model or lane names used that way, trailers,
+   transcripts, review records of the dispute); send none. Keep a technical
+   name only when it does not reveal who took a side; otherwise use a
+   neutral label and a source excerpt. If the evidence cannot be shared
+   anonymously, the judgement stays pending.
+3. **Give it the evidence path.** Ask for each disputed fact checked at a
+   primary source and labelled CONFIRMED with its link or UNVERIFIED. Give
+   web access where the lane has it. For Gemini, inline the primary-source
+   passages with their citations; if they cannot be inlined, use another
+   family.
+4. **Ask for a verdict:** A, B, a named alternative, or INCONCLUSIVE, with
+   the exact rules or fix that follow.
+5. **Check it.** Run the did-it-run checks below. Confirm every factual
+   premise of the ruling at its source yourself. A premise that fails or
+   stays UNVERIFIED keeps the dispute open: back to the seat with the
+   evidence. Meanwhile the owner may choose a course of action, never a
+   fact. If the work is changed so it no longer depends on the disputed
+   fact, before or after the seat runs, record the judgement as moot once
+   you have checked that, and keep every other review and merge gate.
+6. **Record** the positions, the seat, the served model and effort, the
+   deciding facts and your check. Contested rulings and owner decisions go
+   to the owner. Until the dispute is settled, the merge waits.
 
 ## Brief template
 
@@ -122,8 +171,8 @@ a pass:
   repository, hostnames, cell names and keys.
 - Only seats whose final verdict covers the landed tree go into
   `AI-Reviewed-by:` (ADR 0002).
-- Stop rule: stop when a round produces no blocker or major, and every
+- Stop rule: stop when a round produces no blocker or major, every
   confirmed correctness or contract finding is resolved, whatever its
-  severity. After two fix rounds on one change, split it, redesign it, or
+  severity, and no judgement is pending or inconclusive. After two fix rounds on one change, split it, redesign it, or
   record the blocker. If too few independent families are available, the
   change waits.

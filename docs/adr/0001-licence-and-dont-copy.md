@@ -247,7 +247,7 @@ later" already lets IronAFS follow future GPL versions without asking anyone.
 - The plan changes:
   - Rx is written in Rust from the start, with no C Rx through FFI;
   - interface definitions are IronAFS's own;
-  - ADR 0003 (architecture) is written on that basis.
+  - The architecture ADR is written on that basis.
 - `docs/specs/` holds behaviour specs, each naming the sources it used.
 - **Neither OpenAFS nor the kernel's kafs can take IronAFS code.** GPLv3 is
   incompatible with GPLv2-only code and with IPL-1.0. That route was never a

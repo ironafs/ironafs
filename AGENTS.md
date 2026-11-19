@@ -41,8 +41,9 @@ Spec first: a new phase starts with an ADR or spec, not code.
 - format: `cargo fmt` to apply, `cargo fmt --all --check` to check
 - licences: `reuse lint` and `cargo deny check`
 - automation: `cargo xtask check` runs the local checks.
-  `cargo xtask hooks install` opts in to running them before each push.
-  `cargo xtask hooks uninstall` removes the managed hook. Keep repository
+  `cargo xtask hooks install` opts in to running them before each push and
+  checking branch commit trailers with the `commit-msg` hook.
+  `cargo xtask hooks uninstall` removes the managed hooks. Keep repository
   automation in `xtask`.
 
 ## Hard rules
@@ -104,4 +105,12 @@ Spec first: a new phase starts with an ADR or spec, not code.
   approves the exact final message of a squash merge, or of the root commit
   of the public history (the one commit made without a PR), their session
   adds the owner's line (ADR 0002).
+- **Branch commits** carry `Assisted-by:` (or `Assisted-by: none`), never
+  `Signed-off-by:`, `Class:` or `AI-Reviewed-by:`. Never rewrite a commit
+  once it is pushed or under review; scan outgoing commits for secrets
+  before pushing (ADR 0003).
+- **Disclose model writing beyond commits.** An issue, pull request
+  description, comment or review written by a model ends with a line such as
+  `Written by <agent>:<model>.`, adding for whom when it writes for someone
+  else's account (ADR 0003).
 - Never add `Co-authored-by:` for a model.

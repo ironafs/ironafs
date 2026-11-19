@@ -6,11 +6,12 @@
 mod args;
 mod check;
 mod hooks;
+mod trailers;
 
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
 #[derive(Debug)]
@@ -26,11 +27,25 @@ enum Error {
     },
     UnexpectedOutput(&'static str),
     ForeignHook(PathBuf),
+    HookIo {
+        operation: &'static str,
+        path: PathBuf,
+        source: io::Error,
+    },
+    Trailer(trailers::Violation),
 }
 
 impl Error {
     fn io(operation: &'static str) -> impl FnOnce(io::Error) -> Self {
         move |source| Self::Io { operation, source }
+    }
+
+    fn hook_io(operation: &'static str, path: &Path) -> impl FnOnce(io::Error) -> Self {
+        move |source| Self::HookIo {
+            operation,
+            path: path.to_path_buf(),
+            source,
+        }
     }
 
     fn check_status(command: &'static str, status: ExitStatus) -> Result<(), Self> {
@@ -72,10 +87,18 @@ impl fmt::Display for Error {
             Self::ForeignHook(path) => {
                 write!(
                     formatter,
-                    "pre-push hook at {} was not written by xtask",
+                    "hook at {} was not written by xtask",
                     path.display()
                 )
             }
+            Self::HookIo {
+                operation,
+                path,
+                source,
+            } => {
+                write!(formatter, "{operation} at {}: {source}", path.display())
+            }
+            Self::Trailer(violation) => write!(formatter, "{violation}"),
         }
     }
 }
@@ -86,8 +109,9 @@ fn run_task(
 ) -> Result<(), Error> {
     match args::parse(arguments).map_err(Error::Usage)? {
         args::Task::Check => check::run(output),
-        args::Task::InstallHook { force } => hooks::install(force),
+        args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
+        args::Task::Trailers(mode) => trailers::run(mode, output),
     }
 }
 
