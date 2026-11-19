@@ -11,7 +11,7 @@ Claude Code (`claude-opus-5-5`).
 
 | Round | Range | Seat | Served model | Effort | Verdict |
 |---|---|---|---|---|---|
-| 1, review | `09f6a48..2f243a7` | glm | glm-5.3 | high | PASS: 4 minor |
+| 1, review | `7e18b85..2f243a7` | glm | glm-5.3 | high | PASS: 4 minor |
 
 All four minor findings were fixed and checked by the controller:
 
