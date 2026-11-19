@@ -282,6 +282,56 @@ hold everything.
     closing.
   - Relationships (blocked by, parent and sub-issues) use GitHub's fields,
     not prose, and only when the two issues really concern the same thing.
+- **Picking a task.** Take the highest-priority issue that is **ready**:
+  open, triaged (it has its `class:*` label), not `owner-decision`, not
+  `option` unless the owner asks, and with every issue blocking it closed.
+  - Claim it with a comment before starting, naming the branch.
+  - Whoever stops before finishing says so in a comment: the branch, the last
+    pushed commit and what remains. The task is then free to pick up.
+- **At most two active pull requests per author** at a time. The
+  maintainer's own pull requests never use up a contributor's.
+  - Dependabot's pull requests and parked ones do not count.
+  - The limit stops new claims only. Finishing, repairing or landing a pull
+    request within the limit is never blocked by it.
+  - A pull request opened over the limit stays a draft until one of its
+    author's other pull requests is merged, parked or closed. Its author can
+    always close one of their own to free a slot.
+- **Parking** is for a blocker outside the author's reach, such as an owner
+  decision or another pull request, or for an author who has not answered
+  (below). The pull request gets the `parked`
+  label and a comment with two lines:
+  - `Blocker:` what blocks it, and who acts;
+  - `Recheck:` when it is looked at again.
+
+  A `parked` label without that comment still counts towards the limit. A
+  failing check the author can fix is not a blocker.
+- **No silent abandonment.** When a pull request has had no push or comment
+  by its author for 14 days, the author is asked in a comment and has seven
+  days to answer. Without an answer, it is parked as above, or closed with a
+  comment that says what happens to its task.
+- **Settling an issue.** A task is done when its change is on `main` and its
+  acceptance evidence holds there.
+  - A pull request that completes an issue says `Closes #N`; one that does
+    only part of it says `Part of #N`.
+  - Before a merge, the pull request's title, description and commit messages
+    are searched for closing keywords. GitHub ignores negation: "does not
+    close #N" closes #N.
+  - After a merge, every issue the pull request mentions is checked. One left
+    open in error is closed by hand, naming the merge commit; one closed
+    early is reopened with a comment.
+  - Closing a pull request unmerged never closes its task: its comment says
+    what happens to the task instead.
+  - An issue settled without a change to the repository (a question
+    answered, a refuted report, a decision recorded in the issue) is closed
+    by hand, with the record and why. Changes to the repository always land
+    by pull request.
+- **After a merge, clean up.** GitHub deletes the merged branch (a
+  repository setting). Local branches and worktrees are removed once
+  `git fetch` shows the work is on `main`; nothing holding work that is not
+  on `main` is deleted blind.
+- **The queue is reviewed at least every 30 days.** Each `option` and `p3`
+  issue is scheduled, closed with a reason, or kept with its trigger (the
+  event or date that would make it worth doing) still valid.
 - **Milestones are phases.** A phase's plan is the issues in its milestone
   (the `phase-lifecycle` skill). The first three:
   - M0, public foundation;
@@ -296,7 +346,8 @@ hold everything.
     `area:process`.
   - **Status:**
     - `owner-decision`: waits on the owner;
-    - `option`: an idea not yet decided;
+    - `option`: an idea not yet decided. Its body names its trigger: the
+      event or date that makes it worth deciding;
     - `debt`: known shortcuts to repay;
     - `parked`: paused, with a two-line comment saying why and what unblocks
       it.
