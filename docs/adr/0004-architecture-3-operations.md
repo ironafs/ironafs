@@ -1902,7 +1902,8 @@ and the reasons. It is a plan, and it promises no dates.
      where one exists (N25, point 4), and interoperability is claimed only
      as N25, point 6, allows.
    - What waits on rxgk keeps the gates those decisions set, and stays
-     disabled in production builds until they pass: FIPS mode stays
+     disabled in production builds until they pass, and a production build
+     is checked to enforce N13's gate: FIPS mode stays
      unscheduled (O31, point 1), and no negotiation RPC is designed until a
      server exists (N22, point 9).
    - "Interoperable" is said only of a profile tested live against an

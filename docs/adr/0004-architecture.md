@@ -674,4 +674,17 @@ The full record, with every finding and its disposition, is
     - No skill, workflow or contributor file states the rule. The rule
       binds the same actors as before (the maintainer's session,
       contributors and their agents); no bot acts on it.
-  - Review rounds: pending.
+  - Review rounds, class S on the strongest row, from families that
+    wrote neither the amendment nor the decision: GLM (`glm-5.3`, max)
+    and GPT (`gpt-6.2-astra`, xhigh).
+    - Round 1 on `3aacdf0`: GLM PASS, 2 minor; GPT FAIL, 3 major and 2
+      minor (the server trigger worded unlike N25; independent peers
+      required where N25, point 4, uses one only where it exists; gated
+      work such as FIPS mode and the negotiation RPC implied before its
+      gates). Fixed in `4ce1c33`; N25's heading was left as decided.
+    - Round 2 on `3aacdf0..4ce1c33`: GLM PASS; GPT FAIL, 1 major
+      (conformance and interoperability merged) and 1 minor. Fixed in
+      `ea23d5d`.
+    - Round 3 on `4ce1c33..ea23d5d`: GLM PASS and GPT PASS, each with
+      one minor (no production check of N13's gate), fixed in the next
+      commit.
