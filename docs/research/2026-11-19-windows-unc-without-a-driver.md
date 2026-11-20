@@ -45,7 +45,7 @@ the tests, and whether it survives updates is a spike gate.
 
 | Route | Windows versions | Windows' own file sharing | Status |
 |---|---|---|---|
-| 1. Our server on another port; a machine policy ("Alternative Port Mappings") sends `\\afs` there | per-mapping alternative ports: 11 24H2 and later (Microsoft Learn); the machine policy: measured on 26H2 only | kept | MEASURED (maintainer's earlier work, 26H2 only). The policy was found in a third-party copy of Microsoft's administrative templates; the template version was not recorded, and Microsoft's own templates ([administrative templates for Windows 11](https://www.microsoft.com/en-us/download/details.aspx?id=108847)) were not checked, so the policy's presence on 24H2 is to be measured |
+| 1. Our server on another port; a machine policy ("Alternative Port Mappings") sends `\\afs` there | per-mapping alternative ports: 11 24H2 and later (Microsoft Learn); the machine policy: measured on 26H2 only | kept | MEASURED (by the maintainer, earlier, 26H2 only). The policy was found in a third-party copy of Microsoft's administrative templates; the template version was not recorded, and Microsoft's own templates ([administrative templates for Windows 11](https://www.microsoft.com/en-us/download/details.aspx?id=108847)) were not checked, so the policy's presence on 24H2 is to be measured |
 | 2. Our server on `127.0.0.1:445` with Windows' SMB server disabled | 10 and 11 | **lost**: no inbound sharing, no `C$` or `ADMIN$` | MEASURED (by the maintainer, earlier); now a fallback only |
 | **3. Port proxy on `127.0.0.1:445` beside Windows' SMB server** | **10 22H2, 11 24H2, 11 26H2** | **kept** | **MEASURED (this note)** |
 
@@ -84,7 +84,7 @@ Route 3's side effects:
 | Candidate | Result | Evidence |
 |---|---|---|
 | Our server on a second loopback address (`127.0.0.2:445`) | The port binds, but **Windows' SMB client refuses** `\\127.0.0.2\...` at once, with no connection attempt ("The network location cannot be reached"), and `\\afs` mapped to `127.0.0.2` fails the same way. | MEASURED |
-| Port proxy on `127.0.0.1:445`, bound before `srvnet` (route 3) | Works. | MEASURED, section 3 |
+| Port proxy on `127.0.0.1:445`, bound before `srvnet` (route 3) | Works, to the client's first packet; a full SMB session through it is not yet measured. | MEASURED, section 3 |
 | IronAFS's own service binding `127.0.0.1:445` before `srvnet` (route 3 without the proxy) | Expected to work the same way, since the proxy's listener is an ordinary socket; it would remove the back-end port. But `LanmanServer` would then depend on IronAFS's service, so Windows' own file sharing would wait for, or fail with, IronAFS at boot. | NOT VERIFIED; to measure in the spike |
 | NetBIOS over TCP, port 139 | Ruled out: NetBIOS carries SMB dialects 2.0.2 to 3.0.2 only, not 3.1.1. | INSPECTED: [MS-SMB2 Transport](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/1dfacde4-b5c7-4494-8a14-a09d3ab4cc83) |
 | Our server terminating SMB on 445 and passing other shares on to Windows' server | Ruled out: the share name arrives only after authentication, so passing a session on means relaying the user's authentication. | NOT VERIFIED as a measurement; follows from the protocol order |

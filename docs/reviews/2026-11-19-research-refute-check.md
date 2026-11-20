@@ -116,7 +116,7 @@ replaced by documented statements.
 - **New note:**
   [2026-11-19-windows-cloud-files](../research/2026-11-19-windows-cloud-files.md),
   which takes the Windows omissions further with Microsoft's documentation
-  and measurements from the owner's earlier Cloud Files work.
+  and the maintainer's measurements.
 
 ## Still open
 
