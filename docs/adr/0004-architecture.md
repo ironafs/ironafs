@@ -386,11 +386,13 @@ invariant.
    point 6, and O20: no trust from unverified content, the advisory names
    the compromised fingerprint as well as the new one, a removed key's
    signature is rejected, and IronAFS fetches no key.
-7. **S7.** The specification for the Windows route (L19, L20) settles
-   how a saved path under the route's name is handled after the proxy is
+7. **S7.** The specification for the Windows route (L19, L20) settles how a
+   saved path in each form the row ships (`\\afs` where the name is
+   admitted, the literal `\\127.0.0.1` form on literal-address rows, and
+   any site-configured name, L21, point 1) is handled after the proxy is
    removed by a policy refresh or an uninstall, when Windows' own file
    sharing listens on port 445. It must keep L20, point 8: an
-   authentication attempt on a saved `\\afs` path, with the route disabled
+   authentication attempt on each such saved path, with the route disabled
    or with a competing local listener present, reaches IronAFS's own
    listener or no listener at all; any other local or remote listener
    receiving any authentication attempt (Windows credentials included, not

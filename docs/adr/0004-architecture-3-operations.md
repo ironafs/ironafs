@@ -762,18 +762,24 @@ gate waives them (O46).
    a diagnostic. The one exception is deliberate delegation: a handle its
    opener passes to another process keeps that handle's authority and
    nothing more (C13, point 4; C18, point 3).
-   The one stated residual is uid reuse: on Linux and macOS, a successor
+   The one stated residual is uid reuse (C41, point 4; O23's local-user
+   row). On Linux and macOS it has two halves. The token half: a successor
    account given an earlier account's uid that acts before the earlier
-   context is retired acts in that context, with its token and its
-   recovery records. Retirement comes from whichever the host offers: a
-   session-end signal (logind or the user's IronAFS agent, and only once
-   any linger ends); a failed account-instance check (account UUID or
-   equivalent) at the next token installation or record operation; or, for
-   the token half, the token's expiry or `unlog`. The records half lasts
-   until retirement or until the records are resolved (stored or
-   discarded). Hosts with neither signal nor account UUID have the widest
-   window. Hosts with either signal are not affected once the signal
-   has retired the earlier context (C41, point 4; O23's local-user row).
+   context is retired acts in that context, with its token. Retirement
+   comes from whichever the host offers: a session-end signal (logind or
+   the user's IronAFS agent, and only once any linger ends); a failed
+   account-instance check (account UUID or equivalent) at the next token
+   installation or record operation; or, for the token half, the token's
+   expiry or `unlog`. Hosts with neither signal nor account UUID have the
+   widest window; hosts with either signal are not affected once the signal
+   has retired the earlier context. The records half: on a host with no
+   account UUID (or equivalent), recovery records are owned by the
+   account's uid and name, as the operating system owns that account's
+   files; a later account with the same uid and name is the same owner of
+   unresolved records, before or after the earlier context is retired or
+   the daemon restarts, until they are resolved (stored or discarded). A
+   host with an account UUID checks it before every record operation and
+   every rebind, so a recreated account there gets none of them.
 2. **No local privilege escalation through AFS content.** Set-uid and
    set-gid bits and device files in a cell grant nothing on the local
    machine.
@@ -822,7 +828,7 @@ scope needs a superseding ADR.
 |---|---|---|
 | A hostile or compromised fileserver | Bounded decoding (O22.7); byte caps per queue; per-server budgets; deadlines; callback rate limits that mark a server's callbacks suspect and never drop a break (C31, C32); loop bounds; `nosuid,nodev` mounts (L3, L7) `[DES-035]` | It can serve wrong data for the files it hosts, because an AFS client trusts its cell's servers. Where a cell's servers share keys, IronAFS treats the whole cell as the compromise domain |
 | A network attacker against rxkad | The encrypt level by default; rxkad-k5 and rxkad-kdf `[DES-049]`; cache namespaces private to each credential context (C18), so a tampered reply is reused only in the context whose fetch it answered; rxgk later (O50) | rxkad's age (Context 6), and IronAFS's position (rule 4) that no rxkad level protects a reply's or a store's payload. A tampered reply can become the base of that user's own write, and a weakly protected store can change server data. Write and reply integrity against a network attacker needs rxgk at both ends, which no released server offers to clients today `[DES-048]`. Sites that need it now protect the network path (with IPsec or a VPN, for example) or do not allow writes from untrusted networks |
-| Another local user | Per-file, per-principal rights and handles that carry authority (C22, C13); IPC peer credentials; per-user budgets; user projections (O16) | Timing of cache occupancy under shared disk pressure, bounded by per-account floors. Latency and admission failures show that someone is using the cache (C27, point 5). In the opt-in shared pool (C21), an authorised reader can tell whether a file range is warm. The uid-reuse residual: on Linux and macOS, a successor account given an earlier account's uid that acts before the earlier context is retired acts in that context, with its token and its recovery records. Retirement comes from whichever the host offers: a session-end signal (logind or the user's IronAFS agent, and only once any linger ends); a failed account-instance check (account UUID or equivalent) at the next token installation or record operation; or, for the token half, the token's expiry or `unlog`. The records half lasts until retirement or until the records are resolved (stored or discarded). Hosts with neither signal nor account UUID have the widest window. Hosts with either signal are not affected once the signal has retired the earlier context (C41, point 4) |
+| Another local user | Per-file, per-principal rights and handles that carry authority (C22, C13); IPC peer credentials; per-user budgets; user projections (O16) | Timing of cache occupancy under shared disk pressure, bounded by per-account floors. Latency and admission failures show that someone is using the cache (C27, point 5). In the opt-in shared pool (C21), an authorised reader can tell whether a file range is warm. The uid-reuse residual (C41, point 4). On Linux and macOS it has two halves. The token half: a successor account given an earlier account's uid that acts before the earlier context is retired acts in that context, with its token. Retirement comes from whichever the host offers: a session-end signal (logind or the user's IronAFS agent, and only once any linger ends); a failed account-instance check (account UUID or equivalent) at the next token installation or record operation; or, for the token half, the token's expiry or `unlog`. Hosts with neither signal nor account UUID have the widest window; hosts with either signal are not affected once the signal has retired the earlier context. The records half: on a host with no account UUID (or equivalent), recovery records are owned by the account's uid and name, as the operating system owns that account's files; a later account with the same uid and name is the same owner of unresolved records, before or after the earlier context is retired or the daemon restarts, until they are resolved (stored or discarded). A host with an account UUID checks it before every record operation and every rebind, so a recreated account there gets none of them. |
 | The local administrator | None | Out of scope. An administrator can read tokens in memory and the cache |
 | A malicious cell configuration or DNS answer | Configured cells win over DNS; tokens are sent only to their own cell's servers; Kerberos mutual authentication; set-id bits ignored | Unauthenticated traffic to a spoofed server |
 | A malicious local IPC client | Bounded decoding; OS peer credentials; per-user budgets; adapter bindings only by the daemon's own registration (C45); producer roles for events (O3) | None known |
@@ -1632,20 +1638,29 @@ The core's design without I/O (C3) is what makes this possible.
 1. A cross-context or cross-user leak, a privilege escalation, or a
    breach of any O22 invariant fails acceptance, in every phase and on
    every OS. It is never recorded as a known limitation and never waived.
-   The one exclusion is the uid-reuse residual that O22, point 1, states:
-   on Linux and macOS, a successor account given an earlier account's uid
-   that acts before the earlier context is retired acts in that context,
-   with its token and its recovery records. Retirement comes from
-   whichever the host offers: a session-end signal (logind or the user's
-   IronAFS agent, and only once any linger ends); a failed
-   account-instance check (account UUID or equivalent) at the next token
-   installation or record operation; or, for the token half, the token's
-   expiry or `unlog`. The records half lasts until retirement or until the
-   records are resolved (stored or discarded). Hosts with neither signal
-   nor account UUID have the widest window (C41, point 4). It is recorded
-   as a known limitation. Nothing else is excluded: any act in an earlier
-   context after it is retired, any use of records after they are
-   resolved, and any other cross-user access fails acceptance.
+   The one exclusion is the uid-reuse residual that O22, point 1, states
+   (C41, point 4). On Linux and macOS it has two halves. The token half: a
+   successor account given an earlier account's uid that acts before the
+   earlier context is retired acts in that context, with its token.
+   Retirement comes from whichever the host offers: a session-end signal
+   (logind or the user's IronAFS agent, and only once any linger ends); a
+   failed account-instance check (account UUID or equivalent) at the next
+   token installation or record operation; or, for the token half, the
+   token's expiry or `unlog`. Hosts with neither signal nor account UUID
+   have the widest window; hosts with either signal are not affected once
+   the signal has retired the earlier context. The records half: on a host
+   with no account UUID (or equivalent), recovery records are owned by the
+   account's uid and name, as the operating system owns that account's
+   files; a later account with the same uid and name is the same owner of
+   unresolved records, before or after the earlier context is retired or
+   the daemon restarts, until they are resolved (stored or discarded). A
+   host with an account UUID checks it before every record operation and
+   every rebind, so a recreated account there gets none of them. It is
+   recorded as a known limitation. Nothing else is excluded: any act in an
+   earlier context or with its token after that context is retired, any use
+   of records after they are resolved, any record operation by a recreated
+   account on a host with an account UUID, and any other cross-user access
+   fails acceptance.
 2. Any other acceptance case, outside O22, either passes, or its gap is a
    documented and bounded limitation.
 3. A phase gate that cannot show point 1 holds on a platform does not ship
@@ -1717,28 +1732,40 @@ hosted runners, or a case here cannot be automated on a supported OS.
      point 5's test; an administrator revokes one, then a restart
      (no automatic reinstall in either) (C42, point 7);
    - the residual O46, point 1, excludes, with a recovery record of the
-     earlier account seeded and a uid reassigned without a daemon restart:
-     on Linux and macOS, a successor account given an earlier account's
-     uid that acts before the earlier context is retired acts in that
-     context, with its token and its recovery records. Retirement comes
-     from whichever the host offers: a session-end signal (logind or the
-     user's IronAFS agent, and only once any linger ends); a failed
-     account-instance check (account UUID or equivalent) at the next token
-     installation or record operation; or, for the token half, the token's
-     expiry or `unlog`. The records half lasts until retirement or until
-     the records are resolved (stored or discarded). Hosts with neither
-     signal nor account UUID have the widest window. The case tests the
-     window's bounds on each host type: with logind or the agent's signal,
-     the successor acts in the earlier context only until the signal
-     retires it (after any linger), and not after; with an account UUID or
-     equivalent, the next token installation or record operation fails the
-     account-instance check, retires the context and is refused; with
+     earlier account seeded and a uid reassigned, without and then with a
+     daemon restart. On Linux and macOS it has two halves. The token half:
+     a successor account given an earlier account's uid that acts before
+     the earlier context is retired acts in that context, with its token.
+     Retirement comes from whichever the host offers: a session-end signal
+     (logind or the user's IronAFS agent, and only once any linger ends); a
+     failed account-instance check (account UUID or equivalent) at the next
+     token installation or record operation; or, for the token half, the
+     token's expiry or `unlog`. Hosts with neither signal nor account UUID
+     have the widest window; hosts with either signal are not affected once
+     the signal has retired the earlier context. The records half: on a
+     host with no account UUID (or equivalent), recovery records are owned
+     by the account's uid and name, as the operating system owns that
+     account's files; a later account with the same uid and name is the
+     same owner of unresolved records, before or after the earlier context
+     is retired or the daemon restarts, until they are resolved (stored or
+     discarded). A host with an account UUID checks it before every record
+     operation and every rebind, so a recreated account there gets none of
+     them. The case tests the window's bounds on each host type. Token
+     half: with logind or the agent's signal, the successor acts in the
+     earlier context only until the signal retires it (after any linger),
+     and not after; with an account UUID or equivalent, the successor's
+     first record operation, `afs pending list`, and its next token
+     installation each fail the account-instance check, retire the context
+     and are refused before any record or metadata is returned; with
      neither, the successor can use the old token until it expires or is
-     removed by `unlog`, and the seeded record until the context is
-     retired or the record is resolved, and not after. On every host type
-     nothing else crosses: no other context, token or record. After a
-     restart the old records stay quarantined (C41, point 4; C40,
-     point 8);
+     removed by `unlog`, and not after. Records half: on a host with no
+     account UUID, a successor with the same uid and name owns the seeded
+     record before and after the earlier context is retired and after a
+     restart, until the record is resolved, and not after; on a host with
+     an account UUID, the successor gets none of it (`afs pending list`,
+     `show`, `export`, `retry` and `discard` are each refused), before and
+     after a restart. On every host type nothing else crosses: no other
+     context, token or record (C41, point 4; C40, point 8);
    - a rename over a file another local process holds open: the rename
      succeeds where, on SMB, the opener allowed delete sharing, and
      otherwise fails with a sharing violation (L33, point 13); both

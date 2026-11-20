@@ -863,11 +863,13 @@ checked independently of the daemon and re-checked when policy refreshes.
    listener is already bound to every address on port 445 and takes
    nothing over, so with sharing active a saved path can reach it once
    the proxy is gone. The invariant in that state: an authentication
-   attempt on a saved `\\afs` path, with the route disabled or with a
-   competing local listener present, reaches IronAFS's own listener or no
-   listener at all; any other local or remote listener receiving any
-   authentication attempt (Windows credentials included, not only IronAFS
-   or AFS ones) breaks it. L41, point 4, observes which
+   attempt on a saved path in each form the row ships (`\\afs` where the
+   name is admitted, the literal `\\127.0.0.1` form on literal-address
+   rows, and any site-configured name, L21, point 1), with the route
+   disabled or with a competing local listener present, reaches IronAFS's
+   own listener or no listener at all; any other local or remote listener
+   receiving any authentication attempt (Windows credentials included, not
+   only IronAFS or AFS ones) breaks it. L41, point 4, observes which
    listener receives the attempt; how the route keeps the invariant is
    specification item S7. A row that cannot show it is not given the
    route (point 6). On uninstall containment ends:
@@ -1755,17 +1757,19 @@ or authentication defaults on a target build.
 4. Required: the path fails closed with IronAFS stopped or the route
    disabled by policy, and an ordinary local user cannot take over any
    listener the route uses (L20, points 2 and 8; A4). With the route
-   disabled by policy and Windows' own file sharing active, and again
-   with a competing local listener, the test opens a saved path and
-   records which listener receives the authentication attempt, before
-   any tree connection. It passes only if the authentication attempt on
-   the saved `\\afs` path, with the route disabled or with a competing
-   local listener present, reaches IronAFS's own listener or no listener
-   at all; any other local or remote listener receiving any authentication
+   disabled by policy and Windows' own file sharing active, and again with
+   a competing local listener, the test opens a saved path in each form the
+   row ships (`\\afs` where the name is admitted, the literal `\\127.0.0.1`
+   form on literal-address rows, and any site-configured name, L21, point
+   1) and records which listener receives the authentication attempt,
+   before any tree connection. It passes only if the authentication attempt
+   on each such saved path, with the route disabled or with a competing
+   local listener present, reaches IronAFS's own listener or no listener at
+   all; any other local or remote listener receiving any authentication
    attempt (Windows credentials included, not only IronAFS or AFS ones)
    fails the row (L20, point 8; S7). A failed open alone does not pass.
-   After an uninstall, the test checks that no IronAFS or AFS credential
-   is sent under the name.
+   After an uninstall, the test checks that no IronAFS or AFS credential is
+   sent under the name.
 5. Required: Windows' own file sharing still works after a restart, a
    cumulative update and an uninstall.
 6. Only route 3 can qualify the Windows 10 row `[WIN-162]`
