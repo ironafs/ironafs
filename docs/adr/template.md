@@ -13,7 +13,9 @@ The facts the decision rests on, each with its source and evidence label
 ## Decision
 
 What is decided, stated so that it can be checked. Use short, numbered
-points where later documents will cite them.
+points where later documents will cite them. Mark each one **Firm** (a
+format, a security invariant, the don't-copy rule) or **Working**, with a
+"Revisit if" trigger ([README](README.md), "Firm and working decisions").
 
 ## Consequences
 

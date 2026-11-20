@@ -265,7 +265,11 @@ authoritative.
    - **Acceptance evidence:** the commands and results that prove it.
 
    Settle open design questions before dispatch, not during it. Every brief
-   carries the reuse rule (§3a).
+   carries the reuse rule (§3a), and starts with a **re-check**: the claims
+   and ADR decisions the task rests on are re-read at their sources first.
+   A contradiction stops the task and is raised as a design issue, which
+   leads to an amendment of a working decision or a superseding ADR
+   ([docs/adr/README.md](adr/README.md)); it is never worked around.
 4. **Author self-check**: the implementer runs the `rust-review` checklist,
    including the function inventory on its own diff. It reports any deliberate
    departure from its neighbours, with the reason.
