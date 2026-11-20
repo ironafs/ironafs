@@ -3,7 +3,7 @@
 
 # 0004, part 3: Operations, security and lifecycle
 
-Status: proposed (2026-11-20). Part of ADR 0004 ([overview](0004-architecture.md)); raised in issue #20.
+Status: accepted (2026-11-20). Part of ADR 0004 ([overview](0004-architecture.md)); raised in issue #20.
 
 This part decides how IronAFS is observed, managed, secured, upgraded,
 tested and phased. The core is in part 1, the OS layers and the
