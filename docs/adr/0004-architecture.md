@@ -141,8 +141,9 @@ The decisions are in four parts:
      names what would make us look again: a version floor that moves, a
      measurement, an API that ships, or a named assumption that fails. A
      working decision changes by an amendment pull request that brings the
-     new evidence and is reviewed at the normal tier for its class
-     ([docs/workflow.md](../workflow.md)). That route opens once
+     new evidence and is reviewed as
+     [docs/adr/README.md](README.md) sets out (for this ADR, on the
+     strongest row of [docs/workflow.md](../workflow.md) §2). That route opens once
      `docs/adr/README.md` allows amendments; until then a working decision
      changes as a firm one does.
 3. **Milestone names** (M2a, M2b, M3 to M7) are defined in part 3. They are
@@ -623,3 +624,6 @@ The full record, with every finding and its disposition, is
   contradict each other (GLM, one run per part): PASS, with three minor
   cross-reference findings, fixed in `d78ac85` and verified by GLM and GPT
   (both PASS, no findings).
+- **Correction, 2026-11-20 (#28):** "How this ADR is organised", point 2
+  now points to `docs/adr/README.md` for how an amendment is reviewed,
+  instead of "the normal tier for its class". No decision changed.
