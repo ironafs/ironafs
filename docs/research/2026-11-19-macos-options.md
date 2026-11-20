@@ -68,7 +68,7 @@ fresh (§8).
 | 15.4 | A user-space app extension implements `FSUnaryFileSystem`: one resource, one volume, a block device, with Disk Arbitration integration. `XattrOperations`, `AccessCheckOperations` and `reclaimItem` exist; access checks carry no caller context. | INSPECTED: [15.4 release notes](https://developer.apple.com/documentation/macos-release-notes/macos-15_4-release-notes), [AccessCheckOperations](https://developer.apple.com/documentation/fskit/fsvolume/accesscheckoperations) |
 | 26.0 | `FSGenericURLResource` (any URL, including a network address) and `FSPathURLResource` (a file URL, possibly security-scoped); opt-in open-unlink emulation (`enableOpenUnlinkEmulation`). Still the legacy operation signatures, no caller identity, no cache control. | INSPECTED: [FSGenericURLResource](https://developer.apple.com/documentation/fskit/fsgenericurlresource), [FSPathURLResource](https://developer.apple.com/documentation/fskit/fspathurlresource), `FSVolume.h` in the 27.2 SDK |
 | 26.4 | `requestedMountOptions`, whose only public option is read-only. The identity and cache-control gaps remain. | INSPECTED: [MountOptions](https://developer.apple.com/documentation/fskit/fsvolume/mountoptions) |
-| 27.0 | The `Handler` protocols, `FSContext`, `DataCacheHandler`, `setCacheState`, and the `FSClient` mount and settings APIs. macOS 27 runs on Apple silicon Macs only. | INSPECTED: [FSKit updates](https://developer.apple.com/documentation/updates/fskit), [FSContext](https://developer.apple.com/documentation/fskit/fscontext), [macOS 27 compatibility](https://support.apple.com/en-us/127255) |
+| 27.0 | The `Handler` protocols, `FSContext`, `DataCacheHandler`, `setCacheState`, and the `FSClient` mount and settings APIs. Apple's macOS 27 compatibility list names only Apple silicon Macs. | INSPECTED: [FSKit updates](https://developer.apple.com/documentation/updates/fskit), [FSContext](https://developer.apple.com/documentation/fskit/fscontext), [macOS 27 compatibility](https://support.apple.com/en-us/127255) |
 
 No later 15.x or 26.x release adds caller identity or cache control (NOT
 VERIFIED: one family looked and found none).
@@ -132,11 +132,15 @@ VERIFIED: one family looked and found none).
 
 ### Installation and approval
 
-- The module is an app extension in a signed app, with the
+- The module is an app extension with the
   `com.apple.developer.fskit.fsmodule` entitlement. The user enables it in
   System Settings, General, Login Items & Extensions, File System
   Extensions (INSPECTED,
   [passthrough sample](https://developer.apple.com/documentation/fskit/building-a-passthrough-file-system)).
+  The sample page does not mention signing. Signing and notarisation come
+  from the Developer ID rules: Developer ID software must be signed,
+  notarised and built with the hardened runtime (INSPECTED,
+  [notarisation](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)).
 - The `com.apple.NSExtension` MDM payload manages extension allow and deny
   lists (INSPECTED,
   [NSExtensionManagement](https://developer.apple.com/documentation/devicemanagement/nsextensionmanagement)).
@@ -154,9 +158,11 @@ VERIFIED: one family looked and found none).
   From macOS 15 a domain can be placed on an eligible external volume;
   `volumeURL` picks the volume and macOS picks the directory (INSPECTED,
   [init(displayName:userInfo:volumeURL:)](https://developer.apple.com/documentation/fileprovider/nsfileproviderdomain/init(displayname:userinfo:volumeurl:))).
-  That the usual root is under `~/Library/CloudStorage`, and that the
-  `pathRelativeToDocumentStorage` initializer makes a non-replicated domain,
-  are NOT VERIFIED.
+  That the usual root is under `~/Library/CloudStorage` is NOT VERIFIED.
+  The `pathRelativeToDocumentStorage` initializer is available on iOS, Mac
+  Catalyst and visionOS only, and its page does not say it makes a
+  non-replicated domain (INSPECTED,
+  [init(identifier:displayName:pathRelativeToDocumentStorage:)](https://developer.apple.com/documentation/fileprovider/nsfileproviderdomain/init(identifier:displayname:pathrelativetodocumentstorage:))).
 - **`/afs`.** A synthetic `/afs` symlink could reach one chosen domain, but
   it resolves to the same target for every uid, so per-user domains cannot
   give a shared `/afs` (INFERRED).
@@ -245,10 +251,14 @@ mount it.
   cache entries a 60 s lifetime by default (INSPECTED,
   [`nfs.conf(5)`](https://raw.githubusercontent.com/apple-oss-distributions/NFS/main/files/nfs.conf.5));
   whether the two pages describe the same cache is NOT VERIFIED.
-  With `nfs.client.access_cache_timeout` at zero no entry is ever fresh,
-  so each check goes to the server, except on soft mounts, which can still
-  use cached results (INSPECTED,
-  [access cache](https://github.com/apple-oss-distributions/NFS/blob/main/kext/nfs_vnops.c)).
+  With `nfs.client.access_cache_timeout` at zero, a healthy mount asks the
+  server on every check. The client answers from its cache only after a
+  server timeout, and only on `soft` or `deadtimeout` mounts (or in a
+  "mobile" state) (INSPECTED,
+  [access cache](https://github.com/apple-oss-distributions/NFS/blob/main/kext/nfs_vnops.c),
+  `mount_nfs(8)` shipped with macOS 27.2). This matters for the
+  loopback-NFS spike on macOS 15 and 26 (the platform matrix's "Spike
+  only" row).
 - These settings shorten revalidation; kernel data pages remain a separate
   coherence problem (INFERRED).
 
@@ -256,8 +266,10 @@ mount it.
 
 - NFSv3 has no general way for the server to invalidate the client's data
   cache (INSPECTED, [RFC 1813](https://www.rfc-editor.org/rfc/rfc1813)).
-- Apple's NFSv4 client implements `CB_RECALL`: it checks the delegation's
-  state id and queues `DELEGRETURN` (INSPECTED,
+- Apple's client takes `CB_GETATTR` and `CB_RECALL` on NFSv4.0; its
+  NFSv4.1 path also takes `CB_SEQUENCE`, which comes first
+  ([RFC 8881](https://www.rfc-editor.org/rfc/rfc8881)). On a recall it
+  checks the delegation's state id and queues `DELEGRETURN` (INSPECTED,
   [recall handler](https://github.com/apple-oss-distributions/NFS/blob/main/kext/nfs_socket.c),
   [delegation return](https://github.com/apple-oss-distributions/NFS/blob/main/kext/nfs4_vnops.c)).
 - A callback break can trigger a recall where IronAFS granted a
@@ -291,8 +303,10 @@ mount it.
   (INFERRED).
 - Both versions use 64-bit sizes and offsets, and a file unlinked while
   open may be renamed to `.nfs*` (INSPECTED, same man page and source).
-  Hard mounts can hang while the server does not answer (INSPECTED, one
-  family, same man page).
+  By default a mount hangs while the server does not answer, until the
+  server returns or a forced unmount; there is no `hard` option, and
+  `soft` and `intr` are the documented alternatives (INSPECTED,
+  `mount_nfs(8)` shipped with macOS 27.2).
 - NFS fits applications' POSIX expectations best of the loopback options.
   IronAFS still has to decide whether Mac locks stay local or become
   visible to other AFS clients, for example as whole-file AFS server locks
@@ -321,7 +335,8 @@ project's documentation).
   shared mount cannot do per-user authorisation (INFERRED).
 - **WebDAV.** `mount_webdav` takes an `http://` or `https://` URL and an
   existing mount point, reports every file's owner and group as unknown,
-  and refuses write opens on servers without DAV `LOCK` (INSPECTED,
+  and has no option to allow write opens without DAV `LOCK`: on such
+  servers it forces read-only (INSPECTED,
   [`mount_webdav(8)`](https://raw.githubusercontent.com/apple-oss-distributions/webdavfs/main/mount.tproj/mount_webdav.8)).
   DAV locks are per resource, with no byte ranges
   ([RFC 4918](https://www.rfc-editor.org/rfc/rfc4918)). A poor fit for a

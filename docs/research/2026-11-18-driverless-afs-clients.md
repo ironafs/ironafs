@@ -18,6 +18,7 @@
   - **RELAYED:** read only in a secondary source: a forum post (including
     replies from Apple's Developer Technical Support, DTS), an issue on a
     third-party tracker, a mailing-list post, or a third-party summary;
+  - **INFERRED:** a conclusion drawn from labelled facts;
   - **NOT VERIFIED:** no source found either way;
   - **MEASURED:** carried over from another note, as above.
 
@@ -80,7 +81,7 @@ coherency need their own design on Windows
 
 | Option | Gives `/afs`? | Notes | Evidence |
 |---|---|---|---|
-| File Provider | No. No API places a domain at a mount point such as `/afs`. Domains live under `~/Library/CloudStorage/` by default; since macOS 15 a domain can also live on an external volume. | Sync model like Cloud Files; per-user; a good Finder companion, not a full client | INSPECTED: [external-volume domains](https://developer.apple.com/documentation/fileprovider/nsfileproviderdomain/init(displayname:userinfo:volumeurl:)), [File Provider](https://developer.apple.com/documentation/fileprovider) (per-user: one family). The default path is RELAYED. |
+| File Provider | No. No API places a domain at a mount point such as `/afs`. Domains live under `~/Library/CloudStorage/` by default; since macOS 15.0 the domain initializer takes a volume URL, for an "eligible" volume ("external volume" is this note's wording, not Apple's). | Sync model like Cloud Files; per-user; a good Finder companion, not a full client | INSPECTED: [external-volume domains](https://developer.apple.com/documentation/fileprovider/nsfileproviderdomain/init(displayname:userinfo:volumeurl:)), [File Provider](https://developer.apple.com/documentation/fileprovider) (per-user: one family). The default path is RELAYED. |
 | FSKit | Not through the programmatic API: `FSClient.mountSingleVolume` mounts under `/Volumes/` and needs the `com.apple.developer.fskit.mount` entitlement. Apple documents `mount(8)` to an arbitrary existing directory for a URL-backed module, and `synthetic.conf` can create `/afs`. That combination is untested; the spike tests it. | Apple's user-space filesystem interface; gaps below | INSPECTED: [passthrough sample](https://developer.apple.com/documentation/fskit/building-a-passthrough-file-system), [mountSingleVolume](https://developer.apple.com/documentation/fskit/fsclient/mountsinglevolume(resource:bundleid:options:completionhandler:)), [`synthetic.conf(5)`](https://man.freebsd.org/cgi/man.cgi?apropos=0&manpath=macOS+26.7&query=synthetic.conf&sektion=5) |
 | Localhost NFSv4 server | Documented mechanism: `synthetic.conf` creates `/afs`, and `mount_nfs` takes an explicit mount path and NFS version. A loopback IronAFS server is untested. | With `sec=sys` the kernel client sends the caller's effective uid, gid and a group list: a host assertion, not proof. An `access(2)` cache holds access results for up to three users by default. NFSv4 specifies server-side `LOCK`, but a held delegation can let the client handle locks locally. The `nocallback` option implies the client supports delegations; untested. | INSPECTED: [`mount_nfs(8)`](https://man.freebsd.org/cgi/man.cgi?apropos=0&manpath=macOS+26.7&query=mount_nfs&sektion=8), [RFC 5531 appendix A](https://datatracker.ietf.org/doc/html/rfc5531#appendix-A), [RFC 7530 §16.10](https://datatracker.ietf.org/doc/html/rfc7530#section-16.10) (the `/afs` mechanism and locks: one family) |
 
@@ -95,11 +96,11 @@ marked.
 |---|---|---|
 | xattrs | Available since macOS 15.4 through `FSVolume.XattrOperations`; macOS 27 replaces it with `FSVolume.XattrHandler`, which adds the caller context | [XattrHandler](https://developer.apple.com/documentation/fskit/fsvolume/xattrhandler) |
 | Kernel access checks | `FSVolume.AccessCheckOperations` since 15.4, without caller identity; `FSVolume.AccessCheckHandler` (27) adds it. The contract does not promise a fresh decision on every read or cache hit. | [AccessCheckHandler](https://developer.apple.com/documentation/fskit/fsvolume/accesscheckhandler) |
-| Caller identity | `FSContext`, macOS 27 only: real and effective uid and gid. No pid, no supplementary groups, no audit session. Before macOS 27 operations carry no caller identity. | [FSContext](https://developer.apple.com/documentation/fskit/fscontext) |
+| Caller identity | `FSContext`, macOS 27 only: real and effective uid and gid. No pid, no supplementary groups, no audit session. `FSContext` exists only from macOS 27.0. Earlier FSKit operations take no caller context (INFERRED from the API; Apple does not say so). | [FSContext](https://developer.apple.com/documentation/fskit/fscontext) |
 | Cache invalidation (AFS callback breaks) | `DataCacheHandler` and `setCacheState(...)` (macOS 27). Invalidating a directory purges its name cache; Apple does not say whether negative entries go too. `.invalidate` discards dirty data, `.pushInvalidate` flushes it first, `.revoke` reclaims the vnode. The setter can fail, can call back into the module, and must be called without the module's own locks held. | [invalidate](https://developer.apple.com/documentation/fskit/fsvolume/kernelcachecoherencyaction/invalidate), [setCacheState](https://developer.apple.com/documentation/fskit/fsvolume/setcachestate(for:cachemode:coherencytype:action:)) |
 | Inode eviction | `reclaimItem`, since 15.4 in `Operations` and carried into `Handler` | [reclaimItem](https://developer.apple.com/documentation/fskit/fsvolume/commonoperations/reclaimitem(_:replyhandler:)) |
 | ioctl (pioctl) | None. Apple DTS suggests XPC or a Unix socket (RELAYED). | [forum thread 831338](https://developer.apple.com/forums/thread/831338) |
-| Byte-range / advisory locks | No lock operations in the headers, only `supportsOpenDenyModes`, so locks stay kernel-local. DTS says `flock(2)` locks are not delegated either (RELAYED). | [FSVolume](https://developer.apple.com/documentation/fskit/fsvolume) |
+| Byte-range / advisory locks | No lock operations in the headers, only `supportsOpenDenyModes`, so locks stay kernel-local. A forum poster's Feedback report, not DTS, says `flock(2)` locks are not delegated either (RELAYED). | [FSVolume](https://developer.apple.com/documentation/fskit/fsvolume) |
 | ACLs | No ACL API in the public `FSItem` and `FSVolume` interfaces (by absence). AFS authorisation can still be enforced through the access-check hook. | SDK headers |
 
 Open risks:
@@ -211,9 +212,11 @@ Locks remain an open question for the spike.
   not FUSE (RELAYED,
   [openafs-info archive](https://openafs-info.openafs.narkive.com/E8NU7V5g/using-fuse-for-openafs)).
   Arla is an independent user-space AFS client that ran on the BSDs, Linux,
-  Solaris and Darwin, with a kernel module first called `xfs` and later
-  `nnpfs` (INSPECTED, one family,
-  [Arla manual](https://www.stacken.kth.se/project/arla/html/arla.html)).
+  Solaris and Darwin, with its own kernel module. Its manual calls the
+  module `xfs` (INSPECTED,
+  [Arla manual](https://www.stacken.kth.se/project/arla/html/arla.html)),
+  and later posts call it `nnpfs`; no primary source states the rename
+  (RELAYED).
 - MacFUSE was then a kernel extension; macFUSE still ships a kernel backend
   beside its FSKit backend (INSPECTED, [macFUSE](https://macfuse.github.io)).
 - This note's reading of the rest, NOT VERIFIED: FUSE was slow then, it did
@@ -276,8 +279,8 @@ source tree. It was removed on 2026-11-19 (ADR 0001; see the preamble).
   The project's page dates IBM's announcement 2025-02-05; no separate IBM
   publication of that date was found.
 - The project is asking contributors to agree to the change for later
-  contributions, and announced the process for the current code base in
-  July 2026 (INSPECTED,
+  contributions, and posted its request for consent covering the current
+  code base to openafs-info on 2026-10-22 (INSPECTED,
   [Relicensing OpenAFS](https://www.openafs.org/pages/relicense/relicensing-openafs.html),
   [announcement](https://www.mail-archive.com/openafs-info%40openafs.org/msg41790.html)).
   No published file-level inventory says how much of the tree is still

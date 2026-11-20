@@ -5,7 +5,7 @@
 
 **How this note was made.**
 
-- Three kinds of evidence, labelled as in the [research index](README.md):
+- Evidence labelled as in the [research index](README.md):
   - **INSPECTED:** read in Microsoft's documentation, linked with the claim,
     by a research pass; the three pages the answer rests on (alternative
     ports, the SMB2 transports, `netsh portproxy`) were re-read by the
@@ -17,6 +17,7 @@
     marked, earlier by the maintainer, whose raw results are not
     published. These are evidence for design, not proof that IronAFS works
     (EXECUTED in the sense of `docs/workflow.md` §3c, but not on IronAFS);
+  - **INFERRED:** a conclusion drawn from labelled facts;
   - **NOT VERIFIED:** reasoned or reported by others, not measured or read
     in a primary source.
 - Two research passes from different model families (Claude, GPT) listed the
@@ -30,7 +31,9 @@ Windows sends UNC file I/O only to its own kernel redirectors or to a
 third-party driver. IronAFS installs no driver, so a `\\afs\cell\path` path
 means Windows' own SMB client talking to an SMB 3.1.1 server that IronAFS
 runs on the same machine. The problem is the port: Windows 10's SMB client
-connects only to port 445, and Windows' own SMB server already holds 445.
+has no alternative TCP ports. It uses direct TCP on port 445, and NetBIOS
+over TCP on port 139 only for dialects up to 3.0.2, which excludes SMB
+3.1.1; Windows' own SMB server already holds 445.
 
 **Route 3 gets Windows' SMB client's traffic to a listener on the loopback
 address on Windows 10 and 11 without giving up Windows' own file sharing
@@ -45,17 +48,24 @@ the tests, and whether it survives updates is a spike gate.
 
 | Route | Windows versions | Windows' own file sharing | Status |
 |---|---|---|---|
-| 1. Our server on another port; a machine policy ("Alternative Port Mappings") sends `\\afs` there | per-mapping alternative ports: 11 24H2 and later (Microsoft Learn); the machine policy: measured on 26H2 only | kept | MEASURED (by the maintainer, earlier, 26H2 only). The policy was found in a third-party copy of Microsoft's administrative templates; the template version was not recorded, and Microsoft's own templates ([administrative templates for Windows 11](https://www.microsoft.com/en-us/download/details.aspx?id=108847)) were not checked, so the policy's presence on 24H2 is to be measured |
+| 1. Our server on another port; a machine policy ("Alternative Port Mappings") sends `\\afs` there | per-mapping alternative ports: 11 24H2 and later (Microsoft Learn); the machine policy: measured on 26H2 only | kept | MEASURED (by the maintainer, earlier, 26H2 only). Microsoft's Tech Community post on alternative ports (Insider era) documents a Lanman Workstation "Enable Alternative Ports" policy that allows or blocks client use of alternative ports (INSPECTED, [SMB alternative ports in Windows Insider](https://techcommunity.microsoft.com/blog/filecab/smb-alternative-ports-now-supported-in-windows-insider/3974509)). The per-name "Alternative Port Mappings" policy is known only from a third-party copy of Microsoft's administrative templates and from the maintainer's measurement on 26H2; the template version was not recorded, and Microsoft's own templates ([administrative templates for Windows 11](https://www.microsoft.com/en-us/download/details.aspx?id=108847)) were not checked, so the policy's presence on 24H2 is to be measured |
 | 2. Our server on `127.0.0.1:445` with Windows' SMB server disabled | 10 and 11 | **lost**: no inbound sharing, no `C$` or `ADMIN$` | MEASURED (by the maintainer, earlier); now a fallback only |
 | **3. Port proxy on `127.0.0.1:445` beside Windows' SMB server** | **10 22H2, 11 24H2, 11 26H2** | **kept** | **MEASURED (this note)** |
 
 Route 3's side effects:
 
-- a literal `\\127.0.0.1\...` reaches IronAFS instead of Windows, and fails
-  outright while IronAFS is stopped; `\\localhost` still reaches Windows,
-  because it resolves to `::1` first;
-- the hosts entry sends the name `afs` to `127.0.0.1` for every program,
-  not only for SMB;
+- a literal `\\127.0.0.1\...` is expected to reach IronAFS instead of
+  Windows, and to fail outright while IronAFS is stopped; `\\localhost`
+  still reached Windows in the tests, we expect because `localhost`
+  appears to resolve to `::1` first. Neither expectation was measured (NOT
+  VERIFIED; to measure in the spike);
+- the hosts entry sends the name `afs` to `127.0.0.1` for every program
+  that uses the Windows resolver, not only for SMB: the DNS Client service
+  loads the hosts file into its cache (INSPECTED,
+  [DNS queries and lookups](https://learn.microsoft.com/en-us/windows-server/networking/dns/queries-lookups)).
+  Programs with their own resolver, such as browsers using DNS over HTTPS,
+  do not see it. That does not affect the SMB client, which uses the system
+  resolver;
 - while IronAFS is stopped, its back-end port is free for another local
   process to take (section 3, still to measure).
 
@@ -87,7 +97,7 @@ Route 3's side effects:
 | Port proxy on `127.0.0.1:445`, bound before `srvnet` (route 3) | Works, to the client's first packet; a full SMB session through it is not yet measured. | MEASURED, section 3 |
 | IronAFS's own service binding `127.0.0.1:445` before `srvnet` (route 3 without the proxy) | Expected to work the same way, since the proxy's listener is an ordinary socket; it would remove the back-end port. But `LanmanServer` would then depend on IronAFS's service, so Windows' own file sharing would wait for, or fail with, IronAFS at boot. | NOT VERIFIED; to measure in the spike |
 | NetBIOS over TCP, port 139 | Ruled out: NetBIOS carries SMB dialects 2.0.2 to 3.0.2 only, not 3.1.1. | INSPECTED: [MS-SMB2 Transport](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/1dfacde4-b5c7-4494-8a14-a09d3ab4cc83) |
-| Our server terminating SMB on 445 and passing other shares on to Windows' server | Ruled out: the share name arrives only after authentication, so passing a session on means relaying the user's authentication. | NOT VERIFIED as a measurement; follows from the protocol order |
+| Our server terminating SMB on 445 and passing other shares on to Windows' server | Ruled out: the share name arrives only after authentication, so passing a session on means relaying the user's authentication. | INSPECTED: TREE_CONNECT, which carries the share path, follows SESSION_SETUP ([MS-SMB2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/5b80eb31-7e0a-4f24-b570-15217d28f239)); the relay consequence is INFERRED |
 | Windows' own SMB server sharing a local folder that IronAFS fills | Ruled out: requests reach the filesystem as the System account, so the caller's identity is lost. | MEASURED (by the maintainer, earlier) |
 | Windows' own NFS client | Ruled out as measured: in the configuration tried (anonymous UID mapping), every Windows user reached the server with the same identity. Per-user identity mapping was not tested. | MEASURED (by the maintainer, earlier), for that configuration only |
 | WebDAV redirector | The WebDAV path syntax takes an optional port (`\\afs@port\...`); a plain `\\afs\...` reaches WebDAV only if no provider ahead of it in the network provider order claims the name (Microsoft's page uses SMB ahead of WebDAV as its example) ([UNC naming and MUP](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/support-for-unc-naming-and-mup)). Microsoft has deprecated the WebClient service. | The path syntax INSPECTED by a research pass: [DavGetHTTPFromUNCPath](https://learn.microsoft.com/en-us/windows/win32/api/davclnt/nf-davclnt-davgethttpfromuncpath); the deprecation: [deprecated features](https://learn.microsoft.com/en-us/windows/whats-new/deprecated-features) |
@@ -152,7 +162,10 @@ first packet.
   pass; [OpenAFS for Windows release notes](https://docs.openafs.org/ReleaseNotesWindows/)).
 - Drive letters belong to one logon session: services, scheduled tasks and
   elevated processes may not see them. INSPECTED:
-  [mapped drives and elevation](https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/mapped-drives-not-available-from-elevated-command).
+  [Services and Redirected Drives](https://learn.microsoft.com/en-us/windows/win32/services/services-and-redirected-drives)
+  (services and other processes in their own logon session),
+  [mapped drives and elevation](https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/mapped-drives-not-available-from-elevated-command)
+  (elevated processes).
 - Folder Redirection and roaming profiles take UNC paths. INSPECTED:
   [Folder Redirection](https://learn.microsoft.com/en-us/windows-server/storage/folder-redirection/deploy-folder-redirection).
 
@@ -232,6 +245,9 @@ check Windows' own shares again.
 - [MS-SMB2: Transport](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/1dfacde4-b5c7-4494-8a14-a09d3ab4cc83) (INSPECTED, re-read)
 - [netsh interface portproxy](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/netsh-interface) (INSPECTED, re-read: the `v4tov4` syntax)
 - [Deprecated features in the Windows client](https://learn.microsoft.com/en-us/windows/whats-new/deprecated-features)
+- [Services and Redirected Drives](https://learn.microsoft.com/en-us/windows/win32/services/services-and-redirected-drives)
+- [DNS queries and lookups](https://learn.microsoft.com/en-us/windows-server/networking/dns/queries-lookups)
+- [SMB alternative ports in Windows Insider](https://techcommunity.microsoft.com/blog/filecab/smb-alternative-ports-now-supported-in-windows-insider/3974509)
 - [Mapped drives are not available from an elevated prompt](https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/mapped-drives-not-available-from-elevated-command)
 - [Deploy Folder Redirection](https://learn.microsoft.com/en-us/windows-server/storage/folder-redirection/deploy-folder-redirection)
 - [Persistent TCP port reservations](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-createpersistenttcpportreservation) (a candidate for the back-end port; whether it keeps other local processes out is to be measured)
