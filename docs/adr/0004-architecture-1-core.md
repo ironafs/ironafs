@@ -468,7 +468,7 @@ that outlive the daemon.
    ([OpenAFS administration guide, "About Volumes"](https://docs.openafs.org/AdminGuide/HDRWQ177.html)),
    so their paths are different nodes.
 6. What Windows is shown as a file's identity is the stable key, not the
-   node id; its components are in N38, point 7. SMB's per-open ids are
+   node id; its components are in N38, point 8. SMB's per-open ids are
    generated per open by the front end (L19).
 7. Identifier widths are in N38.
 8. A chain of mounts is bounded in depth and checked for cycles, as L32,

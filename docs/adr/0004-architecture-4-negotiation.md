@@ -831,8 +831,9 @@ identifies the build no more finely than its version does.
 2. Support is negotiated on that protected channel. A stronger
    confidentiality requirement of an extension applies.
 3. The legacy fileserver exception (N12) grants no extension access.
-4. Under rxkad the client speaks baseline AFS-3, so released OpenAFS
-   servers see baseline AFS-3 only.
+4. Under rxkad the client uses no IronAFS extension, so released OpenAFS
+   servers see baseline AFS-3 and only the third-party operations N23,
+   point 2, allows.
 5. Each extension has a name and a small integer version in the catalogue
    (N20), a public specification under `docs/specs/`, and a
    `docs/provenance.md` row for its allocation.

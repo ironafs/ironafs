@@ -805,7 +805,8 @@ granting leases (L22, point 4).
    gone, or the
    removal fails, the removal is kept as a pending record for the setter
    (`afs pending`, C29) and reported through O35's side channel. It is
-   never retried under another session's authority.
+   never retried automatically under another session's authority; a
+   retry its owner instructs follows C29, point 4.
 9. Byte-range locks and share modes go to the core's lock service (L33).
 10. Encryption is supported, so a site can require it. Cryptography comes
     through the crypto interface (C5).
