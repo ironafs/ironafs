@@ -73,7 +73,9 @@ it is amended by a pull request:
 - **Same class, same review.** The amendment is reviewed as its ADR was:
   the same class and the same required seats from families that wrote
   neither the amendment nor the decision, at the tier
-  [docs/workflow.md](../workflow.md) §2 sets for that class.
+  [docs/workflow.md](../workflow.md) §2 ("Model routing") sets for that
+  ADR. An amendment to an architecture ADR, or one touching security, is
+  reviewed on the strongest row, as the ADR was.
 - **The text changes in place.** The decision is rewritten to say what now
   holds, with a new "Revisit if" trigger. The ADR's status line gains
   `amended YYYY-MM-DD (#N)`, and its Review section gains an entry: the
