@@ -3,7 +3,8 @@
 
 # 0004: The architecture
 
-Status: proposed (2026-11-20). Raised in issue #20.
+Status: accepted (2026-11-20), by the owner, after the review rounds
+recorded below. Raised in issue #20.
 
 ## Context
 
@@ -618,3 +619,7 @@ The full record, with every finding and its disposition, is
   seven mechanisms became specification items S1 to S7.
 - **Round 15**, on `8592a99..b8ae156`: GLM PASS with no findings; GPT
   PASS, every item fixed.
+- **Round 16** read the whole ADR at `1ecfe1d` for decisions that
+  contradict each other (GLM, one run per part): PASS, with three minor
+  cross-reference findings, fixed in `d78ac85` and verified by GLM (PASS,
+  no findings).
