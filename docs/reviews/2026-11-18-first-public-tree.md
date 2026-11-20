@@ -328,7 +328,7 @@ transcript shows exactly those 11 opened).
     repository automation;
   - the research note's count of sources read raw;
   - the scope of "no shell scripts";
-  - `docs/next-session.md` now lists today's rules, skills and research.
+  - the planning material now lists today's rules, skills and research.
 
 ## Fourth addition, at the owner's request: README and GitHub
 
@@ -381,7 +381,7 @@ All fixed:
     triage;
   - blank-issue, `CODEOWNERS` and Dependabot behaviour are described as
     GitHub actually behaves;
-  - a stale next-session item;
+  - a stale planning item;
   - the macFUSE wording;
   - FSKit at `/afs` marked unconfirmed.
 - **Also added:** a numbered repository-creation checklist in
@@ -478,7 +478,7 @@ All fixed:
 - rules 1–21 named correctly;
 - IronAFS's own FUSE layer named in the architecture plan;
 - the fuzzing exception stated where the README says "only";
-- `docs/next-session.md`'s numbered plan joined into one list.
+- the planning material's numbered plan joined into one list.
 
 ## Seventh addition: README practice, folder READMEs, licence
 
@@ -617,11 +617,11 @@ Also at the owner's request, in the same batch:
 
 - the maintainer's controller instructions are no longer a public file; they
   live in the maintainer's private instructions, and the public files say so;
-- ADR 0001 no longer mentions a future service component's licence;
 - `docs/adr/template.md` gives the sections every ADR has;
-- the session plan (`docs/next-session.md`, named in the rounds above) is no
-  longer published. Plans live in the maintainer's private notes until they
-  become milestones and issues.
+- ADR 0001 no longer carries a licensing reference for a possible later
+  component;
+- private planning material was removed from the public tree; plans live in
+  the maintainer's private notes until they become milestones and issues.
 
 Round 15, verification of round 14 and the owner's batch, on candidate tree
 `af663e25339222c0686c56f858bd2436735ad873` (scope manifest of 19 files; the
@@ -638,7 +638,7 @@ Every round-14 item and every owner change was confirmed fixed, except:
   Both now say all MPL-covered files, changed or not.
 - **Minor, fixed:** the README's licence summary now names the GPL's methods
   for making the source available, like `LICENSING.md` and ADR 0001.
-- **Observation, fixed:** the private session plan now times the FSKit
+- **Observation, fixed:** the planning material now times the FSKit
   distribution check like ADR 0001 ("before the macOS layer is designed").
 
 Changed after round 15's tree, and checked by the controller against the

@@ -454,8 +454,8 @@ All fixed:
   - the usage report reads trailers and review records from the named
     revision;
   - the reference to ADR 0001 now points at its Contributions section;
-  - the stale lines in the session plan (`docs/next-session.md`, since made
-    private) and `CLAUDE.md` are fixed.
+  - the stale lines in the session plan (since made private) and
+    `CLAUDE.md` are fixed.
 
 Round 4, 2026-11-18: final verification of both ADRs and the whole tree.
 

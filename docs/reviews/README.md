@@ -21,6 +21,7 @@ the evidence that refutes it.
 | [2026-11-19-research-refute-check](2026-11-19-research-refute-check.md) | Issue #16: the refute check of the driverless-clients research note (three families and an adjudicator), the macOS options note, and the reviews of the Windows Cloud Files and UNC notes |
 | [2026-11-19-judgement-seat](2026-11-19-judgement-seat.md) | Issue #14: the judgement seat and the strongest tiers |
 | [2026-11-19-model-routing](2026-11-19-model-routing.md) | Issue #17: model routing by seat, class and role |
+| [2026-11-20-pre-public-tidy](2026-11-20-pre-public-tidy.md) | Issue #3: wording tidy before going public |
 | [2026-11-20-windows-smb-first-docs](2026-11-20-windows-smb-first-docs.md) | Issue #21: the public description of Windows as SMB first |
 
 ADRs carry their review records in their own Review sections
