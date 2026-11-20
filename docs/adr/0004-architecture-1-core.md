@@ -1767,10 +1767,12 @@ each filesystem request that a process cannot forge, or the Windows spike
    retried or discarded, and before a context rebinds to one. It checks
    the requesting context first: a mismatch retires the old generation,
    refuses that request before any record or metadata is returned, and
-   treats the records of the old owner as C40, point 8, says. In a context
-   that passes, `afs pending list` shows only records whose owner's
-   account instance matches; the others are left out, and every other
-   request on them is refused. A user whose
+   treats the records of the old owner as C40, point 8, says. Records
+   whose owner's account instance does not match the requester's are
+   another owner's records: an ordinary user's `afs pending list` leaves
+   them out and every other request of theirs on them is refused, an
+   administrator keeps O16, point 5's actions on them, and a retry their
+   owner instructed follows C29, point 4. A user whose
    services linger keeps the context until the linger ends, and the signal
    retires it only then. Hosts with neither signal rely on token expiry and
    `unlog`; this is documented. **Bound.** An account deleted and recreated

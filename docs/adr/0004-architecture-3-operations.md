@@ -1769,10 +1769,10 @@ hosted runners, or a case here cannot be automated on a supported OS.
      an account UUID, a successor that is not an administrator gets none
      of it: the record is left out of its `afs pending list`, and `show`,
      `export`, `retry` and `discard` of it are refused, before and after a
-     restart, while two records the successor writes under its own
-     account UUID, both unresolved in the same state, are listed, shown
-     and exported for it, and one is retried and the other discarded, as
-     for any owner. On every host type nothing else crosses: no other
+     restart, while records the successor writes under its own account
+     UUID are listed, shown and exported for it, and retry and discard
+     each succeed for it on a separate, freshly prepared fixture in the
+     same unresolved state, as for any owner. On every host type nothing else crosses: no other
      context, token or record (C41, point 4; C40, point 8);
    - a rename over a file another local process holds open: the rename
      succeeds where, on SMB, the opener allowed delete sharing, and
