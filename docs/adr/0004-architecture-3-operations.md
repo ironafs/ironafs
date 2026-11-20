@@ -1661,7 +1661,8 @@ The core's design without I/O (C3) is what makes this possible.
    of records after they are resolved, any operation by a recreated
    account on the earlier account's records on a host with an account
    UUID other than an administrator's listing, discard or unread move
-   (O16, point 5), and any other cross-user access fails acceptance.
+   (O16, point 5) or carrying out a retry the record's owner instructed
+   (C29, point 4), and any other cross-user access fails acceptance.
 2. Any other acceptance case, outside O22, either passes, or its gap is a
    documented and bounded limitation.
 3. A phase gate that cannot show point 1 holds on a platform does not ship
@@ -1755,19 +1756,22 @@ hosted runners, or a case here cannot be automated on a supported OS.
      half: with logind or the agent's signal, the successor acts in the
      earlier context only until the signal retires it (after any linger),
      and not after; with an account UUID or equivalent, the successor's
-     first record operation, `afs pending list`, and its next token
-     installation each fail the account-instance check, retire the context
-     and are refused before any record or metadata is returned; with
+     first record operation and its next token installation each fail the
+     account-instance check and retire the context; its `afs pending list`
+     leaves out the earlier account's records, and its other operations on
+     them are refused, before any record or metadata of them is returned;
+     with
      neither, the successor can use the old token until it expires or is
      removed by `unlog`, and not after. Records half: on a host with no
      account UUID, a successor with the same uid and name owns the seeded
      record before and after the earlier context is retired and after a
      restart, until the record is resolved, and not after; on a host with
-     an account UUID, the successor gets none of it (`afs pending list`,
-     `show`, `export`, `retry` and `discard` are each refused), before and
-     after a restart, while a record the successor writes under its own
-     account UUID is listed, shown, exported, retried and discarded for it
-     as for any owner. On every host type nothing else crosses: no other
+     an account UUID, a successor that is not an administrator gets none
+     of it: the record is left out of its `afs pending list`, and `show`,
+     `export`, `retry` and `discard` of it are refused, before and after a
+     restart, while a record the successor writes under its own account
+     UUID is listed, shown, exported, retried and discarded for it as for
+     any owner. On every host type nothing else crosses: no other
      context, token or record (C41, point 4; C40, point 8);
    - a rename over a file another local process holds open: the rename
      succeeds where, on SMB, the opener allowed delete sharing, and
