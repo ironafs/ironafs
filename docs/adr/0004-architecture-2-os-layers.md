@@ -3,7 +3,7 @@
 
 # 0004, part 2: OS layers and Windows
 
-Status: proposed (2026-11-20). Part of ADR 0004 ([overview](0004-architecture.md)); raised in issue #20.
+Status: accepted (2026-11-20). Part of ADR 0004 ([overview](0004-architecture.md)); raised in issue #20.
 
 This part decides how IronAFS appears on each operating system: the Linux,
 macOS and Windows layers, what all of them share when they present names,

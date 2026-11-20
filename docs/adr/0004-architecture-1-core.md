@@ -3,7 +3,7 @@
 
 # 0004, part 1: Core
 
-Status: proposed (2026-11-20). Part of ADR 0004 ([overview](0004-architecture.md)); raised in issue #20.
+Status: accepted (2026-11-20). Part of ADR 0004 ([overview](0004-architecture.md)); raised in issue #20.
 
 ## Context
 

@@ -627,3 +627,6 @@ The full record, with every finding and its disposition, is
 - **Correction, 2026-11-20 (#28):** "How this ADR is organised", point 2
   now points to `docs/adr/README.md` for how an amendment is reviewed,
   instead of "the normal tier for its class". No decision changed.
+- **Correction, 2026-11-20:** the four part files' status lines said
+  "proposed" after the ADR was accepted; they now say "accepted". No
+  decision changed.
