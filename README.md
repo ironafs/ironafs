@@ -91,7 +91,7 @@ an SMB 3.1.1 server of IronAFS's own on the local machine, behind a gate on
 identity, security, application compatibility and coherency. What has been
 measured is the transport: Windows' SMB client reaching a listener on the
 local machine beside Windows' own file sharing, on Windows 10 22H2 and
-Windows 11, to the client's first packet. A full SMB session has not been
+Windows 11 24H2 and 26H2, to the client's first packet. A full SMB session has not been
 measured yet ([the UNC note](docs/research/2026-11-19-windows-unc-without-a-driver.md)).
 A Cloud Files replica may follow later as an optional offline companion,
 and is the Windows surface if the gate fails. This is the maintainer's
