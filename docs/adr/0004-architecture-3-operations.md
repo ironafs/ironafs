@@ -1756,11 +1756,12 @@ hosted runners, or a case here cannot be automated on a supported OS.
      half: with logind or the agent's signal, the successor acts in the
      earlier context only until the signal retires it (after any linger),
      and not after; with an account UUID or equivalent, the successor's
-     first record operation and its next token installation each fail the
-     account-instance check and retire the context; its `afs pending list`
-     leaves out the earlier account's records, and every other request on
-     them is refused, before any record or metadata of them is returned;
-     with neither, the successor can use the old token until it expires or is
+     first record request (an `afs pending list` with nothing to show
+     included) and its next token installation each fail the
+     account-instance check, retire the context and are refused before any
+     record or metadata is returned; once it holds its own context, its
+     `afs pending list` leaves out the earlier account's records and every
+     other request on them is refused; with neither, the successor can use the old token until it expires or is
      removed by `unlog`, and not after. Records half: on a host with no
      account UUID, a successor with the same uid and name owns the seeded
      record before and after the earlier context is retired and after a
@@ -1769,8 +1770,9 @@ hosted runners, or a case here cannot be automated on a supported OS.
      of it: the record is left out of its `afs pending list`, and `show`,
      `export`, `retry` and `discard` of it are refused, before and after a
      restart, while two records the successor writes under its own
-     account UUID are listed, shown and exported for it, one is retried
-     and the other discarded, as for any owner. On every host type nothing else crosses: no other
+     account UUID, both unresolved in the same state, are listed, shown
+     and exported for it, and one is retried and the other discarded, as
+     for any owner. On every host type nothing else crosses: no other
      context, token or record (C41, point 4; C40, point 8);
    - a rename over a file another local process holds open: the rename
      succeeds where, on SMB, the opener allowed delete sharing, and

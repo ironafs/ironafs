@@ -1259,8 +1259,8 @@ users.
    threat model (O23). The archive format is specified with the record
    format (N32 to N35). Every discard is an audit event.
    The account-instance check that runs at token installation also runs
-   before `afs pending list` shows a record (a record that fails it is
-   left out of the list), before any recovery record
+   before any record request is answered, `afs pending list` included
+   (C41, point 4), before any recovery record
    is shown, exported, retried or discarded, and before a context rebinds
    to one (C41, point 4; C40, point 8). The one stated residual (C41, point
    4) is uid reuse. On Linux and macOS it has two halves. The token half: a
@@ -1707,8 +1707,8 @@ that needs a reboot is avoided. Byte limits are coding standards rule 3.
    on a host with no account UUID, recovery records alone follow uid and
    name, as the records half of the stated residual says (C41, point 4).
    Before a restart, the account-instance check that runs at token
-   installation also runs before `afs pending list` shows a record (a
-   record that fails it is left out of the list),
+   installation also runs before any record request is answered, `afs
+   pending list` included (C41, point 4),
    before any recovery record is shown, exported, retried or discarded, and
    before a context rebinds to one (C41, point 4). The one residual (C41,
    point 4) is uid reuse. On Linux and macOS it has two halves. The token
@@ -1762,11 +1762,15 @@ each filesystem request that a process cannot forge, or the Windows spike
    next install retires the old generation (C18, point 7) and treats the
    records of the old owner as C40, point 8, says. **Records.** The
    account-instance check that runs at token installation also runs before
-   `afs pending list` shows a record, before any recovery record is
-   shown, exported, retried or discarded, and before a context rebinds to
-   one. A mismatch retires the old generation and treats the records of
-   the old owner as C40, point 8, says: `afs pending list` leaves those
-   records out, and every other request on them is refused. A user whose
+   any record request is answered, `afs pending list` included even when
+   the list would be empty, before any recovery record is shown, exported,
+   retried or discarded, and before a context rebinds to one. It checks
+   the requesting context first: a mismatch retires the old generation,
+   refuses that request before any record or metadata is returned, and
+   treats the records of the old owner as C40, point 8, says. In a context
+   that passes, `afs pending list` shows only records whose owner's
+   account instance matches; the others are left out, and every other
+   request on them is refused. A user whose
    services linger keeps the context until the linger ends, and the signal
    retires it only then. Hosts with neither signal rely on token expiry and
    `unlog`; this is documented. **Bound.** An account deleted and recreated
