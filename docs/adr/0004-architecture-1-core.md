@@ -558,12 +558,17 @@ long or too costly against the test cell.
      records are detached and no handle resumes; or
    - a callback break makes the file's rights, or its directory's ACL,
      stale; or
-   - a local rename replaces the file (C10, point 5); or
+   - a local rename replaces the file, for a handle of a context other
+     than the renaming one (C10, point 5; the renaming context's handles
+     fail with `Stale` there and are never suspended); or
    - the network generation changes (C23, point 2); or
    - the ten-minute bound of point 5 passes for a node with open handles.
 2. The core then fetches the file's rights under the current credential.
    If they still cover what the handle needs, it resumes with the same id
-   and stores in flight authenticate again. If not, or if the rights
+   and stores in flight authenticate again. A handle suspended by a local
+   rename resumes only if, in addition, its context's revalidation of the
+   entry shows the file is neither gone nor replaced (C10, point 5); a
+   rights fetch on the old file id alone does not resume it. If not, or if the rights
    cannot be fetched before the deadline, C13 applies, and the operating
    system's caches for the node are purged as for a revocation (C15,
    point 2; C17).
@@ -639,6 +644,7 @@ trusted blindly.
    every context's handles on every node, which C24 forbids. **Test:** two
    contexts hold a node; a weak break plus an injected purge failure; both
    get `Stale` on that node only, and their data and records are kept.
+   On SMB, C17, point 5's test covers both branches.
 7. **macOS: a failed revoke.** If revoking the item fails too, the
    extension ends that user's mount (L9, L10). Nothing the mount served
    stays reachable through it.
@@ -730,11 +736,16 @@ and L13.
      reply not acknowledged as written is undelivered; a mutation whose
      reply was not acknowledged as written is uncertain: its outcome is
      read back and it is never repeated (C28, point 4).
-   - **Tests:** a revocation that lands after a reply has crossed the IPC
-     channel and before the front end writes it: the reply is not
-     written. With the advance withheld from the front end, the
-     revocation is not reported complete. Two replies in one encrypted
-     compound, the second revoked. (Also L13, point 10, and L18,
+   - **Tests:** the front end applies a revocation's advance after a
+     reply has crossed the IPC channel and before it writes the reply:
+     the reply is not written. The complementary order: the daemon has
+     recorded the revocation and the advance is withheld from the front
+     end; a reply already issued starts to be written and counts as
+     delivered (point 3), a new request under the revoked authority is
+     refused from the moment of recording, and the revocation is not
+     reported complete until the binding acknowledges the advance or is
+     torn down. Two replies in one encrypted
+     compound, the second revoked (SMB only). (Also L13, point 10, and L18,
      point 9.)
 
 Why: the "silent wrong answer" anti-goal. A check made before a wait says
@@ -767,7 +778,11 @@ cannot fail.
    - SMB: the front end completes pending change notifications with
      "rescan". Only if it cannot, which is a failure of the notification
      channel itself (C15, point 6), does it close the session, ending
-     that session's other opens too;
+     that session's other opens too. **Test:** an unrelated file stays
+     open in the same session while a node's purge fails; after a
+     successful rescan notification the unrelated open stays usable, and
+     after an injected failure of the notification channel it ends with
+     the session;
    - the Windows replica, if built: the event stays unacknowledged until
      the mechanism its own ADR specifies has removed the stale state
      (L28).
@@ -793,7 +808,11 @@ cannot fail.
      it holds is gated as in C16, point 5, and purged as above, or
      handled under point 5 where it cannot be purged. A purge that fails
      under overflow applies C15, point 6, to each node that failed, not to
-     the binding.
+     the binding. **Test:** during an overflow, a new event arrives for a
+     node the overflow has already swept, before the overflow's
+     acknowledgement; the node stays gated and the new effect stays
+     pending under its own revision after the overflow is acknowledged,
+     until that revision is applied and acknowledged.
 
 Why: a callback break must never wait on a layer, and a slow layer must
 not grow the daemon's memory. libfuse documents a deadlock when
@@ -1216,13 +1235,18 @@ users.
    acts.
 4. **Commands.** `afs pending list` shows what waits and why. `retry`
    stores a record over the server's version after the user has seen the
-   difference. `discard` drops it. `show` and `export` give the bytes to
-   the record's durable owner (point 5) only. Only the durable owner
-   instructs a retry, after seeing the difference; a context with the
-   same AFS identity under another account instance may then carry it
+   difference. `discard` drops it, and only the record's durable owner or
+   an administrator (below) may discard it. `show` and `export` give the
+   bytes to the record's durable owner (point 5) only. Only the durable
+   owner instructs a retry, after seeing the difference; a context with
+   the same AFS identity under another account instance may then carry it
    out under C28, point 5, without seeing the bytes or the difference
-   (C18, point 2). A retry
-   always needs C28, point 5. An administrator may list, discard, and move
+   (C18, point 2), and may not discard it. A retry
+   always needs C28, point 5. **Test:** two local accounts hold one AFS
+   identity; the second account's attempt to replay a record before its
+   owner has consented is refused; after consent it carries the retry
+   out; its requests for the bytes, the difference and a discard are
+   each refused; the same holds after a daemon restart (point 6). An administrator may list, discard, and move
    records unread: `afs pending export --for-owner` writes an opaque,
    checksummed archive that carries each record's durable owner, AFS
    identity and cell, and `afs pending import` places those records in
@@ -1236,8 +1260,12 @@ users.
    (C18, point 9; C40, point 6). After that context ends, the same
    account instance may view or export the bytes; replaying still needs a
    current token for the same AFS identity (C28).
-6. After a restart, records wait for their user's token (C42) and then
-   for that user's instruction. A returning token stores nothing.
+6. After a restart, records wait for their durable owner's instruction
+   and for a current token for the same AFS identity in the context that
+   carries the retry out (C42; C28, point 5), under point 4's rules: the
+   owner consents after seeing the difference, and another account
+   instance may carry the retry out without seeing either. A returning
+   token stores nothing.
 7. **On a failed or uncertain store,** the dirty data is detached from
    everything readable and the affected handles fail with the write error.
 8. Budgets are per account (C27). A background store that keeps making
@@ -1688,11 +1716,13 @@ each filesystem request that a process cannot forge, or the Windows spike
    signal rely on token expiry and `unlog`; this is documented.
    **Bound.** An account deleted and recreated with the same uid and
    name, on a system with no account UUID, is indistinguishable from the
-   old one. It inherits nothing only where a session-end signal retired
-   the old context first. On a host with neither signal, a new account
-   reusing the uid can use its predecessor's live token until that token
-   expires or is removed. This residual is stated in O23's local-user
-   row. After a restart such records stay quarantined (C40, point 8).
+   old one. The one residual: on a Linux or macOS host with neither
+   session-end signal (logind or the user's IronAFS agent), a new account
+   given a departed account's uid can use that account's live token until
+   the token expires or is removed by `unlog`. Hosts with either signal
+   are not affected. O22, point 1, O23's local-user row and O46, point 1,
+   state the same residual. After a restart such records stay quarantined
+   (C40, point 8).
 5. **Windows.** The account instance is the account's SID, which is not
    reissued to another account. A context ends when its logon session
    ends (L18, point 12). After a restart the SID is C40, point 8's

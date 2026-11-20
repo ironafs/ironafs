@@ -375,7 +375,10 @@ If any of them could lower the profile, that person would choose it.
 1. Every connection is created through one pure function. Its inputs:
    the cell with its protocol identifier and configuration generation
    (N27), server, service, context, the configured floor, any active pin,
-   evidence, any live N12 attestation, the cell's `anonymous` setting
+   evidence, any live N12 attestation, the **current legacy
+   permission** (whether the cell's `legacy_fileservers` setting in
+   effect now is `cell-attested` and no N12, point 5, end has occurred
+   since the attestation), the cell's `anonymous` setting
    (N3), the `fips` setting and the host's FIPS switch (O31, point 4),
    and the context's token and **authenticated intent** for the cell (a
    marker it or another context of its durable owner holds, or one that
@@ -420,7 +423,8 @@ If any of them could lower the profile, that person would choose it.
      (N1, point 6); it meets the context's token profile (N4, point 1),
      with a credential not known to be expired or revoked; and its class
      meets an active pin's class; or
-   - **legacy:** its security profile meets the configured floor; it is a
+   - **legacy:** the current legacy permission holds (point 1); its
+     security profile meets the configured floor; it is a
      fileserver connection carrying a live N12 attestation, using the
      companion credential (point 4) under that credential's own profile,
      while neither that credential nor the context's token is known to
@@ -429,8 +433,11 @@ If any of them could lower the profile, that person would choose it.
      has neither a token nor authenticated intent for the cell (point 1).
 
    **Tests:** `fips = "require"` with `anonymous = "allow"` refuses the
-   cell; with a fresh attestation, the companion and then the primary
-   credential expires, and each refuses the legacy arm.
+   cell; with fresh credentials and a fresh attestation, a policy change
+   to `deny` refuses the legacy arm; with a fresh attestation, the
+   companion expires while the primary stays live, and then the primary
+   expires while the companion stays live, and each refuses the legacy
+   arm.
 
 Why: one function is one place to test and to audit. A rule enforced at
 several call sites is eventually missed at one.

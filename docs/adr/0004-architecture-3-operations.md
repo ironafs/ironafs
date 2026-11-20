@@ -574,7 +574,9 @@ locally under O12 to O14.
 5. **Pending and recovery records** (C29, point 4) have four separate
    permissions: list, discard, move unread, and read the bytes. An
    administrator holds the first three. Only the record's durable owner
-   (C40, point 6) holds the fourth.
+   (C40, point 6) holds the fourth, and of the others only the durable
+   owner and an administrator may discard. Another account instance that
+   carries out an owner's retry (C29, point 4) holds none of them.
 
 Why: a diagnostic that shows one user what another user opened, or whether
 they hold a token, is a cross-user leak by another route.
@@ -758,8 +760,10 @@ gate waives them (O46).
    a diagnostic. The one exception is deliberate delegation: a handle its
    opener passes to another process keeps that handle's authority and
    nothing more (C13, point 4; C18, point 3). The one stated residual is
-   a uid reused by a new account on a Linux or macOS host with no
-   session-end signal (C41, point 4; O23's local-user row).
+   uid reuse on a Linux or macOS host with neither session-end signal: a
+   new account given a departed account's uid can use that account's live
+   token until the token expires or is removed by `unlog`. Hosts with
+   either signal are not affected (C41, point 4; O23's local-user row).
 2. **No local privilege escalation through AFS content.** Set-uid and
    set-gid bits and device files in a cell grant nothing on the local
    machine.
@@ -808,7 +812,7 @@ scope needs a superseding ADR.
 |---|---|---|
 | A hostile or compromised fileserver | Bounded decoding (O22.7); byte caps per queue; per-server budgets; deadlines; callback rate limits that mark a server's callbacks suspect and never drop a break (C31, C32); loop bounds; `nosuid,nodev` mounts (L3, L7) `[DES-035]` | It can serve wrong data for the files it hosts, because an AFS client trusts its cell's servers. Where a cell's servers share keys, IronAFS treats the whole cell as the compromise domain |
 | A network attacker against rxkad | The encrypt level by default; rxkad-k5 and rxkad-kdf `[DES-049]`; cache namespaces private to each credential context (C18), so a tampered reply is reused only in the context whose fetch it answered; rxgk later (O50) | rxkad's age (Context 6), and IronAFS's position (rule 4) that no rxkad level protects a reply's or a store's payload. A tampered reply can become the base of that user's own write, and a weakly protected store can change server data. Write and reply integrity against a network attacker needs rxgk at both ends, which no released server offers to clients today `[DES-048]`. Sites that need it now protect the network path (with IPsec or a VPN, for example) or do not allow writes from untrusted networks |
-| Another local user | Per-file, per-principal rights and handles that carry authority (C22, C13); IPC peer credentials; per-user budgets; user projections (O16) | Timing of cache occupancy under shared disk pressure, bounded by per-account floors. Latency and admission failures show that someone is using the cache (C27, point 5). In the opt-in shared pool (C21), an authorised reader can tell whether a file range is warm. On a Linux or macOS host with no session-end signal, an account deleted and recreated with the same uid and name (with no account UUID) can use its predecessor's live token until that token expires or is removed (C41, point 4) |
+| Another local user | Per-file, per-principal rights and handles that carry authority (C22, C13); IPC peer credentials; per-user budgets; user projections (O16) | Timing of cache occupancy under shared disk pressure, bounded by per-account floors. Latency and admission failures show that someone is using the cache (C27, point 5). In the opt-in shared pool (C21), an authorised reader can tell whether a file range is warm. On a Linux or macOS host with neither session-end signal, a new account given a departed account's uid can use that account's live token until the token expires or is removed by `unlog`; hosts with either signal are not affected (C41, point 4) |
 | The local administrator | None | Out of scope. An administrator can read tokens in memory and the cache |
 | A malicious cell configuration or DNS answer | Configured cells win over DNS; tokens are sent only to their own cell's servers; Kerberos mutual authentication; set-id bits ignored | Unauthenticated traffic to a spoofed server |
 | A malicious local IPC client | Bounded decoding; OS peer credentials; per-user budgets; adapter bindings only by the daemon's own registration (C45); producer roles for events (O3) | None known |
@@ -990,7 +994,8 @@ attestation level changes, or a platform changes its signing rules.
    (DEB), or the repository's `gpgkey` (RPM). A planned rotation ships
    the new key in a keyring package signed by the old one, before the
    switch. An emergency rotation, when the old key is compromised, is
-   announced by advisory (O30) with the new fingerprint published in the
+   announced by advisory (O30) that names the compromised key's
+   fingerprint as well as the new one, both published in the
    repository and on the release page, and the site installs the new
    keyring by hand. Nothing in IronAFS fetches keys (O20). How clients
    discover these keys is frozen with the identifiers (O38).
@@ -1556,7 +1561,11 @@ behaviour costs more than the tests return.
    invariants; M3's gate requires the write, journal, disk-fault and
    competing-write invariants (point 4).
 3. Invariants are checked after every step:
-   - no read returns bytes older than a version the client has seen broken;
+   - no read reply starts to be submitted after a break of the version it
+     carries is effective at its binding: when the core records the
+     break, for a binding in the daemon's process, and when the front end
+     has applied the epoch advance, for one in its own process (C16,
+     points 3 and 6);
    - outside the stale mode (O34), a read returns bytes older than the
      simulated server's current version only while the client holds
      callback trust for that server (C32, point 1), or within the T
@@ -1567,11 +1576,12 @@ behaviour costs more than the tests return.
      to that server; the server model implements assumption A14 as the
      specification for the callback service states it, and the case
      "break lost in every retransmission, keepalives succeed" is run;
-   - no private cache entry or grant is used outside its credential
-     context and generation, or for a file, incarnation or operation other
-     than its own (C22, point 1), and no delivery starts after the change
-     of its grant's epochs is effective at its binding (C16, points 3 and
-     6); a pool entry is read only with the reader's own shared-pool
+   - no private cache entry is used outside its credential context and
+     generation (C18); no grant is used outside its credential context
+     and generation, or for a file, incarnation or operation other than
+     its own (C22, point 1); and no delivery starts after the change of
+     its grant's epochs is effective at its binding, as the first
+     invariant defines it (C16, points 3 and 6); a pool entry is read only with the reader's own shared-pool
      grant from authoritative evidence (C21, point 6; C22, point 1); a
      handle passed to another process acts in the opener's
      context (C18, point 3);
@@ -1584,7 +1594,8 @@ behaviour costs more than the tests return.
    - nothing is stored over a server version the client has not seen
      without the user's action (C28, point 1): an explicit retry that
      finds the server's version moved past the record's base stores only
-     after the user has seen the difference (C29, point 4);
+     after the record's durable owner has seen the difference and
+     instructed it (C29, point 4);
    - a lost store reply never counts as success;
    - every OS request completes within its deadline;
    - no queue exceeds its cap.
@@ -1611,6 +1622,13 @@ The core's design without I/O (C3) is what makes this possible.
 1. A cross-context or cross-user leak, a privilege escalation, or a
    breach of any O22 invariant fails acceptance, in every phase and on
    every OS. It is never recorded as a known limitation and never waived.
+   The one exclusion is the uid-reuse residual that O22, point 1, states:
+   on a Linux or macOS host with neither session-end signal, a new
+   account's use of its uid predecessor's live token until that token
+   expires or is removed by `unlog` (C41, point 4). It is recorded as a
+   known limitation. Any other cross-user access on such a host, any use
+   after expiry or `unlog`, and any such inheritance on a host with either
+   signal fails acceptance.
 2. Any other acceptance case, outside O22, either passes, or its gap is a
    documented and bounded limitation.
 3. A phase gate that cannot show point 1 holds on a platform does not ship
@@ -1684,9 +1702,11 @@ hosted runners, or a case here cannot be automated on a supported OS.
    - on Linux and macOS, on a host with logind or the agent's signal, a
      uid reassigned to a new account without a daemon restart: the new
      account inherits no context, token or record (C41, point 4);
-   - on Linux and macOS, on a host with neither signal, the documented
-     residual: the old token works until it expires, and after a restart
-     the old records stay quarantined (C41, point 4; C40, point 8);
+   - on Linux and macOS, on a host with neither signal, the residual
+     O46, point 1, excludes: the new account can use the old token until
+     it expires or is removed by `unlog`, and not after; it gets no other
+     context or record, and after a restart the old records stay
+     quarantined (C41, point 4; C40, point 8);
    - a rename over a file another local process holds open: the rename
      succeeds where, on SMB, the opener allowed delete sharing, and
      otherwise fails with a sharing violation (L33, point 13); both
@@ -1694,6 +1714,11 @@ hosted runners, or a case here cannot be automated on a supported OS.
      with `Stale`, another context's handle is suspended until its own
      revalidation retires it, and unstored bytes become recovery records
      of their owners (C10, point 5);
+   - two local accounts with one AFS identity: a retry the second account
+     carries out stores only after the record's owner has consented, and
+     the second account cannot see the bytes or the difference or
+     discard the record, before and after a restart (C29, points 4
+     and 6);
    - an administrator's `afs pending export --for-owner` and
      `afs pending import`: the records arrive under their owner, and no
      administrator command shows or exports their bytes; the archive is

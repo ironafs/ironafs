@@ -383,8 +383,16 @@ invariant.
 6. **S6.** The specification for packaging (O37) settles, per package
    manager, how a site verifies the first keyring package and removes a
    compromised key from the trust store in effect. It must keep O29,
-   point 6, and O20: no trust from unverified content, a removed key's
+   point 6, and O20: no trust from unverified content, the advisory names
+   the compromised fingerprint as well as the new one, a removed key's
    signature is rejected, and IronAFS fetches no key.
+7. **S7.** The specification for the Windows route (L19, L20) settles
+   how a saved path under the route's name is handled after the proxy is
+   removed by a policy refresh or an uninstall, when Windows' own file
+   sharing listens on port 445. It must keep L20, point 8: no IronAFS or
+   AFS credential is ever sent to a listener that is not IronAFS's, and,
+   while the route is disabled, no authentication goes off the machine.
+   L41, point 4, is its gate.
 
 ## Review
 

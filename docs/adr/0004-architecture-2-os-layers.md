@@ -557,7 +557,9 @@ macOS 27 and recorded:
    daemon running under its dedicated user over the adapter endpoint
    (C45), and that the daemon's checks of its code signature and peer
    succeed (C45, point 3);
-10. C16, point 6's tests, through the extension and the kernel;
+10. C16, point 6's revocation-ordering tests, through the extension and
+    the kernel, with native FSKit replies; the encrypted-compound case is
+    SMB's (L18, point 9);
 11. a `revoke` that fails while the item is mapped, and that the layer
     then follows C15's rule for macOS (C15, point 7);
 12. what the extension can do when it loses the daemon (L14, point 5):
@@ -741,7 +743,7 @@ from the authenticated session `[DES-072]`.
    immediately before it writes a reply to the SMB connection, and on an
    invalidation follows C17, points 2 and 5.
 9. C16, point 6's tests run through the front end and the SMB
-   connection.
+   connection, the encrypted-compound case included.
 10. **Re-authentication.** The daemon verifies that a re-authenticated
     session belongs to the same credential context (L17, point 1). If it
     does, the session's trees and opens are rebound to the new capability;
@@ -857,10 +859,18 @@ checked independently of the daemon and re-checked when policy refreshes.
 8. **Disabling and uninstalling.** When a route is disabled on a policy
    refresh, the hosts entry, the NTLM restriction and point 2's
    protection of every listener the route used stay until uninstall, so
-   saved paths under the name fail closed on loopback. On uninstall
-   containment ends:
+   saved paths under the name stay on loopback. Windows' own file-sharing
+   listener is already bound to every address on port 445 and takes
+   nothing over, so with sharing active a saved path can reach it once
+   the proxy is gone. The invariant in that state: no IronAFS or AFS
+   credential is ever sent to a listener that is not IronAFS's, and no
+   authentication goes off the machine. L41, point 4, observes which
+   listener receives the attempt; how the route keeps the invariant is
+   specification item S7. A row that cannot show it is not given the
+   route (point 6). On uninstall containment ends:
    the uninstaller removes the drive mappings and shortcuts the agent
-   created and restores settings (L21, point 5), and the administrator's
+   created and restores settings (L21, point 5), so no IronAFS or AFS
+   credential remains to be sent under the name, and the administrator's
    guide states that saved paths under the name then resolve as any name
    would.
 
@@ -1741,7 +1751,15 @@ or authentication defaults on a target build.
    two-user isolation; callback freshness.
 4. Required: the path fails closed with IronAFS stopped or the route
    disabled by policy, and an ordinary local user cannot take over any
-   listener the route uses (L20, points 2 and 8; A4).
+   listener the route uses (L20, points 2 and 8; A4). With the route
+   disabled by policy and Windows' own file sharing active, and again
+   with a competing local listener, the test opens a saved path and
+   records which listener receives the authentication attempt, before
+   any tree connection. It passes only if no IronAFS or AFS credential
+   reaches a listener that is not IronAFS's and no attempt leaves the
+   machine (L20, point 8; S7). A failed open alone does not pass. After
+   an uninstall, the test checks that no IronAFS or AFS credential is
+   sent under the name.
 5. Required: Windows' own file sharing still works after a restart, a
    cumulative update and an uninstall.
 6. Only route 3 can qualify the Windows 10 row `[WIN-162]`
