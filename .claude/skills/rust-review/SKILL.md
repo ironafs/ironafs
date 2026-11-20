@@ -94,8 +94,8 @@ review seats start.
 
 ## Unsafe
 
-18. `unsafe_code` is `forbid` workspace-wide. A crate that needs it (FSKit or
-    Cloud Files bindings; never C Rx, ADR 0001) gets an ADR first, then runs
+18. `unsafe_code` is `forbid` workspace-wide. A crate that needs it (FSKit, SSPI or
+    other OS bindings; never C Rx, ADR 0001) gets an ADR first, then runs
     at `deny` with named `#[expect(unsafe_code, reason = "…")]` sites (rule 5).
 19. Every `unsafe` block and `unsafe impl` has `// SAFETY:` naming the
     invariant it upholds.
