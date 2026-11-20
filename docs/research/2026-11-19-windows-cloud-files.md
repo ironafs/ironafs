@@ -7,8 +7,8 @@
 
 - Two kinds of evidence, labelled as in the [research index](README.md):
   - **INSPECTED:** read in Microsoft's documentation, linked with the claim;
-  - **MEASURED:** measured in the owner's earlier Cloud Files work (private
-    notes), on disposable virtual machines running Windows 11 Pro 26H2
+  - **MEASURED:** measured by the maintainer on disposable virtual machines
+    running Windows 11 Pro 26H2
     (build 26300) and Windows 10 Pro 22H2 (build 19045), roots on local
     NTFS, in October and November 2026. The raw results are not public.
     These are EXECUTED results in the sense of `docs/workflow.md` §3c, but
@@ -406,4 +406,4 @@ comparable configuration, so it stays open.
 - Microsoft, Cloud Files: [Build a cloud sync engine](https://learn.microsoft.com/en-us/windows/win32/cfapi/build-a-cloud-file-sync-engine), [Cloud Filter API reference](https://learn.microsoft.com/en-us/windows/win32/cfapi/cloud-filter-reference), [CF_CALLBACK_TYPE](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/ne-cfapi-cf_callback_type), [CfExecute](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfexecute), [CF_PROCESS_INFO](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/ns-cfapi-cf_process_info), [CF_CONNECT_FLAGS](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/ne-cfapi-cf_connect_flags), [CF_HYDRATION_POLICY_PRIMARY](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/ne-cfapi-cf_hydration_policy_primary), [CfUpdatePlaceholder](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfupdateplaceholder), [CfSetInSyncState](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfsetinsyncstate), [CfRegisterSyncRoot](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfregistersyncroot), [CF_PLACEHOLDER_CREATE_INFO](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/ns-cfapi-cf_placeholder_create_info)
 - Microsoft, ProjFS: [Projected File System](https://learn.microsoft.com/en-us/windows/win32/projfs/projected-file-system), [Enabling ProjFS](https://learn.microsoft.com/en-us/windows/win32/projfs/enabling-windows-projected-file-system), [PRJ_NOTIFICATION](https://learn.microsoft.com/en-us/windows/win32/api/projectedfslib/ne-projectedfslib-prj_notification)
 - Microsoft, security and files: [LocalService account](https://learn.microsoft.com/en-us/windows/win32/services/localservice-account), [Mandatory Integrity Control](https://learn.microsoft.com/en-us/windows/win32/secauthz/mandatory-integrity-control), [AccessCheck](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-accesscheck), [ReadDirectoryChangesW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw)
-- Measurements: the owner's earlier Cloud Files work (private notes).
+- Measurements: the maintainer's, on the virtual machines named above.

@@ -14,8 +14,8 @@
     IronAFS code:
     here, either on disposable virtual machines for this note (section 3;
     the steps are in the appendix, so anyone can repeat them), or, where
-    marked, in the maintainer's earlier Windows work, whose raw results are
-    private. These are evidence for design, not proof that IronAFS works
+    marked, earlier by the maintainer, whose raw results are not
+    published. These are evidence for design, not proof that IronAFS works
     (EXECUTED in the sense of `docs/workflow.md` §3c, but not on IronAFS);
   - **NOT VERIFIED:** reasoned or reported by others, not measured or read
     in a primary source.
@@ -46,7 +46,7 @@ the tests, and whether it survives updates is a spike gate.
 | Route | Windows versions | Windows' own file sharing | Status |
 |---|---|---|---|
 | 1. Our server on another port; a machine policy ("Alternative Port Mappings") sends `\\afs` there | per-mapping alternative ports: 11 24H2 and later (Microsoft Learn); the machine policy: measured on 26H2 only | kept | MEASURED (maintainer's earlier work, 26H2 only). The policy was found in a third-party copy of Microsoft's administrative templates; the template version was not recorded, and Microsoft's own templates ([administrative templates for Windows 11](https://www.microsoft.com/en-us/download/details.aspx?id=108847)) were not checked, so the policy's presence on 24H2 is to be measured |
-| 2. Our server on `127.0.0.1:445` with Windows' SMB server disabled | 10 and 11 | **lost**: no inbound sharing, no `C$` or `ADMIN$` | MEASURED (maintainer's earlier work); now a fallback only |
+| 2. Our server on `127.0.0.1:445` with Windows' SMB server disabled | 10 and 11 | **lost**: no inbound sharing, no `C$` or `ADMIN$` | MEASURED (by the maintainer, earlier); now a fallback only |
 | **3. Port proxy on `127.0.0.1:445` beside Windows' SMB server** | **10 22H2, 11 24H2, 11 26H2** | **kept** | **MEASURED (this note)** |
 
 Route 3's side effects:
@@ -88,8 +88,8 @@ Route 3's side effects:
 | IronAFS's own service binding `127.0.0.1:445` before `srvnet` (route 3 without the proxy) | Expected to work the same way, since the proxy's listener is an ordinary socket; it would remove the back-end port. But `LanmanServer` would then depend on IronAFS's service, so Windows' own file sharing would wait for, or fail with, IronAFS at boot. | NOT VERIFIED; to measure in the spike |
 | NetBIOS over TCP, port 139 | Ruled out: NetBIOS carries SMB dialects 2.0.2 to 3.0.2 only, not 3.1.1. | INSPECTED: [MS-SMB2 Transport](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/1dfacde4-b5c7-4494-8a14-a09d3ab4cc83) |
 | Our server terminating SMB on 445 and passing other shares on to Windows' server | Ruled out: the share name arrives only after authentication, so passing a session on means relaying the user's authentication. | NOT VERIFIED as a measurement; follows from the protocol order |
-| Windows' own SMB server sharing a local folder that IronAFS fills | Ruled out: requests reach the filesystem as the System account, so the caller's identity is lost. | MEASURED (maintainer's earlier work) |
-| Windows' own NFS client | Ruled out as measured: in the configuration tried (anonymous UID mapping), every Windows user reached the server with the same identity. Per-user identity mapping was not tested. | MEASURED (maintainer's earlier work), for that configuration only |
+| Windows' own SMB server sharing a local folder that IronAFS fills | Ruled out: requests reach the filesystem as the System account, so the caller's identity is lost. | MEASURED (by the maintainer, earlier) |
+| Windows' own NFS client | Ruled out as measured: in the configuration tried (anonymous UID mapping), every Windows user reached the server with the same identity. Per-user identity mapping was not tested. | MEASURED (by the maintainer, earlier), for that configuration only |
 | WebDAV redirector | The WebDAV path syntax takes an optional port (`\\afs@port\...`); a plain `\\afs\...` reaches WebDAV only if no provider ahead of it in the network provider order claims the name (Microsoft's page uses SMB ahead of WebDAV as its example) ([UNC naming and MUP](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/support-for-unc-naming-and-mup)). Microsoft has deprecated the WebClient service. | The path syntax INSPECTED by a research pass: [DavGetHTTPFromUNCPath](https://learn.microsoft.com/en-us/windows/win32/api/davclnt/nf-davclnt-davgethttpfromuncpath); the deprecation: [deprecated features](https://learn.microsoft.com/en-us/windows/whats-new/deprecated-features) |
 | A loopback adapter or a Hyper-V switch for a separate address | Not needed, and each installs a device. | NOT VERIFIED |
 

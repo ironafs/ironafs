@@ -617,11 +617,9 @@ Also at the owner's request, in the same batch:
 
 - the maintainer's controller instructions are no longer a public file; they
   live in the maintainer's private instructions, and the public files say so;
-- ADR 0001 no longer mentions a future service component's licence;
 - `docs/adr/template.md` gives the sections every ADR has;
-- the session plan (`docs/next-session.md`, named in the rounds above) is no
-  longer published. Plans live in the maintainer's private notes until they
-  become milestones and issues.
+- private planning material was removed from the public tree; plans live in
+  the maintainer's private notes until they become milestones and issues.
 
 Round 15, verification of round 14 and the owner's batch, on candidate tree
 `af663e25339222c0686c56f858bd2436735ad873` (scope manifest of 19 files; the
@@ -638,8 +636,7 @@ Every round-14 item and every owner change was confirmed fixed, except:
   Both now say all MPL-covered files, changed or not.
 - **Minor, fixed:** the README's licence summary now names the GPL's methods
   for making the source available, like `LICENSING.md` and ADR 0001.
-- **Observation, fixed:** the private session plan now times the FSKit
-  distribution check like ADR 0001 ("before the macOS layer is designed").
+- **Observation, fixed:** private planning material was aligned with ADR 0001.
 
 Changed after round 15's tree, and checked by the controller against the
 files: the session plan was made private (this record and ADR 0002 note it
