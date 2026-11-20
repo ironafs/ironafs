@@ -4,10 +4,11 @@
 # Review record: wording tidy before going public
 
 Class E, for issue #3. An independent privacy check before the repository
-goes public asked for wording changes: the Windows research notes, the
-research index and two review records describe measurements as the
-maintainer's without describing their source, and reduce withdrawn planning
-material to generic wording while keeping the facts they record. Two
+goes public asked for wording changes. The Windows research notes, the
+research index and one review record now describe measurements as the
+maintainer's without describing their source; two review records reduce
+withdrawn planning material to generic wording while keeping the facts they
+record. Two
 statements of the SMB route's measurement gain its stated limit (to the
 client's first packet). No other claim, evidence label or result changes.
 Written by `claude-code:claude-opus-5-5`.
@@ -17,7 +18,7 @@ Written by `claude-code:claude-opus-5-5`.
 | 1, review | `dda1473..2f44b3f` | GPT read-only | gpt-6.2-sol | high | PASS: 3 minor |
 | 2, final-state check | `dda1473..24df47c` | GPT read-only, same session | gpt-6.2-sol | high | PASS: 2 minor |
 | 2, second family | `dda1473..24df47c` | DeepSeek (peak window, owner's permission) | deepseek-flash | max | FAIL: 1 major, 2 minor |
-| 3, fix verification | see the pull request | DeepSeek | deepseek-flash | max | pending |
+| 3, fix verification | `24df47c..33889f9` | DeepSeek (peak window, owner's permission) | deepseek-flash | max | PASS: 1 minor, fixed in this record's wording |
 
 Round 1's three minor findings were fixed in `126d58c`: the review record
 again states that ADR 0001 dropped a licensing reference, without naming the
