@@ -562,6 +562,11 @@ locally under O12 to O14.
    collection, to the credential context it concerns. Shared fetches, pool
    entries and per-server counters are administrator-only.
 4. Filtering happens before export, and redaction after it.
+5. **Pending and recovery records** (C29, point 4) have four separate
+   permissions: list, discard, move unread, and read the bytes. An
+   administrator holds the first three. Only the record's owner, or a
+   context holding the same AFS identity (C28, point 5), holds the
+   fourth.
 
 Why: a diagnostic that shows one user what another user opened, or whether
 they hold a token, is a cross-user leak by another route.
@@ -580,8 +585,10 @@ policy through the mechanism named here.
 3. `afs config show --effective --origin` names where each value came from.
 4. **Windows:** ADMX and ADML policy templates, writing under a policy key
    of the project's own. **macOS:** managed preferences through
-   configuration profiles. **Linux:** files and drop-ins, suited to
-   configuration management.
+   configuration profiles. **Linux:** policy files under a root-owned
+   policy directory, `/etc/ironafs/policy.d/`, separate from the
+   configuration files of O18 and validated by O19's rules; configuration
+   management delivers them.
 5. Install and upgrade are silent on every OS (O37).
 
 Why: a fleet is configured centrally, and an administrator must be able to
@@ -633,8 +640,11 @@ sites need a state this list lacks.
      reports "degraded". With no last good policy it does not mount, and
      reports "failed".
    - **Incompatible:** as in points 3 and 7.
-5. Returning to unmanaged needs the managed source's own removal signal. A
-   policy that merely disappears is treated as unreadable.
+5. Returning to unmanaged needs either the envelope directive
+   `mode = "unmanaged"`, delivered by the managed source before the host
+   is unassigned, or the audited administrator command
+   `afs config unmanage`, which succeeds only when no policy source is
+   present. A policy that merely disappears is treated as unreadable.
 6. Security floors in policy follow N8: an unknown security value
    refuses the cell.
 7. The daemon validates the whole policy, envelope included, as one
@@ -648,10 +658,18 @@ sites need a state this list lacks.
 9. On a reload into **unreadable** with no last good policy, a daemon
    that is already serving blocks new admissions and fences existing
    grants, as for incompatible, and reports "failed".
+10. If both the policy and the state directory are lost, the host starts
+    as unmanaged. Sites rely on their management tool to deliver policy
+    again; this is documented. Nothing local can recover the managed
+    state, and IronAFS does not promise it.
 
 Why: policy is where a site sets its security floor. An older client that
 skipped a key it did not understand would run below that floor without
-anyone knowing.
+anyone knowing. Fleets unassign through their management tool, so the
+directive of point 5 fits group policy, device management and
+configuration management; a single host or a broken pipeline needs the
+local command. A separate policy directory on Linux keeps a local edit
+from posing as policy.
 
 ### Data that leaves the machine
 
@@ -946,12 +964,26 @@ attestation level changes, or a platform changes its signing rules.
 5. Repository write access and release-signing keys are kept off test
    runners. Signing is a separate step, after verifying the digest and
    provenance of the trusted build of the reviewed release commit.
-6. How clients discover and trust package-signing keys is frozen with the
-   identifiers (O38). Planned and emergency key rotation are both
-   supported.
+6. Clients trust package-signing keys through the operating system:
+   Developer ID on macOS, Authenticode on Windows, and on Linux a keyring
+   package (`ironafs-archive-keyring`) whose key file under
+   `/usr/share/keyrings/` the repository source names with `signed-by`
+   (DEB), or the repository's `gpgkey` (RPM). A planned rotation ships
+   the new key in a keyring package signed by the old one, before the
+   switch. An emergency rotation, when the old key is compromised, is
+   announced by advisory (O30) with the new fingerprint published in the
+   repository and on the release page, and the site installs the new
+   keyring by hand. Nothing in IronAFS fetches keys (O20). How clients
+   discover these keys is frozen with the identifiers (O38).
 
 Why: a client installed fleet-wide as a system service is a high-value
-target for a tampered build.
+target for a tampered build. Point 6 follows Debian's documented practice
+for third-party repositories: the `signed-by` entry points to a file, and
+key updates come as new versions of a keyring package
+([DebianRepository/UseThirdParty](https://wiki.debian.org/DebianRepository/UseThirdParty)).
+A rotation key of IronAFS's own would need a verifier of ours inside the
+package manager's trust path, which APT and DNF do not offer, and more of
+our own code in the supply chain.
 
 ### O30. Vulnerability handling
 
@@ -988,10 +1020,12 @@ administrator to act.
 
 ### O31. FIPS 140 mode is unscheduled
 
-**Working.** Revisit if: client-to-fileserver rxgk interoperates with an
+**Working**, except the values of the `fips` key in point 4, which are
+**Firm** (N8). Revisit if: client-to-fileserver rxgk interoperates with an
 identified peer, and active CMVP certificates cover the exact operating
 environments, module versions and cryptographic services the client would
-use.
+use; or an operating system the matrix names changes how it reports its
+FIPS switch.
 
 1. No FIPS 140-3 mode is scheduled until both conditions above hold.
 2. A future mode requires authenticated rxgk with integrity or encryption,
@@ -1001,9 +1035,20 @@ use.
 3. In that mode a per-platform table (module, version, operating
    environment, algorithm, mode) decides what may run. An operation outside
    it is refused.
-4. A documented OS policy that requires approved cryptography makes
-   IronAFS fail closed by default. A site can require the same on any
-   platform with `fips = require`.
+4. **The operating system's FIPS switch is honoured from the first
+   authenticating release.** The client reads it: on Linux the read-only
+   flag `/proc/sys/crypto/fips_enabled`
+   ([kernel documentation](https://docs.kernel.org/admin-guide/sysctl/crypto.html)),
+   and on Windows the FIPS algorithm mode
+   ([BCryptGetFipsAlgorithmMode](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptgetfipsalgorithmmode)),
+   one `ironafs-os` site (C5, point 5). macOS has no system switch to
+   read. The key is `fips = "auto" | "require" | "permit-nonapproved"`,
+   default `auto`. Under `auto`, a host with the switch on refuses rxkad
+   and local NTLM, with the reason ("FIPS policy: rxkad is not
+   approved"). `permit-nonapproved` allows them; setting it is audited,
+   and policy can lock it (O17). `require` refuses non-approved
+   cryptography on any platform, so until a FIPS mode exists it refuses
+   every cell. No FIPS mode exists yet (point 1).
 5. `afs status` reports the active protocol and any unsupported or unknown
    platform capability.
 6. The project publishes the covered configurations and describes approved
@@ -1018,7 +1063,10 @@ for legacy use only
 ([SP 800-140C](https://csrc.nist.gov/projects/cmvp/sp800-140c)); rxkad's
 cipher, of roughly single-DES strength (Context 6), is none of them. So a
 FIPS mode cannot exist before rxgk does, and no released OpenAFS offers
-client-to-fileserver rxgk `[DES-048]`.
+client-to-fileserver rxgk `[DES-048]`. Point 4 is the "never silently
+lower" rule applied to a host whose owner declared FIPS: without it,
+IronAFS would run non-approved cryptography there without saying so, and
+detecting the switch costs one file read and one documented call.
 
 ### Lifecycle
 
@@ -1027,8 +1075,10 @@ client-to-fileserver rxgk `[DES-048]`.
 **Firm.**
 
 1. From the first release that has a write journal, each release reads or
-   safely migrates the preceding release's journal, recovery store and
-   durable state. The host UUID and the meaning of every record are
+   safely migrates the journal, recovery store and durable state of the
+   preceding release and of every supported long-term support line (O43),
+   through a chain of tested migrations kept in the tree until the oldest
+   supported line ends. Before 1.0 this is the preceding release only. The host UUID and the meaning of every record are
    preserved.
 2. The clean cache's format is not promised across versions. An unknown
    clean-cache format discards the cache. It never discards the host UUID,
@@ -1043,7 +1093,10 @@ client-to-fileserver rxgk `[DES-048]`.
    reason. The records are recovered with a release that reads them.
 
 Why: a pending write is a user's data that exists nowhere else. A clean
-cache can always be fetched again, so only it may be thrown away.
+cache can always be fetched again, so only it may be thrown away. Fleets
+upgrade from one long-term line to the next in one step; a forced
+intermediate release is the manual work an unattended upgrade (O33) is
+meant to avoid.
 
 ### O33. The upgrade and rollback procedure
 
@@ -1069,8 +1122,9 @@ installation.
    the package changes, the running daemon resumes accepting writes.
 4. Rollback is offered for one release, and only on package and state
    transitions that have been tested.
-5. `afs pending export` is the explicit way out when a rollback cannot
-   preserve the state.
+5. When a rollback cannot preserve the state, the explicit way out is to
+   export the records for their owners (C29, point 4): an administrator
+   moves them unread, and each owner recovers their own.
 6. Local IPC between an older `afs` and a newer daemon during an upgrade
    follows C44's compatibility rules.
 7. A graceful shutdown does not wait to store data. Every write the
@@ -1105,8 +1159,8 @@ prove unclear to users in testing.
      names as permitted; a policy permits, it never enters; never
      automatically;
    - serves only data previously authorised in the same credential context;
-   - ends at token expiry, on a known revocation, or when validation
-     succeeds;
+   - ends at token expiry, on a known revocation, when validation
+     succeeds, or when the grants it serves under lapse (point 5);
    - cache misses and all mutations fail;
    - file bytes are never altered;
    - status shows the mode and the last validation time, and an event marks
@@ -1116,8 +1170,13 @@ prove unclear to users in testing.
 5. **What the stale mode relaxes.** It relaxes freshness only: the
    callback and revalidation checks of point 1. The checks of grant
    authority, credential generation (C18, point 7) and policy still apply.
-   While it lasts, the daemon keeps trying to validate under the context's
-   own credentials (C24, point 2), and the first success ends the mode.
+   The ten-minute bound on the core's cached rights decisions (C14,
+   point 5) applies unchanged: the mode never extends a grant, so once the
+   grants it started with lapse, every request that needs fresh
+   authorisation fails, and in practice the mode lasts at most about ten
+   minutes without contact. While it lasts, the daemon keeps trying to
+   validate under the context's own credentials (C24, point 2), and the
+   first success ends the mode.
 6. The Windows replica, if it is built (O51, point 1), serves hydrated
    files offline under its own rule (L27, point 5), not under this mode.
    Before the replica is built, that rule is checked against O22.3.
@@ -1153,7 +1212,7 @@ show that a PAM module is needed where `pam_exec` does not serve.
 
 1. A per-user login service on each OS gets the user's tokens at login,
    when the user's Kerberos credentials change, and when the daemon
-   restarts. It renews before expiry by a margin counted on the boot clock
+   restarts, and tells the daemon when the session ends (C41, point 4). It renews before expiry by a margin counted on the boot clock
    (C37).
    - It runs IronAFS's own token step, part of the native `afs` command
      (C42, point 2), by its absolute installed path, never an `aklog`
@@ -1162,7 +1221,9 @@ show that a PAM module is needed where `pam_exec` does not serve.
    - After a daemon restart it gets a token for a cell only while that
      cell's reacquisition authorisation (C42) is still in force. An
      `unlog` or an administrator's revocation withdraws it, and an
-     ordinary restart does not; C42 states what restores it.
+     ordinary restart does not. After `unlog` the user's own explicit
+     `aklog` restores it; after an administrator's revocation only an
+     administrator does (C42, point 7).
 2. On Windows the per-session agent is started at logon by a Task Scheduler
    logon trigger. A service that is not LocalSystem cannot obtain a user's
    token itself; the logon trigger is this ADR's choice among the
@@ -1203,7 +1264,9 @@ or a platform's install rules change.
    `sysusers.d` and `tmpfiles.d` entries, indexer exclusions, and the
    per-user login service (O36) as a systemd user unit. A static musl
    archive is also produced.
-2. **macOS:** a signed, notarised `.pkg` `[MAC-063]` with the extension's
+2. **macOS:** a signed, notarised `.pkg` `[MAC-063]`, with the
+   notarisation ticket stapled to it so that a first install needs no
+   online lookup, containing the extension's
    app, the launch daemon, the per-user launch agent that is the login
    service (L14, point 3; O36) and the CLI. An uninstaller is included. The
    launch daemon needs an administrator's approval, or pre-approval through
@@ -1236,7 +1299,11 @@ or a platform's install rules change.
    - **every OS:** the uninstaller removes only rules IronAFS created.
 
 Why: fleets install with their own deployment tools, which expect the
-platform's native package and a silent mode.
+platform's native package and a silent mode. Apple's notary service
+issues a ticket to staple to the software, and Gatekeeper finds a ticket
+either online or attached to the software
+([notarizing macOS software](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution));
+stapling makes a first install work offline, with no lookup.
 
 ### O38. Identifiers: one inventory, and when they freeze
 
@@ -1261,7 +1328,9 @@ before the freeze point, or qualification of `\\afs` (L34, L41) fails.
 4. **Frozen from the first public release:** `/afs` as the Unix default,
    the MSI upgrade-family identity, the event id namespace (O2), and the
    assigned ETW provider GUID.
-5. **`\\afs` as the Windows default** is frozen only after its
+5. **`\\afs` as the Windows default** applies per row: `\\afs` where the
+   name is admitted, and the literal-address form elsewhere (L20,
+   point 3). It is frozen only after its
    qualification (L41): local-only resolution and connection, safe failure when
    the local service is absent, coexistence with Windows' own file sharing,
    and, for rows that claim Kerberos, compatibility with the supported
@@ -1373,8 +1442,8 @@ writes.
    outside the supported backup procedure. OS backup and indexing
    exclusions are set where the OS supports them.
 4. Before a machine image is captured, pending records are resolved by
-   their owners or exported, and client state is removed, by a documented
-   preparation procedure.
+   their owners or exported for their owners (C29, point 4), and client
+   state is removed, by a documented preparation procedure.
 5. On a machine-identity mismatch, or a declared restore or clone, the
    client generates a new host UUID and a new installation key (O6,
    point 3), discards the clean cache, and
@@ -1402,7 +1471,9 @@ long-term line, or a platform's own support window forces a change.
 4. `docs/support.md` names the compatibility surfaces: the CLI and its
    JSON, policy and configuration, events (O2), local IPC (C44), and
    durable formats (O32, N8, N32 to N35).
-5. Upgrade paths between supported long-term lines are tested.
+5. Upgrade paths between supported long-term lines are tested. Any
+   supported long-term release upgrades to the next directly, without
+   intermediate releases (O32, point 1).
 
 Why: a site planning a fleet deployment needs dates, and a promise the
 project cannot keep is worse than none.
@@ -1437,7 +1508,9 @@ behaviour costs more than the tests return.
    - volume location and file servers, as our own minimal models written
      from the specifications (ADR 0001);
    - a network with loss, delay, reordering, duplication, partitions, NAT
-     rebinding, and forged and dropped callbacks;
+     rebinding, and forged and dropped callbacks, including forged probes
+     sent while a server's real breaks are dropped, which must never
+     raise callback trust (C24, point 7; C32, point 1);
    - clocks, including suspend;
    - a disk with torn writes and no-space errors.
 2. It is delivered with the first phase (O50), not after it, and grows
@@ -1554,7 +1627,16 @@ hosted runners, or a case here cannot be automated on a supported OS.
    - a set-uid file that grants nothing;
    - removing a file that is still open;
    - on macOS and on Windows, the layer gates (L13, L22, L41);
-   - on Windows, two logons of one account, as two contexts (C41).
+   - on Windows, two logons of one account, as two contexts (C41);
+   - on Linux and macOS, a uid reassigned to a new account without a
+     daemon restart: the new account inherits no context, token or record
+     (C41, point 4);
+   - a rename over a file another local process holds open: the rename
+     succeeds, the opener's handle fails with `Stale`, and its unstored
+     bytes become a recovery record (C10, point 5);
+   - an administrator's `afs pending export --for-owner` and
+     `afs pending import`: the records arrive under their owner, and the
+     administrator cannot read their bytes (C29, point 4).
 5. Every claim about mount behaviour is proven on its own venue
    ([docs/workflow.md](../workflow.md) §5).
 
@@ -1624,7 +1706,8 @@ and the reasons. It is a plan, and it promises no dates.
      confirms or corrects the position of O23.4.
    - `aklog` in the CLI with the platform's Kerberos library; token renewal
      and reacquisition on restart; `afs diagnose tokens` (O12); audit
-     events (O9); security floor keys (N3, N8).
+     events (O9); security floor keys (N3, N8); reading the Linux FIPS
+     switch and the `fips` key (O31, point 4).
    - The Linux login service as a systemd user unit (O36, O37).
    - The cross-context, cross-user and revocation acceptance cases on
      Linux (O48).
@@ -1639,7 +1722,8 @@ and the reasons. It is a plan, and it promises no dates.
    and the `.pkg` (O37).
 6. **Windows (M5).** First the rest of the Windows gate (L22, L41), with the
    prototype front end. Then the SMB surface, the Event Log provider (O8),
-   the policy templates (O17), the MSI (O37) and the session agent (O36).
+   the policy templates (O17), the MSI (O37), the session agent (O36) and
+   reading the Windows FIPS algorithm mode (O31, point 4).
 7. **rxgk and other security work (M6).**
 8. **Proposed later work (M7):** see O51.
 9. **rxgk timing.**
@@ -1707,11 +1791,23 @@ keeps them out of the earlier phases.
      level (O6).
    - No core dump is produced by the daemon by default (O25).
    - `fallocate` is refused (O40).
+   - On a host booted with the operating system's FIPS switch on, AFS
+     access over rxkad fails with "FIPS policy: rxkad is not approved"
+     unless the site sets `fips = "permit-nonapproved"`, which is audited
+     (O31, point 4).
 3. **What administrators get.** Native logs with stable ids on every OS,
    an audit stream whose gaps are visible, metrics without an open port,
    central policy that an older client cannot silently skip, and a
    one-sentence statement that IronAFS's own code sends nothing off the
-   machine unless the site sends it (O20).
+   machine unless the site sends it (O20). To unmanage a fleet they push
+   `mode = "unmanaged"`, wait for the hosts to report it, then unassign;
+   for one host they run `afs config unmanage` (O19, point 5). Before
+   reimaging, they move users' pending records unread for their owners,
+   with no way to read them (C29, point 4; O42, point 4). Linux packages
+   need one extra keyring package and a standard `signed-by` line, and an
+   emergency key change is one manual step prompted by an advisory
+   (O29, point 6). Any supported long-term release upgrades directly to
+   the next (O32, point 1).
 4. **Costs.**
    - The generated outputs and the compatibility snapshot (O1, O2) are
      build tooling the project must maintain.
@@ -1801,3 +1897,18 @@ keeps them out of the earlier phases.
   own models, while existing cells need rxkad to be usable at all.
 - **A FIPS mode on rxkad.** Not possible: rxkad's cipher is not among the
   approved block ciphers (O31), so the mode waits for rxgk.
+- **Ignoring the operating system's FIPS switch until a FIPS mode
+  exists.** Not taken: IronAFS would then run non-approved cryptography on
+  a host whose owner declared FIPS, without saying so (O31, point 4).
+- **Administrators may export any user's pending record.** Not taken: it
+  would make administrators routine readers of users' unsaved files.
+  Moving records unread for their owners serves upgrades and imaging
+  without that (C29, point 4).
+- **LTS-to-LTS upgrades through each intermediate release.** Not taken: a
+  forced stepping stone is the manual work an unattended upgrade is meant
+  to avoid, and with one long-term line a year and the proposed
+  eighteen-month window (O43), at most two such lines are in support at
+  once (O32, point 1).
+- **A pinned offline root key that signs rotated package keys.** Not
+  taken: it needs a verifier of IronAFS's own inside the package
+  manager's trust path, which APT and DNF do not offer (O29, point 6).

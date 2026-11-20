@@ -161,7 +161,8 @@ a weaker class.
    **configured floor** (N3), the **token's own profile and the chosen
    identity** (N4), and the **learned pin** (N9).
 2. The **effective floor** for a cell is the componentwise maximum (N1,
-   point 6) of the configured floor and an unexpired pin. A pin
+   point 6) of the configured floor and an unexpired pin, when
+   `learned = "enforce"` (N3; N9, point 7). A pin
    contributes its class only (N9, point 1); the level comes from the
    configured floor.
 3. The configured floor always applies. No exception in this part goes
@@ -169,7 +170,9 @@ a weaker class.
 4. No control is lowered by a failure, a timeout, or anything received
    without verified protection (N5, N6). A floor is lowered only by an
    audited configuration change, and a pin only by an administrator or its
-   expiry.
+   expiry. Loss of the state directory, or of both copies of the pin
+   store, is not a failure under this rule: it returns the machine to
+   first contact (N11, points 4 and 6; N14).
 
 Why: a configured floor works on first contact; the token rule needs no
 stored state; a pin covers machines nobody provisioned. Each covers a case
@@ -192,13 +195,20 @@ Per cell, with machine-wide defaults:
 | `min_level` | `auth`, `crypt` | `crypt` |
 | `legacy_fileservers` | `deny`, `cell-attested` | `cell-attested`; `deny` when `min_class = "rxgk"` |
 | `anonymous` | `allow`, `deny` | `allow` |
-| `learned` | `enforce`, `warn`, `off` | `enforce` (without effect while N13 holds) |
+| `learned` | `enforce`, `off` | `enforce` (without effect while N13 holds) |
+| `rxgk` | `auto`, `never` | `auto` |
 
 1. OS policy can lock these keys like any other (O17).
 2. Raising or lowering the configured floor is an audited configuration
    change. Lowering it fences existing grants as any policy change does.
 3. There are no per-user floors, no per-server floors, no per-service
    floors and no encryption-type list in configuration.
+4. `rxgk = "never"` stops `aklog` selecting rxgk for the cell (N7,
+   point 4). Setting it is an audited configuration change, like lowering
+   the floor (point 2), and it is never inferred from a failure (N6). With
+   `min_class = "rxgk"` it is a contradiction, and the cell fails with
+   the reason (N8, point 4).
+5. `learned = "off"` is defined in N9, point 7.
 
 Why: the defaults reach existing rxkad cells unchanged `[DRV-089]` while
 refusing clear-text use of a token. One floor per cell and one switch for
@@ -238,7 +248,8 @@ mixed cells is what one administrator can keep correct on a fleet.
 8. `aklog`, `unlog` and `tokens` name the cell and work without reading
    `/afs`, so a context whose token expired can inspect and recover.
 9. **Rebinding after a restart.** A context is joined to a marker only on
-   the evidence C40 names for its operating system. A request whose local
+   the evidence of the same account instance that C41, point 4, names for
+   its operating system (C40, point 8). A request whose local
    account matches a marker's, but whose durable owner that evidence does
    not confirm, is treated as holding the marker: it gets
    `TokenRequired` for that cell, never anonymous data. The marker is not
@@ -261,7 +272,8 @@ mixed cells is what one administrator can keep correct on a fleet.
       refuses an automatic one while the authorisation is withdrawn, and
       the agent checks it before running `aklog` after a restart.
     - After `unlog`, only the context's own explicit `aklog` grants it
-      again.
+      again. After an administrator's revocation, only an administrator
+      grants it again, as an audited action (C42, point 7).
 
 Why: without the marker, an expired or dropped token silently turns a
 user's requests into anonymous ones, and a program reads different data
@@ -349,7 +361,8 @@ If any of them could lower the profile, that person would choose it.
 3. The daemon applies it when a token is set, so a user process cannot
    lower anything.
 4. `aklog` asks the daemon for the effective floor first, tries rxgk when
-   the cell may offer it, and falls back to rxkad only if the floor and any
+   the cell may offer it, and only when the build's rxgk path is enabled
+   (N13) and the cell's `rxgk` key is not `never` (N3), and falls back to rxkad only if the floor and any
    active pin allow. The fallback is an event. One case differs: with
    `legacy_fileservers = "cell-attested"` and a configured floor that
    permits rxkad, `aklog` may obtain, and the daemon may store, a
@@ -383,7 +396,8 @@ several call sites is eventually missed at one.
 
 **Firm.**
 
-1. The floor keys, `SecurityFloor`, `TokenRequired`, `TokenExpired`,
+1. The floor keys and the `rxgk` and `learned` keys (N3), the `fips` key
+   (O31, point 4), `SecurityFloor`, `TokenRequired`, `TokenExpired`,
    `TokenRevoked` (N47) and the authenticated-intent marker exist from the
    first release that authenticates (M2b in the plan).
 2. An unknown **value** of a known security key refuses that cell. It is
@@ -404,9 +418,9 @@ drop pins without saying so.
 
 **Working.** Revisit if: the combine-tokens call gets a published
 procedure number whose semantics differ from draft -08; or the first test
-against an independent rxgk peer (N25) finds a cell that negotiates rxgk
-but does not answer the call, which under these rules would refuse every
-fileserver of that cell.
+against an independent rxgk peer (N25) finds that cells which negotiate
+rxgk but do not answer the call are common enough that the per-cell
+remedy, `rxgk = "never"` (N3, point 4), does not serve sites.
 
 1. A pin records, for the machine, "this cell negotiates rxgk for its
    fileservers". It enforces the class `rxgk` only. The level stays
@@ -430,6 +444,10 @@ fileserver of that cell.
 6. **Effect.** An active pin blocks a downgrade, except through N12. A
    refusal names the cell, the server, the pin's expiry and the
    administrator's command `afs security forget <cell>`.
+7. **`learned = "off"`** stops learning and enforcement. Existing records
+   are kept, are not renewed, and expire as in N10. Deletion is only by
+   `afs security forget` (N10, point 7). There is no mode that learns
+   pins without enforcing them.
 
 Why: a pin is a fact about the cell, and per-context pins would give every
 new login a first contact. The cell itself states, per fileserver, whether
@@ -462,8 +480,8 @@ range.
    count, unless replaced or removed earlier. The expired date is shown
    only to authorised administrators.
 7. `afs security forget <cell>` (administrator, audited) removes a pin.
-   `learned = "off"` in policy does it for a fleet after a cell-wide
-   rollback.
+   For a fleet after a cell-wide rollback, policy sets `learned = "off"`
+   until the records expire (N9, point 7).
 
 Why: a pin with no expiry locks out every client that learned it when a
 cell trials rxgk and withdraws it. We found nothing in the specifications
@@ -483,10 +501,19 @@ chooses one.
 3. A renewal is committed only after it is durably written. On a write
    failure the daemon reports a health error and keeps the active
    restriction while persistence is uncertain.
-4. An **unreadable** pin file is treated as empty, with a health
-   "degraded" event.
-5. A **readable** record holding a suite this release cannot name refuses
-   the cell until an administrator acts. It is not treated as empty.
+4. The pin store keeps **two checksummed copies**. One unreadable copy is
+   repaired from the other, with health "degraded". If both are
+   unreadable, the machine returns to first contact (N14), as with a lost
+   state directory (point 6), with health "failed: pin store lost" and an
+   audit event.
+5. A **readable** record is enforced as point 2 and N9, point 1, say: on
+   its class. A suite this release cannot name is shown as unknown
+   ("suite: unknown (newer release)" in `afs status`). The cell is refused, until
+   an administrator acts, only when the record's class or level is
+   unknown, when the record carries the **must-understand flag** that a
+   release sets once the suite takes part in comparison (N40, point 3), or
+   when the store's format is newer than this release reads (N8,
+   point 3). Such a record is not treated as empty.
 6. A lost state directory returns the machine to first contact (N14) for
    pins. For markers (N4) it does so only for contexts created after a
    verified fresh initialisation:
@@ -502,10 +529,18 @@ chooses one.
    - An administrator's deliberate reset (N4, point 10) is the same
      audited boundary.
 
-Why: a record written by a newer release states a restriction this release
-cannot evaluate, so refusing is the only answer that cannot be weaker than
-the record. An unreadable file carries no statement at all; treating it as
-a refusal would let any corruption lock out a cell.
+Why: floors and pins compare class and level only (N1, point 4; N40), so
+enforcing a record's readable fields is never weaker than that record's
+meaning today, and refusing it would turn a software rollback
+into a cell outage for no gain. A record whose restriction a release
+cannot evaluate (an unknown class or level, or a flagged suite) is
+refused, because refusing is the only answer that cannot be weaker than
+the record; the flag uses the same pattern as journal records (N33). N2,
+point 4, guards against the network. Only a party that can already alter
+the daemon-only state directory can corrupt both copies, and point 6
+already returns the machine to first contact in that case; local
+administrators are outside the threat model (O23). Refusing every cell
+after one disk error would lock out every rxkad cell.
 
 ### N12. The one downgrade signal: a cell-attested legacy fileserver
 
@@ -566,11 +601,15 @@ procedure number for the selected rxgk profile.
    rule. No production path waits on a call that is never made, so N6,
    point 2, locks nothing out. `min_class = "rxgk"` fails the cell with
    the reason; it is never met by falling to rxkad.
-6. Whether such a build may hold an rxgk token for a cell's database
-   services meanwhile is open question 2 of the overview. Under N4,
-   point 1, that token would refuse the cell's fileservers, because the
-   exception of N12 is disabled. Until the question is answered, this ADR
-   claims no production rxgk path while the gate is closed.
+6. While the gate is closed, a production build neither negotiates nor
+   installs an rxgk token: `aklog` does not select rxgk, and the control
+   endpoint refuses the rxgk token kind with the reason. Test builds may
+   hold one. The rxgk token kind stays defined in the IPC token message
+   (N39, point 5) and is refused at run time, so the gate's opening
+   changes no format. Under N4, point 1, an rxgk
+   token for a cell's database services would refuse that cell's
+   fileservers, because the exception of N12 is disabled; this point
+   prevents that. A second exception to N4 for this case is not made.
 
 Why: the draft leaves the call's procedure number unassigned
 ([draft -08, section 9](https://www.ietf.org/archive/id/draft-wilkinson-afs3-rxgk-afs-08.txt)),
@@ -659,6 +698,8 @@ used are covered by active validation certificates.
 3. Its Kerberos profile is limited to RFC 8009 encryption types `[DES-064]`
    whose complete use has been verified.
 4. The rest of that mode (platform policy, what is published) is in O31.
+   Before the mode exists, an operating system's FIPS switch already makes
+   the client refuse rxkad unless a site permits it (O31, point 4).
 
 Why: the mode needs rxgk to a fileserver, and that has no peer to test
 against yet (N25).
@@ -983,7 +1024,11 @@ be reachable only through it.
    private data.
 3. Older published AFS documents are cited for facts only, in IronAFS's
    own words, each edition registered before use, with corroboration for
-   anything that affects interoperability.
+   anything that affects interoperability or correctness. A claim that
+   would fix wire or on-disk behaviour stays unverified until
+   corroborated. Counsel reviews this citation policy before the first
+   release. A registered edition can settle assumption A9 as the overview
+   states.
 
 Why: ADR 0001. A wire format built on an uncheckable fact cannot be
 audited for either correctness or provenance.
@@ -1259,6 +1304,9 @@ of materially different strength; or FIPS mode (N18) is scheduled.
 
 1. The floor stays class and level (N1).
 2. A suite floor is a later policy decision. N39 gives it a place.
+3. A release that adds a suite floor sets the must-understand flag on the
+   pin records that depend on it (N11, point 5), so older releases refuse
+   those records rather than enforce them without the suite.
 
 Why: with no rxgk client path shipped there is no suite to choose between,
 and a policy written before the choices exist would be untested.
@@ -1464,9 +1512,17 @@ wrong.
   Until the combine call is assigned, an unprovisioned machine has no
   downgrade guarantee beyond the token rule (N14). Sites that need one
   provision the floor.
+- **No production rxgk token while the gate is closed** (N13, point 6).
+  rxgk stays test-only until then, which costs users nothing against
+  released OpenAFS servers `[DES-048]`.
+- **A cell that negotiates rxgk but does not answer the combine call**
+  refuses its fileservers once the gate opens (N4, point 1; N6). The
+  site's remedy is `rxgk = "never"` for that cell (N3, point 4), an
+  audited change shown in `afs config show --origin`.
 - **A cell that withdraws rxgk** keeps learned clients out for up to 30
   days after their last qualifying success, or until an administrator
-  forgets the pin or policy turns learning off (N10).
+  forgets the pin, or until the records expire after policy turns
+  learning off (N9, point 7; N10).
 - **rxgk is late.** It follows the Windows layer in the plan, and FIPS
   mode follows rxgk (N18, N25). Nothing is claimed as interoperable before
   a peer exists.
@@ -1477,7 +1533,7 @@ wrong.
   and two checksums on every journal record (N32); typed identifiers and
   checked conversions throughout (N38).
 - **Reserved now, built when their milestone comes:** the floor keys,
-  `SecurityFloor`, `TokenRequired`, `TokenExpired`, `TokenRevoked` and the
+  the `rxgk`, `learned` and `fips` keys, `SecurityFloor`, `TokenRequired`, `TokenExpired`, `TokenRevoked` and the
   marker (M2b); the state
   directory's version (M2a); the profile triple in IPC (N39); simulator
   servers that take a profile (classes, opcodes, capability words, combine
@@ -1523,6 +1579,20 @@ wrong.
   - a pin survives a cache wipe, blocks rxkad until forgotten or expired,
     is not renewed by failures, cached replies or rxkad traffic, and
     survives a failed renewal write;
+  - one corrupt pin-store copy is repaired from the other with health
+    "degraded"; both corrupt return the machine to first contact with
+    health "failed" and an audit event;
+  - a pin record with an unknown suite is enforced on its class after a
+    rollback; one with an unknown class or level, or with the
+    must-understand flag, refuses the cell;
+  - `learned = "off"` neither learns nor enforces, keeps existing records
+    and lets them expire;
+  - `rxgk = "never"` stops rxgk selection; with `min_class = "rxgk"` the
+    cell fails with the reason; a production build refuses the rxgk token
+    kind;
+  - an administrator revokes a token; the user's own `aklog` installs a
+    token but does not restore automatic reacquisition; only an
+    administrator's audited action does;
   - a production build makes no combine call and learns no pin;
   - unknown capability bits and callback opcodes change nothing; no
     extension is offered or accepted under rxkad or on a legacy
@@ -1625,3 +1695,18 @@ wrong.
   the IPC structures, the namespace key and the pin store each a migration
   later, on machines that hold unstored user data. Not taken; readiness is
   kept only where it is free (N26).
+- **rxgk for database services only while the gate is closed,** with an
+  exception to N4 so fileservers use a companion rxkad credential. Not
+  taken: it adds a second exception to a security invariant (N13,
+  point 6).
+- **A `learned = "warn"` mode** that learns pins without enforcing them.
+  Not taken: it knowingly lets through the downgrade pins exist to stop.
+  If it is wanted when pins ship, adding it is a new value that older
+  clients refuse (N8, point 2), handled with `min_client_version` (O19).
+- **Treating an unreadable pin store as empty.** Not taken: one corrupt
+  file would lower a restriction. Two copies make that need a loss of
+  both, which is the same as a lost state directory (N11, point 4).
+- **Refusing a cell whose pin names an unknown suite.** Not taken: suites
+  take no part in comparison today, so a software rollback would become a
+  cell outage for no security gain; the must-understand flag covers a
+  later suite floor (N11, point 5; N40, point 3).

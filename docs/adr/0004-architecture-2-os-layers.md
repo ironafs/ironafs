@@ -510,6 +510,11 @@ handler's close, or the gate finds another commit an application waits on.
 3. **Unless the gate shows that `fsync(2)`, or another commit the
    application waits on, reports a store error to the application, the macOS
    layer is read-only.**
+4. A store that fails at a close-time commit keeps its data as a
+   recovery record (C29) and raises a notification in the user's session
+   (O35). A program that closes without calling `fsync(2)` (for example
+   `cp`, or a shell redirection) can get success for such a write; the
+   data then waits in `afs pending`. This is documented.
 
 Why: the data-cache handler's close takes no error `[DRV-046]`, so a failed
 store at close could be reported as saved. Volume synchronisation exists
@@ -529,8 +534,10 @@ macOS 27 and recorded:
 3. mapped I/O with the data cache off;
 4. item reuse after reclaim;
 5. whether `fsync(2)` reaches a per-item handler, and whether its error
-   reaches the application;
-6. the `nosuid,nodev` equivalent;
+   reaches the application, and that a notification of a failed
+   close-time store (L12, point 4) reaches the user's session;
+6. the `nosuid,nodev` equivalent. If FSKit offers none, the macOS layer
+   does not ship (L3, point 5);
 7. signing, notarisation and the FSKit entitlements for a first-party
    extension installed outside the Mac App Store (ADR 0001 assumes this);
 8. whether an extension enabled per user can be mounted at boot, and
@@ -590,9 +597,12 @@ the replica (L27) becomes the Windows surface. If both fail qualification,
 Windows has no shipping surface until one passes, and the release notes say
 so.
 
-1. The first Windows surface is an online `\\afs\<cell>\...` path, served
-   by IronAFS's own SMB 3.1.1 server on the loopback address and reached
-   through Windows' own SMB client.
+1. The first Windows surface is an online path, served by IronAFS's own
+   SMB 3.1.1 server on the loopback address and reached through Windows'
+   own SMB client: `\\afs\<cell>\...` where the name `afs` is admitted
+   (L20, point 3), and otherwise the literal-address form
+   `\\127.0.0.1\<cell>\...`, which the session agent presents through a
+   drive mapping or a shortcut.
 2. Every request arrives in an authenticated SMB session and goes through
    the same core authorisation path as on Linux.
 3. With this surface, Windows uses the core's normal disk cache (C18,
@@ -618,9 +628,12 @@ a per-name port policy that makes route 1 deployable by policy alone.
 
 1. **Route 3 (port 445 on loopback).** Windows' built-in port proxy listens
    on `127.0.0.1:445` and copies bytes to IronAFS's server on a high
-   loopback port. Windows' own SMB server keeps its listeners. A hosts entry
-   maps the name `afs` to `127.0.0.1` (L21). Route 3 is the only route for
-   Windows 10.
+   loopback port. Windows' own SMB server keeps its listeners. Where the
+   name `afs` is admitted (L20, point 3), a hosts entry maps it to
+   `127.0.0.1` (L21); elsewhere the route is reached by the literal
+   address, which `[WIN-183]` expects to reach IronAFS rather than
+   Windows' own server (measured in L22, point 5). Route 3 is the only
+   route for Windows 10.
 2. **Route 1 (alternative port).** On Windows 11 builds that support it,
    an explicit mapping, which the client's alternative-port policy must
    allow, sends `\\afs` to IronAFS's server on another port.
@@ -756,10 +769,12 @@ granting leases (L22, point 4).
    writes commit as on Linux (L6).
 7. The per-open SMB file id is generated per open. The file's own identity
    is reported from the core's stable key (C11).
-8. Delete-pending and delete-on-close defer the server removal to the last
-   close, with no rename. A request for immediate removal that IronAFS
-   cannot deliver is refused explicitly (C10). The delete right is checked
-   when delete-pending is set. The deferred removal is bound to the
+8. A replacing rename follows C10, point 5, with Windows' share modes
+   applied first (L33, point 13). Delete-pending and delete-on-close
+   defer the server removal to the last close, with no rename. A request
+   for immediate removal that IronAFS cannot deliver is refused
+   explicitly (C10). The delete right is checked when delete-pending is
+   set. The deferred removal is bound to the
    setter's credential context, the parent directory, the file id and the
    volume's incarnation, and runs under that authority with a live check
    of its rights at the last close. If that authority is gone, or the
@@ -777,6 +792,8 @@ granting leases (L22, point 4).
     included, passes C16's submission check as C16, point 6 states it for
     partial submission (L18, point 8). Invalidations reach the front end on
     the channel of L18, point 8.
+13. AFS symbolic links are resolved by the core and never presented as
+    reparse points (L32, points 2 and 7).
 
 Why: `[DES-070]` `[DES-071]`. With no leases and no client caching, a
 callback break can reach the next open or read without a recall round trip.
@@ -791,22 +808,41 @@ checked independently of the daemon and re-checked when policy refreshes.
 
 1. The server listens on loopback only and binds exclusively.
 2. While IronAFS is stopped or being upgraded, no other local process can
-   take any listener the route uses, the back-end port included. `\\afs`
+   take any listener the route uses, the back-end port included. The path
    then fails closed.
-3. The name never resolves off the machine. With the hosts entry removed or
-   overridden, `\\afs` produces no authentication attempt to any other
-   machine, whether through DNS, the configured suffix search, LLMNR or
-   NetBIOS name resolution. IPv6 resolution cannot bypass the loopback
-   entry.
+3. The path never resolves off the machine. A route is admitted under
+   the name `afs` only where a qualified operating-system mechanism stops
+   the SMB client authenticating to any other machine under that name,
+   even with the hosts entry removed or overridden, whether through DNS,
+   the configured suffix search, LLMNR or NetBIOS name resolution, and
+   over IPv4 or IPv6 (L41, point 9). Otherwise the route is admitted only
+   under the literal loopback address, which involves no name
+   resolution.
 4. The server refuses tree connections to any name it was not configured
    with.
 5. Limits on bytes and connections apply before authentication.
 6. A machine that cannot pass is not given the SMB surface. An installer
    check or a diagnostic warning is not a substitute.
+7. The component that disables a route on a policy refresh removes the
+   port proxy and the Windows Filtering Platform rules together, so no
+   back-end port is left unprotected behind a live proxy. It is named in
+   L23, point 1.
 
 Why: IronAFS does not control how Windows' SMB client resolves the name or
 when it starts authentication. A misresolved `afs`, or a rogue listener on
-the port, would receive a user's authentication exchange. A persistent port
+the port, would receive a user's authentication exchange. The candidate
+mechanism for the name is the SMB client's NTLM blocking, available from
+Windows 11 24H2 `[WIN-190]`. Microsoft describes it as blocking NTLM for
+remote outbound connections
+([SMB NTLM blocking](https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-ntlm-blocking)),
+and its exception list takes IP addresses, NetBIOS names and fully
+qualified names `[WIN-190]`. An exception for the name `afs` would
+re-allow NTLM to a misresolved `afs`, so a qualified configuration has no
+exception for the name: either no exception at all, if NTLM to IronAFS on
+loopback is not counted as remote, or an exception for `127.0.0.1` only.
+Which of the two holds is measured (L22, point 2), not assumed. Windows
+10 has no such mechanism, so it uses the literal address, which is
+contained on every build without any machine-wide NTLM change. A persistent port
 reservation does not stop another component `[WIN-187]`; that a Windows
 Filtering Platform rule does is assumption A4. The hosts entry's reach:
 `[WIN-182]`.
@@ -820,8 +856,8 @@ does here.
 1. The name is `afs` by default and is a configuration value: a site with a
    real host or service of that name chooses another. Name and port are the
    same for every user on the machine.
-2. The hosts entry is written by the installer and removed by the
-   uninstaller, unless the site's policy says it manages hosts entries; then
+2. On rows where the name is admitted (L20, point 3), the hosts entry is
+   written by the installer and removed by the uninstaller, unless the site's policy says it manages hosts entries; then
    the installer only validates it. A missing or conflicting entry fails the
    install visibly.
 3. Route 3's port-proxy rule and service dependency are made by the
@@ -864,10 +900,14 @@ front end. It settles A3 and A4.
    point 10).
 2. **Security.** A relayed handshake is refused. L20 holds, with the
    mechanism for point 2 named. Client NTLM blocking `[WIN-190]` is
-   measured both on and off.
+   measured both on and off, including whether NTLM to IronAFS on
+   loopback counts as a remote outbound connection under it, and which
+   exception, if any, it then needs (L20, point 3).
 3. **Application compatibility.** Explorer browsing of `\\afs` and each
    cell, copy, rename, an office suite's open and save, a compiler and a
-   version-control tool; Offline Files confirmed off.
+   version-control tool; Offline Files confirmed off; Explorer's
+   recursive delete of a link's name that resolves to a directory
+   (L32, point 2).
 4. **Coherency.** A callback break is visible within one second of its
    arrival to the next open, read, lookup and enumeration, to a mapped view
    opened after the break, and to an active directory watcher (the watch
@@ -901,7 +941,11 @@ is cheaper to learn before the server is written.
 non-LocalSystem service to start a process in a user's session.
 
 1. `ironafsd` runs under its own virtual account. Only the installer is
-   elevated.
+   elevated. The component of L20, point 7, that disables a route on a
+   policy refresh is a scheduled task that the installer's elevated
+   helper registers, not running as LocalSystem; it is the daemon's own
+   service account instead if the spike shows that account can manage the
+   port proxy and the Windows Filtering Platform rules.
 2. A per-session agent runs as the user: it obtains tokens through the OS's
    Kerberos interface, repeats that after a daemon restart, shows
    notifications, and handles logoff.
@@ -977,13 +1021,16 @@ no colon and places punctuation and the trailing characters differently
    that are not valid Unicode, and names that collide under Windows'
    comparison each get a distinct, stable, reversible form. A form too long
    for Windows gets an alias from a reserved alias namespace, bound to the
-   full raw name and the entry's identity.
+   full raw name.
 2. **Never silently partial.** No entry is omitted from a listing. If an
    entry cannot be presented safely, the listing fails explicitly.
 3. **Reversible.** A presented name or alias decodes to exactly one raw
    name. An alias is derived from the raw name, never from listing order,
-   and can never come to mean another file. A missing or stale alias binding
-   fails the lookup.
+   and can never come to mean another raw name. A missing or stale alias
+   binding fails the lookup. An alias names a raw name, not a file: after
+   the name is replaced, it names the new file, as the name itself does.
+   Operations through a handle use the identity of the open (point 5;
+   C7, point 3; C13).
 4. **Case.** An exact match wins only when no case-insensitive collision
    exists in that directory. Otherwise a unique case-insensitive match is
    used, and an ambiguous one is not found. While a collision exists, only
@@ -1042,18 +1089,25 @@ answered per request by the core. Drive letters are per logon session
 
 **Working.** Revisit if: public measurement contradicts assumption A6 or
 A7, the SMB surface fails qualification (the replica is then scheduled
-first), or a published AFS-3 specification changes A9.
+first), a published AFS-3 specification changes A9, or, once the replica
+is built, its users' records show that explicit publishing (point 3) is a
+burden.
 
-1. The replica is an optional offline companion: per-user sync roots under
-   a provider that runs as a service account, never as the user.
+1. The replica is an optional offline companion: per-account sync roots,
+   each served to one logon session at a time (L28, point 1), under a
+   provider that runs as a service account, never as the user.
 2. It uses the same name projection (L24, L25). Local changes are accepted
    only after the replica's own validation rules are verified.
 3. Local changes are reconciled through the write journal (C28, C29):
    conflicts keep both versions, deletes are tombstoned, and reconciliation
-   at startup runs before a root is reconnected. Whether an upload of a
-   local change is a deferred store under C28, point 3, is open question 4
-   of the overview.
-4. It keeps no second copy of file data beside the hydrated files.
+   at startup runs before a root is reconnected. An upload of a local
+   change is a deferred store (C28, point 3). When the provider observes a
+   change, it copies it into an immutable journal record bound to the base
+   version, before any further edit can reach it. The user publishes
+   pending changes with one action, after seeing any conflicts. Nothing
+   reaches the server until then.
+4. Clean cached data has no second copy beside the hydrated files.
+   Pending changes do (point 3).
 5. Hydrated data stays readable by that same user, inside their own root,
    until the next revalidation dehydrates it; that is documented as "after
    the last handle closes". The replica's offline rule is its own (O34).
@@ -1067,16 +1121,26 @@ first), or a published AFS-3 specification changes A9.
 8. It is built only after public measurement on the matrix's Windows builds
    settles A6 and A7, and it ships only if it recovers without a reboot from
    a provider process that is killed or stops answering, with several roots
-   connected, and if the two-writer case converges.
+   connected, and if the two-writer case converges: both versions are kept
+   and shown to the user. The gate also covers two independent logons of
+   one account, a logoff, a replacement of the AFS identity, and a
+   restart (L28, point 1).
 9. Until then this ADR cites only Microsoft's documentation for it. A
    hydration policy, if named, is progressive or full `[WIN-M44]`.
+10. Where the isolation of L28 cannot be enforced on a machine, the
+    replica is disabled there.
 
 Why: hydrated files are served without asking the provider `[DRV-014]`, so
 live AFS rights cannot be enforced on them; that is why the replica is a
 companion and not the first surface. The platform names no user
 `[WIN-M48]`, so identity is per root (A7). It reports no write or lock
-`[WIN-M43]`. Its behaviour where Microsoft is silent is A6. The publish
-sequence depends on A9.
+`[WIN-M43]`, so the provider sees a change only after the application
+has finished, and no application waits on the store: that is C28,
+point 3's case. Its behaviour where Microsoft is silent is A6. Uploads
+wait for the user because AFS-3 has no conditional store (A9). The
+immutable record keeps a pending edit from living only in a mutable
+hydrated file, where a later edit or a crash could lose it; one publish
+action per reconnect keeps the user's effort small.
 
 ### L28. Replica isolation is per object and absolute
 
@@ -1084,7 +1148,16 @@ sequence depends on A9.
 
 If the replica is built:
 
-1. One user's root is never readable by another user.
+1. One user's root is never readable by another user, nor by another
+   logon session of the same account. A root is readable only by the
+   logon session it is bound to: its descriptors grant that session's
+   logon SID, not the user's SID. Logon-SID entries are removed when the
+   provider starts, before any logon is served, and when the session
+   ends. A root is rebound to a new session only when that session's
+   context holds the same AFS identity the data was fetched under;
+   otherwise it is dehydrated first. A second concurrent logon of the
+   account is refused replica access, with a message that names the
+   reason.
 2. The provider protects every directory and file it publishes, in this
    order:
    1. it creates the object under a parent whose descriptor is locked
@@ -1121,7 +1194,18 @@ If the replica is built:
 
 Why: a placeholder is created without a descriptor `[WIN-047]`, and after
 hydration the provider is no longer asked `[DRV-014]`, so the descriptor on
-each object is the only barrier. Point 2's order closes the window between
+each object is the only barrier. Two logons of one account are two
+contexts (C18, point 2; C41), and NTFS serves hydrated files to either
+without asking the provider, so point 1 binds a root to one logon session.
+An access-control entry's trustee can be a logon session, and each token
+carries a logon SID
+([How DACLs control access](https://learn.microsoft.com/en-us/windows/win32/secauthz/how-dacls-control-access-to-an-object)).
+Logon SID values are recycled when the operating system restarts
+([MS-DTYP, well-known SIDs](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/81d92bba-d22b-4a8c-908a-554ab29148ab)),
+so a persisted entry could match a stranger after a reboot; that is why
+the provider removes them at start. Whether the linked elevated and
+limited tokens of one logon carry the same logon SID is measured by A7's
+spike. Point 2's order closes the window between
 creation and protection. A link generated from a cell's data, or one a user
 planted inside a root, could point the provider or a local program anywhere
 on the machine.
@@ -1213,12 +1297,24 @@ directories. A stable mapping gives the same answer to every tool.
 
 ### L32. Mount points, links and special nodes
 
-**Working.** Revisit if: an indexer or backup tool on a target OS ignores
-the exclusions, or acceptance tests find a traversal loop the bounds miss.
+**Working**, except point 7, which is **Firm** (a security invariant).
+Revisit the rest if: an indexer or backup tool on a target OS ignores the
+exclusions, acceptance tests find a traversal loop the bounds miss, or the
+application tests (L22, point 3) show Explorer recursing through a
+resolved link on delete.
 
 1. An AFS mount point appears as a directory. The core crosses it.
-2. A symbolic link appears as a symbolic link where the OS has them. On the
-   replica, L27 applies.
+2. A symbolic link appears as a symbolic link on Linux and macOS. On SMB,
+   the core resolves an AFS symbolic link whose target lies inside
+   `/afs`, within point 3's bounds, and presents the target. A link that
+   leaves `/afs`, dangles or loops is listed (L25, point 2) and fails on
+   open with a stated status, and `afs diagnose` gives the reason. Delete
+   and rename of the link's own name act on the link, never on its
+   target. An enumeration that reaches a directory through a link is
+   marked, so that a recursive delete through the link's name removes
+   only the link; the application tests measure this (L22, point 3), and
+   if Explorer recurses anyway the claim is narrowed. On the replica, L27
+   applies.
 3. Mount-point and link depth are bounded everywhere. The visited set
    covers mount points and the links the core resolves itself; links the
    kernel resolves rely on the operating system's own hop limit.
@@ -1229,9 +1325,23 @@ the exclusions, or acceptance tests find a traversal loop the bounds miss.
 5. The filesystem type has a distinct name, and the packages install
    exclusions for the system's indexers.
 6. A read-only volume refuses writes with the OS's read-only error.
+7. **No Windows link from cell data.** No Windows surface presents a
+   reparse point, NTFS symbolic link, junction or shortcut made from a
+   cell's data, and no link is ever resolved to a target outside `/afs`.
+   (L28, point 5, states the same for the replica.)
 
 Why: a file manager or indexer that walks the root must not contact every
-cell or loop through mount-point cycles.
+cell or loop through mount-point cycles. On Windows, remote-to-remote and
+remote-to-local symbolic-link evaluation are disabled by default
+([the symbolic link cannot be followed](https://learn.microsoft.com/en-us/archive/blogs/junfeng/the-symbolic-link-cannot-be-followed-because-its-type-is-disabled)),
+so a reparse point presented over SMB would fail on a default machine
+unless a site relaxed a machine-wide setting, which L21 does not require.
+Resolving links on the server and keeping them inside the share is
+established SMB server practice: Samba's defaults are
+`follow symlinks = yes` and `wide links = no`
+([smb.conf(5)](https://www.samba.org/samba/docs/current/man-html/smb.conf.5.html)).
+Because no Windows link reaches the client, cell data cannot point Windows
+at a local path or coerce authentication to another host.
 
 ### L33. Locks, per layer
 
@@ -1291,6 +1401,11 @@ from the lock specification.
     ends, counted on the boot clock (C37); we propose at half the
     lifetime. Before every operation that depends on a lock (point 7's
     list), the core checks that the lock's coverage is still continuous.
+13. **Replacing rename on SMB.** A rename whose destination is open on
+    this machine without delete sharing is refused with a sharing
+    violation, as a Windows file server does. Otherwise the rename follows
+    C10, point 5. What Windows' own server does in this case is confirmed
+    from the specifications and captures of L19, point 11, not assumed.
 
 Why: `[DES-050]` `[DES-051]` `[DES-052]` `[DRV-058]`. Which rights the
 server asks for each lock type is recorded in the specification for the lock
@@ -1303,9 +1418,12 @@ fails for the name `afs` (L41).
 
 1. Linux: `/afs`.
 2. macOS: per-user mounts, with `/afs` as L10 decides.
-3. Windows: `\\afs\<cell>\...`, plus an optional drive letter. With the
-   replica: a per-user root, a per-session drive letter and an Explorer
-   entry.
+3. Windows: `\\afs\<cell>\...` on rows where the name is admitted, and
+   otherwise `\\127.0.0.1\<cell>\...` behind a drive mapping or shortcut
+   the session agent creates (L20, point 3); plus an optional drive
+   letter. With the replica: a per-account root served to one logon
+   session at a time (L28, point 1), a per-session drive letter and an
+   Explorer entry.
 4. On every surface except the replica: `@sys` and `@cell` substitution in
    the core, with an ordered, configurable system-name list. On the
    replica, `@sys` and `@cell` apply only through L27, point 6's explicit
@@ -1466,9 +1584,10 @@ row is dropped).
    `3.10.0-1160`-series kernel `[PLT-015]` `[PLT-025]`. Repeated on each
    claimed release, recording the kernel and the negotiated FUSE
    capabilities. Ends by 2029-05-31 `[PLT-024]`, or earlier if a required
-   toolchain or dependency exceeds the verified floor. This row rests on A1
-   (the artefact runs there at FUSE 7.23) and A2 (enough sites still need
-   it).
+   toolchain or dependency exceeds the verified floor. No earlier date is
+   set for lack of demand. This row rests on A1 (the artefact runs there
+   at FUSE 7.23) and A2: the row is qualified only once a site that runs
+   AFS on EL7 has asked for it.
 4. **Windows 11 Pro 25H2 x64 and Arm64, and Windows 11 Home, Enterprise and
    Education:** exact edition, version and architecture combinations are
    added after the route passes on a named native venue. Domain-joined and
@@ -1537,7 +1656,9 @@ or authentication defaults on a target build.
 1. Each Windows edition, build, architecture, route and authentication mode
    qualifies separately.
 2. With the shipped configuration installed, the test starts from an
-   unprepared user session and opens the normal `\\afs` path.
+   unprepared user session and opens the row's normal path: `\\afs`
+   where the name is admitted, the literal-address form elsewhere
+   (L20, point 3).
 3. Required: authenticated SMB 3.1.1 file I/O with signing in force;
    rejection of guest and unsigned sessions (Windows 11 24H2 Pro,
    Enterprise and Education require signing, and requiring it disables
@@ -1557,6 +1678,16 @@ or authentication defaults on a target build.
    placeholder hydration, offline reads of hydrated files and reconciliation
    of remote changes before its row is published (NTFS only, `[WIN-M41]`;
    [Cloud Files requirements](https://learn.microsoft.com/en-us/windows/win32/cfapi/build-a-cloud-file-sync-engine)).
+9. **Containment test** (L20, point 3), per row: responders for DNS,
+   suffix search, LLMNR and NetBIOS; the hosts entry removed and
+   overridden; IPv4 and IPv6; after a cumulative update and after an
+   uninstall; NTLM blocking on and off; and whether NTLM to IronAFS on
+   loopback counts as remote. A row admits the name `afs` only where no
+   case produces an authentication attempt to another machine.
+10. **Link test** (L32, points 2 and 7): a cell link whose target escapes
+    to a local drive, one whose target is a UNC path, a loop, and a
+    recursive delete through a link. None reaches outside `/afs`, and the
+    delete removes only the link.
 
 Why: this is where A3 is settled for each row. A route measured on one
 build says little about another.
@@ -1631,12 +1762,27 @@ excluded by the overview's constraint.
     can see the empty local directory while it is replaced (L7).
   - macOS: each user has their own mount, `/afs` may be a per-user link or
     absent (L10), locks are local to the machine (L33), and the layer is
-    read-only if no error-reporting commit exists (L12). Only macOS 27 on
-    Apple silicon is a target.
+    read-only if no error-reporting commit exists (L12). An editor that
+    calls `fsync(2)` sees a failed save at once; `cp` or a shell
+    redirection may report success for a write whose close-time store then
+    fails, and the user is notified while the data waits in `afs pending`
+    (L12, point 4). The layer ships only where FSKit gives a
+    `nosuid,nodev` equivalent (L3, point 5). Only macOS 27 on Apple
+    silicon is a target.
   - Windows: `\\afs\cell\path` works through Windows' own SMB client, with
-    no driver. Characters Windows forbids appear as Private Use Area code
-    points (L24). A machine that cannot contain the name gets no SMB surface
-    (L20). There is no offline use until the replica exists.
+    no driver, on rows where a qualified mechanism contains the name; on
+    Windows 10, and wherever a site cannot enable that mechanism, the path
+    is the literal `\\127.0.0.1\cell\path`, presented through a drive
+    mapping or shortcut. `afs diagnose` names the mechanism in force per
+    route. Characters Windows forbids appear as Private Use Area code
+    points (L24). A machine that cannot contain the path gets no SMB
+    surface (L20). AFS symbolic links inside `/afs` behave like their
+    targets; links that leave `/afs` are listed but fail to open (L32). A
+    rename over a file another local program holds open succeeds unless
+    that program denied delete sharing (L33, point 13). There is no
+    offline use until the replica exists. If the replica is built, it
+    serves one sign-in of an account at a time, and changes made in it
+    wait for the user to publish them (L27, L28).
   - Everywhere: an owner without a mapping rule shows as a reserved
     unmapped id (L31), and locks without server coverage are marked
     local-only (L33).
@@ -1739,6 +1885,24 @@ excluded by the overview's constraint.
   belongs to one account `[DES-073]`.
 - **A persistent port reservation to guard the back-end port.** It gives no
   protection between components `[WIN-187]`.
+- **Containing `\\afs` by stated checks and a measured residual window,**
+  or dropping Windows 10. The first lowers a Firm invariant (L20); the
+  second gives up a supported row when the literal loopback address is
+  contained on every build (L20, point 3).
+- **AFS symbolic links as Windows symbolic-link reparse points.** Remote
+  symbolic-link evaluation is off by default on Windows, so they would
+  fail unless every site relaxed a machine-wide setting, and a link could
+  point Windows at a local path or another host (L32).
+- **Non-traversable markers for links over SMB, as on the replica.** It
+  breaks common AFS layouts that rely on links (L32).
+- **A replica root per logon session.** Every logoff would discard the
+  offline data the replica exists to keep (L28, point 1).
+- **Replica uploads stored as soon as the provider sees a change.** With
+  no conditional store (A9), an upload could overwrite a version the
+  client never saw, with no person deciding (C28; L27, point 3).
+- **Long-name aliases derived from the raw name and the file id.** Every
+  save by rename would give the file a new alias and break saved paths
+  and shortcuts (L25, point 3).
 
 ### Linux
 

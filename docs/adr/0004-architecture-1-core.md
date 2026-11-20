@@ -127,8 +127,8 @@ from its seed, or a measured workload needs more concurrent waits than a
 bounded pool of threads can hold.
 
 1. Rx, XDR, the RPC codecs and the security classes are pure state
-   machines: bytes and time in, actions out. They open no socket and read
-   no clock.
+   machines: bytes, time and randomness in, actions out. They open no
+   socket, read no clock and draw no random numbers.
 2. The subtle parts of the cache manager are pure types: coherency states,
    fencing, rights, the chunk map, the lock table. They get exhaustive
    model tests.
@@ -168,6 +168,7 @@ its own.
    | `ironafs-config` | the configuration parser, schema, layering and validation (O17, O18) |
    | `ironafs-events` | the event catalogue, redaction, rate limiting, metrics and health (O1 to O8, O11) |
    | `ironafs-crypto` | the cryptography interface (C5) |
+   | `ironafs-time` | the `Clock` and `Rng` interfaces of C3, the boot, monotonic and wall instant and deadline types (C37), and the 64-bit time types (C38); it has no dependencies |
 
 2. **One composition crate,** `ironafs-client`, is the core: operation
    code over the cache types, the RPC clients, the store queue and
@@ -190,17 +191,21 @@ its own.
    - no pure crate depends on a driver or on `ironafs-client`;
    - no layer crate depends on `ironafs-client` or `ironafs-cache`. A
      layer may depend on `ironafs-vfs`, `ironafs-events`, `ironafs-ipc`,
-     and its own operating-system bindings and cryptography;
+     and its own operating-system bindings under their ADR, and uses
+     cryptography only through `ironafs-crypto`;
    - `ironafs-rx` knows nothing of AFS.
 5. The macOS extension is written in Swift, uses codecs generated from the
    IPC definition (C44) and contains no Rust.
 6. Where the first-party DNS client of C33 lives is settled with its
    specification; we propose a pure codec beside `ironafs-proto` and its
    socket in `ironafs-net`.
-7. Not placed yet: the `Clock` and `Rng` interfaces of C3 and their time
-   types, the simulator, and the state directory's format marker (N8).
-   Pure crates take the time as an argument. The choice is open question 6
-   of the overview.
+7. The `Clock` and `Rng` interfaces and the time types are in
+   `ironafs-time` (point 1). The production clocks are in `ironafs-os`
+   (C37), and the production `Rng` is the cryptographic random source
+   behind `ironafs-crypto` (C5, point 1). The simulator is a test-only
+   workspace crate, `ironafs-sim`, which is never shipped. The state
+   directory's format marker (N8) is in `ironafs-cache`, beside the
+   journal record formats (N32).
 
 Why: point 4 makes "a layer cannot bypass the core" a property the build
 checks, not a convention. The layout follows coding standards rule 20.
@@ -218,7 +223,8 @@ that removes a site from the `ironafs-os` list.
    a mainstream crate chosen under the dependency rule, IronAFS's own
    implementation of rxkad's cipher, or later an operating system's
    validated module. The cryptographic random source comes through the
-   same interface.
+   same interface. The production `Rng` (C3, point 3) is this source; the
+   simulator seeds its own.
 2. rxkad's cipher (fcrypt) is written by IronAFS from the specification
    that C6 requires. It is never treated as approved cryptography.
 3. The Kerberos encryption-type operations rxgk needs run in the client,
@@ -231,9 +237,10 @@ that removes a site from the `ironafs-os` list.
 4. Kerberos and GSS come from each system's own library (`ironafs-gss`).
 5. `ironafs-os` holds the few calls that have no safe route: the clock
    pairs of C37, peer credentials (C43), the service controls, the log
-   calls of O8 and the dump controls of O26. It needs `unsafe`, so it gets its own ADR with a
-   closed list of named sites and safe interfaces on top, before any of it
-   is written. Since Rust 1.82 a foreign declaration can be marked safe
+   calls of O8, the dump controls of O26 and, on Windows, the query of the
+   operating system's FIPS algorithm mode (O31, point 4). It needs
+   `unsafe`, so it gets its own ADR with a closed list of named sites and
+   safe interfaces on top, before any of it is written. Since Rust 1.82 a foreign declaration can be marked safe
    to call, with the proof left to whoever writes the declaration
    `[DES-018]`; that ADR states the proof for each.
 
@@ -358,8 +365,10 @@ application lose data it was told was saved.
 2. Each layer maps its own events to `commit` (L6, L12, L19).
 3. A caller's commit has an absolute deadline. If it passes while the
    store is still making progress, the caller gets a "not yet stored"
-   error, the store continues in the background as a journal record
-   (C29), and `afs pending` shows its outcome.
+   error. The commit already under way continues as the same immediate
+   store while it keeps making progress (C29, point 8), and `afs pending`
+   shows its outcome. A commit that stalls becomes a deferred record
+   (C28, point 3).
 4. `release` never fails.
 5. A commit reports success only when the server has accepted the store
    (point 1). Data held in the journal or in a recovery record is never
@@ -373,41 +382,55 @@ application waits on.
 ### C10. Removing and replacing open files
 
 **Working.** Revisit if: the specification for the file service shows an
-AFS-3 operation that renames only when the destination is absent, or the
-M3 tests show the reserved name cannot be made safe against a concurrent
+AFS-3 operation that renames only when the destination is absent, or one
+that removes an entry only while it still names a given file, or the M3
+tests show the reserved name cannot be made safe against a concurrent
 replacement.
 
 1. **Unlink of an open file, POSIX layers.** The intent is journaled and
-   the file is renamed to a reserved, collision-safe dot-name in the same
-   directory, under the unlinker's authority. While IronAFS tracks the
+   the file is renamed to a reserved dot-name in the same directory,
+   carrying at least 128 random bits, under the unlinker's authority. While IronAFS tracks the
    entry it refuses to open or reuse it by name.
 2. After the last local close, the entry is removed under the same
-   credential context, and only when its identity and liveness are
-   verified and the removal is safe against a concurrent replacement of
-   the name. Otherwise it stays, and `afs pending` reports it. An
-   interrupted sequence is reconciled from the journal; a reserved name
-   whose object cannot be confirmed is quarantined, never removed.
+   credential context, after the core re-reads the entry and confirms its
+   file id immediately before the removal. A removal that cannot be
+   checked yet (for example, with no token after a restart) stays
+   pending, and `afs pending` reports it. A confirmed mismatch is
+   quarantined, never removed. A record holding recovery data for the
+   file (C29) blocks the removal until that data is resolved. An
+   interrupted sequence is reconciled from the journal. The window
+   between the check and the removal is a stated residual: only a party
+   with the delete right on the directory can use it, and that party could
+   delete the file directly.
 3. The unlink is refused when the caller may not rename.
 4. **Windows.** SMB's delete-pending and delete-on-close states defer the
    server's removal to the last close, with no rename. They are modelled
    apart from POSIX unlink (L19).
-5. **Rename over a destination that is open on this machine** is done
-   only where one atomic replacement can also keep the replaced file for
-   its open handles. We know of no AFS-3 operation that does both (a
-   specification item, C6). Until one is shown, the rename is refused
-   with an explicit error, and nothing is replaced (overview, open
-   question 1).
+5. **Rename over a destination that is open on this machine** is done as
+   one atomic rename. Handles on the replaced file then fail with
+   `Stale`, as when it is replaced from another machine (point 7). Its
+   unstored bytes become a recovery record bound to its file id (C29). On
+   SMB, a destination opened without delete sharing refuses the rename
+   with a sharing violation (L33).
 6. **Rename with "do not replace"** is refused with the operating
    system's "invalid argument" error.
 7. Opens made on other machines are not visible to this client.
 
 Why: we know of no AFS-3 call by which a client tells a fileserver which
 files it holds open, so "gone from the directory, alive until closed" has
-to be emulated; that is a specification item too. That
+to be emulated; that is a specification item too. AFS-3 has no
+remove-if-still-this-file call that we know of, so the removal in point 2
+is checked first and the remaining window is stated. That
 AFS-3's rename replaces a destination in one operation, and that it has no
 rename that refuses to replace, are specification items (C6), not cited
 facts. Keeping a replaced file for its open handles would take a second
-namespace change, so the replacement would not be atomic. Emulating
+namespace change, so the replacement would not be atomic, and we know of
+no AFS-3 operation that does both. Refusing the rename instead would make
+every save by rename fail while any local process, even another user's,
+held the file open, and the refusal would tell other users that someone
+on this machine has the file open (O16). Point 5 therefore treats a
+local opener as point 7 treats a remote one, and keeps its unstored
+bytes as recovery data. Emulating
 "do not replace" with a check and then a rename would
 sometimes replace a file, which is the silent wrong answer the overview
 rules out.
@@ -575,11 +598,17 @@ trusted blindly.
    that kernel, and programs cannot be run from `/afs` there. A layer
    promises mapped I/O only where this gate passed.
 6. If a purge fails at run time for a node that may be mapped, the core
-   cannot show the pages are gone. On Linux it aborts the FUSE connection
-   and remounts; on macOS the item is revoked. That stops every later
-   request, and every later fault that reaches the daemon. It does not
-   stop a fault served from pages still resident, and it does not remove
-   pages already resident in live mappings.
+   cannot show the pages are gone. On Linux the node answers `Stale` in
+   every binding, its handles are revoked, and new opens and mappings of
+   it are refused until a purge succeeds. The FUSE connection is aborted
+   only when the notification channel itself fails. On macOS the item is
+   revoked. That stops every later request on the node, and every later
+   fault that reaches the daemon. It does not stop a fault served from
+   pages still resident, and it does not remove pages already resident in
+   live mappings. A failed purge affects that node only, never other
+   nodes or other users; aborting the connection for it would let weak
+   evidence (a forged break, C31) end every context's handles, which C24
+   forbids.
 7. **macOS: a failed revoke.** If revoking the item fails too, the
    extension ends that user's mount (L9, L10). Nothing the mount served
    stays reachable through it.
@@ -681,7 +710,8 @@ cannot fail.
 4. Each in-process layer has one notifier thread, which writes kernel
    notifications and holds no core lock.
 5. **When a purge cannot be completed:**
-   - FUSE: the node answers `Stale` and its handles are revoked;
+   - FUSE: the node answers `Stale` and its handles are revoked, and new
+     mappings are refused until a purge succeeds (C15, point 6);
    - FSKit: the item is revoked;
    - SMB: the front end completes pending change notifications with
      "rescan", and closes the session if it cannot;
@@ -736,8 +766,9 @@ own rule on top.
    serves each context its own item or refuses the ambiguous operation. It
    never serves one context's item to another.
 5. **Dirty data** is visible only inside the writer's context. Other
-   contexts, the same user's other sessions included, see the server's
-   version until the store is accepted, as two machines would.
+   contexts, the same user's other sessions included (where the operating
+   system can tell them apart, C41), see the server's version until the
+   store is accepted, as two machines would.
 6. Nothing ever moves from a private namespace to the shared pool (C21).
 7. **Lifetime.** Renewal keeps the generation only when the daemon has
    its own record that the AFS identity is unchanged, never on the token's
@@ -749,7 +780,8 @@ own rule on top.
    access stops at once, late fetches are fenced off, journal and recovery
    records are detached (point 9), and the remaining files are reclaimed
    afterwards. A recycled uid or SID is a new account instance
-   and inherits nothing. After a daemon restart no private state is
+   and inherits nothing (where the operating system can tell them apart,
+   C41). After a daemon restart no private state is
    attached to a context without positive evidence that the account
    instance, the session, its credentials and the policy continue.
 8. **The same boundary holds above the daemon.** Whatever a front end or
@@ -936,6 +968,11 @@ cited fact; binding the network generation is the cautious reading.
    the reader to revalidate under its own credentials and obtain a fresh
    grant. Each keeps bytes, epochs, handles and journal records. Anything
    else across contexts falls under point 4.
+7. **Callback trust is raised only by a reply to the client's own call.**
+   Before rxgk, a server earns callback trust (C32) only from its reply to
+   a call the client made, matched by that call's random identity.
+   Nothing the callback service receives, probe or break, raises it; such
+   input may only lower trust.
 
 Why: unauthenticated input must not be a lever. If a forged break could
 destroy state, any host on the path could empty every user's cache or
@@ -1060,8 +1097,9 @@ can live while it is not on the server.
 2. An **immediate store**, made while the application's commit is in
    progress and the server is reachable, is unconditional: the last closer
    wins, as with every AFS client.
-3. A **deferred store** (a record left by a failed or timed-out commit, a
-   restart or an upgrade) is never stored automatically. It is kept for
+3. A **deferred store** (a record left by a stalled or failed commit, a
+   restart or an upgrade, or an upload of a change seen by the Windows
+   replica, L27, point 3) is never stored automatically. It is kept for
    explicit recovery.
 4. **A lost reply** (the store was sent and no answer came) is ambiguous.
    The record is quarantined as a conflict and the server's file is left
@@ -1106,11 +1144,18 @@ users.
 4. **Commands.** `afs pending list` shows what waits and why. `retry`
    stores a record over the server's version after the user has seen the
    difference. `discard` drops it. `show` and `export` give the bytes to
-   the record's owner (point 5). A user acts on their own records. An
-   administrator may list and discard any record. A retry always needs
-   C28, point 5. Whether an administrator may export another user's
-   bytes is open question 3 of the overview. Every discard is an audit
-   event.
+   the record's owner (point 5), or to a context holding the same AFS
+   identity (C28, point 5). A user acts on their own records. A retry
+   always needs C28, point 5. An administrator may list, discard, and move
+   records unread: `afs pending export --for-owner` writes an opaque,
+   checksummed archive that carries each record's durable owner, AFS
+   identity and cell, and `afs pending import` places those records in
+   another install's store under the same owner. Both are audited. An
+   administrator cannot show or export a record's bytes. This is an
+   access rule, not encryption: a local administrator can read the
+   daemon's store on disk, and local administrators are outside the
+   threat model (O23). The archive format is specified with the record
+   format (N32 to N35). Every discard is an audit event.
 5. A record's owner is the durable owner of the context that wrote it
    (C18, point 9; C40, point 6). After that context ends, the same
    account instance may view or export the bytes; replaying still needs a
@@ -1121,7 +1166,9 @@ users.
    everything readable and the affected handles fail with the write error.
 8. Budgets are per account (C27). A background store that keeps making
    progress may run past the commit deadline (C9); one that stalls fails,
-   and its data stays in the journal.
+   and its data stays in the journal. Stalled means no acknowledged
+   progress within the stall interval, which the journal specification
+   fixes.
 9. A record is made durable by writing the file, syncing it, and syncing
    its directory. Removal is the reverse.
 
@@ -1171,7 +1218,7 @@ table governs all of it:
 | A break naming files, from an address matching no known server | the same, for the named files only |
 | A break or reset naming no files | every promise from the servers that source could be moves to a new suspect epoch; affected entries are suspect until their reader revalidates them |
 | More than the rate limit can process | the suspect epoch of the affected servers (of every server, if the source is unknown) advances **before** work is dropped or acknowledged; drops are counted |
-| A probe | evidence that the server can reach the client (C32), never authority over any data |
+| A probe | answered per the allowlist (point 4); never raises callback trust (C24, point 7) and is never authority over any data |
 
 1. A break changes the core's counters before the reply goes back, and
    never waits on a layer (C16).
@@ -1194,11 +1241,15 @@ data stale is bounded by C32.
 NAT show the intervals below serve stale data or cost too many
 revalidations.
 
-1. Callback trust is kept per server and per local endpoint generation.
-   It is earned by evidence that the server can reach the client: an
-   attributed inbound call to the callback service (a probe or a break)
-   from that server, no older than **E** (ten minutes by default,
-   configurable), and since the last network change or resume.
+1. Callback trust is kept per server, address family and local endpoint
+   generation. It is earned only by a reply from that server to the
+   client's own keepalive call (point 4), received on the client's
+   callback socket (C30), no older than **E**, and since the last network
+   change or resume. The reply is matched by the keepalive call's Rx
+   identity (epoch, connection id and call number), which the client
+   draws from `Rng` (C3) so that an off-path sender cannot guess it. We
+   propose E = 2 × the keepalive interval. Nothing the callback service
+   receives raises trust (C24, point 7).
 2. Without fresh evidence the server is in **bounded revalidation**: its
    data is served only if its status was validated within the last **T**
    seconds (we propose 30 to 60). Otherwise it is validated before
@@ -1207,8 +1258,10 @@ revalidations.
 3. With trust, cached data is served while its callback is valid and the
    credential and grants are valid, with no further cap since last
    contact. A break, or a known loss of callback continuity, ends that.
-4. The client sends keepalive probes (we propose every 60 to 100 seconds)
-   to servers that hold its callbacks, to keep a NAT mapping open.
+4. The client sends keepalive calls (we propose every 60 to 100 seconds)
+   to servers that hold its callbacks, to keep a NAT mapping open and to
+   earn point 1's evidence. Trust lapses when no reply has arrived within
+   E.
 5. **Resume is checked when data is served,** not only on a notification
    from the operating system. Each serve compares the clocks of C37, and a
    jump marks every callback suspect before the answer is given.
@@ -1216,8 +1269,18 @@ revalidations.
 
 Why: a callback promise is worth nothing if the server cannot reach the
 client, which is the normal case behind NAT, a firewall or after a laptop
-sleeps. Trust earned by observed inbound traffic separates "the server
-would have told us" from "we would never have heard".
+sleeps. The client sends and receives on one socket (C30), so a reply to
+its own call comes back over the same address-and-port pair a break would
+use, and shows that the path through a NAT or firewall is open now. An
+off-path sender cannot forge that reply without guessing the call's random
+identity, while an inbound probe or break could be forged by any host that
+can send UDP (C24). A NAT may drop a UDP mapping after two minutes:
+[RFC 4787](https://www.rfc-editor.org/rfc/rfc4787), REQ-5, allows a
+mapping timer of two minutes and recommends five or more. So the evidence
+is kept to about two keepalive intervals. Keepalives already exist, so
+this adds no traffic. An attacker on the path can still keep a server
+trusted while dropping its breaks; that is the reach rxkad already gives
+them (A13), and rxgk-protected callbacks remove it (C31's trigger).
 
 ### C33. Finding a cell's servers
 
@@ -1294,10 +1357,11 @@ resolution concepts do not map to it `[DES-002]`.
    NAT64 and 464XLAT (assumption A11).
 6. A callback that arrives from a translated address the client cannot
    match to a server (C31, point 3) is handled as one from an unknown
-   address: a break still suspends the files it names. It earns no
-   callback trust, so that server stays in bounded revalidation (C32,
-   point 2). The client is then correct but slower. Whether translated
-   sources can be attributed is part of the NAT64 test (A11).
+   address: a break still suspends the files it names. Trust comes from
+   replies on the client's own flow (C32, point 1), so an unattributable
+   translated source affects only whether breaks are received, not
+   whether a server is trusted. The NAT64 test checks that breaks arrive
+   through the translator (A11).
 
 Why: AFS-3 is an IPv4 service today `[DES-058]` `[DRV-M24]`. Keeping both
 families in every internal type means a later extension adds data, not a
@@ -1481,8 +1545,8 @@ that needs a reboot is avoided. Byte limits are coding standards rule 3.
    a daemon restart. What must survive is keyed by the context's
    **durable owner**: the local account instance (the uid or SID, plus
    the operating system's evidence that it is the same instance of that
-   account), the cell with its protocol identifier and configuration
-   generation (N27), and the AFS identity. It holds no credential
+   account, C41, point 4), the cell with its protocol identifier and
+   configuration generation (N27), and the AFS identity. It holds no credential
    generation and no security profile.
 7. **Which identity keys which store:**
    - the durable owner: the authenticated-intent marker (N4, point 3),
@@ -1522,8 +1586,27 @@ each filesystem request that a process cannot forge, or the Windows spike
    one account cannot hold different AFS identities for the same cell on
    Linux or macOS: the later token replaces the earlier. This is
    documented.
+4. **When a context ends on Linux and macOS.** A context ends when the
+   operating system reports that the uid's last session has ended
+   (systemd-logind's `UserRemoved` signal, where logind runs), or when
+   the user's IronAFS agent exits at logout (the systemd user manager on
+   Linux, the launch agent of L14, point 3, on macOS), or when a token
+   install shows a different account instance for the uid. When a token
+   is installed the daemon records the uid with its user name, and the
+   account's UUID where the operating system has one; a mismatch at the
+   next install retires the old generation (C18, point 7) and treats the
+   records of the old owner as C40, point 8, says. A user whose services
+   linger keeps the context until the linger ends. Hosts with neither
+   signal rely on token expiry and `unlog`; this is documented.
 
-Why: a PAG needs a per-session marker the daemon can trust. A FUSE request
+Why: a PAG needs a per-session marker the daemon can trust. Point 4 uses
+only operating-system interfaces: logind's manager sends its user and
+session signals when a user logs in or out, and documents lingering
+([org.freedesktop.login1](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.login1.html)).
+A logout hook alone would depend on every site configuring one. The user
+name check is cheap and catches the common case of an account removed and
+a new one created with the same uid; Linux has no portable account
+instance id beyond it. A FUSE request
 carries a uid, gid and pid `[DES-022]` and FSKit's context carries user and
 group ids only `[DRV-025]`; neither carries a session. OpenAFS tracks PAGs
 using artificial groups on some platforms `[DRV-075]`; the FUSE kernel
@@ -1547,8 +1630,8 @@ design is shown that keeps C40 and C43.
    when it changes, for a context that is still authorised, from that
    session's own valid Kerberos credentials. Journal records wait for the
    token (C29).
-4. Sign-out, or a deliberate removal of a token, ends that authorisation.
-   A restart cannot undo it.
+4. Sign-out (C41, point 4, on Linux and macOS), or a deliberate removal
+   of a token, ends that authorisation. A restart cannot undo it.
 5. A context that cannot get its token back shows "no token" in
    `afs status`, with a notification. A context with no agent must run
    `aklog` itself. This is documented.
@@ -1564,8 +1647,10 @@ design is shown that keeps C40 and C43.
      acknowledged. Agent requests in flight at that moment are fenced: a
      token they deliver is refused.
    - After `unlog`, only the user's own explicit `aklog` restores it.
-     Who may restore it after an administrator's revocation is an open
-     question of the overview.
+   - After an administrator's revocation, only an administrator restores
+     it, through an audited control operation. The user's own `aklog`
+     installs a token for the session but does not restore automatic
+     reacquisition.
    - After a restart, the daemon accepts a token from an agent's
      automatic `aklog` only while the record is present.
    - **Test:** revoke a token, restart the daemon; the agent's automatic
@@ -1731,13 +1816,16 @@ applied to the error path.
    - A removed file that is still open stays visible under a reserved
      name until it is closed; it counts against quota and can block the
      removal of its directory (C10).
-   - Rename with "do not replace" fails, and so does a rename over a
-     file that is open on the same machine (C10).
+   - Rename with "do not replace" fails (C10).
+   - A rename over a file that is open on the same machine replaces it,
+     and the replaced file's open handles fail with `Stale`, as when the
+     file is replaced from another machine. Its unstored bytes wait as a
+     recovery record (C10).
    - Where a kernel cannot isolate mapped pages, programs cannot be run
      from `/afs` (C15).
-   - Without proof that a server can reach the client, cached data is
-     revalidated every T seconds, and a request fails instead of returning
-     stale data (C32).
+   - Without a recent reply from a server to the client's own keepalive
+     call, that server's cached data is revalidated every T seconds, and a
+     request fails instead of returning stale data (C32).
    - On a Linux host with only a flat list of name servers, DNS discovery
      of cells is off until an administrator confirms it (C33).
 2. **Cost on multi-user hosts.** Until fileservers offer rxgk to clients,
@@ -1746,11 +1834,13 @@ applied to the error path.
    they do not remove it.
 3. **What cannot be promised.** Pages resident in a live mapping stay
    readable after revocation, on Windows until the view's SMB open or
-   session ends (C15, points 2 and 8). On Linux a purge that fails for a
-   node that may be mapped aborts the FUSE connection (C15, point 6): every
-   user's open files on `/afs` fail until the mount is replaced, whatever
-   the cause of the failed purge. Root and the daemon's own account see
-   everything in the cache. A change of the client's address behind a NAT
+   session ends (C15, points 2 and 8). A failed purge affects one file,
+   never other users: on Linux that node answers `Stale` and refuses new
+   mappings until a purge succeeds (C15, point 6). An attacker on the
+   network path can keep a server trusted while dropping its breaks; this
+   is the same reach rxkad already gives them (A13), and rxgk-protected
+   callbacks remove it (C24, point 7; C32). Root and the daemon's own
+   account see everything in the cache. A change of the client's address behind a NAT
    is seen only at the local timeout (C23). Occupancy and timing of the
    cache reveal that it is in use (C27).
 4. **Work that must come first.** The specification gates of C6; the ADR
@@ -1823,3 +1913,20 @@ applied to the error path.
 - **rxgk first:** OpenAFS offers no client-to-fileserver rxgk yet
   `[DES-048]` `[DRV-M25]`, and existing
   cells could not be used at all until rxkad was done (C35).
+- **Callback trust earned from inbound probes or breaks:** before rxgk
+  nothing the callback service receives is authenticated, so a forged
+  probe every few minutes could keep a server trusted while its real
+  breaks were lost (C24, point 7; C32).
+- **Bounded revalidation for every server until callbacks are
+  rxgk-protected:** it would add a status round trip for every cached file
+  every T seconds, on every server, for no gain against an attacker on the
+  path, who can already tamper with rxkad replies (A13; C32).
+- **Refusing a rename over a file open on this machine:** every save by
+  rename would fail while any local process held the file open, and the
+  refusal would tell other users that the file is open (C10, point 5).
+- **Aborting the whole FUSE connection when one purge fails:** a forged
+  break could then end every user's open files (C15, point 6).
+- **The time and randomness seam inside `ironafs-vfs` or
+  `ironafs-client`:** `ironafs-rx` knows nothing of AFS and so cannot
+  depend on `ironafs-vfs`, and pure crates may not depend on
+  `ironafs-client` (C4, points 1, 4 and 7).

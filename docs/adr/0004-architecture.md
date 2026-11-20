@@ -169,8 +169,9 @@ fails reopens every working decision that names it.
 - **A2. Demand for EL7.** We assume enough AFS sites still run EL7 to
   justify a tier 2 candidate row. No public count exists `[PLT-066]`.
   - Depends on it: only the RHEL 7.9 row.
-  - Settled by: site requests, or a survey of the AFS user community.
-    Without either, the row lapses at its cutoff (L39, point 3).
+  - Settled by: a request for the row from a site that runs AFS on EL7.
+    Without one, the row is not qualified and lapses at its cutoff
+    (L39, point 3); no earlier cutoff is set.
 - **A3. The Windows SMB routes.** We assume Windows' own SMB client,
   reaching IronAFS's loopback server through route 3 (and route 1 on
   Windows 11 24H2 and later `[WIN-162]`), completes an authenticated, signed SMB 3.1.1
@@ -183,13 +184,16 @@ fails reopens every working decision that names it.
     recorded in public on the named Windows builds, early in M2.
 - **A4. Protecting the back-end port.** We assume a Windows Filtering
   Platform rule can stop other local processes from taking route 3's
-  back-end port while IronAFS is stopped `[WIN-189]`. A persistent
-  port reservation cannot: Windows gives such reservations no security
-  between components `[WIN-187]`.
-  - Depends on it: the fail-closed admission criterion for route 3
-    (part 2).
+  back-end port while IronAFS is stopped `[WIN-189]`, and the same for
+  route 1's alternative port, and that such a rule persists across a
+  reboot and is in force before any local process can bind the port. A
+  persistent port reservation cannot do this: Windows gives such
+  reservations no security between components `[WIN-187]`.
+  - Depends on it: the fail-closed admission criterion for routes 1 and 3
+    (part 2, L20).
   - Settled by: a test in M2 in which an ordinary local user tries to bind
-    the port while IronAFS is stopped.
+    each route's port while IronAFS is stopped, and again early in boot,
+    and the containment test of L41, point 9.
 - **A5. Identity through Windows' own file server and NFS client.** We
   assume that a local folder shared through Windows' own SMB server loses
   the caller's identity before it reaches the folder's provider, and that
@@ -217,11 +221,15 @@ fails reopens every working decision that names it.
   Microsoft documents a session id in callbacks and no user or token
   `[DRV-019]`. We also assume that logoff needs handling apart from a service
   stop `[WIN-128]`, and that keeping the cache within a size is the
-  provider's job, with no automatic dehydration `[WIN-085]`.
-  - Depends on it: the replica's one-root-per-user model and its cache-size
-    policy (part 2).
-  - Settled by: a spike that logs callback session ids across two users, a
-    logoff and a run under disk pressure.
+  provider's job, with no automatic dehydration `[WIN-085]`. Finally we
+  assume a logon SID is the same across the linked elevated and limited
+  tokens of one logon; Microsoft's documentation does not say.
+  - Depends on it: the replica's per-account roots, each bound to one
+    logon session's logon SID (L28, point 1), and its cache-size policy
+    (part 2).
+  - Settled by: a spike that logs callback session ids across two users,
+    two logons of one account, an elevated and a limited process of one
+    logon, a logoff and a run under disk pressure.
 - **A8. The order of the bulk status calls.** We assume an AFS-3 fileserver
   accepts InlineBulkStatus after a directory listing, and that BulkStatus
   is the fallback when a server refuses it. Both RPCs exist; their
@@ -231,15 +239,15 @@ fails reopens every working decision that names it.
     cell, in M2.
 - **A9. No conditional store in AFS-3.** We assume AFS-3 offers no store
   that is conditional on the server's current version of a file. So a
-  client cannot atomically refuse to overwrite a version it has not seen,
-  and a replica's publish sequence keeps a short window `[WIN-098]`
-  `[WIN-100]`.
+  client cannot atomically refuse to overwrite a version it has not seen
+  `[WIN-098]`.
   - Depends on it: the rule that deferred stores are never automatic
-    (C28), the replica's publish protocol (part 2), and the case for a
+    (C28), the replica's upload rule (L27, point 3), and the case for a
     conditional store in a later server profile (issue #22).
-  - Settled by: a published AFS-3 file-service specification, or a
-    decision, recorded in an ADR, on whether the 1990s AFS reference
-    documents count as published specifications under ADR 0001.
+  - Settled by: a published AFS-3 file-service specification, or an
+    edition of the older AFS documents registered under N31, point 3,
+    whose complete file-service call list shows no conditional store,
+    corroborated as N31, point 3, requires.
 - **A10. Where File Provider puts a domain.** We assume File Provider
   cannot place a domain at a fixed path such as `/afs`, and puts roots
   under the user's Library `[DRV-M29]` `[DRV-043]` `[MAC-M17]` `[MAC-M18]`. The
@@ -251,9 +259,10 @@ fails reopens every working decision that names it.
   fileservers, and receives their callbacks, through NAT64 and 464XLAT on
   an IPv6-only network. RFC 6877 specifies 464XLAT; the client's use
   of it, and the callback path through it, are untested `[DES-067]`.
-  - Depends on it: the IPv6 statement in C34. If a callback's translated
-    source cannot be matched to its server, that server earns no callback
-    trust and stays in bounded revalidation (C34, point 6; C32).
+  - Depends on it: the IPv6 statement in C34. Trust comes from replies on
+    the client's own flow (C32, point 1), so a translated source that
+    cannot be matched to its server affects only whether its breaks are
+    received (C34, point 6).
   - Settled by: the NAT64 test in M2, including the callback path.
 - **A12. Fuzz targets in the workspace.** We assume a `fuzz` directory per
   crate does not work under a `crates/*` virtual workspace without an
@@ -280,68 +289,16 @@ fails reopens every working decision that names it.
 
 ## Open questions for review
 
-On these points the parts do not yet give one answer, or give one whose
-cost the review should weigh. Each entry names the decisions involved and
-the options. None is answered here.
+On this point the parts do not yet give one answer, or give one whose cost
+the review should weigh. The entry names the decisions involved and the
+options. It is not answered here.
 
-1. **Renaming over a file that is open on the same machine** (C10,
-   point 5). C10 allows the rename only where one atomic replacement can
-   also keep the replaced file for its open handles, and refuses it
-   otherwise. We know of no AFS-3 operation that does both, so today it
-   is always refused, and a program that saves by renaming over a file
-   another local process holds open fails. Options:
-   - keep the refusal;
-   - do the one atomic rename, let handles open on the replaced file fail
-     with `Stale`, and keep that file's unstored bytes as recovery data
-     (C29);
-   - refuse only when the replaced file has unstored bytes.
-2. **rxgk in a production build while the combine-tokens call has no
-   assigned number** (N4, N6, N8, N12, N13). N13 gives such a build no
-   rxgk fileserver path. If it still held an rxgk token for a cell's
-   database services, N4, point 1, would refuse that cell's fileservers,
-   because the exception of N12 is disabled too. Options:
-   - no rxgk token is installed in a production build while the gate is
-     closed, so rxgk stays test-only;
-   - rxgk for database services only, with a stated exception to N4 that
-     lets fileservers use a companion rxkad credential inside the
-     configured floor;
-   - no release offers rxgk until the call is assigned.
-3. **May an administrator export another user's recovery data?** (C28,
-   point 7; C29, points 4 and 5; O16; O33, point 5; O42, point 4). C29
-   gives a record's bytes to its owner's account only. The upgrade and
-   imaging procedures use `afs pending export` where no owner may be
-   present. Options:
-   - the owner's account only: an administrator can list and discard;
-   - an administrator may export any record, as an audited action;
-   - an administrator may move records, unread, to where their owner can
-     recover them.
-4. **Uploads from the Windows replica, if it is built** (C28, point 3;
-   L27, point 3; A9). A9 speaks of a publish sequence with a short
-   window, which reads as an automatic store. C28 allows no automatic
-   store of a write that was not committed while its application waited.
-   Options:
-   - an upload is a deferred store: it waits for the user's instruction;
-   - an upload counts as an immediate store, made when the provider sees
-     the change, and the last writer wins;
-   - a check-then-store publish sequence, as a named exception to C28.
-5. **DNS discovery on a flat list of name servers** (C33, point 4). Is
+1. **DNS discovery on a flat list of name servers** (C33, point 4). Is
    an administrator's confirmation, with the listed servers asked in
    order under documented timeouts, enough to keep IronAFS's own DNS
    client from going around the host's choice of server? Options:
    - as C33 states;
    - no discovery on a flat list: configured servers only.
-6. **Where the time and randomness seam lives** (C3, point 3; C4,
-   point 7; C5; C37; N8; O45). No crate in C4 holds the `Clock` and `Rng`
-   interfaces and the time types, the simulator, or the state
-   directory's format marker. C37 puts the production clocks in
-   `ironafs-os`, and C5 puts the cryptographic random source behind
-   `ironafs-crypto`. Options:
-   - a small pure crate, for example `ironafs-time`, with the production
-     implementations in `ironafs-os`;
-   - inside `ironafs-vfs`;
-   - inside `ironafs-client`, with the daemon supplying the system
-     implementations.
-   The simulator and the format marker need a home under any of these.
 
 ## Evidence
 
