@@ -1758,10 +1758,9 @@ hosted runners, or a case here cannot be automated on a supported OS.
      and not after; with an account UUID or equivalent, the successor's
      first record operation and its next token installation each fail the
      account-instance check and retire the context; its `afs pending list`
-     leaves out the earlier account's records, and its other operations on
-     them are refused, before any record or metadata of them is returned;
-     with
-     neither, the successor can use the old token until it expires or is
+     leaves out the earlier account's records, and every other request on
+     them is refused, before any record or metadata of them is returned;
+     with neither, the successor can use the old token until it expires or is
      removed by `unlog`, and not after. Records half: on a host with no
      account UUID, a successor with the same uid and name owns the seeded
      record before and after the earlier context is retired and after a
@@ -1769,9 +1768,9 @@ hosted runners, or a case here cannot be automated on a supported OS.
      an account UUID, a successor that is not an administrator gets none
      of it: the record is left out of its `afs pending list`, and `show`,
      `export`, `retry` and `discard` of it are refused, before and after a
-     restart, while a record the successor writes under its own account
-     UUID is listed, shown, exported, retried and discarded for it as for
-     any owner. On every host type nothing else crosses: no other
+     restart, while two records the successor writes under its own
+     account UUID are listed, shown and exported for it, one is retried
+     and the other discarded, as for any owner. On every host type nothing else crosses: no other
      context, token or record (C41, point 4; C40, point 8);
    - a rename over a file another local process holds open: the rename
      succeeds where, on SMB, the opener allowed delete sharing, and

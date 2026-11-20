@@ -1762,11 +1762,11 @@ each filesystem request that a process cannot forge, or the Windows spike
    next install retires the old generation (C18, point 7) and treats the
    records of the old owner as C40, point 8, says. **Records.** The
    account-instance check that runs at token installation also runs before
-   `afs pending list` shows a record (a record that fails it is left out
-   of the list), before any recovery record is
+   `afs pending list` shows a record, before any recovery record is
    shown, exported, retried or discarded, and before a context rebinds to
-   one; a mismatch retires the old generation, refuses the request and
-   treats the records of the old owner as C40, point 8, says. A user whose
+   one. A mismatch retires the old generation and treats the records of
+   the old owner as C40, point 8, says: `afs pending list` leaves those
+   records out, and every other request on them is refused. A user whose
    services linger keeps the context until the linger ends, and the signal
    retires it only then. Hosts with neither signal rely on token expiry and
    `unlog`; this is documented. **Bound.** An account deleted and recreated
