@@ -170,7 +170,7 @@ fails reopens every working decision that names it.
   justify a tier 2 candidate row. No public count exists `[PLT-066]`.
   - Depends on it: only the RHEL 7.9 row.
   - Settled by: site requests, or a survey of the AFS user community.
-    Without either, the row lapses at its cutoff.
+    Without either, the row lapses at its cutoff (L39, point 3).
 - **A3. The Windows SMB routes.** We assume Windows' own SMB client,
   reaching IronAFS's loopback server through route 3 (and route 1 on
   Windows 11 24H2 and later `[WIN-162]`), completes an authenticated, signed SMB 3.1.1
@@ -264,14 +264,17 @@ fails reopens every working decision that names it.
   - Settled by: running `cargo metadata` and `cargo fuzz` on the pinned
     toolchain when the first fuzz target lands, with the output recorded
     in the pull request.
-- **A13. rxkad and the integrity of a reply.** We assume no rxkad level
-  protects the integrity of a reply's payload. The claim record holds no
-  public source that states, level by level, what rxkad protects. The
-  rxgk base draft describes rxkad as limited to very weak cryptography,
-  approximately single-DES `[ADR-034]`.
-  - Depends on it: IronAFS's stated position on rxkad (O23, point 4);
-    what counts as evidence in negotiation (N1, N5); and the rule that
-    no rxkad fetch enters the shared pool (C18, C21).
+- **A13. rxkad and the integrity of a reply or a request.** We assume no
+  rxkad level protects the integrity of a reply's payload, and IronAFS
+  takes the same position on a request's payload, a store's data
+  included: a network attacker may be able to change it. The claim record
+  holds no public source that states, level by level, what rxkad
+  protects. The rxgk base draft describes rxkad as limited to very weak
+  cryptography, approximately single-DES `[ADR-034]`.
+  - Depends on it: IronAFS's stated position on rxkad (O23, point 4, and
+    its rxkad row); what rxkad's documentation says it does not give
+    (C35, point 5); what counts as evidence in negotiation (N1, N5); and
+    the rule that no rxkad fetch enters the shared pool (C18, C21).
   - Settled by: the specification route for rxkad (O50, point 3), which
     confirms or corrects it.
 

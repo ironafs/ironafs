@@ -103,8 +103,11 @@ where authorisation is decided (C2).
 
 ### C2. Semantics in the core, presentation in the layer
 
-**Working.** Revisit if: an operating-system interface is found that cannot
-be served unless its layer decides one of the things listed in point 1.
+**Firm** (points 1 and 2, a security invariant). **Working** (point 3).
+Revisit point 3 if: an operating-system interface needs a presentation
+that the rights and volume type the core reports cannot compute. An
+interface that could be served only if its layer decided one of the
+things in point 1 needs a superseding ADR.
 
 1. The core decides authorisation, coherency, sharing, locking and when a
    write is committed.
@@ -253,9 +256,10 @@ forbidden workspace-wide until an ADR names the sites (`AGENTS.md`).
    fixtures as ADR 0001 requires.
 3. **Specification gates.** These are written and reviewed before the code
    that depends on them:
+   - before `ironafs-proto`: the table of wire time fields (C38), inbound
+     and outbound;
    - before the cache: what evidence identifies a volume's incarnation
-     (C25), the directory format, the callback procedures, and the table
-     of wire time fields (C38);
+     (C25), the directory format and the callback procedures;
    - before rxkad: a specification route that covers rxkad, rxkad-k5 and
      rxkad-kdf, and the rule that turns an access mask and mode bits into
      an effective right (C22). Where behaviour can be learned only from
@@ -293,8 +297,10 @@ carry.
    act with the handle's authority (C13): read, write, read directory,
    commit, lock on an open file, and subscription to change notification.
    Get and set information, disposition and rename also have handle forms.
-   They use the access granted at open. A rename through a handle needs
-   fresh authority on the target directory. On Windows the names behind
+   Every handle operation is checked as C13, point 2, says. A rename or a
+   delete disposition through a handle also needs the delete right on the
+   source directory, and a rename needs fresh authority on the target
+   directory. On Windows the names behind
    these forms follow L25, point 5.
 4. **Binding operations** carry no caller and change no data: forget,
    release, release directory, reclaim, cancel, volume sync, pin and
@@ -302,7 +308,10 @@ carry.
 5. A handle that comes from the operating system (a descriptor passed to
    an `fs` command) is accepted only after the core has checked that it
    belongs to an IronAFS mount or share and to the volume's current
-   incarnation (C25).
+   incarnation (C25), and that the handle behind it is live and still in
+   its credential generation (C13, points 2 and 4). Where the operating
+   system cannot identify the open behind the descriptor, the command is
+   refused.
 6. Share access and byte-range locks are checked, reserved and enforced
    in the core's lock service. A layer only forwards them. The lock rules
    are in L33.
@@ -321,15 +330,20 @@ release.
    and one credential context (C40), when the layer presents the operating
    system's own statement of the caller: the uid in a FUSE request header
    `[DES-022]`, FSKit's context `[DRV-025]`, or the authenticated SMB session
-   (L17, L18).
+   (L17, L18). Calls on the control endpoint take their caller from the
+   peer credentials of C45, point 1, instead.
 2. A layer cannot construct a caller capability or a handle capability,
    and cannot use one minted for another binding.
 3. Local uid 0 has no AFS powers. A local administrator role exists only
    for control operations (O13, O16).
 
 Why: a layer that could name a caller could act for anyone. This keeps a
-bug in a layer, or a compromised front-end process, from becoming another
-user's authority (C45).
+bug in a layer, or a compromised front-end process, from becoming the
+authority of a user it does not serve (C45). It does not stop a
+compromised front end from acting for the users it does serve, on its own
+bindings: the FSKit extension forwards uids the daemon cannot verify
+`[DRV-025]`, and the SMB front end holds its sessions' keys (L18). C45,
+point 4, states that boundary.
 
 ### C9. One commit operation
 
@@ -347,6 +361,9 @@ application lose data it was told was saved.
    error, the store continues in the background as a journal record
    (C29), and `afs pending` shows its outcome.
 4. `release` never fails.
+5. A commit reports success only when the server has accepted the store
+   (point 1). Data held in the journal or in a recovery record is never
+   reported to the application as stored.
 
 Why: FUSE does not return an error from a release to `close()`, and may
 flush many times or not at all `[DES-029]`. FSKit's cached close takes no
@@ -403,10 +420,13 @@ that outlive the daemon.
 
 1. A node id is 64 bits. It maps to a key of cell, volume, vnode and
    uniquifier, plus an **anchor**: how the volume was entered (the dynamic
-   root, a cell root, or a mount point).
+   root, a cell root, or a mount point). A mount point anchor is the node
+   id of that mount point, whose own key carries its own anchor, so the
+   anchor names the whole chain of mounts.
 2. A node id is never reused within one daemon instance, and is valid for
-   that instance only. A daemon restart ends the FUSE mount and the FSKit
-   items (L7).
+   that instance only. A daemon restart ends every layer's binding: the
+   FUSE mount (L7), the FSKit items (L14), and the SMB sessions and their
+   handles (L19).
 3. The anchor keeps every directory single-parented when one volume is
    mounted in two places. A reverse index from file id to node ids sends
    each callback break and each local change to every alias.
@@ -417,9 +437,20 @@ that outlive the daemon.
    ([OpenAFS administration guide, "About Volumes"](https://docs.openafs.org/AdminGuide/HDRWQ177.html)),
    so their paths are different nodes.
 6. What Windows is shown as a file's identity is the stable key, not the
-   node id. SMB's per-open ids are generated per open by the front end
-   (L19).
+   node id; its components are in N38, point 7. SMB's per-open ids are
+   generated per open by the front end (L19).
 7. Identifier widths are in N38.
+8. A chain of mounts is bounded in depth and checked for cycles, as L32,
+   point 3, states. A chain that exceeds the bound or repeats a mount
+   point is refused, never followed.
+9. A mount point resolves to a volume in the requesting context (C18,
+   point 1). The volume in a node's key is the one the mount point
+   resolved to in that context. Two contexts that resolve one mount point
+   to different volumes get different nodes.
+10. **A full node table.** Each node a layer pins is charged to the
+    pinning context's budget (C27, point 4). A new pin over that budget, or
+    in a table that is full, is refused with a retryable error (busy).
+    Pinned nodes are never evicted to make room.
 
 Why: a kernel assumes a directory has one parent, and AFS lets a volume be
 mounted anywhere. The alias handling is reasoned, not tested; the M2a tests
@@ -436,7 +467,11 @@ still contacts cells from a listing of `/afs`, measured in M2a.
    synthesised.
 3. A lookup of a name that is not a cell is answered from a negative
    cache, so an indexer or a mistyped path does not cause a DNS query each
-   time.
+   time. This cache is machine-wide and part of cell discovery (C33), not
+   a cache entry of any context: it holds only that a name is not a cell.
+   It is filled only from a conclusive negative DNS answer, kept no longer
+   than that answer's time to live, never filled from a timeout or an
+   error, and cleared on a network change (C33, point 6).
 
 Why: points 1 and 2 are the dynamic-root and fake-stat behaviours
 OpenAFS's client documents `[DES-054]`, which users of `/afs` already rely
@@ -451,10 +486,12 @@ on. Point 3 is our own addition.
 1. A handle is bound to its credential context (C40) and that context's
    credential generation, the node, the open mode, the binding, the rights
    at open, and the volume's incarnation (C25).
-2. Where the front end can identify the open, each read or write checks
-   that the handle is live and takes the intersection of the rights at
-   open with the current effective rights. A right that was lost is
-   refused; rights that remain keep working.
+2. Where the front end can identify the open, every handle operation
+   (C7, point 3: read, write, read directory, commit, lock, get and set
+   information, disposition and rename) checks that the handle is live and
+   takes the intersection of the rights at open with the current effective
+   rights. A right that was lost is refused; rights that remain keep
+   working.
 3. Where the front end cannot tell opens apart (FSKit), each operation
    checks only liveness, and any reduction of rights revokes the handle.
    It must be reopened.
@@ -480,19 +517,30 @@ long or too costly against the test cell.
    - a token for the same context, cell and AFS identity replaces the old
      one (what `aklog`, renewal and login services produce); or
    - a callback break makes the file's rights, or its directory's ACL,
-     stale.
+     stale; or
+   - the network generation changes (C23, point 2); or
+   - the ten-minute bound of point 5 passes for a node with open handles.
 2. The core then fetches the file's rights under the current credential.
    If they still cover what the handle needs, it resumes with the same id
-   and stores in flight authenticate again. If not, C13 applies.
+   and stores in flight authenticate again. If not, or if the rights
+   cannot be fetched before the deadline, C13 applies, and the operating
+   system's caches for the node are purged as for a revocation (C15,
+   point 2; C17).
 3. **Revoked** means every later operation fails. A handle is revoked when
    the token is deleted, expires without a replacement, or is replaced by
-   a different AFS identity; when the volume's incarnation changes; or
-   when its binding dies. Expiry revokes handles on public data too; a
-   fresh open may then get a public grant of its own.
+   a different AFS identity; when the volume's incarnation changes; when
+   the cell's protocol identifier or configuration generation changes
+   (N27), in which case it fails with `Stale`; or when its binding dies.
+   Expiry revokes handles on public data too; a fresh open may then get a
+   public grant of its own. A handle opened without a token is revoked
+   when its context installs a token for that cell, so no anonymous
+   authority survives into the authenticated identity (C19; N4, point 2).
 4. After write access is revoked, writes stop. Data not yet committed goes
-   to a recovery record owned by the original context (C29, point 5) and
-   is never stored automatically (C28). The failure is reported by the next
-   write, flush or close that can carry an error, and in `afs status`.
+   to a recovery record owned by the writer's durable owner (C40, point 6;
+   C29, point 5) and is never stored automatically (C28). From then on the
+   handle has no dirty overlay: its next operation of any kind, read
+   included, fails with the write error (as C29, point 7). The failure is
+   also shown in `afs status`.
 5. The core's own cached rights decisions are at most ten minutes old.
    This cannot bound how long a group change takes to spread between
    servers. When fresh authorisation is needed and cannot be had, the
@@ -514,19 +562,34 @@ trusted blindly.
    This is documented, not hidden.
 3. **A second context** that maps the same file is served only through
    its own authorised open. One context's fault is never served from pages
-   another context loaded.
+   another context loaded. This holds in the hardest case too: two
+   contexts, both authorised, each served different bytes by the daemon
+   (C18), mapping the same node.
 4. **Descriptors held by other processes** are revoked with the handle.
 5. **Gate, per supported kernel and per operating system.** Resident
-   pages, a new fault, two contexts mapping one file, and a failed purge
-   while the first mapping is still live are each tested. Where a kernel
-   would serve one context's fault from another's pages without asking the
-   daemon, mapping is refused on that kernel, and programs cannot be run
-   from `/afs` there.
+   pages, a new fault, two contexts mapping one file (point 3's case), a
+   new fault after revocation, and a failed purge while the first mapping
+   is still live are each tested. Where a kernel would serve one context's
+   fault from another's pages without asking the daemon, or would serve a
+   new fault after revocation without asking it, mapping is refused on
+   that kernel, and programs cannot be run from `/afs` there. A layer
+   promises mapped I/O only where this gate passed.
 6. If a purge fails at run time for a node that may be mapped, the core
    cannot show the pages are gone. On Linux it aborts the FUSE connection
-   and remounts; on macOS the item is revoked. That stops every future
-   request and fault. It does not remove pages already resident in live
-   mappings.
+   and remounts; on macOS the item is revoked. That stops every later
+   request, and every later fault that reaches the daemon. It does not
+   stop a fault served from pages still resident, and it does not remove
+   pages already resident in live mappings.
+7. **macOS: a failed revoke.** If revoking the item fails too, the
+   extension ends that user's mount (L9, L10). Nothing the mount served
+   stays reachable through it.
+8. **Windows SMB.** The front end declines leases (L19, point 5), so it
+   cannot recall pages that Windows has mapped. The stated bound is:
+   pages Windows already holds for a mapped view stay readable to that
+   view until the view's SMB open or its SMB session ends, as in point 2.
+   The Windows gate (L22) measures whether a new fault after revocation
+   reaches the front end. Where it does not, that build fails point 5's
+   gate, and point 5's refusal applies.
 
 Why: the first anti-goal of the overview. Stating the bound exactly is
 what lets a site decide whether it is acceptable. The kernel mechanisms
@@ -553,14 +616,46 @@ and L13.
    reply's context, generation, grant and node state in the same step that
    writes it to the kernel or to the SMB connection. A revocation that
    lands earlier stops the reply. A reply already submitted counts as
-   delivered.
+   delivered. Point 6 says how a binding in its own process makes this
+   check.
 4. **Local changes fence too.** A store, create, rename or remove made
    through this client updates the core from the server's reply and
    publishes data, attribute and entry invalidations to every alias of the
-   node, so other users' kernel caches see the change.
+   node, so other users' kernel caches see the change. These
+   invalidations are among the effects C24, point 6, allows on weak
+   evidence: they make readers revalidate and destroy nothing.
 5. **While a purge is pending** in a binding, the node serves nothing in
    that binding that needs the purged state. There is no exception for the
    user who was last served.
+6. **A binding in its own process** (the FSKit extension, the SMB front
+   end, C1, point 2) cannot see the core's state, so point 3's check is
+   split across one ordered stream on the adapter endpoint (C45):
+   - The daemon sends each reply with the binding's current **fence
+     epoch**, on the same ordered stream that carries invalidations
+     (C17).
+   - A revocation or invalidation that affects the binding advances the
+     epoch. The daemon pushes the new epoch on that stream before it
+     acknowledges the revocation.
+   - The front end compares a reply's epoch with the latest epoch it has
+     received immediately before it writes the reply to the operating
+     system or the SMB connection. A reply with an older epoch is
+     discarded, and its request fails or is retried as for a fenced
+     reply (point 2).
+   - **Residual:** a reply the front end has already written counts as
+     delivered (point 3).
+   - **Back-pressure:** the stream is bounded (C39, point 3). When it is
+     full, replies wait within their deadlines. An epoch advance is never
+     dropped: space for it is kept free.
+   - **Partial submission:** a reply sent in several parts (a
+     multi-credit SMB read, for example) checks the epoch before each
+     part. Once the epoch has moved, no further part is written, and the
+     request fails.
+   - **Adapter death:** every reply not yet acknowledged as written counts
+     as undelivered, and the binding is torn down, which revokes its
+     handles (C14, point 3).
+   - **Test:** a revocation that lands after a reply has crossed the IPC
+     channel and before the front end writes it. The reply must not be
+     written.
 
 Why: the "silent wrong answer" anti-goal. A check made before a wait says
 nothing about the moment the bytes leave, so the check that counts is the
@@ -574,10 +669,13 @@ cannot fail.
 
 1. Events are **coalesced per node**, not queued one by one. Memory is
    bounded by the node table, never by the rate of breaks. Overflow
-   becomes one overflow event that gates every node.
-2. Events are **acknowledged per binding.** A layer acknowledges an event
-   only after it has applied it and has drained, or fenced out, every
-   reply it issued earlier that could fill the cache again.
+   becomes one overflow event that gates every node. Point 6 says how
+   events widen and when a binding overflows.
+2. Events are **acknowledged per binding,** in this order: new replies
+   that need the purged state are gated (C16, point 5); every reply the
+   binding issued earlier that could fill the cache again is drained or
+   fenced out (C16, points 3 and 6); the operating system's purge is
+   applied; then the event is acknowledged.
 3. Coherency events go to every binding that holds the node. Rights
    events name a credential context.
 4. Each in-process layer has one notifier thread, which writes kernel
@@ -589,6 +687,19 @@ cannot fail.
      "rescan", and closes the session if it cannot;
    - the Windows replica, if built: the placeholder stays marked stale and
      the event stays unacknowledged until dehydration succeeds.
+6. **Widening and overflow.** A node holds one pending event per
+   binding, so events that do not fit one slot widen:
+   - rights events on one node that name different credential contexts
+     widen to all contexts;
+   - entry events on one directory that name different entry names widen
+     to all entries of that directory. A layer applies an all-entries
+     purge by invalidating every entry name it has handed its operating
+     system under that directory. A layer that cannot list those names
+     treats the purge as one it cannot complete (point 5);
+   - a binding **overflows** when its pending events reach their byte
+     bound (C39, point 3). It then applies the overflow event: every node
+     it holds is gated as in C16, point 5, and purged as above, or
+     handled under point 5 where it cannot be purged.
 
 Why: a callback break must never wait on a layer, and a slow layer must
 not grow the daemon's memory. libfuse documents a deadlock when
@@ -610,8 +721,9 @@ own rule on top.
    the credential context (C40) that fetched it, and is read only under
    them. Private entries are: data chunks, status, rights, directory
    snapshots, lookups and negative lookups, the volume and location data
-   used to reach a file, fetches in flight, dirty data and journal
-   records.
+   used to reach a file, fetches in flight, and dirty data. Journal and
+   recovery records are not generation-locked entries; point 9 says who
+   owns them.
 2. Nothing private crosses contexts. Two accounts, two AFS identities of
    one account, and (where the operating system can tell them apart, C41)
    two sessions of one account are separate contexts.
@@ -630,9 +742,13 @@ own rule on top.
 7. **Lifetime.** Renewal keeps the generation only when the daemon has
    its own record that the AFS identity is unchanged, never on the token's
    opaque contents. Loss of the credential, the end of the session,
-   removal of the account, or a change of policy retires the generation:
-   access stops at once, late fetches are fenced off, and the files are
-   reclaimed afterwards. A recycled uid or SID is a new account instance
+   removal of the account, a change of policy, or a change of the token's
+   restriction status or of any other token property that narrows the
+   rights the server grants retires the generation. The generation's key
+   therefore includes the token's restriction class (N36). Retirement means:
+   access stops at once, late fetches are fenced off, journal and recovery
+   records are detached (point 9), and the remaining files are reclaimed
+   afterwards. A recycled uid or SID is a new account instance
    and inherits nothing. After a daemon restart no private state is
    attached to a context without positive evidence that the account
    instance, the session, its credentials and the policy continue.
@@ -640,6 +756,14 @@ own rule on top.
    its operating system reuses stops being reused when the grant behind it
    ends. Where a front end cannot enforce that, it does not reuse. The
    per-layer rules are in L5, L11, L19 and L28.
+9. **Journal and recovery records** belong to the durable owner of the
+   context that wrote them (C40, point 6), not to its generation. They
+   survive the loss of the credential, the end of the session, the
+   retirement of the generation and a daemon restart. They are removed
+   only by a confirmed store or an explicit discard (C29, point 4).
+   Retirement detaches them from the generation before it reclaims that
+   generation's clean entries. Who may read or replay them is in C28 and
+   C29.
 
 Why: a cache shared across users answers "may this reader read?" but not
 "who vouches for these bytes?". Under rxkad the user holds the session key
@@ -704,9 +828,12 @@ administrator for named cells and volumes. When it exists:
    allowed only on the protocol's own signal `[DES-062]`, never on an RPC
    error, and never below the configured floor (N2, N3).
 6. A reader opens a shared entry only with a shared-pool grant, minted
-   from the reader's own protected status reply (C22). Only status fields
-   that are the same for every caller are shared. Each caller's rights
-   stay private.
+   from the reader's own status reply (C22). That reply, and the reply for
+   every directory and mount point on the path, must be authoritative
+   evidence (C24, point 1), as point 1 requires of the entry. A reply
+   protected only by a key the reader holds mints a private grant, never
+   a shared-pool grant. Only status fields that are the same for every
+   caller are shared. Each caller's rights stay private.
 7. Entries enter the pool only complete and verified. The pool is never
    filled from a writer's dirty data.
 8. A fetch meant for the pool that falls back is a separate, private
@@ -726,7 +853,8 @@ active context caches its own copy. That cost is accepted (Consequences).
 1. Cached data is read only with a **grant**. A read grant is minted only
    from a status reply for that file, fetched in the reader's own context
    and generation, carrying the server's access mask for that caller. Each
-   item of a bulk status reply counts on its own.
+   item of a bulk status reply counts on its own. A shared-pool grant is
+   minted only from authoritative evidence (C21, point 6).
 2. The decision that a mask and mode bits allow reading follows the ACL
    specification (C6). Where it cannot be made reliably, the reader's own
    data fetch decides.
@@ -734,7 +862,9 @@ active context caches its own copy. That cost is accepted (Consequences).
 4. A grant binds the context and generation, the file id, the volume's
    incarnation, the data version, the effective rights and an expiry. A
    private grant opens only its own namespace; a shared-pool grant opens
-   only pool entries.
+   only pool entries. Where a reader has its own dirty data or private
+   chunks for a range, those are read in place of pool chunks (C18,
+   point 5).
 5. A grant is checked before the store is looked up, before joining a
    fetch, after any wait, and immediately before delivery (C16). A reader
    without a valid grant learns nothing, not even whether the data is
@@ -744,7 +874,11 @@ active context caches its own copy. That cost is accepted (Consequences).
    current grant on every directory consulted.
 7. A directory snapshot belongs to the handle that opened it. Its cookies
    bind the context, generation, handle, directory incarnation and
-   version.
+   version. Resuming an enumeration needs a current rights grant on the
+   live directory (point 6); the cookie is checked against the handle's
+   own snapshot, not against the directory's live version. A cookie
+   handed to the operating system is an index into snapshot state the
+   daemon holds, never the bound values themselves.
 8. **A shared fetch shares data, never authority,** and only inside one
    context and generation. Identical requests already authorised there may
    share one RPC. A reader in another context never joins a fetch.
@@ -792,9 +926,16 @@ cited fact; binding the network generation is the cautious reading.
 3. Weak evidence never evicts another context's data or the pool's,
    never retires their handles or journal records, and never establishes
    that two contexts see the same volume incarnation.
-4. Acting on another context's entries, on the pool, or on shared
-   incarnation state needs authoritative evidence.
+4. Evicting, retiring or changing the epoch of another context's
+   entries, of the pool's, or of shared incarnation state needs
+   authoritative evidence.
 5. Suspect bytes and journal records are kept, not destroyed.
+6. **What weak evidence may do across contexts** is this closed list:
+   suspend callback promises, revoke grants, mark entries suspect, and
+   purge operating-system caches (C16, point 4; C17). Each only forces
+   the reader to revalidate under its own credentials and obtain a fresh
+   grant. Each keeps bytes, epochs, handles and journal records. Anything
+   else across contexts falls under point 4.
 
 Why: unauthenticated input must not be a lever. If a forged break could
 destroy state, any host on the path could empty every user's cache or
@@ -824,7 +965,8 @@ unnecessarily broad.
    point 2). Evicting them, or changing the file's shared epoch, needs
    authoritative evidence.
 5. An incarnation change invalidates the volume's handles, directory
-   snapshots, Windows identities and pending journal records.
+   snapshots and Windows identities, and quarantines its pending journal
+   records for explicit recovery (C28, point 3; C29).
 6. Read-only sites marked as an old release, or not yet released, are
    excluded before replicas are ranked.
 
@@ -868,8 +1010,8 @@ filesystem.
    and its incarnation, the local file epoch, vnode, uniquifier, data
    version and chunk index. The namespace is the credential context and
    its generation (or the pool); through the context (C40) it includes
-   the cell's protocol identifier (N27) and the profile used: class,
-   level and suite (N39). A new data version makes old chunks unreachable
+   the cell's protocol identifier and configuration generation (N27) and
+   the profile used: class, level and suite (N39). A new data version makes old chunks unreachable
    without touching them.
 2. **No embedded database.** The filesystem is the index. A clean chunk is
    written to a temporary name and renamed, with a header and a checksum
@@ -949,7 +1091,8 @@ a later profile (N1), offers a conditional store or an operation
 id), or M3 use shows explicit recovery is needed often enough to burden
 users.
 
-1. **A record holds** the credential context's AFS identity and cell; the
+1. **A record holds** its durable owner (C40, point 6), which includes the
+   AFS identity and cell; the
    file's full id and the volume's incarnation; the data version the write
    was made over; the exact change (range and bytes, truncate, create,
    rename, remove); and its order among that file's records. The record
@@ -968,8 +1111,9 @@ users.
    C28, point 5. Whether an administrator may export another user's
    bytes is open question 3 of the overview. Every discard is an audit
    event.
-5. A record's owner is the context that wrote it. After that context
-   ends, its account may view or export the bytes; replaying still needs a
+5. A record's owner is the durable owner of the context that wrote it
+   (C18, point 9; C40, point 6). After that context ends, the same
+   account instance may view or export the bytes; replaying still needs a
    current token for the same AFS identity (C28).
 6. After a restart, records wait for their user's token (C42) and then
    for that user's instruction. A returning token stores nothing.
@@ -996,11 +1140,16 @@ measured throughput.
 1. The client uses one UDP socket per address family, on port 7001 by
    convention `[DES-011]`, for outgoing calls and for the callback service.
 2. One `rx` thread owns the sockets. It never takes a cache lock.
-3. Rx connections are keyed by server, service, security class and level,
-   and credential context with its generation. Status, data and stores
-   have separate queues.
-4. The callback port is opened in the host firewall by the package's
-   installer (O37, point 6), never by the daemon at run time.
+3. **The connection key**, defined here once and cited by N7 and N47:
+   the cell, its protocol identifier and configuration generation (N27);
+   the server, the service and the transport; the security class and
+   level; and the credential context with its generation. These form the
+   selector, known before the handshake. Once the handshake has run, the
+   suite it established (N39) is recorded with the key, and the
+   connection's identity is the selector plus that suite. Status, data
+   and stores have separate queues.
+4. Host firewall rules for the callback port are set up as O37, point 6,
+   states, never by the daemon at run time.
 
 Why: with one socket, the NAT mapping an outgoing call creates is the one
 the server calls back on. Connections per context mean one user's slow
@@ -1170,7 +1319,13 @@ rxkad specification route of C6 fails.
 4. Cells that depend on single-DES service keys are outside what this
    client supports.
 5. For rxkad the documentation says plainly what the class does not give:
-   protection against a party that holds the user's session key (C18).
+   protection against a party that holds the user's session key (C18);
+   and, under IronAFS's position (O23, point 4; assumption A13), the
+   integrity of a request's or a reply's payload against a network
+   attacker. Write and reply integrity against a network attacker needs
+   rxgk at both ends, and we know of no released OpenAFS fileserver that
+   offers rxgk to clients (context, point 3). Sites that need it now protect the
+   network path, or do not allow writes from untrusted networks.
 
 Why: existing cells' clients use rxkad `[DRV-089]`, and OpenAFS's advisory
 on single-DES service keys describes rxkad-k5 and rxkad-kdf as the fixes
@@ -1231,7 +1386,11 @@ says, or a supported target lacks a valid pair.
    propose one second) after allowing for sampling skew, a suspend is
    detected. A detected suspend, a regression of a monotonic clock, or a
    jump of wall time past the threshold marks callbacks suspect (C32).
-   Wall time can only lower trust.
+   Wall time can only lower trust. A regression of a monotonic clock, or
+   a failed sample, also treats every boot-clock deadline (callbacks,
+   tokens, location lifetimes, locks) as possibly expired: a lock counts
+   as lost until it is established again with the server, and a token is
+   checked again before its next use.
 5. Startup is refused without a valid pair. If a later read fails,
    outstanding deadlines expire, callbacks become suspect, one event is
    logged per episode, and no new deadline is set until a valid sample
@@ -1257,7 +1416,8 @@ published definition this rule cannot represent.
    For each field it states the width, signedness, epoch and granularity,
    from the specification.
 3. Conversion never sign-extends by accident and never wraps. A value the
-   wire field cannot carry is refused with a stated error; for example, a
+   wire field cannot carry is refused with the "out of range" error
+   (C46, point 1); for example, a
    file time the server cannot store is refused at store, not truncated.
 4. Arithmetic on server-granted times is done in 64 bits after
    conversion.
@@ -1302,19 +1462,43 @@ that needs a reboot is avoided. Byte limits are coding standards rule 3.
 
 **Firm.**
 
-1. Tokens, Rx connections, caller capabilities, grants, cache namespaces,
-   journal records and recovery are all keyed by one daemon-issued
-   **credential context** id.
+1. Tokens, Rx connections, caller capabilities, grants and cache
+   namespaces are keyed by one daemon-issued **credential context** id.
+   What must outlive the context id (journal and recovery records, and
+   the markers of N4) is keyed by its durable owner (point 6).
 2. A context's local parts are what the operating system **attests** for
    a request or a connection, never what a caller asserts (C41).
-3. The cell and its protocol identifier (N27), the AFS identity, the
-   effective identity list and the profile each call actually ran at
+3. The cell, its protocol identifier and configuration generation (N27),
+   the AFS identity, the effective identity list and the profile each
+   call actually ran at
    (class, level and suite, N39) complete the key. The level is the one
    used, never the configured one.
 4. A token is bound to the context the operating system attests for the
    connection that delivered it, never to a context named inside the
    message.
 5. The daemon never reads a user's credential cache, and never prompts.
+6. **The durable owner.** A context id and its generation do not survive
+   a daemon restart. What must survive is keyed by the context's
+   **durable owner**: the local account instance (the uid or SID, plus
+   the operating system's evidence that it is the same instance of that
+   account), the cell with its protocol identifier and configuration
+   generation (N27), and the AFS identity. It holds no credential
+   generation and no security profile.
+7. **Which identity keys which store:**
+   - the durable owner: the authenticated-intent marker (N4, point 3),
+     the reacquisition authorisation (C42, point 7), and the ownership of
+     journal and recovery records (C18, point 9; C29);
+   - the context id and its credential generation, which by point 3
+     include the profile: tokens, caller capabilities, handles, grants
+     and cache namespaces (C27, point 1);
+   - the connection key (C30, point 3): Rx connections.
+8. **After a restart** a new context takes over a durable owner's records
+   and markers only on positive evidence, from the operating system, that
+   its account instance is the same (C18, point 7). Without that evidence,
+   requests to a cell where that owner holds a marker return
+   `TokenRequired`, never anonymous data (N4, point 4), and the owner's
+   records stay quarantined. They are never given to a new holder of the
+   uid or SID.
 
 Why: every isolation rule in this part reduces to "which context is
 this?". If any part of the answer came from the caller, a caller could
@@ -1348,7 +1532,8 @@ the daemon.
 
 ### C42. Tokens live in the daemon's memory
 
-**Working.** Revisit if: a site asks for tokens to survive a restart and a
+**Working**, except points 4 and 7, which are **Firm** (a security
+invariant). Revisit if: a site asks for tokens to survive a restart and a
 design is shown that keeps C40 and C43.
 
 1. AFS tokens and session keys live only in `ironafsd`'s memory, under
@@ -1368,6 +1553,23 @@ design is shown that keeps C40 and C43.
    `afs status`, with a notification. A context with no agent must run
    `aklog` itself. This is documented.
 6. Renewal and revocation follow C14.
+7. **Reacquisition authorisation.** "Still authorised" in point 3 is a
+   durable record the daemon keeps per durable owner and cell (C40,
+   point 6), stored beside the authenticated-intent marker (N4) but
+   separate from it: the marker survives a revocation, this record does
+   not. It holds no key material.
+   - The user's own explicit `aklog` sets it.
+   - `unlog`, and an administrator's revocation (N4, point 6), withdraw
+     it durably: the withdrawal is committed before they are
+     acknowledged. Agent requests in flight at that moment are fenced: a
+     token they deliver is refused.
+   - After `unlog`, only the user's own explicit `aklog` restores it.
+     Who may restore it after an administrator's revocation is an open
+     question of the overview.
+   - After a restart, the daemon accepts a token from an agent's
+     automatic `aklog` only while the record is present.
+   - **Test:** revoke a token, restart the daemon; the agent's automatic
+     `aklog` does not install a token.
 
 Why: a token on disk is a secret that backups, images and other
 administrators can reach. Having the user's own process build it means the
@@ -1397,10 +1599,14 @@ daemon never needs access to anyone's Kerberos credentials (C40).
      sender checks that the peer's uid, from
      [`SO_PEERCRED`](https://man7.org/linux/man-pages/man7/unix.7.html),
      is the daemon's service account.
-   - **macOS:** the same under a root-owned directory the launch daemon
-     creates, checked with `LOCAL_PEERCRED`
+   - **macOS:** as on Linux. The privileged install or launch step
+     creates the socket's directory, owned by the daemon's dedicated user
+     (L14) and not writable by others. The daemon creates the socket
+     itself. The sender checks that the peer's uid, from
+     `LOCAL_PEERCRED`
      ([`unix(4)`](https://man.freebsd.org/cgi/man.cgi?query=unix&sektion=4&manpath=macOS+26.7)),
-     as another macOS project does for its own socket `[MAC-057]`.
+     is the daemon's user, as another macOS project does for its own
+     socket `[MAC-057]`.
    - **Windows:** the daemon creates its pipe as the first instance,
      refusing remote clients
      ([`CreateNamedPipe`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipew)),
@@ -1409,7 +1615,8 @@ daemon never needs access to anyone's Kerberos credentials (C40).
      own SID `[DES-074]`. The sender finds the pipe server's process
      ([`GetNamedPipeServerProcessId`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeserverprocessid))
      and checks that the process's token carries the service's SID before
-     sending. A process id alone proves nothing.
+     sending. A process id alone proves nothing. The check is made again
+     on every new connection, so it is repeated after a daemon restart.
 
 Why: the endpoint's name is public and the daemon is sometimes down. A
 process that listened in its place would be handed every user's token.
@@ -1460,7 +1667,13 @@ drifting.
    daemon starts the adapter, or, for the FSKit extension that macOS
    starts, checks its code signature and the peer the system reports. It
    hands the adapter a one-time binding capability for one mount or root.
-   A binding without one is refused.
+   A binding without one is refused. A per-user FSKit mount's binding is
+   registered for one owner uid and that user's credential context (L9,
+   L10). The daemon refuses any operation on it whose FSKit context names
+   a real or effective uid other than the owner's, uid 0 included (C8,
+   point 3). Items the binding hands out stay bound to the credential
+   generation they were served under until the operating system has
+   released every reference to them.
 4. **Compromise boundary.** An adapter process holds only capabilities
    the daemon issued. A compromised adapter can read and forge the traffic
    of the sessions it currently serves. It cannot create a capability for
@@ -1484,9 +1697,12 @@ error without losing what the user needs to act on it.
    (`TokenExpired`), token revoked (`TokenRevoked`), below the security
    floor (`SecurityFloor`), read-only, no space, quota exceeded,
    cross-device, stale, busy, offline, timed out, not yet stored (C9),
-   interrupted, not supported, would block, unreachable and conflict. The
-   token errors and `SecurityFloor` reach applications as a permission
-   error, with the cause in the side channel (N4, N6, O35).
+   interrupted, not supported, would block, unreachable, conflict, and
+   out of range (C38, point 3). The token errors and `SecurityFloor`
+   reach applications as a permission error, with the cause in the side
+   channel (N4, N6, O35). Out of range reaches applications as an
+   invalid-argument error (`EINVAL`, an `NSError` with POSIX `EINVAL`, or
+   `STATUS_INVALID_PARAMETER`), with the cause in the side channel.
 2. Each layer maps it to its system's errors: errno, an `NSError` with a
    POSIX code, or NTSTATUS.
 3. **An AFS abort code is classified by the RPC and the server that
@@ -1529,7 +1745,11 @@ applied to the error path.
    it reads, and a new login starts cold. The budgets of C27 bound it;
    they do not remove it.
 3. **What cannot be promised.** Pages resident in a live mapping stay
-   readable after revocation (C15). Root and the daemon's own account see
+   readable after revocation, on Windows until the view's SMB open or
+   session ends (C15, points 2 and 8). On Linux a purge that fails for a
+   node that may be mapped aborts the FUSE connection (C15, point 6): every
+   user's open files on `/afs` fail until the mount is replaced, whatever
+   the cause of the failed purge. Root and the daemon's own account see
    everything in the cache. A change of the client's address behind a NAT
    is seen only at the local timeout (C23). Occupancy and timing of the
    cache reveal that it is in use (C27).

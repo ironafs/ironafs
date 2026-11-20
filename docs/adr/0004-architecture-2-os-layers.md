@@ -278,7 +278,7 @@ invalidation predates it `[PLT-034]`. Point 3: `[PLT-M10]`. Point 4:
 `[DES-024]` `[DES-031]`. Point 6: passthrough takes I/O out of the daemon,
 where authorisation lives `[DRV-008]`.
 
-### L3. `/afs` on Linux never grants local privilege
+### L3. `/afs` never grants local privilege on a POSIX layer
 
 **Firm.**
 
@@ -290,6 +290,11 @@ where authorisation lives `[DRV-008]`.
    change a local process's credentials.
 4. Honouring set-id bits for a trusted cell is not offered. Offering it
    needs a superseding ADR.
+5. This decision applies to every POSIX layer, macOS included. On macOS,
+   point 2 applies as written, and point 1 needs the FSKit equivalent of
+   `nosuid,nodev` that the macOS gate looks for (L13, point 6); the macOS
+   layer ships only where that equivalent is in force. Point 3's test runs
+   on each macOS release in the matrix.
 
 Why: a cell's administrators can set those bits `[DES-053]`, and the
 helper's `nodev,nosuid` limits do not bind a filesystem running as root
@@ -301,11 +306,14 @@ escalation through `/afs` is a failure even if everything else works.
 **Firm.**
 
 1. The FUSE writeback cache is never enabled.
-2. Shared writable mappings are refused. Private mappings work, so programs
-   on `/afs` run. When the handle's authority is revoked, the layer asks
-   the kernel to drop the file's resident pages, so the next fault reaches
-   the daemon and fails; pages already resident in a live mapping may stay
-   readable until it is unmapped (C15, point 2).
+2. Shared writable mappings are refused. Shared read-only mappings are
+   refused too while direct I/O is set (context, point 5; L5). Private
+   mappings work on a kernel where the mapping gate (C15, point 5) passed,
+   so programs on `/afs` run there; on a kernel that failed it, mapping is
+   refused (C15, point 5). When the handle's authority is revoked, the
+   layer asks the kernel to drop the file's resident pages, so the next
+   fault reaches the daemon and fails; pages already resident in a live
+   mapping may stay readable until it is unmapped (C15, point 2).
 3. The kernel's own permission checks are never used in place of the
    core's: no `default_permissions`, and no POSIX ACL negotiation.
 
@@ -329,8 +337,10 @@ setting is relaxed separately, with its test.
    operation's own path (C17).
 
 Why: a cached entry's first permission result may be reused for another
-user `[DRV-072]`. Direct I/O keeps file data out of a cache shared between
-users `[DES-027]`. Point 4: `[DES-032]`.
+user `[DRV-072]`. Direct I/O keeps the data of reads and writes out of a
+cache shared between users `[DES-027]`. It does not cover pages that a
+private mapping faults in: those are covered by C15, points 3 and 5.
+Point 4: `[DES-032]`.
 
 ### L6. Commit points on Linux
 
@@ -345,10 +355,18 @@ The layer calls the core's one commit operation with a reason:
 3. a file opened for synchronous writes commits after each write, reason
    `write_through`;
 4. RELEASE only cleans up.
+5. **Dirty data at the last RELEASE.** If the last RELEASE of a file finds
+   dirty data that no commit has stored, because no FLUSH came after the
+   writes, the layer calls commit with reason `close`. If that store
+   fails, the data becomes a recovery record owned by the writing context
+   (C29, point 5), and the failure is reported through the side channel of
+   O35, point 1. RELEASE itself still never fails (C9, point 4). The M3
+   tests include writes followed by no FLUSH.
 
 Why: RELEASE cannot report an error, and FLUSH is the last call whose error
-reaches `close()` `[DES-029]`. The commit and the journal behind it are
-C9 and C29.
+reaches `close()` `[DES-029]`. FLUSH may also not come at all after writes
+`[DES-029]`, so point 5 gives that case a terminal step. The commit and the
+journal behind it are C9 and C29.
 
 ### L7. Linux hosting: a small privileged mount step, an unprivileged daemon
 
@@ -369,7 +387,13 @@ blocks the direct mount.
    dead connection.
 4. Detach and replacement are serialised over an empty, access-denied mount
    point. A no-gap replacement (mount-beneath) is used only where the kernel
-   and the namespace layout are verified.
+   and the namespace layout are verified. **Residual:** where mount-beneath
+   is not used, a process that overrides file permissions (root, or one
+   holding `CAP_DAC_OVERRIDE`,
+   [capabilities(7)](https://man7.org/linux/man-pages/man7/capabilities.7.html))
+   can see, and write to, the empty local
+   directory during that window. This is documented with the other
+   residuals of a daemon restart.
 5. Containers get `/afs` from a stable shared host parent into a slave
    subtree, or remount their bind on replacement.
 6. A planned upgrade first stops new mutations, lets stores already in
@@ -384,14 +408,20 @@ silently shows the local disk `[DES-036]`. Mount-beneath needs Linux 6.5
 
 ### L8. macOS uses FSKit on macOS 27 and later, Apple silicon only
 
-**Working.** Revisit if: the macOS gate (L13) fails on isolation or
-loading, in which case a loopback NFSv4 server is the fallback to evaluate;
-or Apple brings the caller and cache APIs to an earlier release.
+**Working.** Revisit if: the macOS gate (L13) fails on loading and
+entitlements (point 7), on the extension reaching the daemon (point 9), or
+on mapped I/O with the data cache off (point 3), in which case a loopback
+NFSv4 server is the fallback to evaluate; or Apple brings the caller and
+cache APIs to an earlier release.
 
 1. The macOS layer is an FSKit extension written in Swift, one instance per
    mount. It forwards each operation to `ironafsd` over the adapter endpoint
    (C45) with the caller from `FSContext`, applies
-   invalidations and acknowledges them. It contains no AFS logic.
+   invalidations and acknowledges them. It contains no AFS logic. Replies
+   and invalidations reach it on one ordered stream per binding over the
+   adapter endpoint (C17), and it applies C16's submission check for
+   out-of-process bindings (C16, point 6) immediately before it hands a
+   reply to the kernel.
 2. The floor is macOS 27. Earlier releases and Intel Macs are not targets.
 3. A loopback NFS server stays a spike only, for macOS 15 and 26 (L43).
 
@@ -410,11 +440,25 @@ recorded measurement shows that the interface isolates users on one mount.
 The measurement covers at least: concurrent opens by two users, revocation
 of one while the other reads, mapped I/O, and item reuse after reclaim.
 
+A mount that serves one user is bound to that user:
+
+1. Its binding is registered, from the daemon's own registration (C45,
+   point 3), for one owner uid and that uid's credential context.
+2. The daemon refuses any operation on that binding whose `FSContext` real
+   or effective uid differs from the owner's. Uid 0 is no exception
+   (C8, point 3).
+3. Each item handed to the kernel stays bound to the credential generation
+   it was served under until the kernel has released every reference to
+   it. An operation on it under a later generation follows C13, point 3.
+
 Why: FSKit's read and write carry neither `[MAC-015]`. On a shared mount,
 when one user's authority is revoked, either the other user's authority
 would serve that user's reads or `revoke` would cut both `[MAC-023]`. A
 third-party report says cross-user cache isolation is not guaranteed
-`[DRV-M11]`.
+`[DRV-M11]`. `FSContext` carries plain ids the daemon cannot verify
+`[DRV-025]`, so points 1 to 3 bound what a mount can be used for: a
+compromised extension can act for the uid it serves, on its own binding,
+and for no one else.
 
 ### L10. Per-user FSKit mounts by default
 
@@ -422,7 +466,8 @@ third-party report says cross-user cache isolation is not guaranteed
 mount as L9 requires (then one shared `/afs` mount is used), or macOS does
 not allow a per-user link at `/afs`.
 
-1. Each user gets their own FSKit mount, under a per-user path.
+1. Each user gets their own FSKit mount, under a per-user path, bound to
+   that user as L9 says.
 2. `/afs` is a symbolic link resolved per user if macOS allows it. If it
    does not, the per-user paths are documented and `/afs` is not promised on
    macOS.
@@ -439,13 +484,14 @@ user enables the extension in System Settings `[MAC-027]`.
 type keeps isolation and callback freshness (L13), or FSKit publishes mount
 options beyond read-only.
 
-1. Set-uid and set-gid bits are cleared in attributes and no device node is
-   presented. The FSKit equivalent of `nosuid,nodev` is checked in the gate;
-   L3's rule applies to macOS as well.
+1. Set-id bits and device nodes on macOS follow L3, which is Firm (L3,
+   point 5).
 2. The kernel data cache starts off: the no-cache coherency type for every
    item.
 3. The layer calls `setCacheState` without holding its own locks, and treats
-   a failure as "not invalidated".
+   a failure as "not invalidated". A failed `revoke` then follows C15's
+   rule for macOS (C15, point 7), and the event stays unacknowledged
+   (C17, point 2).
 
 Why: `[MAC-024]` `[MAC-021]`. FSKit's only public mount option is read-only
 `[MAC-011]`, so the flags cannot be assumed.
@@ -488,11 +534,21 @@ macOS 27 and recorded:
 7. signing, notarisation and the FSKit entitlements for a first-party
    extension installed outside the Mac App Store (ADR 0001 assumes this);
 8. whether an extension enabled per user can be mounted at boot, and
-   whether a per-user `/afs` link is possible.
+   whether a per-user `/afs` link is possible;
+9. that the signed, notarised, sandboxed extension connects to the launch
+   daemon running under its dedicated user over the adapter endpoint
+   (C45), and that the daemon's checks of its code signature and peer
+   succeed (C45, point 3);
+10. a reply revoked after it has crossed the adapter endpoint and before
+    the extension hands it to the kernel: it is not served (C16, point 6);
+11. a `revoke` that fails while the item is mapped, and that the layer
+    then follows C15's rule for macOS (C15, point 7);
+12. what the extension can do when it loses the daemon (L14, point 5):
+    revoke its items, or fail the mount.
 
 Why: these are the points where Apple's documentation is silent or where
-only third-party reports exist `[DRV-M11]`. L9, L10 and L12 depend on the
-answers.
+only third-party reports exist `[DRV-M11]`. L3, L8, L9, L10, L12 and L14
+depend on the answers.
 
 ### L14. macOS hosting
 
@@ -505,10 +561,26 @@ extension, or the gate shows the extension cannot reach a system daemon.
    runtime.
 3. A per-user launch agent handles token renewal and notifications.
 4. Distribution is a signed, notarised download (ADR 0001).
+5. **When the extension loses the daemon** (an exit, a crash or a
+   restart), it revokes every item it has handed to the kernel, or fails
+   the mount, so that no open survives without a fresh binding (C11,
+   point 2; C45, point 3). Which of the two the extension can do is a gate
+   item (L13, point 12).
+6. A planned upgrade drains as O33 says, as on Linux (L7, point 6).
+7. The launch agent runs `aklog` again when the daemon's instance id
+   changes (C42, point 3).
+8. **The control socket.** The privileged install or launch step creates
+   the socket's directory, owned by the daemon's dedicated user and not
+   writable by others. The daemon itself creates the socket there; the
+   launch system does not hold it for the daemon. A sender checks that the
+   peer's uid is the daemon's user (C43, point 4), as on Linux.
 
 Why: `[MAC-063]` `[DRV-047]`. An administrator must approve the daemon
 `[MAC-M27]`; device management can pre-approve it, but enabling the
-extension may still need each user (`[MAC-M28]`, corrected form).
+extension may still need each user (`[MAC-M28]`, corrected form). Point 8
+is our own rule: it keeps the peer that a sender checks the daemon's own
+user, and keeps any other process from creating the socket while the
+daemon is down.
 
 ### L15. Windows is SMB first; the Cloud Files replica is a later companion
 
@@ -577,11 +649,20 @@ The full session is A3.
    opened it. AFS tokens are found by the credential context of that
    session's logon session (C40, C41), never by account name alone, so
    they are the tokens that user's own `aklog` set in that logon.
-2. An application that connects with alternate credentials acts as that
-   account in its own logon session, which is its own context with its own
-   tokens: none, until `aklog` runs there. Elevated and unelevated
-   processes of one interactive logon are one context and share its
-   tokens. Two logons of one account are two contexts (C41).
+2. **Alternate credentials** come in two forms, with different outcomes:
+   - a process started in a separate local logon of another account (for
+     example with `runas`) authenticates in NTLM local mode (point 4) as
+     that account. That logon is its own context, with its own tokens:
+     none, until `aklog` runs there;
+   - explicit credentials given for the SMB connection itself (for example
+     `net use` with another user, or `runas /netonly`) produce a network
+     logon. Over NTLM that is refused (point 4). Over Kerberos it is
+     accepted only under point 4's Kerberos rule, with the outcome the
+     spike states (L22, point 1), and is refused until then.
+
+   Elevated and unelevated processes of one interactive logon are one
+   context and share its tokens. Two logons of one account are two
+   contexts (C41).
 3. Only SMB 3.1.1 is accepted, with signing in force. Guest, anonymous and
    unsigned sessions are refused.
 4. **Accepted authentications.** Over NTLM, only local mode, where the
@@ -598,13 +679,13 @@ belong to one account only `[DES-073]`, so one shared name cannot serve a
 fleet; that is why Kerberos waits for a measured scheme. Signing keys come
 from the authenticated session `[DES-072]`.
 
-### L18. SMB authentication runs in the daemon; the front end holds nothing
+### L18. SMB authentication runs in the daemon; the front end holds transport keys and session capabilities, no AFS tokens and no cache
 
 **Firm.**
 
 1. The SMB front end is its own process, `ironafs-smbd`, under its own
    virtual account. It parses everything that arrives before
-   authentication. It holds no tokens and no cache.
+   authentication. It holds no AFS tokens and no cache.
 2. The front end passes the opaque security blobs of SESSION_SETUP to
    `ironafsd`. The daemon runs the OS's authentication interface, applies
    L17, and returns an opaque, session-scoped capability and the session
@@ -615,16 +696,42 @@ from the authenticated session `[DES-072]`.
    signing and encryption keys, and verifies and signs every message.
 5. The daemon records the trees and opens created under each capability and
    checks, before dispatch, that a request's session, tree and open belong
-   together. Re-authentication replaces a capability; logoff or disconnect
-   revokes it.
+   together. Re-authentication follows point 10; logoff follows point 11;
+   a disconnect revokes the capability.
 6. The daemon sees and audits every authentication outcome, failures
    included (O9).
 7. A test presents an open from one session on another; it is refused.
+8. **The daemon-to-front-end channel.** The daemon's replies and its
+   invalidations for a binding reach the front end on one ordered stream
+   over the adapter endpoint (C45, point 2; C17). The front end applies
+   C16's submission check for out-of-process bindings (C16, point 6)
+   immediately before it writes a reply to the SMB connection, and on an
+   invalidation follows C17, points 2 and 5.
+9. A test revokes a context after a reply has crossed the adapter endpoint
+   and before the front end writes it to the SMB connection. The reply is
+   not served.
+10. **Re-authentication.** The daemon verifies that a re-authenticated
+    session belongs to the same credential context (L17, point 1). If it
+    does, the session's trees and opens are rebound to the new capability;
+    if not, the re-authentication is refused. Which keys are used after it
+    follows \[MS-SMB2\] and is confirmed in the spike (L22, point 1).
+11. **Logoff on a live connection.** A logoff retires that session's
+    capability, its keys and its opens, while the connection and its other
+    sessions continue.
+12. The daemon also revokes a session's capability when the operating
+    system reports that its logon session has ended, whether or not the
+    front end reports a logoff.
+13. The front end zeroes the session key once the signing and encryption
+    keys are derived from it, and zeroes the derived keys when the session
+    ends (O28).
 
 Why: a parser bug before authentication then reaches a process with no
-tokens and no cached data. A compromised front end can read and forge
-traffic within sessions users actually opened, but cannot act as a user it
-names or reach another session's opens. Virtual accounts: `[DES-074]`.
+tokens and no cached data. **Compromise boundary:** the front end holds the
+keys and capabilities of every active session, so a compromised front end
+can read and forge traffic within all sessions open at that time. It cannot
+act as a user it names, reach a session that was not open, or reach another
+session's opens (C45, point 4; O23). Points 11 and 12 keep that set no
+larger than the sessions actually in use. Virtual accounts: `[DES-074]`.
 
 ### L19. SMB scope
 
@@ -642,14 +749,23 @@ granting leases (L22, point 4).
    cancel, and session, tree and open lifetimes.
 4. No durable or persistent handles: a reconnect reopens.
 5. Leases and oplocks are declined, and each share is flagged for no
-   offline caching.
+   offline caching. Without leases the front end has no way to recall a
+   client's mapped views; what bounds them after a revocation is C15,
+   point 8, measured in L22, point 7.
 6. Commit: CLOSE commits with reason `close`; FLUSH and write-through
    writes commit as on Linux (L6).
 7. The per-open SMB file id is generated per open. The file's own identity
    is reported from the core's stable key (C11).
 8. Delete-pending and delete-on-close defer the server removal to the last
    close, with no rename. A request for immediate removal that IronAFS
-   cannot deliver is refused explicitly (C10).
+   cannot deliver is refused explicitly (C10). The delete right is checked
+   when delete-pending is set. The deferred removal is bound to the
+   setter's credential context, the parent directory, the file id and the
+   volume's incarnation, and runs under that authority with a live check
+   of its rights at the last close. If that authority is gone, or the
+   removal fails, the removal is kept as a pending record for the setter
+   (`afs pending`, C29) and reported through O35's side channel. It is
+   never retried under another session's authority.
 9. Byte-range locks and share modes go to the core's lock service (L33).
 10. Encryption is supported, so a site can require it. Cryptography comes
     through the crypto interface (C5).
@@ -657,6 +773,10 @@ granting leases (L22, point 4).
     show is listed with its outcome: implemented, or refused with a stated
     status. That list is the specification for the SMB front end, and the
     captured request set becomes its baseline acceptance test.
+12. Every reply the front end writes, multi-credit and compound responses
+    included, passes C16's submission check as C16, point 6 states it for
+    partial submission (L18, point 8). Invalidations reach the front end on
+    the channel of L18, point 8.
 
 Why: `[DES-070]` `[DES-071]`. With no leases and no client caching, a
 callback break can reach the next open or read without a recall round trip.
@@ -731,11 +851,17 @@ front end. It settles A3 and A4.
 
 1. **Identity.** Two local accounts with different AFS rights, each after
    its own `aklog`: through its signed session, each reads what its rights
-   allow and is refused the rest. Alternate credentials get the result of
-   the alternate logon's own context (L17). Elevated and unelevated processes of one user get that
-   user's result. A daemon restart followed by a new `aklog` restores each
-   result. Each logon type (local NTLM, network logon, a local or domain
-   Kerberos scheme, alternate credentials) has a stated expected outcome.
+   allow and is refused the rest. One account with two logon sessions,
+   with `aklog` run in one only: the other sees no token. A process in a
+   separate local logon of another account gets that logon's own context,
+   with no token until `aklog` runs there; explicit credentials on the SMB
+   connection over NTLM are refused (L17, point 2). Elevated and unelevated
+   processes of one user get that user's result. A daemon restart followed
+   by a new `aklog` restores each result. Each logon type (local NTLM,
+   network logon, a local or domain Kerberos scheme, both forms of
+   alternate credentials) has a stated expected outcome. Re-authentication
+   on a live session, and the keys used after it, are captured (L18,
+   point 10).
 2. **Security.** A relayed handshake is refused. L20 holds, with the
    mechanism for point 2 named. Client NTLM blocking `[WIN-190]` is
    measured both on and off.
@@ -748,7 +874,9 @@ front end. It settles A3 and A4.
    completes with the change, or tells the client to rescan). A view mapped
    before the break is measured too; if the client keeps its pages, the SMB
    guarantee is narrowed to "a mapped view sees changes after it is
-   reopened".
+   reopened". **Reopened** means that every handle and every view of the
+   file on that client was closed first. A view mapped before the break
+   must then see the new data once it is reopened.
 5. **Route.** Identity, dialect and signing through the port proxy; the
    bind order across restarts, a cumulative update and an uninstall, with
    Windows' own sharing checked after each; the two unmeasured name
@@ -756,6 +884,12 @@ front end. It settles A3 and A4.
 6. **Lockout.** What Explorer's retries do against a stale `\\afs` entry
    with a wrong or expired credential, so that IronAFS never locks an
    account out.
+7. **Revocation of mapped views,** measured apart from point 4's
+   freshness. After a context's authority is revoked (C15), new page
+   faults on a view it mapped before the revocation are measured: whether
+   they reach IronAFS's SMB server and fail, or are served from the
+   client's own pages. The result decides whether C15, point 8's bound
+   holds on that build or C15, point 5's refusal applies.
 
 Why: the public measurement stops at the first packet `[WIN-154]`. Each
 item is a point where the SMB surface could be unsafe or unusable, and each
@@ -772,6 +906,9 @@ non-LocalSystem service to start a process in a user's session.
    Kerberos interface, repeats that after a daemon restart, shows
    notifications, and handles logoff.
 3. The agent is started by a Task Scheduler logon trigger.
+4. After every daemon restart, the agent repeats C43's check of the pipe
+   server's process identity before it sends anything (C43, points 3
+   and 4).
 
 Why: `[DES-074]`. A service that is not LocalSystem cannot obtain the user's
 token to start the agent itself; a logon trigger is our choice among the
@@ -803,18 +940,34 @@ The table is exactly this, and these 41 code points are the reserved set:
 1. The two trailing mappings apply to the last character only, and never to
    the names `.` and `..`.
 2. A raw name that already contains a reserved code point, or the escape
-   prefix (L25), is escaped, so decoding is unambiguous.
-3. No code point from the Services for Macintosh table is used.
+   prefix (point 5), is escaped, so decoding is unambiguous.
+3. The table is IronAFS's own. It coincides with the Services for
+   Macintosh table for the control characters (U+F001 to U+F01F) and
+   differs elsewhere: that table puts its punctuation at U+F020 to U+F027
+   and a final space and period at U+F028 and U+F029 `[DES-068]`, so
+   U+F020 and U+F022 mean different characters in the two tables.
 4. The table is published in the specification for the name codec and has
    one implementation, in the contract crate, used by every Windows
-   surface.
+   surface. That specification includes frozen round-trip test vectors:
+   control characters, each forbidden punctuation character, trailing
+   spaces and periods, `.` and `..`, and raw names that already contain a
+   reserved code point or the escape prefix.
+5. **The escape prefix** is one code point outside the reserved set. Every
+   occurrence of it in a raw name is itself escaped, as point 2 says, so a
+   presented name decodes to exactly one raw name. Its code point and the
+   exact escaped forms are fixed in the specification for the name codec,
+   with the forms of L25, points 1 and 3, and are then part of this
+   format.
 
 Why: users' saved paths and scripts will contain these code points, so the
 table is a format. For every forbidden character except the backslash,
-adding U+F000 is the conversion Cygwin applies (context 34), so Cygwin
-reaches such files by their real names. The Services for Macintosh table
-has no colon and assigns its code points differently `[DES-068]` (context
-34). Trailing spaces and periods: `[DES-069]`.
+adding U+F000 is the conversion Cygwin applies when it creates or accesses
+a file (context 34), so Cygwin reaches names containing those characters by
+their real names. That compatibility does not extend to the two trailing
+mappings: Cygwin maps trailing spaces and periods only on some filesystems
+or with one mount option `[ADR-020]`. The Services for Macintosh table has
+no colon and places punctuation and the trailing characters differently
+`[DES-068]` (context 34). Trailing spaces and periods: `[DES-069]`.
 
 ### L25. Windows names are total, reversible and never destructive
 
@@ -831,9 +984,11 @@ has no colon and assigns its code points differently `[DES-068]` (context
    name. An alias is derived from the raw name, never from listing order,
    and can never come to mean another file. A missing or stale alias binding
    fails the lookup.
-4. **Case.** An exact match wins. Otherwise a unique case-insensitive match
-   is used, and an ambiguous one is not found. When a collision appears, the
-   unsuffixed form resolves to nothing rather than to a different file.
+4. **Case.** An exact match wins only when no case-insensitive collision
+   exists in that directory. Otherwise a unique case-insensitive match is
+   used, and an ambiguous one is not found. While a collision exists, only
+   the suffixed forms of point 1 resolve; the unsuffixed form resolves to
+   nothing rather than to a different file.
 5. **Never destructive.** The case-insensitive fallback serves only lookups
    and opens that cannot destroy data. A delete, both names of a rename
    that replaces its target, any other rename's source, an open that
@@ -841,9 +996,16 @@ has no colon and assigns its code points differently `[DES-068]` (context
    access, including access used later, need an exact name or an alias.
    The handle forms of disposition (delete-on-close) and rename (C7) are
    covered through the open that granted their access; a rename target is
-   checked when the rename is made.
+   checked when the rename is made. An open that asks for the maximum
+   allowed access through a case-insensitive match is granted no write or
+   delete access. Every component of a destructive operation's path, not
+   only the last, needs an exact name or an alias.
 6. **New names.** SMB accepts only canonical encodings for names it
-   creates.
+   creates. Before any operation that may create a name (a create with the
+   create, open-if, overwrite-if or supersede disposition, a directory
+   creation, or any rename target), the name is compared case-insensitively
+   with the directory's entries. If an entry matches only
+   case-insensitively, the operation fails rather than create a collision.
 7. **The server is never rewritten.** A name on the fileserver is never
    changed to suit Windows.
 
@@ -923,40 +1085,77 @@ sequence depends on A9.
 If the replica is built:
 
 1. One user's root is never readable by another user.
-2. The provider sets a protected security descriptor that it owns on every
-   directory and file before publishing or hydrating it, replaces any
-   descriptor a creator supplied, and verifies it again after renames and
-   restarts.
+2. The provider protects every directory and file it publishes, in this
+   order:
+   1. it creates the object under a parent whose descriptor is locked
+      down: no inheritable entry that grants a creator rights of its own,
+      and no owner-rights entry that lets an owner change the descriptor;
+   2. it applies the per-object protected descriptor that it owns,
+      replacing any descriptor a creator supplied;
+   3. only then does it hydrate the file or mark the directory complete.
+
+   It verifies each descriptor again after renames and restarts.
 3. Verification is done on the open object used for the transfer, never by
    path. A file that may have handles opened before its descriptor was
    repaired is not hydrated until they are closed. A child whose security
    cannot be verified is not hydrated.
 4. Users never hold the right to change a descriptor or take ownership
-   inside a root.
+   inside a root. Where a user created an object inside a root, the
+   provider replaces its owner and descriptor with its own before it
+   reads, publishes or reconciles anything from it. The service privileges
+   that needs are held only by the provider's service account, which is
+   inside the same compromise boundary as the daemon (O23).
 5. No Windows shortcut, NTFS symbolic link or junction is ever generated
-   from cell data.
+   from cell data. Every provider operation, not only transfers, reaches
+   its object from the verified root handle one component at a time,
+   without following a reparse point. A link or reparse point a user
+   created inside a root is quarantined before any descriptor beneath or
+   on it is changed, and the provider never acts through it.
 6. If a marker or an entry cannot be published safely, population fails
    with the directory and the reason, and the directory is not marked
    complete.
+7. The NTFS mechanics these points rely on (what a creator may do to a new
+   object's descriptor, traversal without list rights, and the privileges
+   needed to replace an owner) are measured with assumption A6 before the
+   replica is built.
 
 Why: a placeholder is created without a descriptor `[WIN-047]`, and after
 hydration the provider is no longer asked `[DRV-014]`, so the descriptor on
-each object is the only barrier. A link generated from a cell's data could
-point a local program anywhere on the machine.
+each object is the only barrier. Point 2's order closes the window between
+creation and protection. A link generated from a cell's data, or one a user
+planted inside a root, could point the provider or a local program anywhere
+on the machine.
 
 ### L29. Names on Linux and macOS
 
-**Working.** Revisit if: acceptance tests show a common macOS application
-fails on a case-sensitive volume, or on the lookup fallback.
+**Firm,** except the choice in point 3 of a case-sensitive macOS volume
+with a lookup fallback, which is **Working.** Revisit that choice if:
+acceptance tests show a common macOS application fails on a case-sensitive
+volume, or on the lookup fallback.
 
 1. The core keeps a name's raw bytes and never normalises.
 2. Linux shows the bytes.
 3. macOS presents a case-sensitive volume, with a lookup fallback that is
    insensitive to Unicode normalisation and never rewrites the server's
    name.
+4. **The fallback is never ambiguous.** Exact bytes win only when no other
+   entry in the directory is canonically equivalent. Otherwise a unique
+   equivalent match is used, and an ambiguous one is not found.
+5. **The fallback is never destructive.** An unlink, a removal, an open
+   that truncates, both names of a rename that replaces its target, and
+   any other rename's source need an exact match. A create (`O_CREAT`)
+   that would make a new entry, and a rename that does not replace, fail
+   if the new name is canonically equivalent to an existing entry, rather
+   than create an equivalent sibling.
+6. Lookup and mutation use the same resolved raw name: an operation acts
+   on the entry its lookup found, never on a name normalised again.
+7. Acceptance tests cover a directory where an NFC and an NFD form of one
+   name coexist.
 
 Why: IronAFS treats AFS names as bytes. A client that normalised them
-could not open some files another client created.
+could not open some files another client created. Points 4 to 6 apply
+L25's rules for case to Unicode normalisation, so a path that once named
+one file never deletes or overwrites another.
 
 ### L30. A displayed owner never grants anything
 
@@ -969,6 +1168,20 @@ could not open some files another client created.
    account.
 3. On a mount shared by several users, the mapping is the same for every
    caller.
+4. **Groups** follow the same rules. A group a layer shows is display
+   only. No AFS group or group field is ever shown as gid 0, a system
+   group or a group that grants local privilege; anything unmapped is
+   shown as a reserved unmapped group.
+5. Showing every caller as the owner is never offered.
+6. An object is shown as the local user's own only when its AFS owner is
+   the view's verified AFS identity in that cell, and only on a view bound
+   to one verified credential context (L31, point 4).
+7. An **eligible local account** for point 6 is one the operating system
+   classes as an ordinary user: never uid 0 or an administrator's built-in
+   account, and never a system or service account (point 2).
+8. When a view's credential binding changes, every owner and group it
+   showed under the old binding is invalidated in the kernel (C17) before
+   the view shows another.
 
 Why: native tools trust an owner field. An owner that changed with the
 caller, or mapped to a privileged account, would turn a display choice into
@@ -983,14 +1196,14 @@ common tool that an explicit rule cannot fix.
 2. A native uid or SID comes only from an explicit per-cell rule
    (alignment, name or table).
 3. Otherwise, and for anything L30 forbids, a reserved unmapped id for the
-   platform is shown.
+   platform is shown, and for groups a reserved unmapped group (L30,
+   point 4).
 4. **"Mine as mine"** is an opt-in, offered only on a view bound to one
    verified credential context: a per-user FSKit mount, or an SMB view once
    that surface has qualified. An object is shown as the local user's only
-   when its AFS owner is the view's verified AFS identity in that cell and
-   the local account is eligible. It is tied to the credential binding and
-   dropped when the binding changes.
-5. Showing every caller as the owner is not offered.
+   under L30's conditions (L30, points 6 and 7). It is tied to the
+   credential binding and dropped when the binding changes (L30, point 8).
+5. Showing every caller as the owner is not offered (L30, point 5).
 
 Why: Git by default refuses a repository owned by someone other than the
 current user
@@ -1006,9 +1219,13 @@ the exclusions, or acceptance tests find a traversal loop the bounds miss.
 1. An AFS mount point appears as a directory. The core crosses it.
 2. A symbolic link appears as a symbolic link where the OS has them. On the
    replica, L27 applies.
-3. Mount-point and link depth are bounded everywhere, with a visited set.
-4. The root lists cells without contacting them; a cell is contacted when
-   it is entered.
+3. Mount-point and link depth are bounded everywhere. The visited set
+   covers mount points and the links the core resolves itself; links the
+   kernel resolves rely on the operating system's own hop limit.
+4. The root lists cells without contacting them. Lookup, get attributes
+   and access on a cell's entry in the root return synthesised attributes
+   without contacting the cell (C12, point 2). Contact starts at a read of
+   the cell's directory or a lookup of a name inside it.
 5. The filesystem type has a distinct name, and the packages install
    exclusions for the system's indexers.
 6. A read-only volume refuses writes with the OS's read-only error.
@@ -1026,7 +1243,8 @@ from the lock specification.
    byte-range locks, SMB share modes and the AFS server lock.
 2. Each front end's ownership and range rules are enforced locally. SMB
    byte-range locks are mandatory among this machine's opens, checked on
-   read and write in the core.
+   read and write in the core. SMB share modes are enforced locally only:
+   they never take a server lock and never need the AFS lock right.
 3. Where the server permits, local locks are backed by one whole-file
    advisory AFS lock: a read lock for shared coverage, a write lock for
    exclusive.
@@ -1040,11 +1258,16 @@ from the lock specification.
    handed from one user's authority to another's.
 6. An exclusive request on a read-only open may get local exclusivity with
    server read coverage, reported as partial (refused in strict mode). On a
-   writable open it is refused without the server write lock.
+   writable open it is refused without the server write lock. It is also
+   refused on a writable open while another user sponsors the server read
+   lock, since the write lock could then come only from that user's
+   coverage (point 5).
 7. **Continuity is never assumed.** A failed renewal, a resume after the
-   lease could have lapsed, a volume move or a server restart marks the
-   affected local locks lost; later operations that depend on them fail. A
-   new acquisition never validates old grants.
+   lease could have lapsed, a volume move, a server restart or a clock
+   event of C37, point 4, marks the affected local locks lost. After that,
+   these operations fail on the handles of that lock owner: read, write,
+   truncate, flush, fsync, and any change to its locks. A new acquisition
+   never validates old grants.
 8. Server conflicts and transport failures are honoured. Contention is
    polled with bounded backoff, cancellation and deadlines.
 9. FSKit and the replica have no lock hook, so locks there are local to the
@@ -1052,15 +1275,22 @@ from the lock specification.
 10. **Who keeps the server lock.** A sponsor is a local holder whose own
     status shows the AFS lock right. The server lock is taken and renewed
     over the first sponsor's connection, under that sponsor's authority,
-    while any sponsor holds a local lock on the file. A holder without the
-    lock right never takes, upgrades or prolongs it. When the last sponsor
-    releases, or the first sponsor's token is lost or replaced by another
-    identity, the server lock is released or treated as lost. It is not
-    passed to another sponsor (point 5). Point 7 then applies to locks
-    that relied on the coverage; local-only locks continue, shown as such.
-11. Documented limits: AFS-3 locks are advisory, whole-file and renewed
-    every five minutes, so disjoint ranges on two machines conflict, and a
-    machine that sleeps past the lease while holding locks loses them.
+    while that sponsor holds a local lock on the file. A holder without the
+    lock right never takes, upgrades or prolongs it. When the first sponsor
+    releases its last local lock on the file, loses the lock right on
+    revalidation, or its token is lost or replaced by another identity, the
+    server lock is released or treated as lost. It is not passed to another
+    sponsor (point 5). Point 7 then applies to every lock that relied on
+    the coverage, other sponsors' included; local-only locks continue,
+    shown as such.
+11. Documented limits: AFS-3 server locks are advisory and whole-file, and
+    last five minutes unless renewed `[DES-051]`, so disjoint ranges on two
+    machines conflict, and a machine that sleeps past the lifetime while
+    holding locks loses them.
+12. **Renewal margin.** A server lock is renewed well before its lifetime
+    ends, counted on the boot clock (C37); we propose at half the
+    lifetime. Before every operation that depends on a lock (point 7's
+    list), the core checks that the lock's coverage is still continuous.
 
 Why: `[DES-050]` `[DES-051]` `[DES-052]` `[DRV-058]`. Which rights the
 server asks for each lock type is recorded in the specification for the lock
@@ -1076,9 +1306,11 @@ fails for the name `afs` (L41).
 3. Windows: `\\afs\<cell>\...`, plus an optional drive letter. With the
    replica: a per-user root, a per-session drive letter and an Explorer
    entry.
-4. Everywhere: `@sys` and `@cell` substitution in the core, with an
-   ordered, configurable system-name list; the read-only path by default and
-   the conventional dotted path for read-write.
+4. On every surface except the replica: `@sys` and `@cell` substitution in
+   the core, with an ordered, configurable system-name list. On the
+   replica, `@sys` and `@cell` apply only through L27, point 6's explicit
+   action. Everywhere: the read-only path by default and the conventional
+   dotted path for read-write.
 5. The freeze of `/afs` and `\\afs` as defaults is in O38.
 
 Why: existing AFS users, documentation and scripts use these paths. A UNC
@@ -1097,12 +1329,26 @@ its canonical name `[WIN-191]`.
 3. The daemon identifies the node from the descriptor. It accepts it only
    after checking that the object belongs to an IronAFS mount or share and to
    the current volume incarnation. Otherwise it refuses with "not in AFS".
+   It also checks that the descriptor's handle is live and of the current
+   credential generation, and uses only that handle's authority (C13,
+   point 4). Where the operating system cannot identify the open behind a
+   descriptor, the command is refused.
 4. The daemon never resolves a path string on a caller's behalf.
+5. **Entry-level commands.** A command that acts on a directory entry
+   rather than on what it leads to (making, listing or removing a mount
+   point) passes the descriptor of the parent directory, opened by the
+   caller as point 1 says, and one entry name. The daemon refuses a name
+   that is empty, is `.` or `..`, or contains `/`, `\` or NUL. It acts on
+   that entry without crossing a mount point or following a link, and
+   checks the caller's rights on the parent directory through the
+   parent's handle (point 3). One entry name is not a path, so point 4
+   holds.
 
 Why: a daemon that resolved paths itself would do so with its own view and
 privileges, not the caller's: wrong inside a container or changed root, and
 a confused deputy at worst. The exact mechanism per OS is in each layer's
-specification.
+specification. Point 5 exists because opening a mount point crosses it
+(L32, point 1), and a new or broken mount point cannot be opened at all.
 
 ## Supported-platform matrix
 
@@ -1182,7 +1428,9 @@ route is abandoned (the row is then withdrawn); or a vendor moves a date.
    a client installation of this row's edition and build, so it qualifies
    nothing here. Each run records the image it ran on.
    Uses that need Folder Redirection or roaming profiles do not apply to
-   this row `[WIN-M55]`.
+   this row `[WIN-M55]`. If no Windows 11 SMB route qualifies (L41,
+   point 8), this row is withdrawn, as the trigger above says; a replica
+   row on Arm64 would be a separate claim that qualifies on its own.
 2. **Windows 10 Pro 22H2 x86_64, workgroup use, SMB only.** A disposable
    client VM on the maintainer's x64 test host, with Extended Security
    Updates active and the current cumulative update
@@ -1200,8 +1448,9 @@ conditions so that it cannot linger untested.
 ### L39. Candidates
 
 **Working.** Revisit if: a named venue for a row exists and passes (the row
-becomes a target), or assumption A1 or A2 fails (the RHEL 7.9 row is
-dropped).
+becomes a target); assumption A1 fails (the RHEL 7.9 row is dropped, and
+the static musl row is looked at again, point 5); or A2 fails (the RHEL 7.9
+row is dropped).
 
 1. **RHEL 9 and 10, and Debian 13, x86_64 and aarch64:** tier 1 once
    automated jobs on a booted kernel have qualified them. Those jobs need a
@@ -1260,12 +1509,18 @@ layer's documented freshness bound changes.
    authenticated writer session changes file contents and a directory
    entry.
 4. **The smoke:** install, then mount or connect through the shipped entry
-   point. Verify authenticated reads and writes; each user's allowed access,
-   and denied access to the other's data after the caches are warm; the
-   independently triggered callback, and fresh file and directory results
-   within the layer's documented bound, in the same running client.
+   point. Verify authenticated reads, and writes for a read-write claim; a
+   read-only claim (L36, point 2; L12, point 3) instead verifies that
+   writes are refused with the read-only error (L32, point 6), while the
+   separate writer session still triggers callbacks. Verify each user's
+   allowed access, and denied access to the other's data after the caches
+   are warm; the independently triggered callback, and fresh file and
+   directory results within the layer's documented bound, in the same
+   running client.
 5. Per layer: inode and entry invalidation, or the qualified uncached mode,
-   on FUSE; cache-state changes on FSKit; client-visible refresh on SMB.
+   on FUSE; cache-state changes on FSKit; client-visible refresh on SMB;
+   on the replica, the remote change reconciled into the root's
+   placeholders (L41, point 8).
 6. **Record:** the venue, OS build or kernel, package versions, results,
    release revision and artefact digest. The maintainer's runs use
    disposable test systems and the release revision.
@@ -1315,7 +1570,8 @@ is settled either way.
 
 1. **Linux FUSE:** wire floor 7.23 (L2). Required: a successful INIT, the
    shared `allow_other` mount at `/afs`, and two-uid authorisation. The
-   writeback cache stays off (L4). Each run records the negotiated flags,
+   mounted `/afs` is checked to carry `nosuid,nodev` (L3). The writeback
+   cache stays off (L4). Each run records the negotiated flags,
    and each optional feature that is enabled has its fallback tested.
 2. The first qualification uses the shipped privileged direct mount (L7)
    with the system's normal confinement active. A packaged helper-based
@@ -1369,8 +1625,10 @@ excluded by the overview's constraint.
 
 - **What an existing AFS user will notice.**
   - Linux: set-uid programs in AFS do not gain privilege, and device files
-    do not appear (L3). Shared writable mappings fail (L4). `/afs` goes dead
-    until remount if the daemon crashes (L7).
+    do not appear (L3). Shared mappings fail, and private mappings work
+    only on kernels that pass the mapping gate (L4, C15). `/afs` goes dead
+    until remount if the daemon crashes, and without mount-beneath root
+    can see the empty local directory while it is replaced (L7).
   - macOS: each user has their own mount, `/afs` may be a per-user link or
     absent (L10), locks are local to the machine (L33), and the layer is
     read-only if no error-reporting commit exists (L12). Only macOS 27 on
@@ -1471,9 +1729,9 @@ excluded by the overview's constraint.
   `[WIN-167]`.
 - **A kernel redirector of IronAFS's own, or a third-party user-mode
   filesystem driver.** Excluded by the constraint.
-- **The Services for Macintosh name table.** It has no colon and assigns
-  its code points differently `[DES-068]`, while Cygwin uses the U+F000
-  conversion (context 34).
+- **The Services for Macintosh name table.** It has no colon and places
+  punctuation and the trailing characters differently `[DES-068]`, while
+  Cygwin uses the U+F000 conversion for forbidden characters (context 34).
 - **Omitting names Windows cannot show, or rewriting them on the server.**
   A silently partial listing is a wrong answer, and a rename would break
   every other client (L25).

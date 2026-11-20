@@ -124,18 +124,29 @@ on them.
 
 **Firm.**
 
-1. A **profile** is the security class and level actually used on a
-   connection. Classes are ordered `rxkad` < `rxgk`. Levels are ordered
-   `auth` < `crypt`.
+1. A **security profile** is the security class and level actually used
+   on a connection. Classes are ordered `rxkad` < `rxgk`. Levels are
+   ordered `auth` < `crypt`.
 2. rxgk at clear level and rxkad at clear level are never used with a
    token.
-3. Unauthenticated access (rxnull) is not a profile. It is governed by its
-   own switch (N3) and has its own path.
+3. Unauthenticated access (rxnull) is not a profile. It is decided by the
+   choke point (N7) under its own switch (N3).
 4. Floors, pins and ranking compare class and level only. The negotiated
    suite is recorded beside them (N39) and does not take part in the
    comparison (N40).
 5. The class list and its order are data in the protocol crates, not code
    spread through the client.
+6. **Meeting a floor.** A security profile meets a floor only if its class
+   is at least the floor's class **and** its level is at least the floor's
+   level. The comparison is componentwise: (`rxgk`, `auth`) does not meet a
+   floor of (`rxkad`, `crypt`), and (`rxkad`, `crypt`) does not meet
+   (`rxgk`, `auth`). "Below" a floor, anywhere in this part, means "does
+   not meet it".
+7. **Terms.** "Security profile" is (class, level), with the suite
+   recorded beside it (N39). A **protocol profile** is the set of wire
+   rules a cell speaks, named by its protocol identifier (N27). Where this
+   part says "profile" alone, the context says which; "the selected rxgk
+   profile" (N13, N25) is the rxgk wire profile within a protocol profile.
 
 Why: a floor needs an order to compare against. Class and level are two
 values because the two classes protect different things at each level
@@ -149,8 +160,10 @@ a weaker class.
 1. Downgrade protection has three controls, strongest first: the
    **configured floor** (N3), the **token's own profile and the chosen
    identity** (N4), and the **learned pin** (N9).
-2. The **effective floor** for a cell is the higher of the configured floor
-   and an unexpired pin.
+2. The **effective floor** for a cell is the componentwise maximum (N1,
+   point 6) of the configured floor and an unexpired pin. A pin
+   contributes its class only (N9, point 1); the level comes from the
+   configured floor.
 3. The configured floor always applies. No exception in this part goes
    under it, including the legacy fileserver exception (N12).
 4. No control is lowered by a failure, a timeout, or anything received
@@ -164,7 +177,9 @@ the others miss.
 
 ### N3. The configured floor: keys and defaults
 
-**Working.** Revisit if: client-to-fileserver rxgk ships against a tested
+**Firm:** the key names, their values, and points 1 to 3 (N8 freezes the
+keys from the first release that authenticates). **Working:** the
+defaults in the table. Revisit the defaults if: client-to-fileserver rxgk ships against a tested
 peer (N25), which is when a default of `min_class = "rxgk"` for cells that
 offer it can be weighed; or a tier 1 cell cannot be reached at
 `min_level = "crypt"`.
@@ -204,9 +219,9 @@ mixed cells is what one administrator can keep correct on a fleet.
    (cell, context). The marker:
    - is persisted before the installation is acknowledged;
    - holds no key material and is readable only by the daemon;
-   - is bound to the cell, the authenticated context and that context's
-     lifetime, so it survives a daemon restart and never attaches to a
-     reused identity.
+   - is keyed by the context's **durable owner** (C40), the cell, and the
+     cell's protocol identifier and configuration generation (N27), so it
+     survives a daemon restart and never attaches to a reused identity.
 4. A matching marker without a token returns `TokenRequired`.
    `TokenExpired` is returned only when trusted local expiry metadata
    establishes it under the token's profile. A server's claim that the
@@ -214,13 +229,39 @@ mixed cells is what one administrator can keep correct on a fleet.
    failure keeps the authenticated intent.
 5. The marker is removed only by the context's own explicit `unlog`, or on
    verified teardown of the context. After `unlog`, newly issued requests
-   follow the cell's `anonymous` policy.
+   follow the cell's `anonymous` policy, subject to point 10 and N11,
+   point 6.
 6. An authorised, audited administrator may revoke another context's
    token. The marker stays.
 7. A credential change invalidates queued requests bound to the old
    credential.
 8. `aklog`, `unlog` and `tokens` name the cell and work without reading
    `/afs`, so a context whose token expired can inspect and recover.
+9. **Rebinding after a restart.** A context is joined to a marker only on
+   the evidence C40 names for its operating system. A request whose local
+   account matches a marker's, but whose durable owner that evidence does
+   not confirm, is treated as holding the marker: it gets
+   `TokenRequired` for that cell, never anonymous data. The marker is not
+   given to the new holder.
+10. **An unreadable marker store fails closed.** If the marker store
+    cannot be read, or fails its checksum, the daemon cannot tell which
+    contexts hold a marker. No request then goes out anonymously to any
+    cell: where one would, it gets `TokenRequired`. A health error is
+    raised. This holds until an administrator repairs or resets the store,
+    which is audited. The store is never treated as empty.
+11. **Reacquisition authorisation.** Beside each marker the daemon
+    persists, per durable owner and cell, whether tokens may be
+    reacquired automatically (C42, point 3):
+    - It is withdrawn, and the withdrawal is durably written, before an
+      `unlog` or an administrator's revocation (point 6) is
+      acknowledged.
+    - At that moment, automatic installations already in progress for
+      that owner and cell are fenced: the daemon refuses them.
+    - A token installation states whether it is automatic. The daemon
+      refuses an automatic one while the authorisation is withdrawn, and
+      the agent checks it before running `aklog` after a restart.
+    - After `unlog`, only the context's own explicit `aklog` grants it
+      again.
 
 Why: without the marker, an expired or dropped token silently turns a
 user's requests into anonymous ones, and a program reads different data
@@ -245,6 +286,20 @@ the mitigation.
 5. `aklog` runs as the user, so what it states is a user's assertion. The
    daemon enforces the floor itself when a token is set and again at every
    connection (N7).
+6. **Evidence that reaches beyond one context.** Evidence whose effect
+   reaches another context or the whole machine (learning or renewing a
+   pin, N9; an N12 attestation; a shared per-volume capability, N42) must
+   also be authoritative in C24's sense (C24, point 1): protected under the
+   daemon's combined token, or another key no local user can determine. A
+   reply protected only by a key built from a user's own token (C42,
+   point 2) does not qualify, because that user could produce it. The
+   proof is bound to the cell with its protocol identifier and
+   configuration generation (N27), to the fileserver UUID where one is
+   named, to the request it answers, and to a freshness interval fixed by
+   the specification for the security classes.
+7. Until the selected rxgk profile provides such a channel, pin learning
+   (N9) and the legacy fileserver exception (N12) stay disabled, even
+   after N13's gate opens.
 
 Why: IronAFS relies on no rxkad level for the integrity of a reply's
 payload (O23, point 4; assumption A13), and the AFS-integration draft
@@ -262,9 +317,11 @@ secured connection `[DES-061]`.
    combine-tokens reply fails closed, also before any pin exists. This
    rule binds only a build in which that path is enabled (N13).
 3. Key exhaustion on a connection is its own outcome (N45). It leads to a
-   rekey or a reconnect at the same profile, never to a weaker one.
-4. The error is `SecurityFloor` (with `TokenRequired`, N4), reported to
-   applications as a permission failure with the cause shown (C46,
+   rekey or a reconnect that lowers neither class nor level and stays
+   inside every active floor, never to a weaker one.
+4. The error is `SecurityFloor` (with `TokenRequired`, `TokenExpired`
+   and `TokenRevoked`, N4 and N47), reported to applications as a
+   permission failure with the cause shown (C46,
    O35). A refusal names what refused it.
 5. A cell whose rxkad-only state is established independently follows the
    baseline policy: the configured floor and the token rule.
@@ -276,18 +333,48 @@ If any of them could lower the profile, that person would choose it.
 
 **Firm.**
 
-1. Every connection is created through one pure function: (cell and its
-   protocol identifier (N27), server, service, context, effective floor,
-   evidence) to a profile or a refusal.
+1. Every connection is created through one pure function. Its inputs:
+   the cell with its protocol identifier and configuration generation
+   (N27), server, service, context, the configured floor, any active pin,
+   evidence, any live N12 attestation, the cell's `anonymous` setting
+   (N3), and the context's token and marker state for the cell (N4). Its
+   result is a security profile, **anonymous** (rxnull), or a refusal.
+   rxnull is reached only through it.
 2. It runs again on failover, on a volume move and on a token change. The
-   connection key includes the class (C30).
+   connection key is the one C30 defines (C30, point 3). When an
+   applicable restriction rises (a pin, a floor, a policy), connections
+   below it are closed, and sends queued on them are fenced: a request not
+   yet sent runs through this function again; a mutation already sent
+   follows the lost-reply rule (C28).
 3. The daemon applies it when a token is set, so a user process cannot
    lower anything.
 4. `aklog` asks the daemon for the effective floor first, tries rxgk when
    the cell may offer it, and falls back to rxkad only if the floor and any
-   active pin allow. The fallback is an event.
-5. Invariant, checked in the simulator (O45): **no packet
-   leaves on a connection whose profile is below the effective floor.**
+   active pin allow. The fallback is an event. One case differs: with
+   `legacy_fileservers = "cell-attested"` and a configured floor that
+   permits rxkad, `aklog` may obtain, and the daemon may store, a
+   companion rxkad credential while a pin or a primary rxgk token exists.
+   That credential is restricted to fileservers with a live N12
+   attestation and is used for nothing else.
+5. Invariant, checked in the simulator (O45), stated by point 6:
+   **no packet leaves on a connection the predicate does not permit.**
+   No connection is ever below the configured floor. A connection is below
+   an active pin only if it is a fileserver connection carrying a live N12
+   attestation. rxnull packets leave only when `anonymous = "allow"` and
+   the context holds neither a token nor a marker for that cell (N4,
+   points 9 and 10 count as holding one).
+6. **The predicate**, written once and used by points 1 and 5. A
+   connection to a server of a cell is permitted if and only if one of
+   these holds:
+   - **authenticated:** its security profile meets the configured floor
+     (N1, point 6); it meets the context's token profile (N4, point 1);
+     and its class meets an active pin's class; or
+   - **legacy:** its security profile meets the configured floor; it is a
+     fileserver connection carrying a live N12 attestation, using the
+     companion credential (point 4) under that credential's own profile;
+     or
+   - **anonymous:** it is rxnull, `anonymous = "allow"`, and the context
+     holds neither a token nor a marker for the cell.
 
 Why: one function is one place to test and to audit. A rule enforced at
 several call sites is eventually missed at one.
@@ -296,9 +383,9 @@ several call sites is eventually missed at one.
 
 **Firm.**
 
-1. The floor keys, `SecurityFloor`, `TokenRequired` and the
-   authenticated-intent marker exist from the first release that
-   authenticates (M2b in the plan).
+1. The floor keys, `SecurityFloor`, `TokenRequired`, `TokenExpired`,
+   `TokenRevoked` (N47) and the authenticated-intent marker exist from the
+   first release that authenticates (M2b in the plan).
 2. An unknown **value** of a known security key refuses that cell. It is
    never ignored. Example: `min_class = "rxgk"` on a build whose rxgk
    fileserver path is not enabled fails that cell with the reason.
@@ -322,15 +409,18 @@ but does not answer the call, which under these rules would refuse every
 fileserver of that cell.
 
 1. A pin records, for the machine, "this cell negotiates rxgk for its
-   fileservers".
-2. **Scope.** One pin per cell, per machine, scoped to the client profile
-   and service path it was established on. There are no per-server pins
-   and no per-context pins.
+   fileservers". It enforces the class `rxgk` only. The level stays
+   governed by `min_level` (N3).
+2. **Scope.** One pin per (cell, protocol identifier, configuration
+   generation) (N27), per machine. It is part of the cell's effective
+   floor (N2, point 2), so it covers every Rx service of the cell; N12 is
+   the only per-fileserver exception. There are no per-server pins and no
+   per-context pins.
 3. **Learning.** A pin is learned or renewed only by a **qualifying
    success**: ordinary client rxgk token negotiation succeeds, **and** the
    authenticated volume-location service returns a fresh, well-formed
-   combine-tokens reply at `auth` or `crypt` level for a fileserver of that
-   cell.
+   combine-tokens reply for a fileserver of that cell, under authoritative
+   evidence (N5, point 6).
 4. A non-empty token and an explicit empty token both qualify: either
    shows that the cell answers the negotiation. A database reply alone
    establishes no pin. Failed attempts, cached replies and rxkad traffic
@@ -344,8 +434,10 @@ fileserver of that cell.
 Why: a pin is a fact about the cell, and per-context pins would give every
 new login a first contact. The cell itself states, per fileserver, whether
 rxgk token generation can work for that server now `[DES-062]`, so per-server pins would only remember
-what is asked fresh each time. A local user cannot forge a qualifying
-success for a real cell without that cell's keys.
+what is asked fresh each time. A reply protected only by a key built from
+a user's own token could be produced by that user, so it does not qualify:
+only authoritative evidence (N5, point 6) can set a restriction for every
+context on the machine.
 
 ### N10. The learned pin: lifetime
 
@@ -384,7 +476,10 @@ chooses one.
 
 1. Pins live in the state directory, never in the cache. A pin survives a
    cache wipe.
-2. Each record holds the class, the level and the negotiated suite (N39).
+2. Each record holds the class it enforces (`rxgk`, N9, point 1). The
+   level and the negotiated suite (N39) seen on the volume-location
+   connection that qualified are recorded beside it as information. They
+   do not raise any context's level floor.
 3. A renewal is committed only after it is durably written. On a write
    failure the daemon reports a health error and keeps the active
    restriction while persistence is uncertain.
@@ -392,7 +487,20 @@ chooses one.
    "degraded" event.
 5. A **readable** record holding a suite this release cannot name refuses
    the cell until an administrator acts. It is not treated as empty.
-6. A lost state directory returns the machine to first contact (N14).
+6. A lost state directory returns the machine to first contact (N14) for
+   pins. For markers (N4) it does so only for contexts created after a
+   verified fresh initialisation:
+   - The daemon creates a state directory only through an initialisation
+     it records in the audit log with the boot it happened in. That record
+     is the first-install or reset boundary.
+   - If the state directory is found missing in a boot in which an earlier
+     daemon instance already ran (the daemon keeps a per-boot run-time
+     record outside the state directory for this), no context that existed before the
+     initialisation gets anonymous access to any cell until it runs
+     `aklog` or `unlog` itself, or the machine restarts. Its requests get
+     `TokenRequired`.
+   - An administrator's deliberate reset (N4, point 10) is the same
+     audited boundary.
 
 Why: a record written by a newer release states a restriction this release
 cannot evaluate, so refusing is the only answer that cannot be weaker than
@@ -409,10 +517,11 @@ exception to the primary token's rxgk selection (N4) and to the learned
 pin (N9).
 
 1. **Attestation.** The cell's authenticated volume-location service
-   returns, on a connection at `auth` or `crypt` level under the context's
-   own rxgk credential, a fresh, successful combine-tokens reply with the
-   explicit empty token for that fileserver's UUID. A failure or a missing
-   reply authorises nothing.
+   returns, at `auth` or `crypt` level and under authoritative evidence
+   (N5, point 6), a fresh, successful combine-tokens reply with the
+   explicit empty token for that fileserver's UUID, bound to that UUID and
+   that request. A failure, a missing reply, or a reply protected only by
+   a key built from the user's own token authorises nothing.
 2. **A separate credential.** The rxkad connection uses a separate, valid
    rxkad credential for the same context, cell and intended identity,
    under that credential's own profile and the configured floor. `aklog`
@@ -493,12 +602,17 @@ that is not there.
 ranking by profile first sends reads to a markedly slower site in normal
 operation.
 
-1. Sites are ranked by profile first, then by round-trip time and
-   preference (C33).
+1. Sites are ranked by security profile first, then by round-trip time
+   and preference (C33).
 2. Falling to a cell-attested legacy replica is allowed by the floor,
    raises an event the first time for each volume, and lands in a
    different cache namespace, because the namespace key includes the
-   profile used (C27, C40).
+   security profile used (C27, C40).
+3. **The ranking order** applies only to sites whose security profile
+   already passes the predicate (N7, point 6); it never decides whether a
+   floor is met. It is total: class first, then level, so (`rxgk`,
+   `auth`) ranks above (`rxkad`, `crypt`). Class comes first because
+   IronAFS relies on no rxkad level for a reply's integrity (N5, Why).
 
 Why: a stronger site that answers is preferred to a faster, weaker one;
 data fetched under a weaker profile must not be served as if it had come
@@ -557,8 +671,8 @@ against yet (N25).
 
 1. An observation (a server's capability words, a remembered
    unknown-opcode reply) belongs to the connection that made it.
-2. It stays in memory, and ends with the connection or on evidence of a
-   server restart.
+2. It stays in memory, and ends with the connection or on evidence or a
+   hint of a server restart (N5).
 3. It is never written to disk and never shared with another connection or
    context.
 4. Unknown capability bits are ignored and counted.
@@ -579,6 +693,10 @@ fallback that cannot be described by the catalogue's fields.
 3. Abort codes are classified by RPC and server (C46).
 4. Example: the bulk status call after a listing, and its fallback, is a
    catalogue entry whose order of use rests on A8.
+5. A fallback that keeps the same guarantees may be chosen on a hint
+   (N5, point 3). One that does not requires evidence (N5, point 1); where
+   the caller asked for the stronger guarantee, the operation fails
+   instead.
 
 Why: volume error codes collide with errno values and must be told apart
 by context `[DES-055]`, so "the server refused this" has no single meaning
@@ -589,9 +707,11 @@ outside a per-RPC table. A table is also reviewable in one place.
 **Working.** Revisit if: a tested server requires per-server variation in
 the client's capability reply to interoperate.
 
-1. The client's reply to a server's capability query on the callback
-   service lists only what this build implements and has enabled, the same
-   to every server.
+1. The client's reply to a server's baseline capability query on the
+   callback service lists only the baseline AFS-3 capabilities and the
+   approved third-party ones (N23) this build implements and has enabled,
+   the same to every server. IronAFS extensions are never listed there;
+   they are advertised only on a protected rxgk channel (N22, point 2).
 2. An unknown callback opcode is answered with the abort the callback
    service's specification names, is counted, and changes no state.
 
@@ -617,8 +737,10 @@ identifies the build no more finely than its version does.
    server incarnation that granted it. A lock's guarantee is fixed when it
    is taken.
 7. **Extended callbacks** may narrow what is refetched only when they
-   arrive authenticated. Otherwise they are plain breaks (C31,
-   C32).
+   arrive on the protected channel of point 1. One that arrives without it
+   is not accepted as an extension (point 1): its extension part is never
+   used, and it is acted on only as a plain break of the objects it names,
+   which can only lower trust (N5, point 3; C31, C32).
 8. **Server-coordinated locks** are a new lease kind in the lock service
    (C7, L33), never a change to an existing lock.
 9. No negotiation RPC is designed until a server exists to speak it
@@ -736,10 +858,18 @@ an existing server.
    the product.
 2. Issue #22 is an option, not a commitment. This ADR contains no server
    code and no server design.
-3. Each item in N27 to N31, and each open format in N32 to N47, is kept
-   only while it costs the client nothing against existing servers. Each
-   milestone's shared-core change is gated on packet and outcome
-   equivalence, errors, fallbacks and resource budgets included.
+3. Each item in N27 to N31, and each open format in N32 to N47, is weighed
+   for cost **before** it is frozen, never after. Once a format's
+   specification freezes it under the `wire-format` rules, a cost found
+   later is a reason for a new format version, never for dropping a field
+   a released client writes or reads. The gate, for each milestone's
+   shared-core change:
+   - the baseline is the previous milestone's client, run on the same
+     simulator scenarios and against the same test cell;
+   - packets, outcomes, errors and fallbacks must be identical to the
+     baseline's, with no tolerance;
+   - resource use must stay inside the budgets the milestone's test
+     specification states (O45) before the gate runs.
 4. The protocol crates and the pure crypto interface depend on no client
    crate, checked in CI (C4).
 5. Deferred until a profile needs them: dynamic rights catalogues, editing
@@ -760,11 +890,25 @@ something now is paying for an option nobody has taken.
 3. The identifier is an input to the connection choke point (N7), part of
    the cache namespace key (C27, C40), the scope of journal dependency bytes
    (N32), and shown in IPC status.
-4. Activating another profile for a cell separates connection, credential,
-   cache and journal identities, fences a same-name reconfiguration, and
-   enforces a minimum client version. A re-profiled cell can never alias
-   connections, credentials, cache or journal with its former self.
+4. Activating another protocol identifier for a cell separates
+   connection, credential, cache and journal identities and fences a
+   same-name reconfiguration, through the generation of point 6. A site
+   that needs a minimum client version for it states one with
+   `min_client_version` (O19). A cell whose protocol identifier changed can
+   never alias connections, credentials, cache or journal with its former
+   self.
 5. The identifier is never learned from the network.
+6. **Configuration generation.** Each cell has a configuration generation,
+   kept in the state directory and changed on every change of its protocol
+   identifier, so `afs3`, then another identifier, then `afs3` again is
+   three generations.
+   - (protocol identifier, generation) is part of the key of tokens and
+     credentials (C40), pin records (N9, N11), cache namespaces (C27,
+     C40), connections (C30, point 3) and journal record headers (N32).
+   - On a change, handles opened under the earlier generation fail with
+     `Stale`.
+   - If the stored generation cannot be read, the daemon starts one that
+     cannot equal any earlier one and treats it as a change.
 
 Why: two protocol profiles under one cell name must not share a credential
 or a cached byte. Making the identifier part of every key now is free;
@@ -861,15 +1005,24 @@ does; this is its record format.
    - the payload length;
    - the record's **dependency scope**: the file ids it touches and, for a
      namespace record, both parent directories;
-   - a data-transform id and an at-rest key id (N35).
-2. The dependency scope is encoded as length-delimited bytes scoped by the
-   cell's protocol identifier (N27). Under `afs3` it holds volume, vnode
-   and uniquifier as 32-bit values (N38).
+   - a data-transform id and an at-rest key id (N35);
+   - the cell, its protocol identifier and configuration generation
+     (N27);
+   - the record's durable owner (C40).
+2. The dependency scope is encoded as a counted list of object ids, each
+   individually length-delimited, interpreted under the protocol
+   identifier in the same header (N27). Under `afs3` each id holds volume,
+   vnode and uniquifier as unsigned 32-bit values (N38).
 3. A **payload**, tagged by kind and checksummed separately, with an
    extension area.
 4. Exact field order, sizes and checksum algorithm are fixed by the
    journal's specification under `docs/specs/` before the first release
    that writes a journal, under the `wire-format` rules.
+5. **Framing survives a bad header.** A reader can find where each record
+   starts and ends without trusting a header that failed its checksum.
+   The journal's specification fixes how (point 4).
+6. A torn tail after the last committed record is truncated as
+   uncommitted: C28 never acknowledged it (C28, point 6).
 
 Why: the journal outlives a release. With the dependency scope in a header
 every release can read, a release that does not understand a record's
@@ -890,22 +1043,34 @@ migration.
 3. A journal of a higher minor version is read. Records of known kinds
    are handled as usual: kept for explicit recovery, never stored
    automatically (C28). Unknown may-ignore flags are carried and ignored.
-4. A record of an **unknown kind**, or with an **unknown must-understand
-   flag**, is **quarantined**. Its framing and dependency scope are still
-   readable.
+4. A record of an **unknown kind**, with an **unknown must-understand
+   flag**, or with an unknown protocol identifier or data-transform id, is
+   **quarantined**. Its framing and dependency scope are still readable.
 5. A quarantined record holds back every later record in its dependency
    scope. They wait, shown in `afs pending` with the reason. They are never
-   applied over a state their predecessor did not produce.
+   applied over a state their predecessor did not produce. Being held back
+   is transitive: a held-back record holds back every later record in its
+   own scope too, including objects and parents the quarantined record
+   does not touch (a held rename from A to B holds both A's and B's
+   scopes), until its predecessors are resolved. Order is preserved. Scopes
+   match only by exact (cell, protocol identifier, generation, object id
+   bytes).
 6. A record whose **payload** fails its checksum is quarantined the same
    way, its scope read from the common header.
-7. If a **common header** fails its checksum, the dependencies cannot be
-   known. Recovery stops for the whole journal, every record is kept for
-   explicit recovery, and the health state says so. Nothing is recovered by
-   guess.
-8. That stop blocks an upgrade's drain (O33). An upgrade waits until
-   explicit recovery clears it, or until the whole affected journal, with
-   its format marker, is preserved verbatim in the recovery store and
-   verified readable by the newer release.
+7. If a **common header** fails its checksum, that record's dependencies
+   cannot be known, so it holds back every later record. Records before
+   it stay structured and are handled as usual. If the framing past it
+   cannot be found (N32, point 5), the unframeable remainder is kept as one
+   raw quarantined blob, for export or discard. Recovery of the held-back
+   part stops, every record is kept for explicit recovery, and the health
+   state says so. Nothing is recovered by guess.
+8. That stop blocks an upgrade's drain (O33). The upgrade does not wait:
+   its preflight refuses with the reason (O33, point 3), unless the whole
+   affected journal, with its format marker, is preserved verbatim in the
+   recovery store. "Verified readable by the newer release" applies only
+   to records this release cannot read because of their version. Corrupt
+   bytes are readable by no release, so they need explicit archival or
+   clearance first.
 9. Otherwise a drain before an upgrade is complete when no store is in
    progress. A drain stores no deferred record (C28, point 3; O33).
    Quarantined records and the records they fence move to the recovery
@@ -977,13 +1142,17 @@ missing.
    alias.
 3. With it goes a **context kind**: user session, machine, or service.
 4. The value is used in context ids, cache namespace keys, journal
-   records, IPC and audit.
+   records, IPC and audit. It is one component of context ids, of the
+   durable owner (C40) and of cache namespace keys, never the whole key.
 5. **Anonymous authenticated identities** are a namespace of their own,
    distinct from rxnull, which stays the unauthenticated path (N1). Their
    shared name never makes two contexts one, and they are never eligible
    for the shared cache pool (C21).
 6. A restricted token (one whose server-side rights are narrowed) carries
-   that status into IPC and is never pool-eligible.
+   that status into IPC and is never pool-eligible. A change of restriction
+   status, or of any token property that narrows server-side rights,
+   retires the credential generation (C18, point 7): the generation's key
+   includes the token's restriction class.
 7. Token IPC reserves an optional key-handle field for sender-constrained
    (proof-of-possession) tokens, the key held by the daemon. It is empty
    now.
@@ -1010,10 +1179,11 @@ format break.
    object's owner or owning group), and an opaque form.
 4. Answers are per object, and say when an object's ACL follows its
    directory.
-5. **Unknown variants, entry types and flag bits round-trip unchanged**
-   for reading and transport.
+5. **Unknown variants, entry types, flag bits, rights bits and opaque
+   principals round-trip unchanged** for reading and transport.
 6. **An edit is refused** whenever the ACL holds an unknown variant, an
-   unknown entry type, or an unknown must-understand flag, even if the raw
+   unknown entry type, an unknown must-understand flag, an entry with
+   unknown rights bits (N28), or an opaque principal, even if the raw
    values could be preserved. Unknown may-ignore bits are preserved and do
    not block an edit.
 
@@ -1028,8 +1198,11 @@ stored.
 
 1. **The data version is unsigned 64-bit** in every internal type, cache
    key, IPC field and journal field.
-2. **Volume, vnode and uniquifier are typed 32-bit** under the `afs3`
-   profile. They are distinct types, not bare integers.
+2. **Volume, vnode and uniquifier are typed unsigned 32-bit** under the
+   `afs3` protocol identifier. They are distinct types, not bare integers.
+   The signedness is IronAFS's reading; the file-service specification
+   (C6) confirms it against its sources before any format that stores
+   them is frozen.
 3. **Legacy protection ids are typed signed 32-bit**, with checked
    conversions and tests for negative ids.
 4. Principals are the typed value of N36, never a bare id.
@@ -1044,6 +1217,13 @@ stored.
    means live), so a later named stream or same-volume snapshot never
    aliases its base object. Their encodings are fixed by the specification
    of the first profile that uses them.
+8. The stable object key's components are: the cell; its protocol
+   identifier and configuration generation (N27); the volume incarnation,
+   a local epoch bumped when a restore is ambiguous (C25, point 3); vnode;
+   uniquifier; stream; and snapshot view. A restored volume therefore
+   never repeats a key the operating system has already seen for a
+   different object. Two anchors of one live object share its key. Per-open
+   SMB ids are independent of it.
 
 Why: a 64-bit data version appears in published extension material
 `[DES-057]`, so 64 bits is the width that cannot truncate. For the file
@@ -1052,13 +1232,13 @@ search, not a proof of absence), so any wider width chosen now would be a
 guess; typed fields and a length-delimited scope make the later change
 cheap instead.
 
-### N39. A profile is recorded as class, level and suite
+### N39. A security profile is recorded as class, level and suite
 
 **Firm.**
 
-1. A connection's profile is recorded as (class, level, suite). The suite
-   is the encryption type actually negotiated, known once the security
-   class completes its handshake.
+1. A connection's security profile (N1) is recorded with its suite, as
+   (class, level, suite). The suite is the encryption type actually
+   negotiated, known once the security class completes its handshake.
 2. The suite is *none* for a profile whose class negotiates no suite
    (rxkad). *None* is a valid value, not an unknown one.
 3. rxnull is not a profile and has no suite value.
@@ -1107,6 +1287,11 @@ for growth inside it.
 7. The adapter contract (C7, C44) uses the same shapes under its
    exact-version rule: it needs room to grow, not compatibility.
 8. IPC passes an unknown error cause through as its code plus its text.
+9. A non-critical extension in a request may not change what the request
+   mutates. An unknown one is ignored, and the reply names it as ignored.
+10. Read results are an adapter-contract structure, not a control IPC
+    one. Their extension arm, where N46, point 4, reserves a hole-extent
+    extension, is in the adapter contract under point 7.
 
 Why: partial application of a request the receiver half understands is
 the failure to prevent; "refuse whole" is checkable. Bounded lists keep an
@@ -1114,19 +1299,22 @@ extension from being a memory attack.
 
 ### N42. Per-volume capabilities
 
-**Working.** Revisit if: the first profile that offers one of these
-features defines capability discovery at a different grain (per server or
-per cell).
+**Firm:** points 4, 5, 7 and 8, which are security rules. **Working:**
+points 1, 2, 3 and 6. Revisit the working points if: the first protocol
+profile that offers one of these features defines capability discovery at
+a different grain (per server or per cell).
 
 1. Beside N19's per-RPC capability words there is a capability value per
-   (volume, the server serving it and that server's incarnation, profile),
-   learned from that server.
+   (protocol identifier, volume, the server serving it and that server's
+   incarnation, security profile), learned from that server under point 8.
 2. It is an open set: holes, server-side copy and clone, atomic no-replace
    rename, extended attributes, named streams, case and normalisation
    rules, and their limits.
 3. It is invalidated with the connection or incarnation (N19) and on a
    volume move or replica change.
-4. A layer checks it **per operation**.
+4. The core checks it **per operation**, on the connection that executes
+   the RPC, and checks again after a failover. A layer only presents the
+   result (C2).
 5. An OS-level flag that **promises an invariant** for the whole mount
    (for example a case-insensitive name space) is set only if it holds for
    every cell, and never for permission checks (L1, L4).
@@ -1137,6 +1325,11 @@ per cell).
    extended-attribute contract and in each layer's table, whatever the
    volume offers. The server's ACLs are reached only through the ACL value
    (N37).
+8. **How a value is learned.** A value is shared beyond the connection
+   that observed it only when learned under authoritative evidence (N5,
+   point 6). A capability seen on rxnull or rxkad is a hint (N5, point 2):
+   it is usable only by the connection that saw it, and ends with it, as
+   an observation does (N19).
 
 Why: `/afs` spans every cell, so a mount-wide promise is a promise about
 servers the client has not met. FUSE's POSIX ACL capability turns on the
@@ -1190,7 +1383,8 @@ rekeying must be visible above the security-class interface.
    provider. A class may ask for a new key or a reconnect on a live
    connection.
 2. **Key exhaustion is its own outcome**, distinct from a transport
-   failure. It triggers a rekey or a reconnect at the same profile (N6).
+   failure. It triggers a rekey or a reconnect without lowering class or
+   level and inside every active floor (N6, N7).
 3. A request not yet sent continues on the new key within its own
    deadline.
 4. A mutation already sent whose outcome is unknown follows the lost-reply
@@ -1222,26 +1416,32 @@ supported cell offers one of the reserved operations.
    copies by reading and writing under the caller's own grants, as
    ordinary writes.
 4. Reads of a hole return zeros. A hole-extent extension in read results
-   is reserved in the extension arm, not built.
+   is reserved in the adapter contract's extension arm (N41, point 10),
+   not built.
 
 Why: an operation absent from the contract is a contract change when a
 volume first offers it; one present and refused is a capability check.
 
 ### N47. Small fields that are cheap now
 
-**Working.** Revisit if: a specification written for M2a or M2b shows one
-of these fields cannot be populated from what an AFS-3 server returns.
+**Firm:** points 3, 4 and 5 (event shapes, the connection key and an
+error the floor rules name). **Working:** points 1, 2 and 6. Revisit the
+working points if: a specification written for M2a or M2b shows one of
+these fields cannot be populated from what an AFS-3 server returns.
 
-1. A **status-change token** separate from the data version (N29).
+1. A **status-change token** separate from the data version (N29). Under
+   `afs3` it is explicitly *none*; nothing relies on it there.
 2. The coherency state names the promise's **kind** (callback, lease,
    none) and its **scope** (status, data, with room for write-capable
    promises) as separate fields.
 3. Invalidation events carry a change kind and their scope (object,
-   directory, volume or server), and pair a rename's two names. An event a
-   layer does not understand is handled conservatively at its known scope,
-   and through the existing overflow path when its scope cannot be
-   determined.
-4. The transport is part of the connection key.
+   directory, volume or server), and pair a rename's two names. Where a
+   paired rename is coalesced with other names on the same directory, it
+   widens with them to all entries of that directory (C17, point 6). An
+   event a layer does not understand is handled conservatively at its
+   known scope, and through the existing overflow path when its scope
+   cannot be determined.
+4. The transport is part of the connection key (C30, point 3).
 5. `TokenRevoked` is distinct from `TokenExpired`.
 6. A creation time records whether the server supplied it. A layer
    synthesises one from the modification time only when the server gives
@@ -1277,7 +1477,8 @@ wrong.
   and two checksums on every journal record (N32); typed identifiers and
   checked conversions throughout (N38).
 - **Reserved now, built when their milestone comes:** the floor keys,
-  `SecurityFloor`, `TokenRequired` and the marker (M2b); the state
+  `SecurityFloor`, `TokenRequired`, `TokenExpired`, `TokenRevoked` and the
+  marker (M2b); the state
   directory's version (M2a); the profile triple in IPC (N39); simulator
   servers that take a profile (classes, opcodes, capability words, combine
   answers), with N7's invariant.
@@ -1298,6 +1499,25 @@ wrong.
   - an expired or revoked token, a restart and an authentication failure
     never yield anonymous data, and only `unlog` returns a context to the
     anonymous policy;
+  - a restart with a corrupt marker store, and a restart with a missing
+    state directory within the same boot, give `TokenRequired`, never
+    anonymous data; an unconfirmed durable owner never inherits a marker;
+  - an administrator revokes a context's token, the daemon restarts, and
+    the agent does not reinstall a token; after `unlog`, an automatic
+    installation in flight is refused;
+  - floors compare componentwise: (`rxgk`, `auth`) does not meet
+    (`rxkad`, `crypt`) and the reverse; the effective floor is the
+    componentwise maximum; ranking orders only candidates that pass;
+  - the predicate of N7, point 6: no connection below the configured
+    floor; below a pin only for an N12-attested fileserver with the
+    companion credential; rxnull only with `anonymous = "allow"` and
+    neither token nor marker; raising a pin closes lower connections and
+    fences their queued sends;
+  - a combine reply protected only by a key built from a user's own token
+    learns no pin and authorises no legacy fileserver;
+  - a cell changed from `afs3` to another protocol identifier and back
+    shares no token, pin, cache entry, connection or journal scope with
+    its earlier generations, and its old handles answer `Stale`;
   - a database reply alone learns no pin; a combine reply with an empty or
     a non-empty token after a real negotiation does;
   - a pin survives a cache wipe, blocks rxkad until forgotten or expired,
@@ -1308,10 +1528,14 @@ wrong.
     extension is offered or accepted under rxkad or on a legacy
     connection;
   - a policy reader meeting an unknown security value refuses the cell;
-  - journal: an unknown kind and a bad payload checksum quarantine and
-    fence their scope; a bad header checksum stops recovery and blocks a
-    drain; a higher minor version handles its known kinds;
-  - ACLs: unknown variants round-trip, and an edit over one is refused;
+  - journal: an unknown kind, an unknown protocol identifier or
+    data-transform id, and a bad payload checksum quarantine and fence
+    their scope, transitively; a bad header checksum holds back the rest
+    of the journal, keeps earlier records structured and blocks a drain;
+    a torn tail is truncated; a higher minor version handles its known
+    kinds;
+  - ACLs: unknown variants, rights bits and opaque principals round-trip,
+    and an edit over any of them is refused;
     unknown rights bits grant nothing; negative protection ids convert
     with checks;
   - on a real OpenAFS 1.8 cell: the catalogue's fallbacks, and rxkad at
