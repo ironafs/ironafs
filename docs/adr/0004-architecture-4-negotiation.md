@@ -239,7 +239,10 @@ mixed cells is what one administrator can keep correct on a fleet.
      context's hold; the persisted marker is removed only when no context
      of its durable owner holds it. After a restart a context joined to
      the durable owner (point 9) holds it until it runs `aklog` or
-     `unlog` itself.
+     `unlog` itself. A marker persisted before a restart is not removed
+     while a logon of its durable owner that predates the restart may
+     still be live and has not rejoined (C41); where the operating system
+     cannot show this, it stays until the machine restarts.
 4. A matching marker without a token returns `TokenRequired`.
    `TokenExpired` is returned only when trusted local expiry metadata
    establishes it under the token's profile. A server's claim that the
@@ -252,8 +255,11 @@ mixed cells is what one administrator can keep correct on a fleet.
    `anonymous` policy unless another context of the same durable owner
    still holds the marker, subject to point 10, N11, point 6, and N27,
    point 6. **Test:** two Windows logons of one account with one AFS
-   identity: one unlogs and the other's token expires (`TokenRequired`);
-   one logs off (the other keeps its marker).
+   identity: one unlogs and gets `TokenRequired` while the other holds
+   the marker; the other's token then expires, or is removed, and
+   neither gets anonymous data; one logs off (the other keeps its
+   marker); after a restart, one rejoins and unlogs before the other's
+   first request, which gets `TokenRequired`.
 6. An authorised, audited administrator may revoke another context's
    token. The marker stays.
 7. A credential change invalidates queued requests bound to the old
@@ -371,7 +377,10 @@ If any of them could lower the profile, that person would choose it.
    (N27), server, service, context, the configured floor, any active pin,
    evidence, any live N12 attestation, the cell's `anonymous` setting
    (N3), the `fips` setting and the host's FIPS switch (O31, point 4),
-   and the context's token and marker state for the cell (N4). Its
+   and the context's token and **authenticated intent** for the cell (a
+   marker it or another context of its durable owner holds, or one that
+   N4, points 3, 9 and 10, N11, point 6, or N27, point 6, count as
+   held). Its
    result is a security profile, **anonymous** (rxnull), or a refusal.
    rxnull is reached only through it.
 2. It runs again on failover, on a volume move and on a token change. The
@@ -401,8 +410,8 @@ If any of them could lower the profile, that person would choose it.
    No connection is ever below the configured floor. A connection is below
    an active pin only if it is a fileserver connection carrying a live N12
    attestation. rxnull packets leave only when `anonymous = "allow"` and
-   the context holds neither a token nor a marker for that cell (N4,
-   points 9 and 10 count as holding one).
+   the context has neither a token nor authenticated intent for that
+   cell (point 1).
 6. **The predicate**, written once and used by points 1 and 5. A
    connection to a server of a cell is permitted if and only if one of
    these holds, and in every arm O31, point 4, permits it (under
@@ -413,13 +422,15 @@ If any of them could lower the profile, that person would choose it.
      meets an active pin's class; or
    - **legacy:** its security profile meets the configured floor; it is a
      fileserver connection carrying a live N12 attestation, using the
-     companion credential (point 4) under that credential's own profile;
-     or
+     companion credential (point 4) under that credential's own profile,
+     while neither that credential nor the context's token is known to
+     be expired or revoked (N12, points 2 and 4); or
    - **anonymous:** it is rxnull, `anonymous = "allow"`, and the context
-     holds neither a token nor a marker for the cell.
+     has neither a token nor authenticated intent for the cell (point 1).
 
-   **Test:** `fips = "require"` with `anonymous = "allow"` refuses the
-   cell.
+   **Tests:** `fips = "require"` with `anonymous = "allow"` refuses the
+   cell; with a fresh attestation, the companion and then the primary
+   credential expires, and each refuses the legacy arm.
 
 Why: one function is one place to test and to audit. A rule enforced at
 several call sites is eventually missed at one.
@@ -952,9 +963,10 @@ an existing server.
    - the comparison is the same milestone's build with and without the
      provision under review, on the same seeded simulator scenarios and
      the same test cell;
-   - packets, outcomes, errors and fallbacks are identical, except where
-     the provision is itself the change under review;
-   - resource use stays inside the milestone's budgets (O45).
+   - packets, outcomes, errors and fallbacks are identical, except the
+     differences declared for the provision before the comparison;
+   - resource use stays inside the limits the milestone's benchmark
+     specification (O49) declares before the comparison.
 4. The protocol crates and the pure crypto interface depend on no client
    crate, checked in CI (C4).
 5. Deferred until a profile needs them: dynamic rights catalogues, editing
@@ -995,7 +1007,9 @@ something now is paying for an option nobody has taken.
      `Stale`.
    - The identifier and its generation are committed together, in two
      checksummed copies with a commit counter (as N11, points 3 and 4).
-     If neither copy can be read, the cell fails closed: no connection to
+     A cell whose first generation was committed is never treated as new
+     again (S4). If neither copy can be read for such a cell, it fails
+     closed: no connection to
      it is made, requests get `TokenRequired`, never anonymous data,
      health is "failed" and an audit event is raised, until an
      administrator resets the cell, which is audited. The generation is
@@ -1334,7 +1348,10 @@ stored.
    identifier and configuration generation (N27); the volume id; the
    volume incarnation; vnode; uniquifier; stream; and snapshot view. The
    incarnation component is a value drawn from a daemon-wide counter
-   persisted in the state directory, so it never repeats on the machine.
+   persisted in the state directory. It never repeats within one state
+   directory; a new state directory or a declared restore (N11, point 6;
+   O42, point 5) never reuses a key an earlier one issued (S5), and an
+   undetected rollback of all checked state is O42, point 6's bound.
    It changes for a context when that context observes ambiguity (C25,
    point 3), and for a view shared by several contexts only on
    authoritative evidence (C24, point 4). **Tests:** two volumes with

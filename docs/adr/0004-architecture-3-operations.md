@@ -360,8 +360,10 @@ Each sink is the operating system's own interface, which rule 21 allows.
 3. Each audit event carries a correlation id, the host, the local user (uid
    or SID), the AFS principal, the outcome and a sequence number.
 4. Audit is never dropped silently. When audit events are lost a gap
-   event says so: with the exact count where sequences were assigned
-   (O10, points 1, 4 and 8), and as a possible-loss interval of unknown
+   event says so: with the exact sequence ranges where sequences were
+   assigned (O10, points 1, 4 and 8), each marked as a known loss or,
+   where a sink may have received it, an uncertain outcome, and as a
+   possible-loss interval of unknown
    count for events never admitted before a crash (O10, point 9).
 5. The audited operations are at least: token set, renewal and loss;
    authentication failures; ACL changes made through the client;
@@ -755,7 +757,9 @@ gate waives them (O46).
    whether through the client's cache, an OS cache, a handle, a mapping or
    a diagnostic. The one exception is deliberate delegation: a handle its
    opener passes to another process keeps that handle's authority and
-   nothing more (C13, point 4; C18, point 3).
+   nothing more (C13, point 4; C18, point 3). The one stated residual is
+   a uid reused by a new account on a Linux or macOS host with no
+   session-end signal (C41, point 4; O23's local-user row).
 2. **No local privilege escalation through AFS content.** Set-uid and
    set-gid bits and device files in a cell grant nothing on the local
    machine.
@@ -991,14 +995,12 @@ attestation level changes, or a platform changes its signing rules.
    keyring by hand. Nothing in IronAFS fetches keys (O20). How clients
    discover these keys is frozen with the identifiers (O38).
    - **The first package.** A host trusts the first keyring package only
-     after the site verifies it: downloaded over HTTPS from the project's
-     release page, and its key fingerprint checked against the one
-     published in the release notes, `SECURITY.md` and the repository, or
-     against one the site provisions, before the repository is enabled.
-   - **A compromised key.** An emergency advisory names the compromised
-     fingerprint; the new keyring package removes the old key file, and
-     the site removes any copy it installed itself.
-   - Both are site actions (O20).
+     after the site has verified the whole package, not only the key it
+     carries, against what the project publishes, before the repository
+     is enabled.
+   - **A compromised key** is removed from every trust store the host's
+     package manager uses, and a signature by it is then rejected.
+   - Both are site actions (O20), and their steps are S6.
 
 Why: a client installed fleet-wide as a system service is a high-value
 target for a tampered build. Point 6 follows Debian's documented practice
@@ -1205,8 +1207,8 @@ prove unclear to users in testing.
    first success ends the mode.
 6. **The replica's offline reads.** The Windows replica, if it is built
    (O51, point 1), serves offline reads that either meet O22.3 (served
-   only while freshness is established as C32 states) or are an explicit,
-   user-entered mode shown as such within point 5's bounds. The replica
+   only while freshness is established as C32 states) or are the stale
+   mode, under all of points 2 and 5. The replica
    ADR (L27, point 11) states which, and how NTFS ends access when
    authority lapses. The replica is not built before that ADR is
    accepted.
@@ -1566,10 +1568,12 @@ behaviour costs more than the tests return.
      specification for the callback service states it, and the case
      "break lost in every retransmission, keepalives succeed" is run;
    - no private cache entry or grant is used outside its credential
-     context and generation, and no delivery happens after its grant's
-     epochs changed; a pool entry is read only with the reader's own
-     shared-pool grant from authoritative evidence (C21, point 6; C22,
-     point 1); a handle passed to another process acts in the opener's
+     context and generation, or for a file, incarnation or operation other
+     than its own (C22, point 1), and no delivery starts after the change
+     of its grant's epochs is effective at its binding (C16, points 3 and
+     6); a pool entry is read only with the reader's own shared-pool
+     grant from authoritative evidence (C21, point 6; C22, point 1); a
+     handle passed to another process acts in the opener's
      context (C18, point 3);
    - weak evidence never evicts or retires another context's state (C24,
      point 3), save the handle revocation that follows a demonstrated
@@ -1666,17 +1670,17 @@ hosted runners, or a case here cannot be automated on a supported OS.
      no login service reinstalls the token (C42; O36, point 1);
    - token or ACL revocation during buffered, direct and mapped I/O, and
      with a descriptor passed to another process;
-   - token renewal during I/O, with no interruption;
+   - token renewal during I/O with a restriction class the daemon
+     verifies unchanged, with no interruption (C14, point 1);
    - a callback break refreshing bytes, attributes and lookups;
    - overlapping lock contention and lock upgrade;
    - a set-uid file that grants nothing;
    - removing a file that is still open;
    - on macOS and on Windows, the layer gates (L13, L22, L41);
    - on Windows, two logons of one account, as two contexts (C41);
-   - on Windows, two logons of one account with one AFS identity: one
-     unlogs and the other's token expires (`TokenRequired`); one logs off
-     (the other keeps its marker); an administrator revokes one, then a
-     restart (no automatic reinstall in either) (C42, point 7; N4);
+   - on Windows, two logons of one account with one AFS identity: N4,
+     point 5's test; an administrator revokes one, then a restart
+     (no automatic reinstall in either) (C42, point 7);
    - on Linux and macOS, on a host with logind or the agent's signal, a
      uid reassigned to a new account without a daemon restart: the new
      account inherits no context, token or record (C41, point 4);
@@ -1819,7 +1823,7 @@ Proposed, and scheduled only when their issues are approved:
 
 1. the Windows offline companion (the Cloud Files replica, L27, resting on
    A6 and A7), built only after its own ADR is accepted (L27, point 11),
-   whose offline reads follow O34, point 6, and not the stale mode;
+   whose offline reads follow O34, point 6;
 2. the opt-in read-only stale mode (O34);
 3. OTLP metrics export (O11);
 4. `/afs` surviving a daemon restart on Linux (L7);

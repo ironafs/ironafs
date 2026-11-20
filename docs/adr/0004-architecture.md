@@ -352,6 +352,40 @@ options. It is not answered here.
 
 Filled in when all four parts are drafted.
 
+## Specification items
+
+These are left to the named specifications. Each must keep the stated
+invariant.
+
+1. **S1.** The specification for the adapter endpoint (C44, C45) settles
+   the order of an out-of-process revocation's events (the daemon records
+   it, the front end applies the advance, a write starts, the binding
+   acknowledges or is torn down) and how the tests observe each. It must
+   keep C16, points 1, 3 and 6, and C31, point 1.
+2. **S2.** The specification for the SMB front end (L19, point 11)
+   settles which responses are framed, signed or encrypted as one unit,
+   and how a unit is completed when one reply in it is fenced. It must
+   keep C16, point 6: every reply in a unit is checked before its first
+   byte, and no part of a protected unit is followed by an error.
+3. **S3.** The specification for the macOS layer settles how an item
+   keeps whether it was reached through the lookup fallback, across item
+   reuse, relative operations and access upgrades. It must keep L29,
+   points 4 to 6.
+4. **S4.** The specification for the state directory settles how a
+   cell's first generation is committed with a record that the cell was
+   initialised, so first contact and the loss of both copies differ. It
+   must keep N27, point 6: an initialised cell fails closed and its
+   generation is never recreated automatically.
+5. **S5.** The specification for the stable object key (C11) settles how
+   a new state directory or a declared restore changes the keys it
+   issues. It must keep N38, point 8: no key the operating system has
+   seen names another object, within O42, point 6's bound.
+6. **S6.** The specification for packaging (O37) settles, per package
+   manager, how a site verifies the first keyring package and removes a
+   compromised key from the trust store in effect. It must keep O29,
+   point 6, and O20: no trust from unverified content, a removed key's
+   signature is rejected, and IronAFS fetches no key.
+
 ## Review
 
 Reviews are recorded here, part by part.

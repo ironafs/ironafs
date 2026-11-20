@@ -318,7 +318,8 @@ carry.
    incarnation (C25), and that the handle behind it is live and still in
    its credential generation (C13, points 2 and 4). Where the operating
    system cannot identify the open behind the descriptor, the command is
-   refused.
+   refused, except the ACL commands on a metadata-only descriptor that
+   L35, point 6, allows.
 6. Share access and byte-range locks are checked, reserved and enforced
    in the core's lock service. A layer only forwards them. The lock rules
    are in L33.
@@ -557,6 +558,7 @@ long or too costly against the test cell.
      records are detached and no handle resumes; or
    - a callback break makes the file's rights, or its directory's ACL,
      stale; or
+   - a local rename replaces the file (C10, point 5); or
    - the network generation changes (C23, point 2); or
    - the ten-minute bound of point 5 passes for a node with open handles.
 2. The core then fetches the file's rights under the current credential.
@@ -695,45 +697,45 @@ and L13.
      (C17).
    - A revocation or invalidation that affects the binding advances the
      epoch, and the daemon pushes the new epoch on that stream.
-   - **When a revocation is effective.** A revocation becomes effective
-     at an out-of-process binding when the front end applies the epoch
-     advance. From the moment the daemon records the revocation (point 1)
-     it gates new requests for that binding, and it reports the
-     revocation complete, to whatever caused it and through C17's
-     acknowledgement, only after the binding acknowledges the advance.
-     The front end applies epoch advances and writes replies in one
-     serialised step, so no reply is written between the arrival of an
-     advance and its application.
+   - **When a revocation is effective.** From the moment the daemon
+     records a revocation (point 1) it admits no new request for that
+     binding under the revoked authority. The revocation is effective at
+     the binding when the front end applies the epoch advance: after
+     that, no reply produced under the revoked authority starts to be
+     written, and replies that started before count as delivered
+     (point 3). The front end applies advances and writes replies in one
+     serialised step. The revocation is complete when the binding
+     acknowledges the advance (C17's acknowledgement) or the binding is
+     torn down; a callback's reply to its server never waits for either
+     (C31, point 1). The order of these events is S1.
    - The front end compares a reply's epoch with the latest epoch it has
      applied immediately before it writes the reply to the operating
      system or the SMB connection. A reply with an older epoch is
      discarded. A fenced fetch reply is retried as point 2 says; a fenced
      mutation reply follows C28, point 4: its outcome is read back and the
      mutation is never repeated.
-   - **Residual:** replies written before the front end applied the
-     advance count as delivered (point 3).
    - **Back-pressure:** the stream is bounded (C39, point 3). When it is
      full, replies wait within their deadlines. An epoch advance is never
      dropped: space for it is kept free.
-   - **Partial submission.** Fencing is at whole-message boundaries. The
-     front end checks the epoch before it starts writing a complete SMB
-     response message (one compound element, signed or encrypted as a
-     whole) or a complete FSKit reply. A message whose write has started
-     is completed. When a later advance must stop the rest of a response
-     that spans several messages, no further message is written and the
-     connection is torn down (SMB) or the request fails (FSKit). A part of
-     a signed or encrypted message is never followed by an error on the
-     same stream.
+   - **Partial submission.** Fencing is at the boundary of what the
+     transport frames, signs or encrypts as one unit. Before the first
+     byte of such a unit, the front end checks every reply the unit
+     carries. A unit whose write has started is completed; when a later
+     advance must stop the rest of a response, no further unit is written
+     and the connection is torn down (SMB) or the request fails (FSKit).
+     Part of a signed or encrypted unit is never followed by an error on
+     the same stream. Which SMB units these are is S2.
    - **Adapter death:** the binding is torn down, which revokes its
-     handles (C14, point 3). A read reply not acknowledged as written is
-     undelivered; a mutation whose reply was not acknowledged as written
-     is uncertain: its outcome is read back and it is never repeated
-     (C28, point 4).
+     handles (C14, point 3) and ends any revocation pending on it. A read
+     reply not acknowledged as written is undelivered; a mutation whose
+     reply was not acknowledged as written is uncertain: its outcome is
+     read back and it is never repeated (C28, point 4).
    - **Tests:** a revocation that lands after a reply has crossed the IPC
-     channel and before the front end writes it: the reply must not be
-     written. The advance is withheld from the front end: the revocation
-     is not reported complete, and no reply issued after the revocation
-     was recorded is written (also L13, point 10, and L18, point 9).
+     channel and before the front end writes it: the reply is not
+     written. With the advance withheld from the front end, the
+     revocation is not reported complete. Two replies in one encrypted
+     compound, the second revoked. (Also L13, point 10, and L18,
+     point 9.)
 
 Why: the "silent wrong answer" anti-goal. A check made before a wait says
 nothing about the moment the bytes leave, so the check that counts is the
@@ -763,7 +765,9 @@ cannot fail.
      mappings are refused until a purge succeeds (C15, point 6);
    - FSKit: the item is revoked;
    - SMB: the front end completes pending change notifications with
-     "rescan", and closes the session if it cannot;
+     "rescan". Only if it cannot, which is a failure of the notification
+     channel itself (C15, point 6), does it close the session, ending
+     that session's other opens too;
    - the Windows replica, if built: the event stays unacknowledged until
      the mechanism its own ADR specifies has removed the stale state
      (L28).
@@ -784,7 +788,8 @@ cannot fail.
      system under that directory. A layer that cannot list those names
      treats the purge as one it cannot complete (point 5);
    - a binding **overflows** when its pending events reach their byte
-     bound (C39, point 3). It then applies the overflow event: every node
+     bound (C39, point 3). It then applies the overflow event, which
+     carries a revision like a slot: every node
      it holds is gated as in C16, point 5, and purged as above, or
      handled under point 5 where it cannot be purged. A purge that fails
      under overflow applies C15, point 6, to each node that failed, not to
@@ -1212,10 +1217,11 @@ users.
 4. **Commands.** `afs pending list` shows what waits and why. `retry`
    stores a record over the server's version after the user has seen the
    difference. `discard` drops it. `show` and `export` give the bytes to
-   the record's durable owner (point 5) only. A context with the same AFS
-   identity under another account instance may replay a record under
-   C28, point 5, but not read its bytes (C18, point 2). A user acts on
-   their own records. A retry
+   the record's durable owner (point 5) only. Only the durable owner
+   instructs a retry, after seeing the difference; a context with the
+   same AFS identity under another account instance may then carry it
+   out under C28, point 5, without seeing the bytes or the difference
+   (C18, point 2). A retry
    always needs C28, point 5. An administrator may list, discard, and move
    records unread: `afs pending export --for-owner` writes an opaque,
    checksummed archive that carries each record's durable owner, AFS
@@ -1952,6 +1958,8 @@ applied to the error path.
    resident pages (C15, points 2 and 8). A failed purge affects one file:
    every context holding it gets `Stale` and reopens; on Linux that node
    also refuses new mappings until a purge succeeds (C15, point 6). On
+   SMB, a front end that cannot tell the client to rescan ends the
+   session (C17, point 5). On
    macOS, if revoking an item fails after a failed purge, that user's
    whole mount ends (C15, point 7). An attacker on the network path can
    keep a server trusted while dropping its breaks; this is the same
