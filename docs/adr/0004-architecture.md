@@ -58,8 +58,9 @@ Each of these is a failure even if the client otherwise works:
   the client's own;
 - local privilege escalation through `/afs`;
 - a silent wrong answer: stale data served as fresh, a partial listing
-  shown as complete, a lost write reported as saved, or a deferred store
-  made over newer data;
+  shown as complete, a lost write reported as saved, or a write stored
+  later, without the user's action, over a version of the file the client
+  has not seen (C28);
 - a hang that needs a reboot;
 - code copied, ported or translated from another AFS implementation
   ([ADR 0001](0001-licence-and-dont-copy.md));
@@ -154,7 +155,7 @@ The decisions are in four parts:
 
 Some things this ADR rests on cannot be shown from a public source today.
 Each is named here, with the claims it concerns, what depends on it and
-what would settle it. The parts cite them as A1 to A12. An assumption that
+what would settle it. The parts cite them as A1 to A13. An assumption that
 fails reopens every working decision that names it.
 
 - **A1. The RHEL 7.9 artifact.** We assume a client built against glibc 2.17
@@ -250,7 +251,9 @@ fails reopens every working decision that names it.
   fileservers, and receives their callbacks, through NAT64 and 464XLAT on
   an IPv6-only network. RFC 6877 specifies 464XLAT; the client's use
   of it, and the callback path through it, are untested `[DES-067]`.
-  - Depends on it: the IPv6 statement in C34.
+  - Depends on it: the IPv6 statement in C34. If a callback's translated
+    source cannot be matched to its server, that server earns no callback
+    trust and stays in bounded revalidation (C34, point 6; C32).
   - Settled by: the NAT64 test in M2, including the callback path.
 - **A12. Fuzz targets in the workspace.** We assume a `fuzz` directory per
   crate does not work under a `crates/*` virtual workspace without an
@@ -261,6 +264,81 @@ fails reopens every working decision that names it.
   - Settled by: running `cargo metadata` and `cargo fuzz` on the pinned
     toolchain when the first fuzz target lands, with the output recorded
     in the pull request.
+- **A13. rxkad and the integrity of a reply.** We assume no rxkad level
+  protects the integrity of a reply's payload. The claim record holds no
+  public source that states, level by level, what rxkad protects. The
+  rxgk base draft describes rxkad as limited to very weak cryptography,
+  approximately single-DES `[ADR-034]`.
+  - Depends on it: IronAFS's stated position on rxkad (O23, point 4);
+    what counts as evidence in negotiation (N1, N5); and the rule that
+    no rxkad fetch enters the shared pool (C18, C21).
+  - Settled by: the specification route for rxkad (O50, point 3), which
+    confirms or corrects it.
+
+## Open questions for review
+
+On these points the parts do not yet give one answer, or give one whose
+cost the review should weigh. Each entry names the decisions involved and
+the options. None is answered here.
+
+1. **Renaming over a file that is open on the same machine** (C10,
+   point 5). C10 allows the rename only where one atomic replacement can
+   also keep the replaced file for its open handles, and refuses it
+   otherwise. We know of no AFS-3 operation that does both, so today it
+   is always refused, and a program that saves by renaming over a file
+   another local process holds open fails. Options:
+   - keep the refusal;
+   - do the one atomic rename, let handles open on the replaced file fail
+     with `Stale`, and keep that file's unstored bytes as recovery data
+     (C29);
+   - refuse only when the replaced file has unstored bytes.
+2. **rxgk in a production build while the combine-tokens call has no
+   assigned number** (N4, N6, N8, N12, N13). N13 gives such a build no
+   rxgk fileserver path. If it still held an rxgk token for a cell's
+   database services, N4, point 1, would refuse that cell's fileservers,
+   because the exception of N12 is disabled too. Options:
+   - no rxgk token is installed in a production build while the gate is
+     closed, so rxgk stays test-only;
+   - rxgk for database services only, with a stated exception to N4 that
+     lets fileservers use a companion rxkad credential inside the
+     configured floor;
+   - no release offers rxgk until the call is assigned.
+3. **May an administrator export another user's recovery data?** (C28,
+   point 7; C29, points 4 and 5; O16; O33, point 5; O42, point 4). C29
+   gives a record's bytes to its owner's account only. The upgrade and
+   imaging procedures use `afs pending export` where no owner may be
+   present. Options:
+   - the owner's account only: an administrator can list and discard;
+   - an administrator may export any record, as an audited action;
+   - an administrator may move records, unread, to where their owner can
+     recover them.
+4. **Uploads from the Windows replica, if it is built** (C28, point 3;
+   L27, point 3; A9). A9 speaks of a publish sequence with a short
+   window, which reads as an automatic store. C28 allows no automatic
+   store of a write that was not committed while its application waited.
+   Options:
+   - an upload is a deferred store: it waits for the user's instruction;
+   - an upload counts as an immediate store, made when the provider sees
+     the change, and the last writer wins;
+   - a check-then-store publish sequence, as a named exception to C28.
+5. **DNS discovery on a flat list of name servers** (C33, point 4). Is
+   an administrator's confirmation, with the listed servers asked in
+   order under documented timeouts, enough to keep IronAFS's own DNS
+   client from going around the host's choice of server? Options:
+   - as C33 states;
+   - no discovery on a flat list: configured servers only.
+6. **Where the time and randomness seam lives** (C3, point 3; C4,
+   point 7; C5; C37; N8; O45). No crate in C4 holds the `Clock` and `Rng`
+   interfaces and the time types, the simulator, or the state
+   directory's format marker. C37 puts the production clocks in
+   `ironafs-os`, and C5 puts the cryptographic random source behind
+   `ironafs-crypto`. Options:
+   - a small pure crate, for example `ironafs-time`, with the production
+     implementations in `ironafs-os`;
+   - inside `ironafs-vfs`;
+   - inside `ironafs-client`, with the daemon supplying the system
+     implementations.
+   The simulator and the format marker need a home under any of these.
 
 ## Evidence
 
@@ -268,14 +346,14 @@ fails reopens every working decision that names it.
    of [the claim record](../reviews/2026-11-20-adr-0004-claims.md): one
    fact, the primary source it was checked against, the verdict and the
    date. The prefixes are PLT (platform floors), DES (design facts), MAC
-   (macOS), DRV (driverless clients), LAY (layout and tests) and WIN
-   (Windows).
+   (macOS), DRV (driverless clients), LAY (layout and tests), WIN
+   (Windows) and ADR (facts read while this ADR was drafted).
 2. **Verdict labels.**
    - CONFIRMED: the source states the claim.
    - AMEND: the claim is partly right. This ADR uses the corrected form
      the record gives.
    - UNVERIFIED: no reachable public source settles the claim. This ADR
-     rests on such a claim only through a named assumption (A1 to A12),
+     rests on such a claim only through a named assumption (A1 to A13),
      never directly.
    - UNVERIFIED-PRIVATE: the claim rests on a measurement whose record is
      not public. This ADR does not cite it.

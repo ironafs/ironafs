@@ -10,7 +10,7 @@ tested and phased. The core is in part 1, the OS layers and the
 supported-platform matrix in part 2, protocol negotiation and the rules for
 long-lived formats in part 4. This part refers to them and does not restate
 them. Claim ids such as `[DES-043]` point into the
-[claim record](../reviews/2026-11-20-adr-0004-claims.md). A1 to A12 are the
+[claim record](../reviews/2026-11-20-adr-0004-claims.md). A1 to A13 are the
 named assumptions in the [overview](0004-architecture.md).
 
 ## Context
@@ -70,8 +70,7 @@ named assumptions in the [overview](0004-architecture.md).
      ([draft-wilkinson-afs3-rxgk-11, section 1](https://datatracker.ietf.org/doc/html/draft-wilkinson-afs3-rxgk-11)).
    - The claim record holds no public source that states, for each rxkad
      level, whether a reply's payload is integrity-protected. IronAFS
-     therefore states its own security position in O23.4: it relies on no
-     rxkad level for the integrity of a reply's payload.
+     therefore assumes none is (A13) and states its position in O23.4.
 7. **OpenAFS offers no client-to-fileserver rxgk yet.**
    - The rxgk base draft `[DRV-085]` and "Integrating rxgk with AFS"
      `[DRV-086]` are expired Internet-Drafts. The base draft has
@@ -416,7 +415,11 @@ command names.
 1. `afs status` shows: version, cells, per-server state (up or down, last
    contact, round-trip time, callbacks held, revalidation mode), cache
    occupancy, pending stores and conflicts, the active security protocol,
-   and the caller's own token state. It never shows key material.
+   and the caller's own token state. It never shows key material. A user
+   gets all of this in the user projection (O16): server state only as
+   the caller's own credential context observed it, and the caller's own
+   cache use and pending stores. Machine-wide per-server state and
+   counters are in the administrator's projection.
 2. `afs diagnose` checks: clock skew against servers and the KDC; tokens;
    DNS and cell discovery; reachability of the volume location and file
    servers; callback reachability; cache disk health and storage protection
@@ -653,8 +656,8 @@ gate waives them (O46).
    machine.
 3. **No silent wrong answer.** The client never presents stale data as
    fresh, a partial listing as complete, or a lost write as saved, and
-   never lets a deferred store replace newer server data without reporting
-   a conflict. The one named exception is the opt-in stale mode of O34,
+   never stores a deferred write without the user's explicit instruction
+   (C28). The one named exception is the opt-in stale mode of O34,
    which is explicit and shown as such.
 4. **No silent downgrade of protection.** A failure never lowers a security
    floor (N6).
@@ -703,8 +706,7 @@ Rules that follow from the table:
    guide.
 4. **IronAFS's stated security position on rxkad:** IronAFS relies on no
    rxkad level for the integrity of a reply's payload. This is the
-   project's own position, not a cited fact: the claim record holds no
-   public source that settles rxkad's per-level packet protection
+   project's own position, held as assumption A13, not a cited fact
    (Context 6). The specification route for rxkad (O50.3) confirms or
    corrects it; until then every decision that depends on reply
    integrity treats rxkad replies as unprotected.
@@ -930,11 +932,14 @@ client-to-fileserver rxgk `[DES-048]`.
 2. The clean cache's format is not promised across versions. An unknown
    clean-cache format discards the cache. It never discards the host UUID,
    the journal, the recovery store or other durable state.
-3. An upgrade or rollback never discards, forces or silently replays a
-   pending or quarantined write. Quarantined records are kept.
+3. An upgrade or rollback never discards or stores a pending or
+   quarantined write (C28). Quarantined records are kept.
 4. The record formats, their versioning and the state directory's versioned
    layout are decided in N8 and N32 to N35. The journal's behaviour is
    decided in C28 and C29.
+5. A release that finds a state directory or journal format it does not
+   know (N8, N33) refuses to start, changes none of it, and names the
+   reason. The records are recovered with a release that reads them.
 
 Why: a pending write is a user's data that exists nowhere else. A clean
 cache can always be fetched again, so only it may be thrown away.
@@ -946,9 +951,12 @@ it claims, or packaging on a supported OS cannot stop before changing the
 installation.
 
 1. An upgrade or rollback first quiesces new writes.
-2. It proceeds unattended only when a preflight confirms the target can
-   preserve all durable state and replay pending writes, or when a bounded
-   drain leaves nothing pending and the remaining state is compatible.
+2. It proceeds unattended only when a preflight confirms the target
+   preserves all durable state and reads every pending and quarantined
+   record, so each stays open to explicit recovery; or when a bounded
+   drain leaves nothing pending and the remaining state is compatible. A
+   drain only lets stores already in progress finish. It stores no
+   deferred record (C28, point 3).
 3. Otherwise it exits promptly with the current installation and data
    intact, and says how to recover.
 4. Rollback is offered for one release, and only on package and state
@@ -1019,7 +1027,7 @@ show that a PAM module is needed where `pam_exec` does not serve.
    renews before expiry by a margin counted on the boot clock (C37).
 2. On Windows the per-session agent is started at logon by a Task Scheduler
    logon trigger. A service that is not LocalSystem cannot obtain a user's
-   token itself; the logon trigger is this design's choice among the
+   token itself; the logon trigger is this ADR's choice among the
    documented ways to start a program at logon (`[DES-075]`, corrected
    form).
 3. No PAM module is written, because it would need C and `unsafe`.
@@ -1072,6 +1080,8 @@ or a platform's install rules change.
 4. Install and upgrade are silent on every OS.
 5. The Windows publisher and the Apple signing team are settled before the
    first external build that is meant to upgrade (O38).
+6. The installer opens the callback port (C30) in the host firewall, and
+   the uninstaller closes it.
 
 Why: fleets install with their own deployment tools, which expect the
 platform's native package and a silent mode.
@@ -1194,19 +1204,20 @@ or cloned machine, or sites show a need for client-side backup of pending
 writes.
 
 1. Committed AFS data is backed up at the server, by volume dumps. To
-   include queued writes, `afs pending` is checked and the relevant clients
-   are drained first.
+   include queued writes, `afs pending` is checked on the relevant clients
+   and their owners resolve what waits (C29) first.
 2. A backup tool walking the mounted namespace sees only what its effective
    AFS identity can read. There is no dedicated AFS backup principal.
 3. The cache, the journal and the recovery state are sensitive local data
    outside the supported backup procedure. OS backup and indexing
    exclusions are set where the OS supports them.
-4. Before a machine image is captured, pending data is drained or exported
-   and client state is removed, by a documented preparation procedure.
+4. Before a machine image is captured, pending records are resolved by
+   their owners or exported, and client state is removed, by a documented
+   preparation procedure.
 5. On a machine-identity mismatch, or a declared restore or clone, the
    client generates a new host UUID, discards the clean cache, and
    quarantines pending and recovery records for explicit recovery. Nothing
-   is replayed automatically.
+   is stored automatically.
 6. The restore procedure is required even on the original hardware. The
    documentation says that a snapshot which preserves all checked state can
    evade automatic detection.
@@ -1272,16 +1283,15 @@ behaviour costs more than the tests return.
    - no read returns bytes older than a version the client has seen broken;
    - no grant crosses principals or files, and no delivery happens after
      its grant's epochs changed;
-   - every dirty byte is on the server, in the journal or in a conflict
-     copy;
-   - no deferred store lands over a server version it did not check, except
-     inside the documented check-to-store window, and every such overwrite
-     is reported as a conflict;
+   - every dirty byte is on the server, in the journal or in the recovery
+     store;
+   - no deferred store is sent without an explicit instruction (C28);
    - a lost store reply never counts as success;
    - every OS request completes within its deadline;
    - no queue exceeds its cap.
 4. The simulator injects a competing write from a second simulated client
-   inside the check-to-store window and during a lost reply.
+   during an immediate store, before an explicit retry and during a lost
+   reply.
 5. The rule the simulator imposes on the code: threads live only in thin
    drivers, and the core never spawns or sleeps (C3, C39).
 6. Event sequences fed to the simulator are fuzzed (O47).
@@ -1313,8 +1323,9 @@ A12 is settled differently when the first fuzz target lands.
 
 1. **Model-based tests** compare the client against a small reference model
    of AFS semantics as IronAFS specifies them: the last closer wins;
-   other clients see changes after a close and a break; all local handles
-   see unstored bytes.
+   other clients see changes after a close and a break; handles in the
+   writer's own context see unstored bytes, and other contexts see the
+   server's version (C18).
 2. **Property tests** use our own seeded generator and shrinker (rule 21).
 3. **Fuzzing** covers every decoder: XDR, Rx, RPC replies, the directory
    format, FUSE messages, local IPC, the configuration parser, DNS replies

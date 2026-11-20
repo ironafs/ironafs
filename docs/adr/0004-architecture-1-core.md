@@ -11,7 +11,7 @@ The core is everything the three operating-system layers share: the AFS
 protocols, the cache, tokens, locks and the write journal. This part decides
 how it is built, where it runs, and what it promises the layers. The
 overview gives the goals, the anti-goals, the constraints, the named
-assumptions (A1 to A12) and the evidence rules. The facts this part rests
+assumptions (A1 to A13) and the evidence rules. The facts this part rests
 on:
 
 1. **What an operating system says about a caller differs by system and by
@@ -194,6 +194,10 @@ its own.
 6. Where the first-party DNS client of C33 lives is settled with its
    specification; we propose a pure codec beside `ironafs-proto` and its
    socket in `ironafs-net`.
+7. Not placed yet: the `Clock` and `Rng` interfaces of C3 and their time
+   types, the simulator, and the state directory's format marker (N8).
+   Pure crates take the time as an argument. The choice is open question 6
+   of the overview.
 
 Why: point 4 makes "a layer cannot bypass the core" a property the build
 checks, not a convention. The layout follows coding standards rule 20.
@@ -210,13 +214,17 @@ that removes a site from the `ironafs-os` list.
    call only it. Implementations are supplied when the client is composed:
    a mainstream crate chosen under the dependency rule, IronAFS's own
    implementation of rxkad's cipher, or later an operating system's
-   validated module.
+   validated module. The cryptographic random source comes through the
+   same interface.
 2. rxkad's cipher (fcrypt) is written by IronAFS from the specification
    that C6 requires. It is never treated as approved cryptography.
 3. The Kerberos encryption-type operations rxgk needs run in the client,
    so they sit behind `ironafs-crypto`. The GSS exchange and its
    pseudo-random function `[DES-060]` stay in the operating system's GSS
-   library.
+   library, behind `ironafs-gss`. `ironafs-rxgk` stays pure (C3): it
+   makes no GSS call, and takes the exchange's results and the function's
+   output as inputs when the client is composed. The exact interface is
+   part of the rxgk profile record (N25).
 4. Kerberos and GSS come from each system's own library (`ironafs-gss`).
 5. `ironafs-os` holds the few calls that have no safe route: the clock
    pairs of C37, peer credentials (C43), the service controls, the log
@@ -286,7 +294,8 @@ carry.
    commit, lock on an open file, and subscription to change notification.
    Get and set information, disposition and rename also have handle forms.
    They use the access granted at open. A rename through a handle needs
-   fresh authority on the target directory.
+   fresh authority on the target directory. On Windows the names behind
+   these forms follow L25, point 5.
 4. **Binding operations** carry no caller and change no data: forget,
    release, release directory, reclaim, cancel, volume sync, pin and
    unpin. They can only release or flush what the binding already holds.
@@ -365,9 +374,12 @@ replacement.
 4. **Windows.** SMB's delete-pending and delete-on-close states defer the
    server's removal to the last close, with no rename. They are modelled
    apart from POSIX unlink (L19).
-5. **Rename over an open destination** is one AFS rename. Local handles
-   still open on the replaced file then fail with `Stale`. Bytes of the
-   replaced file not yet stored are kept as recovery data (C29).
+5. **Rename over a destination that is open on this machine** is done
+   only where one atomic replacement can also keep the replaced file for
+   its open handles. We know of no AFS-3 operation that does both (a
+   specification item, C6). Until one is shown, the rename is refused
+   with an explicit error, and nothing is replaced (overview, open
+   question 1).
 6. **Rename with "do not replace"** is refused with the operating
    system's "invalid argument" error.
 7. Opens made on other machines are not visible to this client.
@@ -377,7 +389,9 @@ files it holds open, so "gone from the directory, alive until closed" has
 to be emulated; that is a specification item too. That
 AFS-3's rename replaces a destination in one operation, and that it has no
 rename that refuses to replace, are specification items (C6), not cited
-facts. Emulating "do not replace" with a check and then a rename would
+facts. Keeping a replaced file for its open handles would take a second
+namespace change, so the replacement would not be atomic. Emulating
+"do not replace" with a check and then a rename would
 sometimes replace a file, which is the silent wrong answer the overview
 rules out.
 
@@ -476,8 +490,8 @@ long or too costly against the test cell.
    when its binding dies. Expiry revokes handles on public data too; a
    fresh open may then get a public grant of its own.
 4. After write access is revoked, writes stop. Data not yet committed goes
-   to a recovery record private to the original context and is never
-   replayed automatically (C28). The failure is reported by the next
+   to a recovery record owned by the original context (C29, point 5) and
+   is never stored automatically (C28). The failure is reported by the next
    write, flush or close that can carry an error, and in `afs status`.
 5. The core's own cached rights decisions are at most ten minutes old.
    This cannot bound how long a group change takes to spread between
@@ -805,8 +819,10 @@ unnecessarily broad.
    are fenced.
 4. A data version lower than the cached one is ambiguity about that file.
    The observing context drops its own chunks for it and stops using the
-   file's shared entries. Fencing the file for others needs authoritative
-   evidence (C24).
+   file's shared entries. For other contexts and the pool the
+   observation is weak evidence: it marks their entries suspect (C24,
+   point 2). Evicting them, or changing the file's shared epoch, needs
+   authoritative evidence.
 5. An incarnation change invalidates the volume's handles, directory
    snapshots, Windows identities and pending journal records.
 6. Read-only sites marked as an old release, or not yet released, are
@@ -848,10 +864,13 @@ item.
 layout or the eviction policy misses its targets on a supported
 filesystem.
 
-1. **The data store** holds chunks keyed by context and generation (or the
-   pool), cell, volume and its incarnation, the local file epoch, vnode,
-   uniquifier, data version and chunk index. A new data version makes old
-   chunks unreachable without touching them.
+1. **The data store** holds chunks keyed by namespace, then cell, volume
+   and its incarnation, the local file epoch, vnode, uniquifier, data
+   version and chunk index. The namespace is the credential context and
+   its generation (or the pool); through the context (C40) it includes
+   the cell's protocol identifier (N27) and the profile used: class,
+   level and suite (N39). A new data version makes old chunks unreachable
+   without touching them.
 2. **No embedded database.** The filesystem is the index. A clean chunk is
    written to a temporary name and renamed, with a header and a checksum
    and no sync. A bad chunk is a miss, never an error.
@@ -943,13 +962,17 @@ users.
    acts.
 4. **Commands.** `afs pending list` shows what waits and why. `retry`
    stores a record over the server's version after the user has seen the
-   difference. `discard` drops it. `show` and `export` give the bytes. A
-   user acts on their own records and an administrator on all. Every
-   discard is an audit event.
+   difference. `discard` drops it. `show` and `export` give the bytes to
+   the record's owner (point 5). A user acts on their own records. An
+   administrator may list and discard any record. A retry always needs
+   C28, point 5. Whether an administrator may export another user's
+   bytes is open question 3 of the overview. Every discard is an audit
+   event.
 5. A record's owner is the context that wrote it. After that context
    ends, its account may view or export the bytes; replaying still needs a
    current token for the same AFS identity (C28).
-6. After a restart, records wait for their user's token (C42).
+6. After a restart, records wait for their user's token (C42) and then
+   for that user's instruction. A returning token stores nothing.
 7. **On a failed or uncertain store,** the dirty data is detached from
    everything readable and the affected handles fail with the write error.
 8. Budgets are per account (C27). A background store that keeps making
@@ -976,7 +999,8 @@ measured throughput.
 3. Rx connections are keyed by server, service, security class and level,
    and credential context with its generation. Status, data and stores
    have separate queues.
-4. The installer opens the callback port in the host firewall.
+4. The callback port is opened in the host firewall by the package's
+   installer (O37, point 6), never by the daemon at run time.
 
 Why: with one socket, the NAT mapping an outgoing call creates is the one
 the server calls back on. Connections per context mean one user's slow
@@ -994,9 +1018,9 @@ table governs all of it:
 
 | Received | Effect |
 |---|---|
-| A break naming files, from a known server's address | those files' promises are suspended in every context, and refetched on next use |
+| A break naming files, from a known server's address | those files' promises are suspended and their entries marked suspect in every context (C24, point 2); each reader revalidates on its next use. Nothing is evicted |
 | A break naming files, from an address matching no known server | the same, for the named files only |
-| A break or reset naming no files | every promise from the servers that source could be moves to a new suspect epoch; affected entries are fenced until revalidated |
+| A break or reset naming no files | every promise from the servers that source could be moves to a new suspect epoch; affected entries are suspect until their reader revalidates them |
 | More than the rate limit can process | the suspect epoch of the affected servers (of every server, if the source is unknown) advances **before** work is dropped or acknowledged; drops are counted |
 | A probe | evidence that the server can reach the client (C32), never authority over any data |
 
@@ -1119,6 +1143,12 @@ resolution concepts do not map to it `[DES-002]`.
    database gives `[DES-058]`.
 5. On an IPv6-only network the client reaches those addresses through
    NAT64 and 464XLAT (assumption A11).
+6. A callback that arrives from a translated address the client cannot
+   match to a server (C31, point 3) is handled as one from an unknown
+   address: a break still suspends the files it names. It earns no
+   callback trust, so that server stays in bounded revalidation (C32,
+   point 2). The client is then correct but slower. Whether translated
+   sources can be attributed is part of the NAT64 test (A11).
 
 Why: AFS-3 is an IPv4 service today `[DES-058]` `[DRV-M24]`. Keeping both
 families in every internal type means a later extension adds data, not a
@@ -1195,9 +1225,13 @@ says, or a supported target lacks a valid pair.
    - Windows: `GetTickCount64` `[DES-016]` and
      `QueryUnbiasedInterruptTimePrecise` `[DES-015]`.
 3. Rust's `Instant` is used for neither.
-4. A detected suspend, a regression of a monotonic clock, or a large jump
-   of wall time marks callbacks suspect (C32). Wall time can only lower
-   trust.
+4. **Suspend detection.** Each awake-clock sample is bracketed by two
+   boot-clock reads, in 64-bit nanoseconds with checked arithmetic. If
+   the boot clock grew more than the awake clock by over a threshold (we
+   propose one second) after allowing for sampling skew, a suspend is
+   detected. A detected suspend, a regression of a monotonic clock, or a
+   jump of wall time past the threshold marks callbacks suspect (C32).
+   Wall time can only lower trust.
 5. Startup is refused without a valid pair. If a later read fails,
    outstanding deadlines expire, callbacks become suspect, one event is
    logged per episode, and no new deadline is set until a valid sample
@@ -1273,9 +1307,10 @@ that needs a reboot is avoided. Byte limits are coding standards rule 3.
    **credential context** id.
 2. A context's local parts are what the operating system **attests** for
    a request or a connection, never what a caller asserts (C41).
-3. The AFS identity, the effective identity list and the security class
-   and level each call actually ran at complete the key. The level is the
-   one used, never the configured one.
+3. The cell and its protocol identifier (N27), the AFS identity, the
+   effective identity list and the profile each call actually ran at
+   (class, level and suite, N39) complete the key. The level is the one
+   used, never the configured one.
 4. A token is bound to the context the operating system attests for the
    connection that delivered it, never to a context named inside the
    message.
@@ -1344,8 +1379,11 @@ daemon never needs access to anyone's Kerberos credentials (C40).
 
 1. No credential material is read or sent until the sender has shown that
    the endpoint belongs to the daemon.
-2. The check binds the daemon's instance id from the handshake (C44). A
-   failed check aborts before anything secret moves.
+2. The check has two parts on every operating system: the endpoint's
+   owner is the daemon's service identity, as the operating system
+   reports it (point 4), and the handshake's instance id (C44) is bound
+   to that checked connection. A failed check aborts before anything
+   secret moves.
 3. The automatic `aklog` after a restart (C42) goes through the same
    check, so a process that takes the endpoint's place during a restart or
    an upgrade receives nothing.
@@ -1368,9 +1406,10 @@ daemon never needs access to anyone's Kerberos credentials (C40).
      ([`CreateNamedPipe`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipew)),
      with an access-control list that lets only its service identity
      create instances. Services can run under a virtual account with its
-     own SID `[DES-074]`. The sender checks the pipe server's process
+     own SID `[DES-074]`. The sender finds the pipe server's process
      ([`GetNamedPipeServerProcessId`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeserverprocessid))
-     before sending.
+     and checks that the process's token carries the service's SID before
+     sending. A process id alone proves nothing.
 
 Why: the endpoint's name is public and the daemon is sometimes down. A
 process that listened in its place would be handed every user's token.
@@ -1476,7 +1515,8 @@ applied to the error path.
    - A removed file that is still open stays visible under a reserved
      name until it is closed; it counts against quota and can block the
      removal of its directory (C10).
-   - Rename with "do not replace" fails (C10).
+   - Rename with "do not replace" fails, and so does a rename over a
+     file that is open on the same machine (C10).
    - Where a kernel cannot isolate mapped pages, programs cannot be run
      from `/afs` (C15).
    - Without proof that a server can reach the client, cached data is

@@ -17,7 +17,7 @@ This part decides three things:
   extension rules of long-lived structures (N32 to N47).
 
 Claim ids such as `[DES-061]` refer to the
-[claim record](../reviews/2026-11-20-adr-0004-claims.md). A1 to A12 are the
+[claim record](../reviews/2026-11-20-adr-0004-claims.md). A1 to A13 are the
 named assumptions in the [overview](0004-architecture.md). Milestone names
 (M2a, M2b, M3, M6) are the plan in part 3 (O50); they are a plan, not a
 promise. Other parts are referenced by decision id where this part depends
@@ -138,8 +138,8 @@ on them.
    spread through the client.
 
 Why: a floor needs an order to compare against. Class and level are two
-values because the two classes protect different things at each level (the
-threat model, O23); anonymous access is the absence of a credential, not
+values because the two classes protect different things at each level
+(O23, point 4, and assumption A13); anonymous access is the absence of a credential, not
 a weaker class.
 
 ### N2. Three controls, and the effective floor
@@ -246,8 +246,8 @@ the mitigation.
    daemon enforces the floor itself when a token is set and again at every
    connection (N7).
 
-Why: IronAFS does not rely on any rxkad level for the integrity of a
-reply's payload (the threat model, O23), and the AFS-integration draft
+Why: IronAFS relies on no rxkad level for the integrity of a reply's
+payload (O23, point 4; assumption A13), and the AFS-integration draft
 requires the one call that carries a downgrade signal to run over a
 secured connection `[DES-061]`.
 
@@ -258,8 +258,9 @@ secured connection `[DES-061]`.
 1. A dropped packet, an abort, an unknown-opcode reply, a missing
    credential or a Kerberos error produces a failure or a retry inside the
    effective floor. None produces a lower profile.
-2. On the rxgk path, a missing, failed or invalid combine-tokens reply
-   fails closed, also before any pin exists.
+2. On the rxgk fileserver path, a missing, failed or invalid
+   combine-tokens reply fails closed, also before any pin exists. This
+   rule binds only a build in which that path is enabled (N13).
 3. Key exhaustion on a connection is its own outcome (N45). It leads to a
    rekey or a reconnect at the same profile, never to a weaker one.
 4. The error is `SecurityFloor` (with `TokenRequired`, N4), reported to
@@ -450,6 +451,17 @@ procedure number for the selected rxgk profile.
    configured floor and the token's own profile.
 4. Any number used for the call before an assignment is test-only.
    Fixture numbers stay out of production builds (N24).
+5. **What production uses meanwhile.** While the gate is closed, a
+   production build has no rxgk fileserver path (N8, point 2). It reaches
+   fileservers over rxkad, inside the configured floor and the token
+   rule. No production path waits on a call that is never made, so N6,
+   point 2, locks nothing out. `min_class = "rxgk"` fails the cell with
+   the reason; it is never met by falling to rxkad.
+6. Whether such a build may hold an rxgk token for a cell's database
+   services meanwhile is open question 2 of the overview. Under N4,
+   point 1, that token would refuse the cell's fileservers, because the
+   exception of N12 is disabled. Until the question is answered, this ADR
+   claims no production rxgk path while the gate is closed.
 
 Why: the draft leaves the call's procedure number unassigned
 ([draft -08, section 9](https://www.ietf.org/archive/id/draft-wilkinson-afs3-rxgk-afs-08.txt)),
@@ -486,7 +498,7 @@ operation.
 2. Falling to a cell-attested legacy replica is allowed by the floor,
    raises an event the first time for each volume, and lands in a
    different cache namespace, because the namespace key includes the
-   profile used (C18).
+   profile used (C27, C40).
 
 Why: a stronger site that answers is preferred to a faster, weaker one;
 data fetched under a weaker profile must not be served as if it had come
@@ -746,7 +758,7 @@ something now is paying for an option nobody has taken.
    default.
 2. An unsupported value is refused before any network I/O.
 3. The identifier is an input to the connection choke point (N7), part of
-   the cache namespace key (C18), the scope of journal dependency bytes
+   the cache namespace key (C27, C40), the scope of journal dependency bytes
    (N32), and shown in IPC status.
 4. Activating another profile for a cell separates connection, credential,
    cache and journal identities, fences a same-name reconfiguration, and
@@ -872,11 +884,12 @@ migration.
 1. Format versions are (major, minor). A new kind or a new must-understand
    flag is a **minor** version. Anything that changes the common header is
    a **major** version.
-2. A release refuses a journal of a major version it does not know: an
-   unsupported format: the release refuses to start, and the journal is
-   drained with the newer release (O32, O33).
+2. A release refuses a journal of a major version it does not know, as
+   an unsupported format: it refuses to start and changes nothing (O32,
+   point 5). The records are recovered with a release that reads them.
 3. A journal of a higher minor version is read. Records of known kinds
-   replay as usual. Unknown may-ignore flags are carried and ignored.
+   are handled as usual: kept for explicit recovery, never stored
+   automatically (C28). Unknown may-ignore flags are carried and ignored.
 4. A record of an **unknown kind**, or with an **unknown must-understand
    flag**, is **quarantined**. Its framing and dependency scope are still
    readable.
@@ -887,15 +900,16 @@ migration.
    way, its scope read from the common header.
 7. If a **common header** fails its checksum, the dependencies cannot be
    known. Recovery stops for the whole journal, every record is kept for
-   explicit recovery, and the health state says so. Nothing is replayed by
+   explicit recovery, and the health state says so. Nothing is recovered by
    guess.
-8. That stop blocks a drain. An upgrade waits until explicit recovery
-   clears it, or until the whole affected journal, with its format marker,
-   is preserved verbatim in the recovery store and verified readable by the
-   newer release.
-9. Otherwise a drain before an upgrade is complete when nothing replayable
-   remains. Quarantined records and the records they fence move to the
-   recovery store, whose format later releases read.
+8. That stop blocks an upgrade's drain (O33). An upgrade waits until
+   explicit recovery clears it, or until the whole affected journal, with
+   its format marker, is preserved verbatim in the recovery store and
+   verified readable by the newer release.
+9. Otherwise a drain before an upgrade is complete when no store is in
+   progress. A drain stores no deferred record (C28, point 3; O33).
+   Quarantined records and the records they fence move to the recovery
+   store, whose format later releases read.
 
 Why: unknowns must never reorder recovery. Skipping an unreadable record
 and applying its successors would store data over a state that never
@@ -1048,8 +1062,8 @@ cheap instead.
 2. The suite is *none* for a profile whose class negotiates no suite
    (rxkad). *None* is a valid value, not an unknown one.
 3. rxnull is not a profile and has no suite value.
-4. The triple appears in IPC status, in the cache namespace key (C18)
-   and in the pin record (N11).
+4. The triple appears in IPC status, in the cache namespace key (C27,
+   C40) and in the pin record (N11).
 5. In IPC, the token message carries a token kind, and status carries the
    profile as class, level and suite, never as a boolean.
 
@@ -1296,7 +1310,7 @@ wrong.
   - a policy reader meeting an unknown security value refuses the cell;
   - journal: an unknown kind and a bad payload checksum quarantine and
     fence their scope; a bad header checksum stops recovery and blocks a
-    drain; a higher minor version replays its known kinds;
+    drain; a higher minor version handles its known kinds;
   - ACLs: unknown variants round-trip, and an edit over one is refused;
     unknown rights bits grant nothing; negative protection ids convert
     with checks;
@@ -1319,7 +1333,8 @@ wrong.
   failure. The token rule needs no state and closes that. Not taken.
 - **Treating any authenticated reply as evidence, rxkad included.** It
   would let most of a pin's state be learned on today's cells. Not taken:
-  IronAFS does not rely on rxkad for payload integrity (N5).
+  IronAFS relies on no rxkad level for payload integrity (O23, point 4;
+  assumption A13).
 - **Per-server pins.** The cell answers per fileserver, fresh, over the
   protected channel; a per-server pin remembers a stale copy of that
   answer and blocks the legitimate rollback of one server. Not taken.

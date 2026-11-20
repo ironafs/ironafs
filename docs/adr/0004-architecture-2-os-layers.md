@@ -17,7 +17,7 @@ Conventions, as in the overview:
 - A claim id in brackets, such as `[DES-024]`, points to a row of the
   [claim record](../reviews/2026-11-20-adr-0004-claims.md). "Corrected form"
   marks a row labelled AMEND; the text here uses the correction.
-- A1 to A12 are the named assumptions in the overview. A statement that
+- A1 to A13 are the named assumptions in the overview. A statement that
   rests on one says so.
 - Each decision is **Firm** (it changes only by a superseding ADR) or
   **Working** (it has a trigger for a second look).
@@ -302,8 +302,10 @@ escalation through `/afs` is a failure even if everything else works.
 
 1. The FUSE writeback cache is never enabled.
 2. Shared writable mappings are refused. Private mappings work, so programs
-   on `/afs` run; their pages are dropped when the handle's authority is
-   revoked (C15).
+   on `/afs` run. When the handle's authority is revoked, the layer asks
+   the kernel to drop the file's resident pages, so the next fault reaches
+   the daemon and fails; pages already resident in a live mapping may stay
+   readable until it is unmapped (C15, point 2).
 3. The kernel's own permission checks are never used in place of the
    core's: no `default_permissions`, and no POSIX ACL negotiation.
 
@@ -370,8 +372,9 @@ blocks the direct mount.
    and the namespace layout are verified.
 5. Containers get `/afs` from a stable shared host parent into a slave
    subtree, or remount their bind on replacement.
-6. A planned upgrade first stops new mutations and completes, or reports,
-   pending writes (O32).
+6. A planned upgrade first stops new mutations, lets stores already in
+   progress finish, and reports what stays pending (O33). It stores no
+   deferred record (C28, point 3).
 
 Why: the helper's limits do not bind a root mount `[DES-035]`, and
 `NoNewPrivileges` would defeat a setuid helper anyway `[DES-041]`
@@ -571,11 +574,14 @@ The full session is A3.
 
 1. The authority for a request is the account authenticated in the SMB
    session that carries it. An operation on an open uses the session that
-   opened it. AFS tokens are found by that account's identity, so they are
-   the tokens that user's own `aklog` set.
+   opened it. AFS tokens are found by the credential context of that
+   session's logon session (C40, C41), never by account name alone, so
+   they are the tokens that user's own `aklog` set in that logon.
 2. An application that connects with alternate credentials acts as that
-   account, with that account's tokens. Elevated and unelevated processes of
-   one user share the account and its tokens.
+   account in its own logon session, which is its own context with its own
+   tokens: none, until `aklog` runs there. Elevated and unelevated
+   processes of one interactive logon are one context and share its
+   tokens. Two logons of one account are two contexts (C41).
 3. Only SMB 3.1.1 is accepted, with signing in force. Guest, anonymous and
    unsigned sessions are refused.
 4. **Accepted authentications.** Over NTLM, only local mode, where the
@@ -725,8 +731,8 @@ front end. It settles A3 and A4.
 
 1. **Identity.** Two local accounts with different AFS rights, each after
    its own `aklog`: through its signed session, each reads what its rights
-   allow and is refused the rest. Alternate credentials get the alternate
-   account's result. Elevated and unelevated processes of one user get that
+   allow and is refused the rest. Alternate credentials get the result of
+   the alternate logon's own context (L17). Elevated and unelevated processes of one user get that
    user's result. A daemon restart followed by a new `aklog` restores each
    result. Each logon type (local NTLM, network logon, a local or domain
    Kerberos scheme, alternate credentials) has a stated expected outcome.
@@ -829,9 +835,13 @@ has no colon and assigns its code points differently `[DES-068]` (context
    is used, and an ambiguous one is not found. When a collision appears, the
    unsuffixed form resolves to nothing rather than to a different file.
 5. **Never destructive.** The case-insensitive fallback serves only lookups
-   and opens that cannot destroy data. A delete, a rename's source, an open
-   that truncates or overwrites, and any open that grants write or delete
-   access need an exact name or an alias.
+   and opens that cannot destroy data. A delete, both names of a rename
+   that replaces its target, any other rename's source, an open that
+   truncates or overwrites, and any open that grants write or delete
+   access, including access used later, need an exact name or an alias.
+   The handle forms of disposition (delete-on-close) and rename (C7) are
+   covered through the open that granted their access; a rename target is
+   checked when the rename is made.
 6. **New names.** SMB accepts only canonical encodings for names it
    creates.
 7. **The server is never rewritten.** A name on the fileserver is never
@@ -878,7 +888,9 @@ first), or a published AFS-3 specification changes A9.
    only after the replica's own validation rules are verified.
 3. Local changes are reconciled through the write journal (C28, C29):
    conflicts keep both versions, deletes are tombstoned, and reconciliation
-   at startup runs before a root is reconnected.
+   at startup runs before a root is reconnected. Whether an upload of a
+   local change is a deferred store under C28, point 3, is open question 4
+   of the overview.
 4. It keeps no second copy of file data beside the hydrated files.
 5. Hydrated data stays readable by that same user, inside their own root,
    until the next revalidation dehydrates it; that is documented as "after
@@ -1037,7 +1049,16 @@ from the lock specification.
    polled with bounded backoff, cancellation and deadlines.
 9. FSKit and the replica have no lock hook, so locks there are local to the
    machine. FUSE and SMB forward to the lock service.
-10. Documented limits: AFS-3 locks are advisory, whole-file and renewed
+10. **Who keeps the server lock.** A sponsor is a local holder whose own
+    status shows the AFS lock right. The server lock is taken and renewed
+    over the first sponsor's connection, under that sponsor's authority,
+    while any sponsor holds a local lock on the file. A holder without the
+    lock right never takes, upgrades or prolongs it. When the last sponsor
+    releases, or the first sponsor's token is lost or replaced by another
+    identity, the server lock is released or treated as lost. It is not
+    passed to another sponsor (point 5). Point 7 then applies to locks
+    that relied on the coverage; local-only locks continue, shown as such.
+11. Documented limits: AFS-3 locks are advisory, whole-file and renewed
     every five minutes, so disjoint ranges on two machines conflict, and a
     machine that sleeps past the lease while holding locks loses them.
 
@@ -1154,10 +1175,12 @@ route is abandoned (the row is then withdrawn); or a vendor moves a date.
 
 1. **Windows 11 Pro 26H2 Arm64, workgroup use at first.** SMB qualification
    and the release smoke run on a disposable Arm64 Windows client guest on
-   the maintainer's Apple silicon Mac. The hosted Arm64 Windows image is
-   used for build and unit tests only: its published description names
-   Windows 11 Enterprise 25H2, not this row's edition and build
-   ([hosted Arm image](https://github.com/actions/partner-runner-images/blob/main/images/arm-windows-11-image.md)).
+   the maintainer's Apple silicon Mac. The hosted Arm64 Windows runner
+   (label `windows-11-arm`,
+   [runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners))
+   is used for build and unit tests only. It is GitHub's build image, not
+   a client installation of this row's edition and build, so it qualifies
+   nothing here. Each run records the image it ran on.
    Uses that need Folder Redirection or roaming profiles do not apply to
    this row `[WIN-M55]`.
 2. **Windows 10 Pro 22H2 x86_64, workgroup use, SMB only.** A disposable
