@@ -1830,8 +1830,8 @@ that executes a pull request's code is untrusted by construction.
 ### O50. The order of work
 
 **Working.** Revisit if: a phase's gate fails, a specification route proves
-unavailable, or an rxgk trigger in point 9 fires. The GitHub milestones are
-the live record of the phases and their issues
+unavailable, or an rxgk trigger in point 9 opens a scheduling review. The
+GitHub milestones are the live record of the phases and their issues
 ([docs/workflow.md](../workflow.md) §6). This decision records the order
 and the reasons. It is a plan, and it promises no dates.
 
@@ -1888,12 +1888,19 @@ and the reasons. It is a plan, and it promises no dates.
      encryption-type operations in the client's cryptography boundary;
      check the GSS pseudo-random function rxgk needs `[DES-060]` and its
      exact output on each platform.
-   - rxgk implementation starts when one of these holds: a released
-     OpenAFS offers client-to-fileserver rxgk; a third-party peer and wire
-     profile are agreed; or an IronAFS server exists (issue #22).
-   - Until then rxgk work, and what waits on it (the shared cache pool,
-     FIPS mode, protocol extensions and learned pins: C21, N18, N22, N9),
-     is tested against the simulator and independent peers.
+   - rxgk implementation is planned for M6, after the Windows layer
+     (N25, point 1), and is tested against the clean-room simulator peer
+     of N25, point 3; it needs no outside peer to start. Any one of these
+     opens a scheduling review that may move it, and does not start work
+     by itself: a released OpenAFS offers client-to-fileserver rxgk; a
+     third-party peer and wire profile are agreed; or an IronAFS server
+     exists (issue #22).
+   - Until an accessible independent peer verified for the same profile
+     exists (N25, point 4), rxgk work, and what waits on it (the shared
+     cache pool, FIPS mode, protocol extensions and learned pins: C21,
+     N18, N22, N9), is tested against the simulator and the clean-room
+     peer. That is conformance evidence, not interoperability (N25,
+     point 3).
    - "Interoperable" is said only of a profile tested live against an
      independent implementation.
 10. Rx's own code, with rxkad against OpenAFS 1.8, comes before everything
@@ -1905,8 +1912,9 @@ and the reasons. It is a plan, and it promises no dates.
     disk-fault and competing-write invariants.
 
 Why: the core and the Linux layer are the test bed for everything else, so
-they come first. rxgk waits because no released OpenAFS offers it to
-clients `[DES-048, DRV-M25]`.
+they come first. rxgk comes after the Windows layer, built against a
+clean-room peer, because no released OpenAFS offers it to clients
+`[DES-048, DRV-M25]`.
 
 ### O51. Proposed later work
 

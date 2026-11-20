@@ -4,7 +4,7 @@
 # 0004: The architecture
 
 Status: accepted (2026-11-20), by the owner, after the review rounds
-recorded below. Raised in issue #20.
+recorded below. Raised in issue #20. Amended 2026-11-20 (#31).
 
 ## Context
 
@@ -630,3 +630,38 @@ The full record, with every finding and its disposition, is
 - **Correction, 2026-11-20:** the four part files' status lines said
   "proposed" after the ADR was accepted; they now say "accepted". No
   decision changed.
+- **Amendment, 2026-11-20 (#31): O50, point 9, and C35, point 3.**
+  - What changed: rxgk is planned for M6, after the Windows layer, and is
+    tested against N25, point 3's clean-room simulator peer. It needs no
+    outside peer to start. Each of the three triggers now opens a
+    scheduling review that may move the work; none starts it by itself.
+    O50's "Revisit if" and "Why" say the same. Work against the
+    clean-room peer is conformance evidence, not interoperability.
+  - Evidence: the two texts disagreed. O50, point 9, started rxgk
+    implementation only on a trigger; N25, points 1 and 3, planned it for
+    M6 against the clean-room peer. Both are working decisions, and no
+    firm decision depends on the start rule. The owner decided on
+    2026-11-20 that N25 holds. N25 is not changed.
+  - Sweep: the repository was searched for "implementation starts", "one
+    of these holds", "Until then rxgk", "rxgk waits", "point 9 fires",
+    "O50, point 9", "O50.9", "planned for M6" and "rxgk".
+    - O50, point 9, its "Revisit if" and its "Why" (part 3), and C35,
+      point 3 (part 1): rewritten as above.
+    - N25's heading and point 1 (part 4), and the overview's index entry
+      for N25: "waits for a peer" and "may be advanced on the same three
+      triggers" agree with the new rule, since the M6 peer is the
+      clean-room simulator. Unchanged.
+    - C35's "Revisit if" (part 1) and N25's "Revisit if" (part 4): name
+      the triggers as reasons to revisit, not as starts. Unchanged.
+    - C21's "planned for M6" (part 1), N30, point 4 (part 4), and part
+      1's "Cost on multi-user hosts": agree. Unchanged.
+    - Part 3's threat table ("rxgk later (O50)"), its alternative "rxgk
+      before the OS layers", and its FIPS alternative: agree. Unchanged.
+    - Part 4: N3's default trigger, N5, point 7, N9's "Revisit if",
+      N18's "Why", the "No production rxgk token" consequence and the
+      "self-written peer" alternative: about an independent peer or the
+      gate of N13, not the start rule. Unchanged.
+    - ADR 0001, the research note and the review records in
+      `docs/reviews/`: no start rule, or a dated record. Unchanged.
+    - No skill, workflow or contributor file states the rule.
+  - Review rounds: pending.
