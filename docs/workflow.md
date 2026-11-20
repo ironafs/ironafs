@@ -76,8 +76,13 @@ refuted, if at all, by a family that neither wrote the change nor raised it.
 ### Seats by class
 
 **Rule:** every required seat comes from a family that did not write the
-change. A family *wrote* a change if it wrote its design or its code. Drafting
-the commit message, a brief or the review record does not count. Outside
+change. A family *wrote* a change if it wrote its design or its code: the
+text or code under review, including fixes it wrote into it. Drafting the
+commit message, a brief or the review record does not count. Nor does
+having reviewed an earlier draft, gathered or synthesised research it
+draws on, or proposed fixes that another family wrote in; such a family may
+hold a required seat, and the review record says what its earlier part
+was. Outside
 contributors' declared tools count. The controller writes code only for work
 only it can run, so most code comes from codex.
 
