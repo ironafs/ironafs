@@ -4,7 +4,7 @@
 # 0004: The architecture
 
 Status: accepted (2026-11-20), by the owner, after the review rounds
-recorded below. Raised in issue #20. Amended 2026-11-20 (#31).
+recorded below. Raised in issue #20. Amended 2026-11-20 (#32).
 
 ## Context
 
@@ -630,13 +630,18 @@ The full record, with every finding and its disposition, is
 - **Correction, 2026-11-20:** the four part files' status lines said
   "proposed" after the ADR was accepted; they now say "accepted". No
   decision changed.
-- **Amendment, 2026-11-20 (#31): O50, point 9, and C35, point 3.**
+- **Amendment, 2026-11-20 (#32, issue #31): O50, point 9, and C35, point 3.**
   - What changed: rxgk is planned for M6, after the Windows layer, and is
     tested against N25, point 3's clean-room simulator peer. It needs no
     outside peer to start. Each of the three triggers now opens a
     scheduling review that may move the work; none starts it by itself.
     O50's "Revisit if" and "Why" say the same. Work against the
-    clean-room peer is conformance evidence, not interoperability.
+    clean-room peer is conformance evidence, not interoperability. The
+    server trigger is worded as N25 words it (issue #22 decided in favour
+    of a server). An independent peer is used where one exists (N25,
+    point 4). What waits on rxgk keeps its own gates: FIPS mode stays
+    unscheduled (O31, point 1), and no negotiation RPC is designed until a
+    server exists (N22, point 9).
   - Evidence: the two texts disagreed. O50, point 9, started rxgk
     implementation only on a trigger; N25, points 1 and 3, planned it for
     M6 against the clean-room peer. Both are working decisions, and no
@@ -644,7 +649,8 @@ The full record, with every finding and its disposition, is
     2026-11-20 that N25 holds. N25 is not changed.
   - Sweep: the repository was searched for "implementation starts", "one
     of these holds", "Until then rxgk", "rxgk waits", "point 9 fires",
-    "O50, point 9", "O50.9", "planned for M6" and "rxgk".
+    "O50, point 9", "O50.9", "planned for M6", "rxgk is late", "ADR 0004"
+    and "rxgk".
     - O50, point 9, its "Revisit if" and its "Why" (part 3), and C35,
       point 3 (part 1): rewritten as above.
     - N25's heading and point 1 (part 4), and the overview's index entry
@@ -663,5 +669,9 @@ The full record, with every finding and its disposition, is
       gate of N13, not the start rule. Unchanged.
     - ADR 0001, the research note and the review records in
       `docs/reviews/`: no start rule, or a dated record. Unchanged.
-    - No skill, workflow or contributor file states the rule.
+    - Part 4's consequence "rxgk is late": agrees with the M6 order.
+      Unchanged.
+    - No skill, workflow or contributor file states the rule. The rule
+      binds the same actors as before (the maintainer's session,
+      contributors and their agents); no bot acts on it.
   - Review rounds: pending.

@@ -1515,9 +1515,9 @@ rxkad specification route of C6 fails.
 2. M2a is unauthenticated and read-only (Rx's null class), to prove Rx,
    the cache and the Linux layer first.
 3. **rxgk** is planned for M6 and tested against N25, point 3's
-   clean-room simulator peer. Its work, and what waits on it (the
-   shared pool, C21), is tested against that peer and independent peers
-   until a server offers it. A trigger of N25 opens a scheduling review
+   clean-room simulator peer, and against an accessible independent peer
+   verified for the same profile where one exists (N25, point 4). The
+   shared pool (C21) waits on rxgk and keeps its own gate. A trigger of N25 opens a scheduling review
    (O50, point 9); it does not start work by itself.
 4. Cells that depend on single-DES service keys are outside what this
    client supports.

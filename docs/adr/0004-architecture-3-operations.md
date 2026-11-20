@@ -1893,14 +1893,16 @@ and the reasons. It is a plan, and it promises no dates.
      of N25, point 3; it needs no outside peer to start. Any one of these
      opens a scheduling review that may move it, and does not start work
      by itself: a released OpenAFS offers client-to-fileserver rxgk; a
-     third-party peer and wire profile are agreed; or an IronAFS server
-     exists (issue #22).
-   - Until an accessible independent peer verified for the same profile
-     exists (N25, point 4), rxgk work, and what waits on it (the shared
-     cache pool, FIPS mode, protocol extensions and learned pins: C21,
-     N18, N22, N9), is tested against the simulator and the clean-room
-     peer. That is conformance evidence, not interoperability (N25,
-     point 3).
+     third-party peer and wire profile are agreed; or issue #22 is decided
+     in favour of a server (N25).
+   - rxgk work is tested against the clean-room peer, and against an
+     accessible independent peer verified for the same profile where one
+     exists (N25, point 4). That is conformance evidence, not
+     interoperability (N25, point 3). What waits on rxgk (the shared cache
+     pool, FIPS mode, protocol extensions and learned pins: C21, N18, N22,
+     N9) keeps the gates those decisions set; FIPS mode stays unscheduled
+     (O31, point 1), and no negotiation RPC is designed until a server
+     exists (N22, point 9).
    - "Interoperable" is said only of a profile tested live against an
      independent implementation.
 10. Rx's own code, with rxkad against OpenAFS 1.8, comes before everything
