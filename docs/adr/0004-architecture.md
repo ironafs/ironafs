@@ -155,7 +155,7 @@ The decisions are in four parts:
 
 Some things this ADR rests on cannot be shown from a public source today.
 Each is named here, with the claims it concerns, what depends on it and
-what would settle it. The parts cite them as A1 to A13. An assumption that
+what would settle it. The parts cite them as A1 to A14. An assumption that
 fails reopens every working decision that names it.
 
 - **A1. The RHEL 7.9 artifact.** We assume a client built against glibc 2.17
@@ -208,11 +208,13 @@ fails reopens every working decision that names it.
   process holding a sync root's connection fails, hydration while antivirus
   software scans, in-sync marking, vetoes of delete and rename, Explorer
   refresh, removal of a root, and drift of NTFS access-control lists.
-  - Depends on it: the design of the Cloud Files replica and when it is
-    scheduled (part 2).
-  - Settled by: public measurement on the named Windows builds, before the
-    replica is built. Until then this ADR cites only Microsoft's
-    documentation for the replica.
+  - Depends on it: the replica ADR that must be accepted before the
+    replica is built (L27, point 11), which specifies its mechanisms, and
+    when the replica is scheduled (part 2). This ADR fixes only the
+    replica's invariants (L27, L28).
+  - Settled by: public measurement on the named Windows builds, recorded
+    in that replica ADR, before the replica is built. Until then this ADR
+    cites only Microsoft's documentation for the replica.
   - Two documented facts belong beside it: hard links on placeholders are
     refused by default `[WIN-M04]`, and Microsoft's two pages disagree on
     whether the partial hydration policy is supported `[WIN-M44]`.
@@ -224,12 +226,13 @@ fails reopens every working decision that names it.
   provider's job, with no automatic dehydration `[WIN-085]`. Finally we
   assume a logon SID is the same across the linked elevated and limited
   tokens of one logon; Microsoft's documentation does not say.
-  - Depends on it: the replica's per-account roots, each bound to one
-    logon session's logon SID (L28, point 1), and its cache-size policy
-    (part 2).
-  - Settled by: a spike that logs callback session ids across two users,
-    two logons of one account, an elevated and a limited process of one
-    logon, a logoff and a run under disk pressure.
+  - Depends on it: how the replica ADR (L27, point 11) binds a root to
+    one logon session and meets L28, point 1's isolation, and its
+    cache-size policy.
+  - Settled by: a spike, recorded in the replica ADR, that logs callback
+    session ids across two users, two logons of one account, an elevated
+    and a limited process of one logon, a logoff and a run under disk
+    pressure.
 - **A8. The order of the bulk status calls.** We assume an AFS-3 fileserver
   accepts InlineBulkStatus after a directory listing, and that BulkStatus
   is the fallback when a server refuses it. Both RPCs exist; their
@@ -242,7 +245,8 @@ fails reopens every working decision that names it.
   client cannot atomically refuse to overwrite a version it has not seen
   `[WIN-098]`.
   - Depends on it: the rule that deferred stores are never automatic
-    (C28), the replica's upload rule (L27, point 3), and the case for a
+    (C28), the replica's rule of no automatic upload (L27, point 3), and
+    the case for a
     conditional store in a later server profile (issue #22).
   - Settled by: a published AFS-3 file-service specification, or an
     edition of the older AFS documents registered under N31, point 3,
@@ -286,6 +290,21 @@ fails reopens every working decision that names it.
     the rule that no rxkad fetch enters the shared pool (C18, C21).
   - Settled by: the specification route for rxkad (O50, point 3), which
     confirms or corrects it.
+- **A14. Callback continuity.** We assume an AFS-3 fileserver that cannot
+  deliver a break stops treating this client as holding that callback,
+  and that the client learns of the loss no later than its next call to
+  that server, through a reset of its callback state or an error. No
+  public source in the claim record states this.
+  - Depends on it: the branch of C32, point 3, that serves cached data
+    under callback trust with no further cap; and O34, point 1, which
+    serves offline under that trust. An on-path attacker who drops breaks
+    is a separate, stated residual (C32, Why); rxgk-protected callbacks
+    stop forged breaks, not dropped ones.
+  - Settled by: the specification for the callback service (C6), and a
+    test against the test cell in which every retransmission of a break
+    is dropped while keepalives succeed. If either refutes A14, the
+    uncapped branch does not ship: data under trust is served only within
+    a revalidation cap, and C32 is reopened.
 
 ## Open questions for review
 
@@ -313,7 +332,7 @@ options. It is not answered here.
    - AMEND: the claim is partly right. This ADR uses the corrected form
      the record gives.
    - UNVERIFIED: no reachable public source settles the claim. This ADR
-     rests on such a claim only through a named assumption (A1 to A13),
+     rests on such a claim only through a named assumption (A1 to A14),
      never directly.
    - UNVERIFIED-PRIVATE: the claim rests on a measurement whose record is
      not public. This ADR does not cite it.

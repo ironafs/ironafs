@@ -10,7 +10,7 @@ tested and phased. The core is in part 1, the OS layers and the
 supported-platform matrix in part 2, protocol negotiation and the rules for
 long-lived formats in part 4. This part refers to them and does not restate
 them. Claim ids such as `[DES-043]` point into the
-[claim record](../reviews/2026-11-20-adr-0004-claims.md). A1 to A13 are the
+[claim record](../reviews/2026-11-20-adr-0004-claims.md). A1 to A14 are the
 named assumptions in the [overview](0004-architecture.md).
 
 ## Context
@@ -203,7 +203,12 @@ drops events a bounded queue would keep.
 
 1. When the daemon cannot take an event within a bound (not running,
    wedged, overloaded, refusing the handshake), a component writes it to
-   the OS log directly, under its own identity.
+   the OS log directly, under its own identity. The exception is a
+   component that O8, point 2, gives no direct path: it writes the event
+   to its standard error with a not-logged marker and counts it, and a
+   component with no interactive standard error (a login service) reports
+   the count to the daemon at its next successful handshake as a loss
+   event. The administrator's guide states the gap.
 2. A direct write uses the same generated id, validation and redaction, and
    carries a "direct" flag.
 3. A direct write happens on a logging thread with its own time bound,
@@ -354,8 +359,10 @@ Each sink is the operating system's own interface, which rule 21 allows.
    is never audit.
 3. Each audit event carries a correlation id, the host, the local user (uid
    or SID), the AFS principal, the outcome and a sequence number.
-4. Audit is never dropped silently. When audit events are lost, a gap event
-   states how many, including across a daemon crash (O10).
+4. Audit is never dropped silently. When audit events are lost a gap
+   event says so: with the exact count where sequences were assigned
+   (O10, points 1, 4 and 8), and as a possible-loss interval of unknown
+   count for events never admitted before a crash (O10, point 9).
 5. The audited operations are at least: token set, renewal and loss;
    authentication failures; ACL changes made through the client;
    configuration and policy changes; daemon start and stop; adapter
@@ -564,9 +571,8 @@ locally under O12 to O14.
 4. Filtering happens before export, and redaction after it.
 5. **Pending and recovery records** (C29, point 4) have four separate
    permissions: list, discard, move unread, and read the bytes. An
-   administrator holds the first three. Only the record's owner, or a
-   context holding the same AFS identity (C28, point 5), holds the
-   fourth.
+   administrator holds the first three. Only the record's durable owner
+   (C40, point 6) holds the fourth.
 
 Why: a diagnostic that shows one user what another user opened, or whether
 they hold a token, is a cross-user leak by another route.
@@ -617,13 +623,16 @@ is easier to audit and fuzz than a general one.
 
 ### O19. Policy across client versions
 
-**Working**, except points 1, 3 and 7, which are **Firm**: the envelope
-every client reads, and what makes a policy incompatible. Revisit the
+**Working**, except points 1, 3, 5 (the directive's meaning), 6 and 7,
+which are **Firm**: the envelope every client reads, what the directive
+means, how far an unknown security value reaches, and what makes a
+policy incompatible. Revisit the
 rest if: a management system is shown to drop or reorder the envelope, or
 sites need a state this list lacks.
 
 1. OS policy carries a small, stable envelope that every client version
-   reads: `min_client_version` and a `required` list of keys.
+   reads: `min_client_version`, a `required` list of keys, and the mode
+   directive of point 5.
 2. The daemon ignores and reports unknown policy keys, so a newer policy
    works with an older client.
 3. The exceptions are a key named in `required` that the client does not
@@ -645,16 +654,22 @@ sites need a state this list lacks.
    is unassigned, or the audited administrator command
    `afs config unmanage`, which succeeds only when no policy source is
    present. A policy that merely disappears is treated as unreadable.
-6. Security floors in policy follow N8: an unknown security value
-   refuses the cell.
+6. Security floors in policy follow N8. An unknown value of a known
+   security key (N8, point 2) refuses the cells it applies to, and only
+   those. It is the one value failure that does not make the whole policy
+   incompatible. **Test:** one policy for two cells, one with an unknown
+   `min_class` value: that cell is refused and the other serves.
 7. The daemon validates the whole policy, envelope included, as one
-   unit. A readable policy that fails schema or value validation, or has
+   unit. A readable policy that fails schema validation, or a value
+   validation other than point 6's, or has
    no value for a key named in `required`, is **incompatible**, as in
    point 3. It never falls back to an older copy.
-8. The last good policy is written atomically (a temporary name, flushed,
-   then renamed into place) with a checksum. A copy that fails its
-   checksum counts as none. O10's audit checkpoint is written the same
-   way.
+8. The last good policy is written atomically (to a temporary name,
+   flushed, renamed into place, and its directory synced where the
+   platform requires it; C29, point 9; O41, point 4) with a checksum. A
+   copy that fails its checksum counts as none. O10's audit checkpoint is
+   written the same way. O41, point 4's crash tests include power loss
+   after the rename.
 9. On a reload into **unreadable** with no last good policy, a daemon
    that is already serving blocks new admissions and fences existing
    grants, as for incompatible, and reports "failed".
@@ -789,7 +804,7 @@ scope needs a superseding ADR.
 |---|---|---|
 | A hostile or compromised fileserver | Bounded decoding (O22.7); byte caps per queue; per-server budgets; deadlines; callback rate limits that mark a server's callbacks suspect and never drop a break (C31, C32); loop bounds; `nosuid,nodev` mounts (L3, L7) `[DES-035]` | It can serve wrong data for the files it hosts, because an AFS client trusts its cell's servers. Where a cell's servers share keys, IronAFS treats the whole cell as the compromise domain |
 | A network attacker against rxkad | The encrypt level by default; rxkad-k5 and rxkad-kdf `[DES-049]`; cache namespaces private to each credential context (C18), so a tampered reply is reused only in the context whose fetch it answered; rxgk later (O50) | rxkad's age (Context 6), and IronAFS's position (rule 4) that no rxkad level protects a reply's or a store's payload. A tampered reply can become the base of that user's own write, and a weakly protected store can change server data. Write and reply integrity against a network attacker needs rxgk at both ends, which no released server offers to clients today `[DES-048]`. Sites that need it now protect the network path (with IPsec or a VPN, for example) or do not allow writes from untrusted networks |
-| Another local user | Per-file, per-principal rights and handles that carry authority (C22, C13); IPC peer credentials; per-user budgets; user projections (O16) | Timing of cache occupancy under shared disk pressure, bounded by per-account floors. Latency and admission failures show that someone is using the cache (C27, point 5). In the opt-in shared pool (C21), an authorised reader can tell whether a file range is warm |
+| Another local user | Per-file, per-principal rights and handles that carry authority (C22, C13); IPC peer credentials; per-user budgets; user projections (O16) | Timing of cache occupancy under shared disk pressure, bounded by per-account floors. Latency and admission failures show that someone is using the cache (C27, point 5). In the opt-in shared pool (C21), an authorised reader can tell whether a file range is warm. On a Linux or macOS host with no session-end signal, an account deleted and recreated with the same uid and name (with no account UUID) can use its predecessor's live token until that token expires or is removed (C41, point 4) |
 | The local administrator | None | Out of scope. An administrator can read tokens in memory and the cache |
 | A malicious cell configuration or DNS answer | Configured cells win over DNS; tokens are sent only to their own cell's servers; Kerberos mutual authentication; set-id bits ignored | Unauthenticated traffic to a spoofed server |
 | A malicious local IPC client | Bounded decoding; OS peer credentials; per-user budgets; adapter bindings only by the daemon's own registration (C45); producer roles for events (O3) | None known |
@@ -975,6 +990,15 @@ attestation level changes, or a platform changes its signing rules.
    repository and on the release page, and the site installs the new
    keyring by hand. Nothing in IronAFS fetches keys (O20). How clients
    discover these keys is frozen with the identifiers (O38).
+   - **The first package.** A host trusts the first keyring package only
+     after the site verifies it: downloaded over HTTPS from the project's
+     release page, and its key fingerprint checked against the one
+     published in the release notes, `SECURITY.md` and the repository, or
+     against one the site provisions, before the repository is enabled.
+   - **A compromised key.** An emergency advisory names the compromised
+     fingerprint; the new keyring package removes the old key file, and
+     the site removes any copy it installed itself.
+   - Both are site actions (O20).
 
 Why: a client installed fleet-wide as a system service is a high-value
 target for a tampered build. Point 6 follows Debian's documented practice
@@ -1140,8 +1164,9 @@ stop safely by itself when it cannot prove it is safe.
 
 ### O34. Offline behaviour
 
-**Working**, except the stale mode's bounds in points 2, 3 and 5, which
-are **Firm**. Revisit the rest if: sites show that the default fails work
+**Working**, except the stale mode's bounds in points 2, 3 and 5, and the
+replica's rule in point 6, which are **Firm**. Revisit the rest if: sites
+show that the default fails work
 they could safely have continued, or the stale mode's entry and exit rules
 prove unclear to users in testing.
 
@@ -1149,7 +1174,8 @@ prove unclear to users in testing.
    point 1), cached data is served while its callback is valid and the
    credential and rights grants are valid, with no extra time cap since
    last contact; a callback break, or a known loss of callback
-   continuity, ends that. Without it, the server is in bounded
+   continuity, ends that; this branch rests on assumption A14 (C32,
+   point 3). Without it, the server is in bounded
    revalidation (C32, point 2): data is served only if its status was
    validated within the last T seconds, and is otherwise validated before
    delivery. A request that cannot be validated fails at its deadline.
@@ -1177,9 +1203,13 @@ prove unclear to users in testing.
    minutes without contact. While it lasts, the daemon keeps trying to
    validate under the context's own credentials (C24, point 2), and the
    first success ends the mode.
-6. The Windows replica, if it is built (O51, point 1), serves hydrated
-   files offline under its own rule (L27, point 5), not under this mode.
-   Before the replica is built, that rule is checked against O22.3.
+6. **The replica's offline reads.** The Windows replica, if it is built
+   (O51, point 1), serves offline reads that either meet O22.3 (served
+   only while freshness is established as C32 states) or are an explicit,
+   user-entered mode shown as such within point 5's bounds. The replica
+   ADR (L27, point 11) states which, and how NTFS ends access when
+   authority lapses. The replica is not built before that ADR is
+   accepted.
 
 Why: serving unvalidated data by default would break the promise that a
 callback break is honoured. A user who knowingly chooses stale read-only
@@ -1419,9 +1449,14 @@ the matrix supports, or a platform's qualified flush sequence changes.
    overlay.
 6. Journal headroom is reserved. A write is acknowledged to the
    application only after its journal record is durable on local storage
-   (C28, point 6). That is local durability only: `fsync` and close report
-   success only when the server's store commits (C9, point 1), never
-   because the data is in the journal. On a journal failure the native
+   (C28, point 6). That is local durability only. A commit reports
+   success only when the server's store commits (C9, point 5), never
+   because the data is in the journal. Where `close()` can carry an error
+   (FLUSH on Linux, CLOSE on SMB) it reports that commit's result. Where
+   it cannot (FSKit's close, L12, point 4; a Linux RELEASE with no FLUSH,
+   L6, point 5) `close()` may report success for a write whose store then
+   fails; the data becomes a recovery record with a notification (O35).
+   On a journal failure the native
    no-space or I/O error is returned, and recoverable pending data is
    kept.
 
@@ -1525,10 +1560,20 @@ behaviour costs more than the tests return.
      callback trust for that server (C32, point 1), or within the T
      window of bounded revalidation (C32, point 2); any other stale read
      fails;
-   - no grant or cache entry crosses credential contexts or files, and no
-     delivery happens after its grant's epochs changed;
+   - after the simulated server failed to deliver a break, a stale read
+     under trust is allowed only until the client's next completed call
+     to that server; the server model implements assumption A14 as the
+     specification for the callback service states it, and the case
+     "break lost in every retransmission, keepalives succeed" is run;
+   - no private cache entry or grant is used outside its credential
+     context and generation, and no delivery happens after its grant's
+     epochs changed; a pool entry is read only with the reader's own
+     shared-pool grant from authoritative evidence (C21, point 6; C22,
+     point 1); a handle passed to another process acts in the opener's
+     context (C18, point 3);
    - weak evidence never evicts or retires another context's state (C24,
-     point 3);
+     point 3), save the handle revocation that follows a demonstrated
+     purge failure (C15, point 6; C24, point 6);
    - every byte of an acknowledged write is on the server, in the journal
      or in the recovery store (C28, point 6);
    - no deferred store is sent without an explicit instruction (C28);
@@ -1628,15 +1673,27 @@ hosted runners, or a case here cannot be automated on a supported OS.
    - removing a file that is still open;
    - on macOS and on Windows, the layer gates (L13, L22, L41);
    - on Windows, two logons of one account, as two contexts (C41);
-   - on Linux and macOS, a uid reassigned to a new account without a
-     daemon restart: the new account inherits no context, token or record
-     (C41, point 4);
+   - on Windows, two logons of one account with one AFS identity: one
+     unlogs and the other's token expires (`TokenRequired`); one logs off
+     (the other keeps its marker); an administrator revokes one, then a
+     restart (no automatic reinstall in either) (C42, point 7; N4);
+   - on Linux and macOS, on a host with logind or the agent's signal, a
+     uid reassigned to a new account without a daemon restart: the new
+     account inherits no context, token or record (C41, point 4);
+   - on Linux and macOS, on a host with neither signal, the documented
+     residual: the old token works until it expires, and after a restart
+     the old records stay quarantined (C41, point 4; C40, point 8);
    - a rename over a file another local process holds open: the rename
-     succeeds, the opener's handle fails with `Stale`, and its unstored
-     bytes become a recovery record (C10, point 5);
+     succeeds where, on SMB, the opener allowed delete sharing, and
+     otherwise fails with a sharing violation (L33, point 13); both
+     outcomes are tested. On success, the renaming context's handle fails
+     with `Stale`, another context's handle is suspended until its own
+     revalidation retires it, and unstored bytes become recovery records
+     of their owners (C10, point 5);
    - an administrator's `afs pending export --for-owner` and
-     `afs pending import`: the records arrive under their owner, and the
-     administrator cannot read their bytes (C29, point 4).
+     `afs pending import`: the records arrive under their owner, and no
+     administrator command shows or exports their bytes; the archive is
+     not encrypted (C29, point 4).
 5. Every claim about mount behaviour is proven on its own venue
    ([docs/workflow.md](../workflow.md) §5).
 
@@ -1761,8 +1818,8 @@ before it shows it is not worth building.
 Proposed, and scheduled only when their issues are approved:
 
 1. the Windows offline companion (the Cloud Files replica, L27, resting on
-   A6 and A7), whose offline rule is its own and not the stale mode (O34,
-   point 6);
+   A6 and A7), built only after its own ADR is accepted (L27, point 11),
+   whose offline reads follow O34, point 6, and not the stale mode;
 2. the opt-in read-only stale mode (O34);
 3. OTLP metrics export (O11);
 4. `/afs` surviving a daemon restart on Linux (L7);
@@ -1791,6 +1848,9 @@ keeps them out of the earlier phases.
      level (O6).
    - No core dump is produced by the daemon by default (O25).
    - `fallocate` is refused (O40).
+   - Where `close()` cannot report an error (macOS, and Linux when no
+     FLUSH came), a write may appear saved and then fail to store; the
+     user is notified and the data waits in `afs pending` (O41, point 6).
    - On a host booted with the operating system's FIPS switch on, AFS
      access over rxkad fails with "FIPS policy: rxkad is not approved"
      unless the site sets `fips = "permit-nonapproved"`, which is audited
@@ -1835,7 +1895,9 @@ keeps them out of the earlier phases.
    - the event catalogue and its specification;
    - the specification for the callback allowlist (O15);
    - `docs/support.md` and the administrator's guide;
-   - the identifier inventory (O38).
+   - the identifier inventory (O38);
+   - the replica ADR, before the Cloud Files replica is built (L27,
+     point 11; O34, point 6).
 8. **Milestones.** The GitHub milestones are renamed to match O50 when the
    plan for the phases after M1 is written
    ([docs/workflow.md](../workflow.md) §6 is updated with them).

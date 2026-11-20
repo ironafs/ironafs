@@ -11,7 +11,7 @@ The core is everything the three operating-system layers share: the AFS
 protocols, the cache, tokens, locks and the write journal. This part decides
 how it is built, where it runs, and what it promises the layers. The
 overview gives the goals, the anti-goals, the constraints, the named
-assumptions (A1 to A13) and the evidence rules. The facts this part rests
+assumptions (A1 to A14) and the evidence rules. The facts this part rests
 on:
 
 1. **What an operating system says about a caller differs by system and by
@@ -372,7 +372,9 @@ application lose data it was told was saved.
 4. `release` never fails.
 5. A commit reports success only when the server has accepted the store
    (point 1). Data held in the journal or in a recovery record is never
-   reported to the application as stored.
+   reported to the application as stored. This binds the commit
+   operation; what `close()` shows where it cannot carry an error is in
+   L6, point 5, and L12, point 4.
 
 Why: FUSE does not return an error from a release to `close()`, and may
 flush many times or not at all `[DES-029]`. FSKit's cached close takes no
@@ -407,11 +409,16 @@ replacement.
    server's removal to the last close, with no rename. They are modelled
    apart from POSIX unlink (L19).
 5. **Rename over a destination that is open on this machine** is done as
-   one atomic rename. Handles on the replaced file then fail with
-   `Stale`, as when it is replaced from another machine (point 7). Its
-   unstored bytes become a recovery record bound to its file id (C29). On
-   SMB, a destination opened without delete sharing refuses the rename
-   with a sharing violation (L33).
+   one atomic rename. Handles of the renaming context on the replaced
+   file fail with `Stale`, as when it is replaced from another machine
+   (point 7), and their unstored bytes become a recovery record bound to
+   its file id (C29). Handles of other contexts are suspended (C14,
+   point 1) and their entries marked suspect (C24, point 2); each is
+   retired, and its dirty overlay detached to its owner's recovery record
+   (C29), when its own context's revalidation shows the file is gone or
+   replaced, or on authoritative evidence (C24, point 4). Until then
+   nothing of theirs is discarded. On SMB, a destination opened without
+   delete sharing refuses the rename with a sharing violation (L33).
 6. **Rename with "do not replace"** is refused with the operating
    system's "invalid argument" error.
 7. Opens made on other machines are not visible to this client.
@@ -537,8 +544,17 @@ long or too costly against the test cell.
 1. **Suspended** means the handle's operations wait, within their
    deadlines. A handle is suspended when what its authority rests on
    becomes uncertain:
-   - a token for the same context, cell and AFS identity replaces the old
-     one (what `aklog`, renewal and login services produce); or
+   - a token for the same context, cell and AFS identity, whose
+     restriction class the daemon has itself verified to be unchanged
+     (C18, point 7), replaces the old one (what `aklog`, renewal and login
+     services produce). For a token kind whose restriction status the
+     daemon cannot verify itself, rather than take from the installing
+     process, a replacement counts as a change: the generation is retired
+     and no handle of the old generation resumes. A token kind whose
+     specification (C6) shows no restricted form keeps the generation on
+     renewal. **Test:** the same principal with an unverifiable
+     restriction status replaces its token; the generation is retired,
+     records are detached and no handle resumes; or
    - a callback break makes the file's rights, or its directory's ACL,
      stale; or
    - the network generation changes (C23, point 2); or
@@ -594,8 +610,14 @@ trusted blindly.
    new fault after revocation, and a failed purge while the first mapping
    is still live are each tested. Where a kernel would serve one context's
    fault from another's pages without asking the daemon, or would serve a
-   new fault after revocation without asking it, mapping is refused on
-   that kernel, and programs cannot be run from `/afs` there. A layer
+   new fault after revocation without asking it, the layer refuses the
+   affected mappings only through a mechanism demonstrated on that kernel
+   or build (for example, refusing the open modes the operating system
+   reports for a mapping), and programs cannot be run from `/afs` there.
+   Where no such mechanism is demonstrated, the row does not qualify for
+   that layer (O46, point 3) until one is. The gate's measurement, per
+   kernel and build, is that a new fault after revocation reaches the
+   daemon or front end and fails (L4, L13, L22, point 7). A layer
    promises mapped I/O only where this gate passed.
 6. If a purge fails at run time for a node that may be mapped, the core
    cannot show the pages are gone. On Linux the node answers `Stale` in
@@ -605,20 +627,29 @@ trusted blindly.
    revoked. That stops every later request on the node, and every later
    fault that reaches the daemon. It does not stop a fault served from
    pages still resident, and it does not remove pages already resident in
-   live mappings. A failed purge affects that node only, never other
-   nodes or other users; aborting the connection for it would let weak
-   evidence (a forged break, C31) end every context's handles, which C24
-   forbids.
+   live mappings. A failed purge is local evidence that the operating
+   system may still serve the node's old state, because its cache for the
+   node is shared by every context that holds it. It revokes every
+   context's handles on that node and nothing else: no other node, and no
+   bytes, epochs or journal records (C24, point 6). The connection is
+   aborted only when the notification channel itself fails; aborting it
+   for a failed purge would let weak evidence (a forged break, C31) end
+   every context's handles on every node, which C24 forbids. **Test:** two
+   contexts hold a node; a weak break plus an injected purge failure; both
+   get `Stale` on that node only, and their data and records are kept.
 7. **macOS: a failed revoke.** If revoking the item fails too, the
    extension ends that user's mount (L9, L10). Nothing the mount served
    stays reachable through it.
 8. **Windows SMB.** The front end declines leases (L19, point 5), so it
    cannot recall pages that Windows has mapped. The stated bound is:
    pages Windows already holds for a mapped view stay readable to that
-   view until the view's SMB open or its SMB session ends, as in point 2.
-   The Windows gate (L22) measures whether a new fault after revocation
-   reaches the front end. Where it does not, that build fails point 5's
-   gate, and point 5's refusal applies.
+   view until it is unmapped, as in point 2. Closing the SMB open or
+   ending the session stops later faults reaching data; it does not
+   remove resident pages. The Windows gate (L22, point 7) measures whether
+   a new fault after revocation reaches the front end. Where it does not,
+   that build fails point 5's gate, and point 5's rule applies: the
+   affected mappings are refused only through a demonstrated mechanism,
+   or the row does not qualify.
 
 Why: the first anti-goal of the overview. Stating the bound exactly is
 what lets a site decide whether it is acceptable. The kernel mechanisms
@@ -643,8 +674,8 @@ and L13.
    operation, the binding, the credential generation and the rights
    generation. The last check is at **submission**: the binding checks the
    reply's context, generation, grant and node state in the same step that
-   writes it to the kernel or to the SMB connection. A revocation that
-   lands earlier stops the reply. A reply already submitted counts as
+   writes it to the kernel or to the SMB connection. A revocation already
+   effective at that binding (point 6) stops the reply. A reply already submitted counts as
    delivered. Point 6 says how a binding in its own process makes this
    check.
 4. **Local changes fence too.** A store, create, rename or remove made
@@ -663,28 +694,46 @@ and L13.
      epoch**, on the same ordered stream that carries invalidations
      (C17).
    - A revocation or invalidation that affects the binding advances the
-     epoch. The daemon pushes the new epoch on that stream before it
-     acknowledges the revocation.
+     epoch, and the daemon pushes the new epoch on that stream.
+   - **When a revocation is effective.** A revocation becomes effective
+     at an out-of-process binding when the front end applies the epoch
+     advance. From the moment the daemon records the revocation (point 1)
+     it gates new requests for that binding, and it reports the
+     revocation complete, to whatever caused it and through C17's
+     acknowledgement, only after the binding acknowledges the advance.
+     The front end applies epoch advances and writes replies in one
+     serialised step, so no reply is written between the arrival of an
+     advance and its application.
    - The front end compares a reply's epoch with the latest epoch it has
-     received immediately before it writes the reply to the operating
+     applied immediately before it writes the reply to the operating
      system or the SMB connection. A reply with an older epoch is
-     discarded, and its request fails or is retried as for a fenced
-     reply (point 2).
-   - **Residual:** a reply the front end has already written counts as
-     delivered (point 3).
+     discarded. A fenced fetch reply is retried as point 2 says; a fenced
+     mutation reply follows C28, point 4: its outcome is read back and the
+     mutation is never repeated.
+   - **Residual:** replies written before the front end applied the
+     advance count as delivered (point 3).
    - **Back-pressure:** the stream is bounded (C39, point 3). When it is
      full, replies wait within their deadlines. An epoch advance is never
      dropped: space for it is kept free.
-   - **Partial submission:** a reply sent in several parts (a
-     multi-credit SMB read, for example) checks the epoch before each
-     part. Once the epoch has moved, no further part is written, and the
-     request fails.
-   - **Adapter death:** every reply not yet acknowledged as written counts
-     as undelivered, and the binding is torn down, which revokes its
-     handles (C14, point 3).
-   - **Test:** a revocation that lands after a reply has crossed the IPC
-     channel and before the front end writes it. The reply must not be
-     written.
+   - **Partial submission.** Fencing is at whole-message boundaries. The
+     front end checks the epoch before it starts writing a complete SMB
+     response message (one compound element, signed or encrypted as a
+     whole) or a complete FSKit reply. A message whose write has started
+     is completed. When a later advance must stop the rest of a response
+     that spans several messages, no further message is written and the
+     connection is torn down (SMB) or the request fails (FSKit). A part of
+     a signed or encrypted message is never followed by an error on the
+     same stream.
+   - **Adapter death:** the binding is torn down, which revokes its
+     handles (C14, point 3). A read reply not acknowledged as written is
+     undelivered; a mutation whose reply was not acknowledged as written
+     is uncertain: its outcome is read back and it is never repeated
+     (C28, point 4).
+   - **Tests:** a revocation that lands after a reply has crossed the IPC
+     channel and before the front end writes it: the reply must not be
+     written. The advance is withheld from the front end: the revocation
+     is not reported complete, and no reply issued after the revocation
+     was recorded is written (also L13, point 10, and L18, point 9).
 
 Why: the "silent wrong answer" anti-goal. A check made before a wait says
 nothing about the moment the bytes leave, so the check that counts is the
@@ -715,10 +764,18 @@ cannot fail.
    - FSKit: the item is revoked;
    - SMB: the front end completes pending change notifications with
      "rescan", and closes the session if it cannot;
-   - the Windows replica, if built: the placeholder stays marked stale and
-     the event stays unacknowledged until dehydration succeeds.
-6. **Widening and overflow.** A node holds one pending event per
-   binding, so events that do not fit one slot widen:
+   - the Windows replica, if built: the event stays unacknowledged until
+     the mechanism its own ADR specifies has removed the stale state
+     (L28).
+6. **Widening and overflow.** A node's slot per binding holds the union
+   of its pending effects (data, attributes, entries, rights) and a
+   revision number. A new event merges into the slot and raises the
+   revision; where the union cannot be represented it widens as below.
+   An acknowledgement (point 2) names the revision it applied and clears
+   only effects up to it; an event that arrives while a purge is being
+   applied stays pending under the higher revision. **Test:** a rights
+   event and an entry event on one node; a second event during a purge.
+   Events that do not fit one slot widen:
    - rights events on one node that name different credential contexts
      widen to all contexts;
    - entry events on one directory that name different entry names widen
@@ -729,7 +786,9 @@ cannot fail.
    - a binding **overflows** when its pending events reach their byte
      bound (C39, point 3). It then applies the overflow event: every node
      it holds is gated as in C16, point 5, and purged as above, or
-     handled under point 5 where it cannot be purged.
+     handled under point 5 where it cannot be purged. A purge that fails
+     under overflow applies C15, point 6, to each node that failed, not to
+     the binding.
 
 Why: a callback break must never wait on a layer, and a slow layer must
 not grow the daemon's memory. libfuse documents a deadlock when
@@ -776,7 +835,9 @@ own rule on top.
    removal of the account, a change of policy, or a change of the token's
    restriction status or of any other token property that narrows the
    rights the server grants retires the generation. The generation's key
-   therefore includes the token's restriction class (N36). Retirement means:
+   therefore includes the token's restriction class (N36), as the daemon
+   itself verifies it; where it cannot, C14, point 1, treats a
+   replacement as a change. Retirement means:
    access stops at once, late fetches are fenced off, journal and recovery
    records are detached (point 9), and the remaining files are reclaimed
    afterwards. A recycled uid or SID is a new account instance
@@ -956,7 +1017,8 @@ cited fact; binding the network generation is the cautious reading.
    A suspect entry is not delivered until its reader has revalidated it
    under the reader's own credentials.
 3. Weak evidence never evicts another context's data or the pool's,
-   never retires their handles or journal records, and never establishes
+   never retires their handles (save point 6's purge-failure case) or
+   journal records, and never establishes
    that two contexts see the same volume incarnation.
 4. Evicting, retiring or changing the epoch of another context's
    entries, of the pool's, or of shared incarnation state needs
@@ -966,8 +1028,12 @@ cited fact; binding the network generation is the cautious reading.
    suspend callback promises, revoke grants, mark entries suspect, and
    purge operating-system caches (C16, point 4; C17). Each only forces
    the reader to revalidate under its own credentials and obtain a fresh
-   grant. Each keeps bytes, epochs, handles and journal records. Anything
-   else across contexts falls under point 4.
+   grant. Each keeps bytes, epochs, handles and journal records. The one
+   further effect, after a demonstrated purge failure, is revocation of
+   the handles on that node (C15, point 6): the operating system's cache
+   for the node is shared, so local evidence, not the weak input, decides
+   it, and it keeps bytes, epochs and journal records. Anything else
+   across contexts falls under point 4.
 7. **Callback trust is raised only by a reply to the client's own call.**
    Before rxgk, a server earns callback trust (C32) only from its reply to
    a call the client made, matched by that call's random identity.
@@ -1046,10 +1112,12 @@ filesystem.
 1. **The data store** holds chunks keyed by namespace, then cell, volume
    and its incarnation, the local file epoch, vnode, uniquifier, data
    version and chunk index. The namespace is the credential context and
-   its generation (or the pool); through the context (C40) it includes
-   the cell's protocol identifier and configuration generation (N27) and
-   the profile used: class, level and suite (N39). A new data version makes old chunks unreachable
-   without touching them.
+   its generation, plus the security profile and suite (N39) of the
+   connection that fetched the entry; or the pool, with the cell, its
+   protocol identifier and configuration generation (N27). Through the
+   context (C40, point 3) a private namespace also carries the cell's
+   protocol identifier and configuration generation. A new data version
+   makes old chunks unreachable without touching them.
 2. **No embedded database.** The filesystem is the index. A clean chunk is
    written to a temporary name and renamed, with a header and a checksum
    and no sync. A bad chunk is a miss, never an error.
@@ -1144,8 +1212,10 @@ users.
 4. **Commands.** `afs pending list` shows what waits and why. `retry`
    stores a record over the server's version after the user has seen the
    difference. `discard` drops it. `show` and `export` give the bytes to
-   the record's owner (point 5), or to a context holding the same AFS
-   identity (C28, point 5). A user acts on their own records. A retry
+   the record's durable owner (point 5) only. A context with the same AFS
+   identity under another account instance may replay a record under
+   C28, point 5, but not read its bytes (C18, point 2). A user acts on
+   their own records. A retry
    always needs C28, point 5. An administrator may list, discard, and move
    records unread: `afs pending export --for-owner` writes an opaque,
    checksummed archive that carries each record's durable owner, AFS
@@ -1258,6 +1328,12 @@ revalidations.
 3. With trust, cached data is served while its callback is valid and the
    credential and grants are valid, with no further cap since last
    contact. A break, or a known loss of callback continuity, ends that.
+   A loss is known when a call to that server shows it: a reset of the
+   client's callback state, or an error. This branch rests on assumption
+   A14 (callback continuity). If the specification gate refutes A14, the
+   uncapped branch does not ship: data under trust is served only within
+   a revalidation cap, whose length is then a project decision, and this
+   decision is reopened.
 4. The client sends keepalive calls (we propose every 60 to 100 seconds)
    to servers that hold its callbacks, to keep a NAT mapping open and to
    earn point 1's evidence. Trust lapses when no reply has arrived within
@@ -1280,7 +1356,10 @@ mapping timer of two minutes and recommends five or more. So the evidence
 is kept to about two keepalive intervals. Keepalives already exist, so
 this adds no traffic. An attacker on the path can still keep a server
 trusted while dropping its breaks; that is the reach rxkad already gives
-them (A13), and rxgk-protected callbacks remove it (C31's trigger).
+them (A13). rxgk-protected callbacks stop forged breaks and probes
+(C31's trigger); they do not stop an attacker on the path dropping
+breaks. What bounds a dropped break is the server's handling of a break
+it could not deliver (assumption A14).
 
 ### C33. Finding a cell's servers
 
@@ -1532,11 +1611,12 @@ that needs a reboot is avoided. Byte limits are coding standards rule 3.
    the markers of N4) is keyed by its durable owner (point 6).
 2. A context's local parts are what the operating system **attests** for
    a request or a connection, never what a caller asserts (C41).
-3. The cell, its protocol identifier and configuration generation (N27),
-   the AFS identity, the effective identity list and the profile each
-   call actually ran at
-   (class, level and suite, N39) complete the key. The level is the one
-   used, never the configured one.
+3. The cell with its protocol identifier and configuration generation
+   (N27), the AFS identity and the effective identity list complete the
+   context's key. The security profile is not part of it: the profile
+   and suite a call actually ran at (N39) key the connection (C30,
+   point 3) and the cache entries it fetched (C27, point 1). The level
+   recorded there is the one used, never the configured one.
 4. A token is bound to the context the operating system attests for the
    connection that delivered it, never to a context named inside the
    message.
@@ -1545,17 +1625,19 @@ that needs a reboot is avoided. Byte limits are coding standards rule 3.
    a daemon restart. What must survive is keyed by the context's
    **durable owner**: the local account instance (the uid or SID, plus
    the operating system's evidence that it is the same instance of that
-   account, C41, point 4), the cell with its protocol identifier and
+   account, C41, points 4 and 5), the cell with its protocol identifier and
    configuration generation (N27), and the AFS identity. It holds no credential
    generation and no security profile.
 7. **Which identity keys which store:**
    - the durable owner: the authenticated-intent marker (N4, point 3),
      the reacquisition authorisation (C42, point 7), and the ownership of
      journal and recovery records (C18, point 9; C29);
-   - the context id and its credential generation, which by point 3
-     include the profile: tokens, caller capabilities, handles, grants
-     and cache namespaces (C27, point 1);
-   - the connection key (C30, point 3): Rx connections.
+   - the context id and its credential generation: tokens, caller
+     capabilities, handles and grants, and, with the security profile
+     and suite of the fetching connection, cache namespaces (C27,
+     point 1);
+   - the connection key (C30, point 3), with the suite after the
+     handshake: Rx connections.
 8. **After a restart** a new context takes over a durable owner's records
    and markers only on positive evidence, from the operating system, that
    its account instance is the same (C18, point 7). Without that evidence,
@@ -1598,6 +1680,21 @@ each filesystem request that a process cannot forge, or the Windows spike
    records of the old owner as C40, point 8, says. A user whose services
    linger keeps the context until the linger ends. Hosts with neither
    signal rely on token expiry and `unlog`; this is documented.
+   **Bound.** An account deleted and recreated with the same uid and
+   name, on a system with no account UUID, is indistinguishable from the
+   old one. It inherits nothing only where a session-end signal retired
+   the old context first. On a host with neither signal, a new account
+   reusing the uid can use its predecessor's live token until that token
+   expires or is removed. This residual is stated in O23's local-user
+   row. After a restart such records stay quarantined (C40, point 8).
+5. **Windows.** The account instance is the account's SID, which is not
+   reissued to another account. A context ends when its logon session
+   ends (L18, point 12). After a restart the SID is C40, point 8's
+   positive evidence.
+6. **Gate.** The account-instance evidence of points 4 and 5 is confirmed
+   on each supported release of each operating system (L13, L22) before
+   the release that rebinds records after a restart. Where it is not
+   confirmed, records stay quarantined after a restart (C40, point 8).
 
 Why: a PAG needs a per-session marker the daemon can trust. Point 4 uses
 only operating-system interfaces: logind's manager sends its user and
@@ -1630,31 +1727,46 @@ design is shown that keeps C40 and C43.
    when it changes, for a context that is still authorised, from that
    session's own valid Kerberos credentials. Journal records wait for the
    token (C29).
-4. Sign-out (C41, point 4, on Linux and macOS), or a deliberate removal
+4. Sign-out (C41, point 4, on Linux and macOS; point 5 on Windows), or a deliberate removal
    of a token, ends that authorisation. A restart cannot undo it.
 5. A context that cannot get its token back shows "no token" in
    `afs status`, with a notification. A context with no agent must run
    `aklog` itself. This is documented.
 6. Renewal and revocation follow C14.
 7. **Reacquisition authorisation.** "Still authorised" in point 3 is a
-   durable record the daemon keeps per durable owner and cell (C40,
+   durable state the daemon keeps per durable owner and cell (C40,
    point 6), stored beside the authenticated-intent marker (N4) but
-   separate from it: the marker survives a revocation, this record does
-   not. It holds no key material.
-   - The user's own explicit `aklog` sets it.
-   - `unlog`, and an administrator's revocation (N4, point 6), withdraw
-     it durably: the withdrawal is committed before they are
-     acknowledged. Agent requests in flight at that moment are fenced: a
-     token they deliver is refused.
-   - After `unlog`, only the user's own explicit `aklog` restores it.
-   - After an administrator's revocation, only an administrator restores
-     it, through an audited control operation. The user's own `aklog`
-     installs a token for the session but does not restore automatic
-     reacquisition.
+   separate from it. It holds no key material. Its states are **none**,
+   **authorised**, **withdrawn-by-user** and **blocked-by-administrator**:
+
+   | Event | From | To |
+   |---|---|---|
+   | The user's explicit `aklog`, or the login service's token step at session start | none, withdrawn-by-user | authorised |
+   | The same, while blocked | blocked-by-administrator | blocked-by-administrator (the session gets its token; automatic reacquisition stays off) |
+   | `unlog` | none, authorised, withdrawn-by-user | withdrawn-by-user |
+   | `unlog` | blocked-by-administrator | blocked-by-administrator |
+   | An administrator's revocation (N4, point 6) | any | blocked-by-administrator |
+   | An administrator's audited restore | blocked-by-administrator | authorised |
+   | Sign-out (point 4) | authorised, withdrawn-by-user | none |
+   | Sign-out | blocked-by-administrator | blocked-by-administrator |
+   | Token expiry | any | unchanged |
+
+   - Every change is committed durably before the operation that caused
+     it is acknowledged. Agent requests in flight at that moment are
+     fenced: a token they deliver is refused.
    - After a restart, the daemon accepts a token from an agent's
-     automatic `aklog` only while the record is present.
-   - **Test:** revoke a token, restart the daemon; the agent's automatic
-     `aklog` does not install a token.
+     automatic `aklog` only in the authorised state.
+   - **Per durable owner.** Reacquisition authorisation belongs to the
+     durable owner, not to one logon. An `unlog` or an administrator's
+     revocation in one logon withdraws it for every logon of that owner:
+     after a restart neither logon's agent reinstalls a token, and each
+     gets `TokenRequired`, never anonymous data. This is documented.
+   - **Tests:** revoke a token, restart the daemon: the agent's automatic
+     `aklog` does not install a token. An administrator revokes, the user
+     unlogs, the user runs `aklog`, the daemon restarts: no automatic
+     reinstall. Two Windows logons of one account with one AFS identity:
+     one revocation by an administrator, then a restart: no automatic
+     reinstall in either.
 
 Why: a token on disk is a secret that backups, images and other
 administrators can reach. Having the user's own process build it means the
@@ -1817,12 +1929,14 @@ applied to the error path.
      name until it is closed; it counts against quota and can block the
      removal of its directory (C10).
    - Rename with "do not replace" fails (C10).
-   - A rename over a file that is open on the same machine replaces it,
-     and the replaced file's open handles fail with `Stale`, as when the
-     file is replaced from another machine. Its unstored bytes wait as a
-     recovery record (C10).
+   - A rename over a file that is open on the same machine replaces it.
+     The renaming user's handles on the replaced file fail with `Stale`,
+     as when the file is replaced from another machine; other users'
+     handles fail once their own revalidation shows the file replaced.
+     Unstored bytes wait as recovery records of their owners (C10).
    - Where a kernel cannot isolate mapped pages, programs cannot be run
-     from `/afs` (C15).
+     from `/afs`, and the row qualifies only where a mechanism that
+     refuses the affected mappings is demonstrated (C15, point 5).
    - Without a recent reply from a server to the client's own keepalive
      call, that server's cached data is revalidated every T seconds, and a
      request fails instead of returning stale data (C32).
@@ -1833,13 +1947,19 @@ applied to the error path.
    it reads, and a new login starts cold. The budgets of C27 bound it;
    they do not remove it.
 3. **What cannot be promised.** Pages resident in a live mapping stay
-   readable after revocation, on Windows until the view's SMB open or
-   session ends (C15, points 2 and 8). A failed purge affects one file,
-   never other users: on Linux that node answers `Stale` and refuses new
-   mappings until a purge succeeds (C15, point 6). An attacker on the
-   network path can keep a server trusted while dropping its breaks; this
-   is the same reach rxkad already gives them (A13), and rxgk-protected
-   callbacks remove it (C24, point 7; C32). Root and the daemon's own
+   readable after revocation until the view is unmapped, on Windows too:
+   closing the SMB open or ending the session stops later faults, not
+   resident pages (C15, points 2 and 8). A failed purge affects one file:
+   every context holding it gets `Stale` and reopens; on Linux that node
+   also refuses new mappings until a purge succeeds (C15, point 6). On
+   macOS, if revoking an item fails after a failed purge, that user's
+   whole mount ends (C15, point 7). An attacker on the network path can
+   keep a server trusted while dropping its breaks; this is the same
+   reach rxkad already gives them (A13). rxgk-protected callbacks stop
+   forged breaks and probes; they do not stop an attacker on the path
+   dropping breaks. What bounds a dropped break is the server's handling
+   of a break it could not deliver (assumption A14; C24, point 7;
+   C32). Root and the daemon's own
    account see everything in the cache. A change of the client's address behind a NAT
    is seen only at the local timeout (C23). Occupancy and timing of the
    cache reveal that it is in use (C27).

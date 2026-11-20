@@ -17,7 +17,7 @@ This part decides three things:
   extension rules of long-lived structures (N32 to N47).
 
 Claim ids such as `[DES-061]` refer to the
-[claim record](../reviews/2026-11-20-adr-0004-claims.md). A1 to A13 are the
+[claim record](../reviews/2026-11-20-adr-0004-claims.md). A1 to A14 are the
 named assumptions in the [overview](0004-architecture.md). Milestone names
 (M2a, M2b, M3, M6) are the plan in part 3 (O50); they are a plan, not a
 promise. Other parts are referenced by decision id where this part depends
@@ -172,7 +172,9 @@ a weaker class.
    audited configuration change, and a pin only by an administrator or its
    expiry. Loss of the state directory, or of both copies of the pin
    store, is not a failure under this rule: it returns the machine to
-   first contact (N11, points 4 and 6; N14).
+   first contact (N11, points 4 and 6; N14). Damage to a cell's
+   configuration generation record is not covered by this carve-out; it
+   fails that cell closed (N27, point 6).
 
 Why: a configured floor works on first contact; the token rule needs no
 stored state; a pin covers machines nobody provisioned. Each covers a case
@@ -180,7 +182,7 @@ the others miss.
 
 ### N3. The configured floor: keys and defaults
 
-**Firm:** the key names, their values, and points 1 to 3 (N8 freezes the
+**Firm:** the key names, their values, and points 1 to 5 (N8 freezes the
 keys from the first release that authenticates). **Working:** the
 defaults in the table. Revisit the defaults if: client-to-fileserver rxgk ships against a tested
 peer (N25), which is when a default of `min_class = "rxgk"` for cells that
@@ -231,16 +233,27 @@ mixed cells is what one administrator can keep correct on a fleet.
    - holds no key material and is readable only by the daemon;
    - is keyed by the context's **durable owner** (C40), the cell, and the
      cell's protocol identifier and configuration generation (N27), so it
-     survives a daemon restart and never attaches to a reused identity.
+     survives a daemon restart and never attaches to a reused identity;
+   - is held, while the daemon runs, by each context of that durable
+     owner that installed a token. A context's explicit `unlog` ends that
+     context's hold; the persisted marker is removed only when no context
+     of its durable owner holds it. After a restart a context joined to
+     the durable owner (point 9) holds it until it runs `aklog` or
+     `unlog` itself.
 4. A matching marker without a token returns `TokenRequired`.
    `TokenExpired` is returned only when trusted local expiry metadata
    establishes it under the token's profile. A server's claim that the
    token expired is reported as a server rejection. Every authentication
    failure keeps the authenticated intent.
-5. The marker is removed only by the context's own explicit `unlog`, or on
-   verified teardown of the context. After `unlog`, newly issued requests
-   follow the cell's `anonymous` policy, subject to point 10 and N11,
-   point 6.
+5. A context's hold on the marker ends only by its own explicit `unlog`,
+   or on verified teardown of the context; the marker itself is removed
+   only when no context of its durable owner holds it (point 3). After
+   `unlog`, newly issued requests of that context follow the cell's
+   `anonymous` policy unless another context of the same durable owner
+   still holds the marker, subject to point 10, N11, point 6, and N27,
+   point 6. **Test:** two Windows logons of one account with one AFS
+   identity: one unlogs and the other's token expires (`TokenRequired`);
+   one logs off (the other keeps its marker).
 6. An authorised, audited administrator may revoke another context's
    token. The marker stays.
 7. A credential change invalidates queued requests bound to the old
@@ -248,7 +261,7 @@ mixed cells is what one administrator can keep correct on a fleet.
 8. `aklog`, `unlog` and `tokens` name the cell and work without reading
    `/afs`, so a context whose token expired can inspect and recover.
 9. **Rebinding after a restart.** A context is joined to a marker only on
-   the evidence of the same account instance that C41, point 4, names for
+   the evidence of the same account instance that C41, points 4 and 5, name for
    its operating system (C40, point 8). A request whose local
    account matches a marker's, but whose durable owner that evidence does
    not confirm, is treated as holding the marker: it gets
@@ -271,9 +284,14 @@ mixed cells is what one administrator can keep correct on a fleet.
     - A token installation states whether it is automatic. The daemon
       refuses an automatic one while the authorisation is withdrawn, and
       the agent checks it before running `aklog` after a restart.
-    - After `unlog`, only the context's own explicit `aklog` grants it
-      again. After an administrator's revocation, only an administrator
-      grants it again, as an audited action (C42, point 7).
+    - Its states and transitions are C42, point 7's table: after
+      `unlog`, the user's own explicit `aklog` grants it again; after an
+      administrator's revocation, only an administrator's audited restore
+      does, and a later `unlog` and `aklog` by the user do not.
+    - It is per durable owner. An `unlog` or an administrator's
+      revocation in one logon withdraws it for every logon of that owner:
+      after a restart neither logon's agent reinstalls a token, and each
+      gets `TokenRequired`, never anonymous data. This is documented.
 
 Why: without the marker, an expired or dropped token silently turns a
 user's requests into anonymous ones, and a program reads different data
@@ -329,8 +347,11 @@ secured connection `[DES-061]`.
    combine-tokens reply fails closed, also before any pin exists. This
    rule binds only a build in which that path is enabled (N13).
 3. Key exhaustion on a connection is its own outcome (N45). It leads to a
-   rekey or a reconnect that lowers neither class nor level and stays
-   inside every active floor, never to a weaker one.
+   rekey or a reconnect that goes through N7's predicate again, with a
+   fresh N12 attestation for a legacy connection (N12, point 4), and
+   lowers neither class nor level relative to the connection it
+   replaces; never to a weaker one. **Test:** key exhaustion on an
+   attested legacy connection under a pin.
 4. The error is `SecurityFloor` (with `TokenRequired`, `TokenExpired`
    and `TokenRevoked`, N4 and N47), reported to applications as a
    permission failure with the cause shown (C46,
@@ -349,7 +370,8 @@ If any of them could lower the profile, that person would choose it.
    the cell with its protocol identifier and configuration generation
    (N27), server, service, context, the configured floor, any active pin,
    evidence, any live N12 attestation, the cell's `anonymous` setting
-   (N3), and the context's token and marker state for the cell (N4). Its
+   (N3), the `fips` setting and the host's FIPS switch (O31, point 4),
+   and the context's token and marker state for the cell (N4). Its
    result is a security profile, **anonymous** (rxnull), or a refusal.
    rxnull is reached only through it.
 2. It runs again on failover, on a volume move and on a token change. The
@@ -358,8 +380,13 @@ If any of them could lower the profile, that person would choose it.
    below it are closed, and sends queued on them are fenced: a request not
    yet sent runs through this function again; a mutation already sent
    follows the lost-reply rule (C28).
-3. The daemon applies it when a token is set, so a user process cannot
-   lower anything.
+3. When a token is set the daemon checks the cell-wide prerequisites:
+   the token's profile meets the configured floor and, for a primary
+   token, any active pin. A companion rxkad credential is admitted only
+   under point 4, and used only on a connection that passes point 6 with
+   a live N12 attestation. Point 6 runs at every connection (point 2), so
+   a user process cannot lower anything. **Tests:** an expired token; a
+   companion installed before any attestation is stored and unused.
 4. `aklog` asks the daemon for the effective floor first, tries rxgk when
    the cell may offer it, and only when the build's rxgk path is enabled
    (N13) and the cell's `rxgk` key is not `never` (N3), and falls back to rxkad only if the floor and any
@@ -378,16 +405,21 @@ If any of them could lower the profile, that person would choose it.
    points 9 and 10 count as holding one).
 6. **The predicate**, written once and used by points 1 and 5. A
    connection to a server of a cell is permitted if and only if one of
-   these holds:
+   these holds, and in every arm O31, point 4, permits it (under
+   `fips = "require"` no arm holds, the anonymous arm included):
    - **authenticated:** its security profile meets the configured floor
-     (N1, point 6); it meets the context's token profile (N4, point 1);
-     and its class meets an active pin's class; or
+     (N1, point 6); it meets the context's token profile (N4, point 1),
+     with a credential not known to be expired or revoked; and its class
+     meets an active pin's class; or
    - **legacy:** its security profile meets the configured floor; it is a
      fileserver connection carrying a live N12 attestation, using the
      companion credential (point 4) under that credential's own profile;
      or
    - **anonymous:** it is rxnull, `anonymous = "allow"`, and the context
      holds neither a token nor a marker for the cell.
+
+   **Test:** `fips = "require"` with `anonymous = "allow"` refuses the
+   cell.
 
 Why: one function is one place to test and to audit. A rule enforced at
 several call sites is eventually missed at one.
@@ -498,9 +530,12 @@ chooses one.
    level and the negotiated suite (N39) seen on the volume-location
    connection that qualified are recorded beside it as information. They
    do not raise any context's level floor.
-3. A renewal is committed only after it is durably written. On a write
-   failure the daemon reports a health error and keeps the active
-   restriction while persistence is uncertain.
+3. A new or renewed pin is committed, and acknowledged, only after both
+   copies (point 4) are durably written (C29, point 9), each with a
+   commit counter. Repair takes the valid copy with the higher counter; a
+   lower counter never overwrites a higher one. On a write failure the
+   daemon reports a health error and keeps the active restriction while
+   persistence is uncertain.
 4. The pin store keeps **two checksummed copies**. One unreadable copy is
    repaired from the other, with health "degraded". If both are
    unreadable, the machine returns to first contact (N14), as with a lost
@@ -508,12 +543,14 @@ chooses one.
    audit event.
 5. A **readable** record is enforced as point 2 and N9, point 1, say: on
    its class. A suite this release cannot name is shown as unknown
-   ("suite: unknown (newer release)" in `afs status`). The cell is refused, until
-   an administrator acts, only when the record's class or level is
+   ("suite: unknown (newer release)" in `afs status`). The cell is
+   refused, until an administrator acts, only when the record's class is
    unknown, when the record carries the **must-understand flag** that a
    release sets once the suite takes part in comparison (N40, point 3), or
    when the store's format is newer than this release reads (N8,
-   point 3). Such a record is not treated as empty.
+   point 3). An unknown level or suite, which point 2 records as
+   information, is shown as unknown, and the class is enforced. Such a
+   record is not treated as empty.
 6. A lost state directory returns the machine to first contact (N14) for
    pins. For markers (N4) it does so only for contexts created after a
    verified fresh initialisation:
@@ -521,10 +558,17 @@ chooses one.
      it records in the audit log with the boot it happened in. That record
      is the first-install or reset boundary.
    - If the state directory is found missing in a boot in which an earlier
-     daemon instance already ran (the daemon keeps a per-boot run-time
-     record outside the state directory for this), no context that existed before the
-     initialisation gets anonymous access to any cell until it runs
-     `aklog` or `unlog` itself, or the machine restarts. Its requests get
+     daemon instance already ran, every context that makes a request in
+     that boot is treated as possibly existing before the initialisation,
+     because the daemon cannot tell: none gets anonymous access to any
+     cell until it runs `aklog` or `unlog` itself, or the machine
+     restarts. Its requests get `TokenRequired`.
+   - The per-boot record lives in a daemon-only directory the service
+     manager creates for each boot (on Linux under `/run`, as C43,
+     point 4), is written before the first request is served, and its
+     presence is the only evidence that an earlier instance ran in this
+     boot. **Test:** after the state directory is removed, a process that
+     predates the replacement daemon makes its first request and gets
      `TokenRequired`.
    - An administrator's deliberate reset (N4, point 10) is the same
      audited boundary.
@@ -533,7 +577,7 @@ Why: floors and pins compare class and level only (N1, point 4; N40), so
 enforcing a record's readable fields is never weaker than that record's
 meaning today, and refusing it would turn a software rollback
 into a cell outage for no gain. A record whose restriction a release
-cannot evaluate (an unknown class or level, or a flagged suite) is
+cannot evaluate (an unknown class, or a flagged suite) is
 refused, because refusing is the only answer that cannot be weaker than
 the record; the flag uses the same pattern as journal records (N33). N2,
 point 4, guards against the network. Only a party that can already alter
@@ -905,12 +949,12 @@ an existing server.
    later is a reason for a new format version, never for dropping a field
    a released client writes or reads. The gate, for each milestone's
    shared-core change:
-   - the baseline is the previous milestone's client, run on the same
-     simulator scenarios and against the same test cell;
-   - packets, outcomes, errors and fallbacks must be identical to the
-     baseline's, with no tolerance;
-   - resource use must stay inside the budgets the milestone's test
-     specification states (O45) before the gate runs.
+   - the comparison is the same milestone's build with and without the
+     provision under review, on the same seeded simulator scenarios and
+     the same test cell;
+   - packets, outcomes, errors and fallbacks are identical, except where
+     the provision is itself the change under review;
+   - resource use stays inside the milestone's budgets (O45).
 4. The protocol crates and the pure crypto interface depend on no client
    crate, checked in CI (C4).
 5. Deferred until a profile needs them: dynamic rights catalogues, editing
@@ -944,12 +988,26 @@ something now is paying for an option nobody has taken.
    identifier, so `afs3`, then another identifier, then `afs3` again is
    three generations.
    - (protocol identifier, generation) is part of the key of tokens and
-     credentials (C40), pin records (N9, N11), cache namespaces (C27,
-     C40), connections (C30, point 3) and journal record headers (N32).
+     credentials (C40), pin records (N9, N11), cache namespaces and pool
+     entries (C27, C40), per-volume capabilities (N42), connections (C30,
+     point 3) and journal record headers (N32).
    - On a change, handles opened under the earlier generation fail with
      `Stale`.
-   - If the stored generation cannot be read, the daemon starts one that
-     cannot equal any earlier one and treats it as a change.
+   - The identifier and its generation are committed together, in two
+     checksummed copies with a commit counter (as N11, points 3 and 4).
+     If neither copy can be read, the cell fails closed: no connection to
+     it is made, requests get `TokenRequired`, never anonymous data,
+     health is "failed" and an audit event is raised, until an
+     administrator resets the cell, which is audited. The generation is
+     never replaced automatically. N2, point 4's carve-out does not
+     extend to this record: only a lost state directory as a whole is
+     N11, point 6's case.
+   - After a deliberate change of identifier, a context that held a
+     marker under an earlier generation of the cell is treated as holding
+     one (N7, point 6's anonymous arm does not apply) until it runs
+     `aklog` or `unlog`.
+   - **Test:** corrupt both generation copies: the cell refuses with
+     `TokenRequired`; pins and markers are kept.
 
 Why: two protocol profiles under one cell name must not share a credential
 or a cached byte. Making the identifier part of every key now is free;
@@ -1066,8 +1124,12 @@ does; this is its record format.
 5. **Framing survives a bad header.** A reader can find where each record
    starts and ends without trusting a header that failed its checksum.
    The journal's specification fixes how (point 4).
-6. A torn tail after the last committed record is truncated as
-   uncommitted: C28 never acknowledged it (C28, point 6).
+6. The journal's specification fixes an independently verifiable commit
+   boundary, made durable after each record (C29, point 9). Only bytes
+   beyond the last committed boundary are truncated as a torn tail: C28
+   never acknowledged them (C28, point 6). Damage at or before the
+   boundary is never truncated: it is kept verbatim and quarantined
+   (N33, point 7).
 
 Why: the journal outlives a release. With the dependency scope in a header
 every release can read, a release that does not understand a record's
@@ -1106,7 +1168,10 @@ migration.
    cannot be known, so it holds back every later record. Records before
    it stay structured and are handled as usual. If the framing past it
    cannot be found (N32, point 5), the unframeable remainder is kept as one
-   raw quarantined blob, for export or discard. Recovery of the held-back
+   raw quarantined blob, for export or discard. A raw blob whose durable
+   owner cannot be read belongs to no owner's export: an administrator may
+   list it, move it unread to the recovery store, or discard it, each
+   audited (C29, point 4). Recovery of the held-back
    part stops, every record is kept for explicit recovery, and the health
    state says so. Nothing is recovered by guess.
 8. That stop blocks an upgrade's drain (O33). The upgrade does not wait:
@@ -1197,7 +1262,10 @@ missing.
    that status into IPC and is never pool-eligible. A change of restriction
    status, or of any token property that narrows server-side rights,
    retires the credential generation (C18, point 7): the generation's key
-   includes the token's restriction class.
+   includes the token's restriction class. The status the installing
+   process states in IPC is an assertion: the daemon keeps a generation
+   across a replacement only when it has verified the class itself, and
+   otherwise counts the replacement as a change (C14, point 1).
 7. Token IPC reserves an optional key-handle field for sender-constrained
    (proof-of-possession) tokens, the key held by the daemon. It is empty
    now.
@@ -1263,9 +1331,14 @@ stored.
    aliases its base object. Their encodings are fixed by the specification
    of the first profile that uses them.
 8. The stable object key's components are: the cell; its protocol
-   identifier and configuration generation (N27); the volume incarnation,
-   a local epoch bumped when a restore is ambiguous (C25, point 3); vnode;
-   uniquifier; stream; and snapshot view. A restored volume therefore
+   identifier and configuration generation (N27); the volume id; the
+   volume incarnation; vnode; uniquifier; stream; and snapshot view. The
+   incarnation component is a value drawn from a daemon-wide counter
+   persisted in the state directory, so it never repeats on the machine.
+   It changes for a context when that context observes ambiguity (C25,
+   point 3), and for a view shared by several contexts only on
+   authoritative evidence (C24, point 4). **Tests:** two volumes with
+   equal vnode and uniquifier; a restored volume. A restored volume therefore
    never repeats a key the operating system has already seen for a
    different object. Two anchors of one live object share its key. Per-open
    SMB ids are independent of it.
@@ -1287,8 +1360,9 @@ cheap instead.
 2. The suite is *none* for a profile whose class negotiates no suite
    (rxkad). *None* is a valid value, not an unknown one.
 3. rxnull is not a profile and has no suite value.
-4. The triple appears in IPC status, in the cache namespace key (C27,
-   C40) and in the pin record (N11).
+4. The security profile and suite (the triple) appear in IPC status, in
+   the cache namespace key (C27, point 1) and in the pin record (N11);
+   they are not part of the credential context's key (C40, point 3).
 5. In IPC, the token message carries a token kind, and status carries the
    profile as class, level and suite, never as a boolean.
 
@@ -1353,8 +1427,9 @@ profile that offers one of these features defines capability discovery at
 a different grain (per server or per cell).
 
 1. Beside N19's per-RPC capability words there is a capability value per
-   (protocol identifier, volume, the server serving it and that server's
-   incarnation, security profile), learned from that server under point 8.
+   (cell, protocol identifier and configuration generation (N27), volume,
+   the server serving it and that server's incarnation, security
+   profile), learned from that server under point 8.
 2. It is an open set: holes, server-side copy and clone, atomic no-replace
    rename, extended attributes, named streams, case and normalisation
    rules, and their limits.
@@ -1431,8 +1506,10 @@ rekeying must be visible above the security-class interface.
    provider. A class may ask for a new key or a reconnect on a live
    connection.
 2. **Key exhaustion is its own outcome**, distinct from a transport
-   failure. It triggers a rekey or a reconnect without lowering class or
-   level and inside every active floor (N6, N7).
+   failure. It leads to a rekey or a reconnect that goes through N7's
+   predicate again, with a fresh N12 attestation for a legacy connection
+   (N12, point 4), and lowers neither class nor level relative to the
+   connection it replaces (N6, point 3).
 3. A request not yet sent continues on the new key within its own
    deadline.
 4. A mutation already sent whose outcome is unknown follows the lost-reply
@@ -1520,9 +1597,11 @@ wrong.
   site's remedy is `rxgk = "never"` for that cell (N3, point 4), an
   audited change shown in `afs config show --origin`.
 - **A cell that withdraws rxgk** keeps learned clients out for up to 30
-  days after their last qualifying success, or until an administrator
-  forgets the pin, or until the records expire after policy turns
-  learning off (N9, point 7; N10).
+  days after their last qualifying success, until an administrator
+  forgets the pin, or until policy turns learning off. `learned = "off"`
+  stops enforcement at once; the records keep ageing and are enforced
+  again if learning is switched back on before they expire (N9, point 7;
+  N10).
 - **rxgk is late.** It follows the Windows layer in the plan, and FIPS
   mode follows rxgk (N18, N25). Nothing is claimed as interoperable before
   a peer exists.
@@ -1583,8 +1662,15 @@ wrong.
     "degraded"; both corrupt return the machine to first contact with
     health "failed" and an audit event;
   - a pin record with an unknown suite is enforced on its class after a
-    rollback; one with an unknown class or level, or with the
-    must-understand flag, refuses the cell;
+    rollback; one with an unknown class, or with the must-understand
+    flag, refuses the cell;
+  - a pin-store copy with a lower commit counter never overwrites one
+    with a higher counter;
+  - a cell reconfigured `afs3`, another identifier, then `afs3`: no
+    token, credential, cache or pool entry, per-volume capability,
+    connection or journal scope of an earlier generation is used under a
+    later one (N27, point 6); both generation copies corrupt refuse the
+    cell with `TokenRequired`;
   - `learned = "off"` neither learns nor enforces, keeps existing records
     and lets them expire;
   - `rxgk = "never"` stops rxgk selection; with `min_class = "rxgk"` the
@@ -1597,7 +1683,8 @@ wrong.
   - unknown capability bits and callback opcodes change nothing; no
     extension is offered or accepted under rxkad or on a legacy
     connection;
-  - a policy reader meeting an unknown security value refuses the cell;
+  - a policy reader meeting an unknown value of a known security key
+    refuses the cells it applies to, and only those (O19, point 6);
   - journal: an unknown kind, an unknown protocol identifier or
     data-transform id, and a bad payload checksum quarantine and fence
     their scope, transitively; a bad header checksum holds back the rest
