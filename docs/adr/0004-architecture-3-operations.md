@@ -1660,8 +1660,8 @@ The core's design without I/O (C3) is what makes this possible.
    earlier context or with its token after that context is retired, any use
    of records after they are resolved, any operation by a recreated
    account on the earlier account's records on a host with an account
-   UUID, and any other cross-user access
-   fails acceptance.
+   UUID other than an administrator's listing, discard or unread move
+   (O16, point 5), and any other cross-user access fails acceptance.
 2. Any other acceptance case, outside O22, either passes, or its gap is a
    documented and bounded limitation.
 3. A phase gate that cannot show point 1 holds on a platform does not ship
@@ -1765,7 +1765,9 @@ hosted runners, or a case here cannot be automated on a supported OS.
      restart, until the record is resolved, and not after; on a host with
      an account UUID, the successor gets none of it (`afs pending list`,
      `show`, `export`, `retry` and `discard` are each refused), before and
-     after a restart. On every host type nothing else crosses: no other
+     after a restart, while a record the successor writes under its own
+     account UUID is listed, shown, exported, retried and discarded for it
+     as for any owner. On every host type nothing else crosses: no other
      context, token or record (C41, point 4; C40, point 8);
    - a rename over a file another local process holds open: the rename
      succeeds where, on SMB, the opener allowed delete sharing, and
