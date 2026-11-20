@@ -35,9 +35,12 @@ recommends tier 2 rather than tier 1.
 - **FUSE:** the RHEL 7.9 kernel exposes FUSE protocol 7.23, with the
   writeback cache backported, and it has the invalidation notifications that
   AFS callback breaks need (RELAYED: the third-party kernel import). It
-  lacks everything from 7.24 up:
-  larger requests, per-thread device file descriptors, parallel directory
-  operations, directory and symlink caching, passthrough and io_uring.
+  has LSEEK (7.24), but lacks larger requests (7.28), per-thread device
+  file descriptors (kernel 4.2), parallel directory operations (7.25),
+  POSIX ACLs and kill-privilege handling (7.26), directory and symlink
+  caching and `copy_file_range` (7.28), explicit data invalidation (7.30),
+  expire-only entry notification (7.38), statx (7.39), passthrough (7.40)
+  and io_uring (7.42) (A4).
 - **Costs:** an end-of-life build image, a virtual machine for any real
   kernel test, and a floor that Rust may raise, because the distribution
   that justified it left maintenance on 2024-06-30.
@@ -51,8 +54,8 @@ and review RHEL 7 no later than the end of Red Hat's extended support on
 | # | Claim | Verdict (review vocabulary) | Quoted source | URL |
 |---|---|---|---|---|
 | 1 | Rust std needs kernel 3.2+ and glibc 2.17+ | CONFIRMED for x86_64; AMEND for aarch64, which needs kernel 4.1+ | "x86_64-unknown-linux-gnu: 64-bit Linux (kernel 3.2+, glibc 2.17+)"; "aarch64-unknown-linux-gnu: ARM64 Linux (kernel 4.1+, glibc 2.17+)" | https://doc.rust-lang.org/1.97.1/rustc/platform-support.html |
-| 2 | The 2022 baseline has not been raised | CONFIRMED. The 1.97.1, stable and nightly pages give the same figures. | "glibc >= 2.17 (previously glibc >= 2.11)"; "kernel >= 3.2 (previously kernel >= 2.6.32)" | https://blog.rust-lang.org/2022/08/01/Increasing-glibc-kernel-requirements/ |
-| 3 | A future raise is announced | NOT VERIFIED (not found). The stated rationale has expired (A1). | "The new baseline requirements were picked as the least common denominator among long-term-support distributions that still have active support. This is currently RHEL 7" | same |
+| 2 | The 2022 baseline has not been raised | CONFIRMED as far as checked: no later raise found as of 2026-11-19. The 1.97.1, stable and nightly pages give the same figures. | "glibc >= 2.17 (previously glibc >= 2.11)"; "kernel >= 3.2 (previously kernel >= 2.6.32)" | https://blog.rust-lang.org/2022/08/01/Increasing-glibc-kernel-requirements/ |
+| 3 | A future raise is announced | NOT VERIFIED (no announced raise found as of 2026-11-19). The stated rationale has expired (A1). | "The new baseline requirements were picked as the least common denominator among long-term-support distributions that still have active support. This is currently RHEL 7" | same |
 | 4 | A static musl binary sidesteps glibc on RHEL 7 | CONFIRMED (EXECUTED). The kernel floor still applies. | "`*-linux-musl*` targets are only affected by the kernel requirements, not the glibc requirements." | same |
 | 5 | "Roughly the RHEL 7 floor" | CONFIRMED | "RHEL 7 (glibc 2.17, kernel 3.10)" listed as still supported | same |
 | 6 | RHEL 7.9 kernel is 3.10.0-1160 | CONFIRMED | "RHEL 7.9, 2020-09-29, 3.10.0-1160" | https://access.redhat.com/articles/3078 |
@@ -73,8 +76,8 @@ and review RHEL 7 no later than the end of Red Hat's extended support on
 - INSPECTED. Rust 1.97.1 lists tier 1 `x86_64-unknown-linux-gnu` at kernel
   3.2+ and glibc 2.17+, and `aarch64-unknown-linux-gnu` at kernel 4.1+ and
   glibc 2.17+.
-- The floor was set in Rust 1.64 (2022-09-22). No later change raising it was
-  found, and no announced raise. That is absence of evidence, not a
+- The floor was set in Rust 1.64 (2022-09-22). No later raise was found as
+  of 2026-11-19, and no announced raise. That is absence of evidence, not a
   guarantee.
 - **Risk** (this note's reading): the 2022 rationale was the oldest
   long-term distribution "with active support". RHEL 7 left maintenance on
@@ -121,7 +124,7 @@ and review RHEL 7 no later than the end of Red Hat's extended support on
 | systemd | 219 | EXECUTED |
 | OpenSSL | 1.0.2k | EXECUTED |
 | gcc | 4.8.5 | EXECUTED |
-| libfuse | fuse 2.9.2 in base; fuse3 3.6.1 in Extras and EPEL | INSPECTED and EXECUTED |
+| libfuse | fuse 2.9.2 in base; fuse3 3.6.1 in CentOS Extras (EPEL not checked) | INSPECTED and EXECUTED |
 
 **Support status:**
 
@@ -154,8 +157,9 @@ and the INIT handshake offers the writeback cache.
 | `notify_inval_inode`, `notify_inval_entry` (callback breaks) | 7.12 | Present |
 | readdirplus | 7.21 | Present |
 | splice on the device | 7.14 | Present |
-| `FOPEN_KEEP_CACHE`, `FUSE_AUTO_INVAL_DATA` | 7.9, 7.20 | Present |
+| `FOPEN_KEEP_CACHE`, `FUSE_AUTO_INVAL_DATA` | 7.2, 7.20 | Present |
 | Caller uid, gid and pid per request (not on delayed writeback writes) | old | Present |
+| `LSEEK` (`SEEK_DATA`, `SEEK_HOLE`) | 7.24 | Present (backport) |
 | Requests larger than 128 KiB (`max_pages`) | 7.28 / 4.20 | Missing |
 | One device fd per worker (`FUSE_DEV_IOC_CLONE`) | kernel 4.2 | Missing |
 | Parallel directory operations | 7.25 | Missing |
@@ -167,10 +171,15 @@ and the INIT handshake offers the writeback cache.
 | Passthrough to backing files | 7.40 / 6.9 | Missing |
 | io_uring transport | 7.42 / 6.14 | Missing |
 
-- **Mounting:** the `fuse` and `fuse3` packages install `fusermount` setuid
-  root (EXECUTED). An actual mount on a 3.10 kernel was not run.
+- **Mounting:** the kernel's FUSE documentation says `fusermount` is
+  installed setuid root (INSPECTED,
+  https://docs.kernel.org/filesystems/fuse/fuse.html). That CentOS 7's
+  `fuse` and `fuse3` packages install it so is our own run (EXECUTED). An
+  actual mount on a 3.10 kernel was not run.
 - **`allow_other`:** a system-wide `/afs` needs it, gated by
-  `user_allow_other` in `/etc/fuse.conf` for non-root users (NOT VERIFIED).
+  `user_allow_other` in `/etc/fuse.conf` for non-root users, enforced by
+  the `fusermount3` helper (INSPECTED, mount.fuse3(8), CONFIGURATION:
+  https://man7.org/linux/man-pages/man8/mount.fuse3.8.html).
 - **The `fuser` crate** (for reference): it accepts protocol 7.6 and up, and
   negotiates capabilities at run time. Its README says "Pull requests are no
   longer being accepted" and "Future releases will be developed primarily by a
@@ -341,7 +350,8 @@ This placement is a judgement, not a measured result.
 - Red Hat: [release dates and kernels](https://access.redhat.com/articles/3078), [RHEL 7 end of maintenance](https://access.redhat.com/articles/7060360), [ELS announcement](https://www.redhat.com/en/blog/announcing-4-years-extended-life-cycle-support-els-red-hat-enterprise-linux-7), [retired life-cycle dates](https://access.redhat.com/articles/4038291)
 - CentOS: [end dates](https://blog.centos.org/2023/04/end-dates-are-coming-for-centos-stream-8-and-centos-linux-7/), [7.9 packages](https://vault.centos.org/7.9.2009/os/x86_64/Packages/)
 - RHEL 7 kernel source (third-party import): [`fuse.h`](https://git.zx2c4.com/rhel7-kernel-misery/plain/include/uapi/linux/fuse.h), [`fs/fuse/inode.c`](https://git.zx2c4.com/rhel7-kernel-misery/plain/fs/fuse/inode.c)
-- Linux: [upstream `fuse.h`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/include/uapi/linux/fuse.h)
+- Linux: [upstream `fuse.h`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/include/uapi/linux/fuse.h), [FUSE documentation](https://docs.kernel.org/filesystems/fuse/fuse.html)
+- libfuse: [mount.fuse3(8)](https://man7.org/linux/man-pages/man8/mount.fuse3.8.html)
 - `fuser`: [README](https://github.com/cberner/fuser/blob/master/README.md), [v0.18.0 `session.rs`](https://github.com/cberner/fuser/blob/v0.18.0/src/session.rs)
 - Debian: [Debian 13 release notes](https://www.debian.org/releases/trixie/release-notes/whats-new.en.html)
 - Research sites: [QMUL](https://blog.hpc.qmul.ac.uk/rocky-announce/), [University of Arizona](https://hpcdocs.hpc.arizona.edu/resources/updates), [SCARF](https://www.scarf.rl.ac.uk/user-guides/rocky9.html)

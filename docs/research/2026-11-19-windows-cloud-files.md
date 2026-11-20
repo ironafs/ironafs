@@ -5,7 +5,7 @@
 
 **How this note was made.**
 
-- Two kinds of evidence, labelled as in the [research index](README.md):
+- Evidence labelled as in the [research index](README.md):
   - **INSPECTED:** read in Microsoft's documentation, linked with the claim;
   - **MEASURED:** measured by the maintainer on disposable virtual machines
     running Windows 11 Pro 26H2
@@ -14,6 +14,7 @@
     These are EXECUTED results in the sense of `docs/workflow.md` §3c, but
     not on IronAFS code and not reproducible from this repository, so they
     are evidence for design, not proof that IronAFS works;
+  - **INFERRED:** a conclusion drawn from labelled facts;
   - **NOT VERIFIED:** reasoned or reported, not measured or documented.
 - Where Microsoft's documentation and a measurement agree, both are given.
   Where they disagree, the measurement is stated and the difference named.
@@ -85,7 +86,10 @@ Files as a possible offline companion.
   [CfRegisterSyncRoot](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfregistersyncroot)),
   so that observation is unsupported behaviour, not something to rely on. The filter attaches to a volume only at the first registration
   there, so tests need fresh machines (MEASURED).
-- **Namespace.** A root is a local directory, not a `\\server` path. A
+- **Namespace.** A root is a local directory (INFERRED: the filter supports
+  only NTFS, and roots are registered "on a given volume"; nothing
+  Microsoft publishes states that a `\\server` sync root is refused,
+  [CfRegisterSyncRoot](https://learn.microsoft.com/en-us/windows/win32/api/cfapi/nf-cfapi-cfregistersyncroot)). A
   per-session drive letter over a root works for Explorer, `cmd` and Win32
   programs, but elevated processes do not see it (MEASURED).
 - **NTFS surface AFS never had.** Hard links, junctions, symbolic links,
