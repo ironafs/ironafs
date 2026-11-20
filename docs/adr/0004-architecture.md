@@ -621,5 +621,5 @@ The full record, with every finding and its disposition, is
   PASS, every item fixed.
 - **Round 16** read the whole ADR at `1ecfe1d` for decisions that
   contradict each other (GLM, one run per part): PASS, with three minor
-  cross-reference findings, fixed in `d78ac85` and verified by GLM (PASS,
-  no findings).
+  cross-reference findings, fixed in `d78ac85` and verified by GLM and GPT
+  (both PASS, no findings).
