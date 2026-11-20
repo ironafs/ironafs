@@ -28,13 +28,16 @@ harder to ship everywhere.
   which runs in user space.
 - **On Linux,** new kernel interfaces are increasingly limited to GPL code,
   while FUSE keeps gaining speed and features.
-- **On Windows,** the Cloud Files API lets a sync provider present files on
-  demand, as placeholders in an existing filesystem, without a driver of its
-  own.
+- **On Windows,** the plan is a small SMB server inside IronAFS on the local
+  machine, reached as `\\afs` through Windows' own SMB client, with no driver.
+  So far only the transport is measured (see the planned design below), and
+  the path is behind a gate. The Cloud Files API, which presents files on
+  demand as placeholders, can follow later as an optional offline companion.
 
-All three systems now offer a supported way to expose files without
-third-party kernel code: FUSE and FSKit as filesystems, and Cloud Files as
-a sync provider. IronAFS is a client built for that world. The background
+All three systems offer a way to expose files without third-party kernel
+code: FUSE and FSKit as supported filesystem interfaces, and on Windows, if
+the gate passes, Windows' own SMB client talking to a local server. IronAFS
+is a client built for that world. The background
 is in the
 [research notes](docs/research/2026-11-18-driverless-afs-clients.md).
 
@@ -45,9 +48,10 @@ is in the
   `fs` commands, mount points, ACLs and volume access. Then modernise it.
 - **Share as much as possible.** One core does everything that is not
   operating-system specific; each platform adds only a thin layer.
-- **No kernel code of our own.** FSKit on macOS, a Cloud Files sync provider
-  on Windows, FUSE on Linux. Other systems with FUSE, or a similar
-  interface, can follow.
+- **No kernel code of our own.** FUSE on Linux, FSKit on macOS, and on
+  Windows a small SMB server of our own on the local machine, reached through
+  Windows' own SMB client. Other systems with FUSE, or a similar interface,
+  can follow.
 - **Safe by construction.** Everything that parses data from the network is
   safe Rust, with no `unsafe` and no panics on bad input.
 - **Few dependencies, all of them readable.** IronAFS writes its own protocol
@@ -61,8 +65,9 @@ is in the
 
 ## The planned design
 
-Three thin platform layers (FUSE on Linux, FSKit on macOS, Cloud Files on
-Windows) sit on one shared Rust core, which the `afs` command line uses too:
+Three thin platform layers (FUSE on Linux, FSKit on macOS, a local SMB
+server on Windows) sit on one shared Rust core, which the `afs` command line
+uses too:
 
 ```
                  afs command line
@@ -74,12 +79,24 @@ Windows) sit on one shared Rust core, which the `afs` command line uses too:
    |  tokens, configuration                     |
    +--------------------------------------------+
         |                |                 |
-   FUSE layer      FSKit layer      Cloud Files layer
-     (Linux)         (macOS)           (Windows)
+   FUSE layer      FSKit layer       SMB layer
+     (Linux)         (macOS)          (Windows)
 ```
 
 This is the intended shape, not code that exists. The architecture decision
 is the next design step.
+
+**Windows, planned:** an online `\\afs` path through Windows' own SMB client to
+an SMB 3.1.1 server of IronAFS's own on the local machine, behind a gate on
+identity, security, application compatibility and coherency. What has been
+measured is the transport: Windows' SMB client reaching a listener on the
+local machine beside Windows' own file sharing, on Windows 10 22H2 and
+Windows 11 24H2 and 26H2, to the client's first packet. A full SMB session has not been
+measured yet ([the UNC note](docs/research/2026-11-19-windows-unc-without-a-driver.md)).
+A Cloud Files replica may follow later as an optional offline companion,
+and is the Windows surface if the gate fails. This is the maintainer's
+decision of 2026-11-19, to be recorded in ADR 0004
+([#20](https://github.com/ironafs/ironafs/issues/20)).
 
 ## Compatibility
 

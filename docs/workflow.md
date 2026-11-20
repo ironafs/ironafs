@@ -40,7 +40,8 @@ change so most of it lands in a lower class.
 | Rx or XDR parsing, anything decoding fileserver replies | S | Hostile or broken servers send this data |
 | Callback handling, cache invalidation, data cache | S | A mistake serves stale or wrong data |
 | Token storage, per-user token lookup, the local IPC caller check | S | A mistake leaks a token or lets one user act as another |
-| `unsafe` code, FSKit or Cloud Files bindings (no C Rx: ADR 0001) | S | Memory safety rests on hand-checked invariants |
+| `unsafe` code, FSKit, SSPI or other OS bindings (no C Rx: ADR 0001) | S | Memory safety rests on hand-checked invariants |
+| SMB message parsing, SMB session authentication and identity mapping | S | Local processes send this data, and a mistake lets one user act as another |
 | Locking, async tasks, shutdown | S | Races and deadlocks |
 | A cache format on disk we promise to read in later versions | R | Users' caches depend on it forever |
 | First public release, going public, relicensing | R | Can't be taken back |
@@ -368,7 +369,8 @@ Rules:
 
 - Edit and build on the development machine (macOS) (toolchain pinned in `rust-toolchain.toml`).
 - Linux FUSE: a container or Linux VM. macOS FSKit: a macOS 26/27 machine or
-  VM. Windows Cloud Files: a Windows VM.
+  VM. Windows (the SMB layer; Cloud Files later): Windows 10 and Windows 11
+  virtual machines.
 - Every task that touches a platform layer names its venue; a claim about
   mount behaviour is only proven on that venue.
 
@@ -448,7 +450,7 @@ hold everything.
     Every PR and task issue has exactly one.
   - **Type:** `type:bug`, `type:design`, `type:task`, `type:research`.
   - **Area:** `area:rx`, `area:xdr`, `area:cache`, `area:auth`, `area:cli`,
-    `area:fuse`, `area:fskit`, `area:cloudfiles`, `area:docs`,
+    `area:fuse`, `area:fskit`, `area:smb`, `area:cloudfiles`, `area:docs`,
     `area:process`.
   - **Status:**
     - `owner-decision`: waits on the owner;
