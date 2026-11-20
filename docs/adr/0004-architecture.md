@@ -389,10 +389,13 @@ invariant.
 7. **S7.** The specification for the Windows route (L19, L20) settles
    how a saved path under the route's name is handled after the proxy is
    removed by a policy refresh or an uninstall, when Windows' own file
-   sharing listens on port 445. It must keep L20, point 8: no IronAFS or
-   AFS credential is ever sent to a listener that is not IronAFS's, and,
-   while the route is disabled, no authentication goes off the machine.
-   L41, point 4, is its gate.
+   sharing listens on port 445. It must keep L20, point 8: an
+   authentication attempt on a saved `\\afs` path, with the route disabled
+   or with a competing local listener present, reaches IronAFS's own
+   listener or no listener at all; any other local or remote listener
+   receiving any authentication attempt (Windows credentials included, not
+   only IronAFS or AFS ones) fails the row. After an uninstall, no IronAFS
+   or AFS credential is sent under the name. L41, point 4, is its gate.
 
 ## Review
 

@@ -1241,8 +1241,10 @@ users.
    owner instructs a retry, after seeing the difference; a context with
    the same AFS identity under another account instance may then carry it
    out under C28, point 5, without seeing the bytes or the difference
-   (C18, point 2), and may not discard it. A retry
-   always needs C28, point 5. **Test:** two local accounts hold one AFS
+   (C18, point 2); executing the retry grants no permission by itself,
+   and an account that also holds the administrator role keeps that
+   role's permissions (O16, point 5). A retry always needs C28, point 5.
+   **Test:** two local accounts, neither an administrator, hold one AFS
    identity; the second account's attempt to replay a record before its
    owner has consented is refused; after consent it carries the retry
    out; its requests for the bytes, the difference and a discard are
@@ -1256,6 +1258,20 @@ users.
    daemon's store on disk, and local administrators are outside the
    threat model (O23). The archive format is specified with the record
    format (N32 to N35). Every discard is an audit event.
+   The account-instance check that runs at token installation also runs
+   before any recovery record is shown, exported, retried or discarded,
+   and before a context rebinds to one (C41, point 4; C40, point 8). The
+   one stated residual (C41, point 4): on Linux and macOS, a successor
+   account given an earlier account's uid that acts before the earlier
+   context is retired acts in that context, with its token and its
+   recovery records. Retirement comes from whichever the host offers: a
+   session-end signal (logind or the user's IronAFS agent, and only once
+   any linger ends); a failed account-instance check (account UUID or
+   equivalent) at the next token installation or record operation; or, for
+   the token half, the token's expiry or `unlog`. The records half lasts
+   until retirement or until the records are resolved (stored or
+   discarded). Hosts with neither signal nor account UUID have the widest
+   window.
 5. A record's owner is the durable owner of the context that wrote it
    (C18, point 9; C40, point 6). After that context ends, the same
    account instance may view or export the bytes; replaying still needs a
@@ -1679,6 +1695,20 @@ that needs a reboot is avoided. Byte limits are coding standards rule 3.
    `TokenRequired`, never anonymous data (N4, point 4), and the owner's
    records stay quarantined. They are never given to a new holder of the
    uid or SID.
+   Before a restart, the account-instance check that runs at token
+   installation also runs before any recovery record is shown, exported,
+   retried or discarded, and before a context rebinds to one (C41, point
+   4). The one residual (C41, point 4): on Linux and macOS, a successor
+   account given an earlier account's uid that acts before the earlier
+   context is retired acts in that context, with its token and its
+   recovery records. Retirement comes from whichever the host offers: a
+   session-end signal (logind or the user's IronAFS agent, and only once
+   any linger ends); a failed account-instance check (account UUID or
+   equivalent) at the next token installation or record operation; or, for
+   the token half, the token's expiry or `unlog`. The records half lasts
+   until retirement or until the records are resolved (stored or
+   discarded). Hosts with neither signal nor account UUID have the widest
+   window.
 
 Why: every isolation rule in this part reduces to "which context is
 this?". If any part of the answer came from the caller, a caller could
@@ -1704,25 +1734,38 @@ each filesystem request that a process cannot forge, or the Windows spike
    documented.
 4. **When a context ends on Linux and macOS.** A context ends when the
    operating system reports that the uid's last session has ended
-   (systemd-logind's `UserRemoved` signal, where logind runs), or when
-   the user's IronAFS agent exits at logout (the systemd user manager on
+   (systemd-logind's `UserRemoved` signal, where logind runs), or when the
+   user's IronAFS agent exits at logout (the systemd user manager on
    Linux, the launch agent of L14, point 3, on macOS), or when a token
-   install shows a different account instance for the uid. When a token
-   is installed the daemon records the uid with its user name, and the
+   install shows a different account instance for the uid. When a token is
+   installed the daemon records the uid with its user name, and the
    account's UUID where the operating system has one; a mismatch at the
    next install retires the old generation (C18, point 7) and treats the
-   records of the old owner as C40, point 8, says. A user whose services
-   linger keeps the context until the linger ends. Hosts with neither
-   signal rely on token expiry and `unlog`; this is documented.
-   **Bound.** An account deleted and recreated with the same uid and
-   name, on a system with no account UUID, is indistinguishable from the
-   old one. The one residual: on a Linux or macOS host with neither
-   session-end signal (logind or the user's IronAFS agent), a new account
-   given a departed account's uid can use that account's live token until
-   the token expires or is removed by `unlog`. Hosts with either signal
-   are not affected. O22, point 1, O23's local-user row and O46, point 1,
-   state the same residual. After a restart such records stay quarantined
-   (C40, point 8).
+   records of the old owner as C40, point 8, says. **Records.** The
+   account-instance check that runs at token installation also runs before
+   any recovery record is shown, exported, retried or discarded, and
+   before a context rebinds to one; a mismatch retires the old generation,
+   refuses the request and treats the records of the old owner as C40,
+   point 8, says. A user whose
+   services linger keeps the context until the linger ends, and the signal
+   retires it only then. Hosts with neither signal rely on token expiry
+   and `unlog`; this is documented. **Bound.** An account deleted and
+   recreated with the same uid and name, on a system with no account UUID,
+   is indistinguishable from the old one. The one residual: on Linux and
+   macOS, a successor account given an earlier account's uid that acts
+   before the earlier context is retired acts in that context, with its
+   token and its recovery records. Retirement comes from whichever the
+   host offers: a session-end signal (logind or the user's IronAFS agent,
+   and only once any linger ends); a failed account-instance check
+   (account UUID or equivalent) at the next token installation or record
+   operation; or, for the token half, the token's expiry or `unlog`. The
+   records half lasts until retirement or until the records are resolved
+   (stored or discarded). Hosts with neither signal nor account UUID have
+   the widest window. Hosts with either signal are not affected once the
+   signal has retired the earlier context. C29, point 4, C40, point 8,
+   O22, point 1, O23's local-user row, O46, point 1, and O48, point 4,
+   state the same residual. After a restart the old owner's
+   records stay quarantined (C40, point 8).
 5. **Windows.** The account instance is the account's SID, which is not
    reissued to another account. A context ends when its logon session
    ends (L18, point 12). After a restart the SID is C40, point 8's
