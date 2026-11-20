@@ -350,7 +350,206 @@ options. It is not answered here.
 
 ## Decision index
 
-Filled in when all four parts are drafted.
+Each decision's mark is in its part.
+
+**[Part 1, the core](0004-architecture-1-core.md)**
+
+- C1: One system daemon per machine holds the core
+- C2: Semantics in the core, presentation in the layer
+- C3: Protocol code without I/O, synchronous operation code, no async runtime
+- C4: Crates and their dependency rules
+- C5: The cryptography boundary and the operating-system bindings
+- C6: The protocol code is written from specifications
+- C7: The contract crate and its three kinds of operation
+- C8: Caller capabilities come from the core, from what the OS attests
+- C9: One commit operation
+- C10: Removing and replacing open files
+- C11: Node identity
+- C12: The dynamic root
+- C13: Handles carry authority
+- C14: Suspension, resumption and revocation
+- C15: What revocation guarantees, by access path
+- C16: Fencing: record first, never serve a fenced reply, check at submission
+- C17: The invalidation stream
+- C18: Cache state is private to each credential context
+- C19: Nothing unauthenticated feeds an authenticated path
+- C20: Unauthenticated data is not cached at all
+- C21: The shared pool admits only data no local user could have forged
+- C22: Grants: per file, from the reader's own status reply
+- C23: How long a grant lasts
+- C24: Weak evidence only lowers trust
+- C25: Volume incarnation: when in doubt, fetch again
+- C26: Coherency and what survives a restart
+- C27: The store on disk, eviction and budgets
+- C28: What the journal never does
+- C29: Journal behaviour and recovery
+- C30: One socket per address family; connections per context
+- C31: What the callback service does with what it receives
+- C32: Callback trust and bounded revalidation
+- C33: Finding a cell's servers
+- C34: Addresses and IPv6
+- C35: Security classes and their order
+- C36: Performance choices made at the start
+- C37: Three clocks behind one seam
+- C38: Time is 64-bit inside; wire times are converted in one place
+- C39: Threads and locking
+- C40: One credential context, built from what the OS attests
+- C41: What each operating system attests; no PAGs
+- C42: Tokens live in the daemon's memory
+- C43: A token sender authenticates the daemon first
+- C44: Local IPC: one framework, its encoding and compatibility rules
+- C45: Two endpoints; adapters bind only by the daemon's registration
+- C46: Errors
+
+**[Part 2, OS layers and Windows](0004-architecture-2-os-layers.md)**
+
+- L1: A layer is a translator and holds no authority
+- L2: Linux uses FUSE through IronAFS's own protocol layer, floor 7.23
+- L3: `/afs` never grants local privilege on a POSIX layer
+- L4: Every write on Linux is attributable to a caller
+- L5: Linux kernel caches start off and relax only with evidence
+- L6: Commit points on Linux
+- L7: Linux hosting: a small privileged mount step, an unprivileged daemon
+- L8: macOS uses FSKit on macOS 27 and later, Apple silicon only
+- L9: A mount whose reads and writes name no caller serves one user
+- L10: Per-user FSKit mounts by default
+- L11: macOS mount and cache settings start conservative
+- L12: macOS writes need a commit that reports errors
+- L13: The macOS gate
+- L14: macOS hosting
+- L15: Windows is SMB first; the Cloud Files replica is a later companion
+- L16: Routes from Windows' SMB client to the loopback server
+- L17: Over SMB, authority is the session's own account
+- L18: SMB authentication runs in the daemon; the front end holds transport keys and session capabilities, no AFS tokens and no cache
+- L19: SMB scope
+- L20: The loopback endpoint is contained, or the route is off
+- L21: Machine-wide Windows settings each have one owner
+- L22: What the Windows spike must show
+- L23: Windows hosting
+- L24: The Windows name table
+- L25: Windows names are total, reversible and never destructive
+- L26: Windows metadata
+- L27: The Cloud Files replica, if it is built
+- L28: Replica isolation is per object and absolute
+- L29: Names on Linux and macOS
+- L30: A displayed owner never grants anything
+- L31: Owner mapping
+- L32: Mount points, links and special nodes
+- L33: Locks, per layer
+- L34: Where the filesystem appears
+- L35: `fs` command paths are resolved by the caller, not the daemon
+- L36: What a row means
+- L37: Tier 1 targets
+- L38: Tier 2 targets
+- L39: Candidates
+- L40: The common smoke test and the test cell
+- L41: Windows route qualification
+- L42: Build, mount and authentication floors
+- L43: Spikes and exclusions
+
+**[Part 3, operations, security and lifecycle](0004-architecture-3-operations.md)**
+
+- O1: One event catalogue for every component
+- O2: A published event keeps its id and meaning for good
+- O3: Components report through the daemon, which stamps the source
+- O4: A direct write when the daemon cannot take an event
+- O5: No secret in a log, a capture or a support bundle
+- O6: Default redaction and opaque references
+- O7: Storm control, run-time levels and scoped captures
+- O8: Native log sinks
+- O9: Audit comes only from the daemon, and its loss is always visible
+- O10: Audit capacity, durability and collection
+- O11: Metrics and health, with no listener by default
+- O12: `afs status` and `afs diagnose`
+- O13: Cache inspection and flush
+- O14: Support bundles
+- O15: No remote debug service
+- O16: A user sees only their own state
+- O17: Layered configuration, and policy locks its keys
+- O18: The configuration file
+- O19: Policy across client versions
+- O20: Nothing phones home
+- O21: Retention, and what the client tells others by working
+- O22: The security invariants
+- O23: The threat model
+- O24: Least privilege for every process
+- O25: No secret in a dump
+- O26: How dumps are disabled, and what stays outside the client's control
+- O27: Encryption at rest is the operating system's
+- O28: Constant-time comparison and zeroisation at named places
+- O29: Supply chain and release signing
+- O30: Vulnerability handling
+- O31: FIPS 140 mode is unscheduled
+- O32: Pending writes and durable state survive an upgrade
+- O33: The upgrade and rollback procedure
+- O34: Offline behaviour
+- O35: Errors a user can act on
+- O36: Tokens at login, and the command line
+- O37: Packaging and installers
+- O38: Identifiers: one inventory, and when they freeze
+- O39: Servers supported, and how compatibility is decided
+- O40: Protocol details that users notice
+- O41: Where the cache and the journal may live
+- O42: Backups, images and clones
+- O43: Release and support policy
+- O44: Generated troubleshooting reference and runbooks
+- O45: A deterministic whole-system simulator
+- O46: The acceptance rule
+- O47: Model-based, property and fuzz tests
+- O48: Interoperability and acceptance cases
+- O49: Benchmarks and CI venues
+- O50: The order of work
+- O51: Proposed later work
+
+**[Part 4, negotiation and formats](0004-architecture-4-negotiation.md)**
+
+- N1: Profiles, and their order
+- N2: Three controls, and the effective floor
+- N3: The configured floor: keys and defaults
+- N4: The token's own profile, and no anonymous fallback
+- N5: Evidence and hints
+- N6: Failure never lowers
+- N7: One choke point
+- N8: Security keys are understood from the first authenticating release
+- N9: The learned pin: scope and learning
+- N10: The learned pin: lifetime
+- N11: The pin store
+- N12: The one downgrade signal: a cell-attested legacy fileserver
+- N13: What ships disabled: the opcode gate
+- N14: First contact
+- N15: Replicas of mixed profile
+- N16: The administrator's view
+- N17: Negotiation never fetches code
+- N18: FIPS mode is this mechanism with fixed values
+- N19: Capability observations are never persisted or shared
+- N20: Fallbacks come only from a static catalogue
+- N21: What the client announces
+- N22: IronAFS extensions only over rxgk
+- N23: Third-party optional operations
+- N24: The registration gate
+- N25: rxgk waits for a peer; what may be claimed
+- N26: The client is an AFS-3 client; readiness costs nothing
+- N27: A protocol identifier per cell
+- N28: Operation grants, not rights letters
+- N29: Callback kinds form a registry
+- N30: Token and combine calls sit behind the profile
+- N31: Evidence for any wire fact
+- N32: Journal records: two layers
+- N33: Journal versions, unknown records and quarantine
+- N34: Journal kinds
+- N35: Reserved areas in a record, and what is not reserved
+- N36: The principal is a typed value
+- N37: The ACL value is open
+- N38: Identifier widths
+- N39: A security profile is recorded as class, level and suite
+- N40: No suite floor yet
+- N41: Extension arms in control IPC
+- N42: Per-volume capabilities
+- N43: No permanent refusal for what a later cell may offer
+- N44: Seams: data transform and crypto agility
+- N45: Rekeying belongs to the security class
+- N46: Reserved contract operations, and two baselines
+- N47: Small fields that are cheap now
 
 ## Specification items
 
@@ -401,4 +600,21 @@ invariant.
 
 ## Review
 
-Reviews are recorded here, part by part.
+The full record, with every finding and its disposition, is
+[docs/reviews/2026-11-20-adr-0004-review.md](../reviews/2026-11-20-adr-0004-review.md).
+
+- **Seats.** GLM (`glm-5.3`, max) for security and design, and GPT
+  (`gpt-6.2-astra`, xhigh) for design; Gemini (`gemini-4-carbon-high`) for
+  design in round 1 only.
+- **Round 1** reviewed the whole ADR at `9ced6e2`. All seats failed it. The
+  findings merged into 109 issues (19 blockers, 65 majors, 25 minors), none
+  refuted: 86 were fixed in `8452f18`, and 23 choices were decided and
+  written in `6020b53`.
+- **Round 2** verified those fixes. Its 45 items were fixed in `6f39ac4`,
+  including the move of the Cloud Files replica's mechanisms to a replica
+  ADR required before it is built (L27).
+- **Rounds 3 to 14** each verified only the previous round's findings and
+  the text that changed; every finding was fixed in the next commit, and
+  seven mechanisms became specification items S1 to S7.
+- **Round 15**, on `8592a99..b8ae156`: GLM PASS with no findings; GPT
+  PASS, every item fixed.
