@@ -90,9 +90,10 @@ more independent reviewers it needs. When in doubt, the higher class wins.
 ### Who writes and who must review
 
 No model family reviews its own family's work. A required review always
-comes from a family that did not write the change: the text or code under
-review. Having reviewed an earlier draft, or gathered research it draws on,
-does not make a family an author (`docs/workflow.md` §2).
+comes from a family that did not write the change: any of its text or code,
+or the design it was built from. Having reviewed an earlier draft, or
+gathered research it draws on without its text entering the change, does
+not make a family an author (`docs/workflow.md` §2).
 
 | Class | Usually written by | Required reviews before merge | Other checks |
 |---|---|---|---|
