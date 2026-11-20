@@ -1762,7 +1762,8 @@ hosted runners, or a case here cannot be automated on a supported OS.
      record or metadata is returned; once it holds its own context, a
      successor that is not an administrator has the earlier account's
      records left out of its `afs pending list` and every other request of
-     its on them refused (C41, point 4); with neither, the successor can use the old token until it expires or is
+     its on them refused, unless it carries out a retry their owner
+     instructed (C29, point 4; C41, point 4); with neither, the successor can use the old token until it expires or is
      removed by `unlog`, and not after. Records half: on a host with no
      account UUID, a successor with the same uid and name owns the seeded
      record before and after the earlier context is retired and after a
