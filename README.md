@@ -28,14 +28,16 @@ harder to ship everywhere.
   which runs in user space.
 - **On Linux,** new kernel interfaces are increasingly limited to GPL code,
   while FUSE keeps gaining speed and features.
-- **On Windows,** Windows' own SMB client can reach a file server running on
-  the same machine, so a small SMB server inside IronAFS can present `\\afs`
-  with no driver. The Cloud Files API, which presents files on demand as
-  placeholders, can follow later as an optional offline companion.
+- **On Windows,** the plan is a small SMB server inside IronAFS on the local
+  machine, reached as `\\afs` through Windows' own SMB client, with no driver.
+  So far only the transport is measured (see the planned design below), and
+  the path is behind a gate. The Cloud Files API, which presents files on
+  demand as placeholders, can follow later as an optional offline companion.
 
-All three systems now offer a supported way to expose files without
-third-party kernel code: FUSE and FSKit as filesystems, and Windows' own SMB
-client talking to a local server. IronAFS is a client built for that world. The background
+All three systems offer a way to expose files without third-party kernel
+code: FUSE and FSKit as supported filesystem interfaces, and on Windows, if
+the gate passes, Windows' own SMB client talking to a local server. IronAFS
+is a client built for that world. The background
 is in the
 [research notes](docs/research/2026-11-18-driverless-afs-clients.md).
 
