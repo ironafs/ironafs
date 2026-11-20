@@ -24,9 +24,9 @@ All four outside families are approved for IronAFS source (owner,
 ## Which seat, by class
 
 Use "Seats by class" in `docs/workflow.md` §2; it is authoritative, and
-`AI.md` explains it. Required seats always come from a family that wrote
-neither the design nor the code, counting outside contributors' declared
-tools. Security reviews go to GPT read-only, a Claude seat or GLM, whichever
+`AI.md` explains it. Required seats always come from a family that did
+not write the change, as §2 defines it (any of its text or code, or the
+design it was built from), counting outside contributors' declared tools. Security reviews go to GPT read-only, a Claude seat or GLM, whichever
 wrote neither the design nor the code, never to Gemini. Embargoed security
 work goes only to the Anthropic and OpenAI lanes until disclosure
 (`docs/workflow.md` §2). A same-family review is an extra

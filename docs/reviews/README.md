@@ -24,6 +24,7 @@ the evidence that refutes it.
 | [2026-11-20-pre-public-tidy](2026-11-20-pre-public-tidy.md) | Issue #3: wording tidy before going public |
 | [2026-11-20-adr-0004-claims](2026-11-20-adr-0004-claims.md) | Issue #20: the factual claims behind ADR 0004, each re-checked at its source |
 | [2026-11-20-windows-smb-first-docs](2026-11-20-windows-smb-first-docs.md) | Issue #21: the public description of Windows as SMB first |
+| [2026-11-20-review-authorship](2026-11-20-review-authorship.md) | Issue #26: who counts as an author for review seats |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
