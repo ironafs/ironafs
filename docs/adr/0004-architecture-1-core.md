@@ -1700,11 +1700,11 @@ that needs a reboot is avoided. Byte limits are coding standards rule 3.
    its account instance is the same (C18, point 7). Without that evidence,
    requests to a cell where that owner holds a marker return
    `TokenRequired`, never anonymous data (N4, point 4), and the owner's
-   records stay quarantined. They are never given to a new holder of the
-   uid or SID that the host's evidence tells apart from the earlier
-   account; on a host with no account UUID, uid and name are that
-   evidence, and the records half of the stated residual applies (C41,
-   point 4).
+   records stay quarantined. Markers are never given to a new holder of
+   the uid or SID (N4, points 3 and 9). Records are never given to a new
+   holder that the host's evidence tells apart from the earlier account;
+   on a host with no account UUID, recovery records alone follow uid and
+   name, as the records half of the stated residual says (C41, point 4).
    Before a restart, the account-instance check that runs at token
    installation also runs before `afs pending list` returns anything,
    before any recovery record is shown, exported, retried or discarded, and

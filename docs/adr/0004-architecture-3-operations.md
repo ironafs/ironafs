@@ -1658,8 +1658,9 @@ The core's design without I/O (C3) is what makes this possible.
    every rebind, so a recreated account there gets none of them. It is
    recorded as a known limitation. Nothing else is excluded: any act in an
    earlier context or with its token after that context is retired, any use
-   of records after they are resolved, any record operation by a recreated
-   account on a host with an account UUID, and any other cross-user access
+   of records after they are resolved, any operation by a recreated
+   account on the earlier account's records on a host with an account
+   UUID, and any other cross-user access
    fails acceptance.
 2. Any other acceptance case, outside O22, either passes, or its gap is a
    documented and bounded limitation.
