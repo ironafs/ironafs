@@ -37,7 +37,7 @@ number and is marked retired; new rules are appended.
    messages are lowercase, with no trailing period.
 
 5. **`unsafe` is forbidden** workspace-wide (`unsafe_code = "forbid"`).
-   - A crate that needs it (FSKit or Cloud Files bindings) gets an ADR first.
+   - A crate that needs it (FSKit, SSPI or other OS bindings) gets an ADR first.
      Check first whether a safe binding crate removes the need.
    - Every crate inherits the workspace lints (`[lints] workspace = true`);
      a crate that does not is a finding.
@@ -320,8 +320,8 @@ number and is marked retired; new rules are appended.
       - `doctest = false` only where doc-test time is measured to matter.
     - **Per-OS crates and platform code** (proposed; the architecture ADR
       decides):
-      - `ironafs-fuse`, `ironafs-fskit` and `ironafs-cloudfiles`, flat in
-        `crates/`. Every crate builds on every OS, with OS-only dependencies
+      - `ironafs-fuse`, `ironafs-fskit` and `ironafs-smb` (with
+        `ironafs-cloudfiles` later, if built), flat in `crates/`. Every crate builds on every OS, with OS-only dependencies
         under `[target.'cfg(…)'.dependencies]`;
       - non-Rust code (the Swift FSKit extension, Windows packaging) under a
         top-level `platform/<os>/`.

@@ -7,8 +7,8 @@ These rules apply to every AI agent working in this repository (Claude Code,
 codex, Antigravity, or any other), and to the people directing them.
 
 IronAFS is a modern AFS client in Rust: one shared core with thin per-OS
-layers (macOS FSKit, Windows Cloud Files, Linux FUSE) and one `afs` command
-line. It is meant to work with existing AFS cells. OpenAFS servers are the
+layers (Linux FUSE, macOS FSKit, and on Windows a local SMB server reached
+through Windows' own SMB client, planned) and one `afs` command line. It is meant to work with existing AFS cells. OpenAFS servers are the
 first intended test target, and nothing is tested yet. It has no kernel
 extensions or drivers of its own.
 
@@ -65,8 +65,8 @@ Spec first: a new phase starts with an ADR or spec, not code.
 - **Untrusted input.** No `unwrap`, `expect`, `panic` or indexing reachable
   from it. The client parses fileserver data and serves callbacks to
   fileservers. Tests may use them (`clippy.toml`).
-- **`unsafe`** is forbidden workspace-wide. A crate that needs it (FSKit or
-  Cloud Files bindings) gets an ADR first, then named `// SAFETY:` sites.
+- **`unsafe`** is forbidden workspace-wide. A crate that needs it (FSKit, SSPI or
+  other OS bindings) gets an ADR first, then named `// SAFETY:` sites.
 - **Reuse and neighbours.** New code reuses what exists and reads like the code
   around it (`docs/workflow.md` §3a). Name any deliberate departure, with its
   reason.
