@@ -22,8 +22,14 @@ fn extension_keeps_its_tag_flag_and_bytes() {
 }
 
 #[test]
+fn extension_caps_are_16_extensions_and_4096_bytes() {
+    assert_eq!(MAX_EXTENSIONS, 16);
+    assert_eq!(MAX_EXTENSION_BYTES, 4096);
+}
+
+#[test]
 fn extension_over_the_byte_cap_is_refused() {
-    let bytes = vec![0; MAX_EXTENSION_BYTES + 1];
+    let bytes = vec![0; 4097];
     assert_eq!(
         Extension::new(1, false, bytes).unwrap_err(),
         ExtensionError::TooLarge
@@ -32,39 +38,32 @@ fn extension_over_the_byte_cap_is_refused() {
 
 #[test]
 fn extension_at_the_byte_cap_is_accepted() {
-    let bytes = vec![0; MAX_EXTENSION_BYTES];
-    assert_eq!(
-        Extension::new(1, false, bytes).unwrap().bytes().len(),
-        MAX_EXTENSION_BYTES
-    );
+    let bytes = vec![0; 4096];
+    assert_eq!(Extension::new(1, false, bytes).unwrap().bytes().len(), 4096);
 }
 
 #[test]
 fn list_refuses_more_than_its_count_cap() {
     let mut list = Extensions::new();
-    for tag in 0..u32::try_from(MAX_EXTENSIONS).unwrap() {
+    for tag in 0..16 {
         list.push(plain(tag)).unwrap();
     }
     assert_eq!(
         list.push(plain(1_000)).unwrap_err(),
         ExtensionError::TooMany
     );
-    assert_eq!(list.iter().count(), MAX_EXTENSIONS);
+    assert_eq!(list.iter().count(), 16);
 }
 
 #[test]
 fn list_refuses_more_than_its_byte_cap_in_total() {
     let mut list = Extensions::new();
-    let half = MAX_EXTENSION_BYTES / 2;
-    list.push(Extension::new(1, false, vec![0; half]).unwrap())
+    list.push(Extension::new(1, false, vec![0; 2048]).unwrap())
         .unwrap();
-    list.push(Extension::new(2, false, vec![0; MAX_EXTENSION_BYTES - half]).unwrap())
+    list.push(Extension::new(2, false, vec![0; 2048]).unwrap())
         .unwrap();
-    assert_eq!(
-        list.push(Extension::new(3, false, vec![0]).unwrap())
-            .unwrap_err(),
-        ExtensionError::TooLarge
-    );
+    let over = Extension::new(3, false, vec![0]).unwrap();
+    assert_eq!(list.push(over).unwrap_err(), ExtensionError::TooLarge);
     assert_eq!(list.iter().count(), 2);
 }
 

@@ -4,7 +4,6 @@
 //! Tests for what a contract name may hold.
 
 use alloc::format;
-use alloc::vec;
 
 use super::{MAX_NAME_BYTES, Name, NameError};
 
@@ -46,18 +45,14 @@ fn name_refuses_a_nul_anywhere() {
 }
 
 #[test]
-fn name_at_the_cap_is_accepted_and_one_more_byte_is_refused() {
-    assert_eq!(
-        Name::new(&vec![b'a'; MAX_NAME_BYTES])
-            .unwrap()
-            .as_bytes()
-            .len(),
-        MAX_NAME_BYTES
-    );
-    assert_eq!(
-        Name::new(&vec![b'a'; MAX_NAME_BYTES + 1]).unwrap_err(),
-        NameError::TooLong
-    );
+fn name_cap_is_linux_name_max() {
+    assert_eq!(MAX_NAME_BYTES, 255);
+}
+
+#[test]
+fn name_of_255_bytes_is_accepted_and_of_256_is_refused() {
+    assert_eq!(Name::new(&[b'a'; 255]).unwrap().as_bytes().len(), 255);
+    assert_eq!(Name::new(&[b'a'; 256]).unwrap_err(), NameError::TooLong);
 }
 
 #[test]

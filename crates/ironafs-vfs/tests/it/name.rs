@@ -6,12 +6,13 @@
 //! the length cap.
 
 use ironafs_test_support::{Exhaustive, Property, Source};
-use ironafs_vfs::{MAX_NAME_BYTES, linux};
+use ironafs_vfs::linux;
 
-/// One Linux path component, stated without the crate's code: 1 to 255
-/// bytes, no `/`, no NUL, and neither `.` nor `..`.
+/// One Linux path component, stated without the crate's code or its
+/// constants: 1 to 255 bytes (Linux's `NAME_MAX`), no `/`, no NUL, and
+/// neither `.` nor `..`.
 fn is_component(bytes: &[u8]) -> bool {
-    (1..=MAX_NAME_BYTES).contains(&bytes.len())
+    (1..=255).contains(&bytes.len())
         && bytes != b"."
         && bytes != b".."
         && !bytes.iter().any(|byte| *byte == b'/' || *byte == 0)
@@ -41,11 +42,11 @@ fn linux_codec_accepts_exactly_the_components_around_the_cap() {
     Property::new("names around the length cap").check(
         |source: &mut Source| {
             // Lengths at and next to the cap, or any length up to past it.
-            let near = [1, MAX_NAME_BYTES - 1, MAX_NAME_BYTES, MAX_NAME_BYTES + 1];
+            let near = [1, 254, 255, 256];
             let length = if source.bool() {
                 *source.pick(&near)
             } else {
-                source.usize_in(0..=MAX_NAME_BYTES + 8)
+                source.usize_in(0..=264)
             };
             // Bytes a component allows, then at most one that it does not.
             let mut bytes: Vec<u8> = source

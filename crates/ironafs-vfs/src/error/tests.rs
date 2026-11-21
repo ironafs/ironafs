@@ -8,7 +8,7 @@ use alloc::string::ToString;
 
 use super::{Surface, VfsError};
 
-/// Every value of the error set, each once.
+/// Every value of the error set, each once, in the order of `position`.
 const ALL: [VfsError; 22] = [
     VfsError::NotFound,
     VfsError::Exists,
@@ -34,6 +34,79 @@ const ALL: [VfsError; 22] = [
     VfsError::OutOfRange,
 ];
 
+/// Each value's place in `ALL`. The match has no wildcard, so a new value
+/// does not compile here until it is given a place, and
+/// `all_lists_every_error_once` then fails until `ALL` holds it.
+fn position(error: VfsError) -> usize {
+    match error {
+        VfsError::NotFound => 0,
+        VfsError::Exists => 1,
+        VfsError::Access => 2,
+        VfsError::TokenRequired => 3,
+        VfsError::TokenExpired => 4,
+        VfsError::TokenRevoked => 5,
+        VfsError::SecurityFloor => 6,
+        VfsError::ReadOnly => 7,
+        VfsError::NoSpace => 8,
+        VfsError::QuotaExceeded => 9,
+        VfsError::CrossDevice => 10,
+        VfsError::Stale => 11,
+        VfsError::Busy => 12,
+        VfsError::Offline => 13,
+        VfsError::TimedOut => 14,
+        VfsError::NotYetStored => 15,
+        VfsError::Interrupted => 16,
+        VfsError::NotSupported => 17,
+        VfsError::WouldBlock => 18,
+        VfsError::Unreachable => 19,
+        VfsError::Conflict => 20,
+        VfsError::OutOfRange => 21,
+    }
+}
+
+/// How each value reaches applications, from ADR 0004, C46, point 1,
+/// written out without the crate's code and with no wildcard arm.
+fn expected_surface(error: VfsError) -> Surface {
+    match error {
+        VfsError::TokenRequired
+        | VfsError::TokenExpired
+        | VfsError::TokenRevoked
+        | VfsError::SecurityFloor => Surface::Permission,
+        VfsError::OutOfRange => Surface::InvalidArgument,
+        VfsError::NotFound
+        | VfsError::Exists
+        | VfsError::Access
+        | VfsError::ReadOnly
+        | VfsError::NoSpace
+        | VfsError::QuotaExceeded
+        | VfsError::CrossDevice
+        | VfsError::Stale
+        | VfsError::Busy
+        | VfsError::Offline
+        | VfsError::TimedOut
+        | VfsError::NotYetStored
+        | VfsError::Interrupted
+        | VfsError::NotSupported
+        | VfsError::WouldBlock
+        | VfsError::Unreachable
+        | VfsError::Conflict => Surface::Itself,
+    }
+}
+
+#[test]
+fn all_lists_every_error_once() {
+    for (index, error) in ALL.into_iter().enumerate() {
+        assert_eq!(position(error), index, "{error:?}");
+    }
+}
+
+#[test]
+fn every_error_reaches_applications_as_c46_says() {
+    for error in ALL {
+        assert_eq!(error.surface(), expected_surface(error), "{error:?}");
+    }
+}
+
 #[test]
 fn token_and_floor_errors_reach_applications_as_permission() {
     for error in [
@@ -49,20 +122,6 @@ fn token_and_floor_errors_reach_applications_as_permission() {
 #[test]
 fn out_of_range_reaches_applications_as_invalid_argument() {
     assert_eq!(VfsError::OutOfRange.surface(), Surface::InvalidArgument);
-}
-
-#[test]
-fn every_other_error_reaches_applications_as_itself() {
-    let indirect = [
-        VfsError::TokenRequired,
-        VfsError::TokenExpired,
-        VfsError::TokenRevoked,
-        VfsError::SecurityFloor,
-        VfsError::OutOfRange,
-    ];
-    for error in ALL.into_iter().filter(|error| !indirect.contains(error)) {
-        assert_eq!(error.surface(), Surface::Itself, "{error:?}");
-    }
 }
 
 #[test]
