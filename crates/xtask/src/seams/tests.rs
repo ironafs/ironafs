@@ -4,9 +4,10 @@
 //! Tests for the seam checks on sources held in memory, and for the
 //! self-test's planted cases.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use super::{Sampling, SourceFile, Violation, check, renamed_dependencies, self_test, source_file};
+use crate::metadata::Member;
 
 const SAMPLING: &[Sampling] = &[Sampling {
     krate: "core-crate",
@@ -376,28 +377,43 @@ fn pure_check_passes_a_home_enum_variant_imported_or_by_full_path() {
     assert_eq!(check(&files, SAMPLING), []);
 }
 
+fn member(name: &str, renamed: &[&str]) -> Member {
+    Member {
+        name: name.into(),
+        id: name.into(),
+        dir: PathBuf::from(format!("/w/crates/{name}")),
+        lib_root: None,
+        target_kinds: vec!["lib".into()],
+        editions: vec!["2024".into()],
+        renamed: renamed.iter().map(|name| (*name).into()).collect(),
+    }
+}
+
 #[test]
-fn renamed_dependency_in_a_pure_manifest_is_refused() {
-    let manifest = "[package]\nname = \"ironafs-rx\"\n\n[dependencies]\n\
-                    DeadlineError = { package = \"ironafs-time\", path = \"../ironafs-time\" }\n\
-                    ironafs-time.workspace = true\n\n[dependencies.Other]\npackage = \"ironafs-time\"\n";
-    let found = renamed_dependencies(Path::new("crates/ironafs-rx/Cargo.toml"), manifest);
-    assert!(
-        matches!(
-            found.as_slice(),
-            [
-                Violation::RenamedDependency { line: 5, .. },
-                Violation::RenamedDependency { line: 9, .. }
-            ]
-        ),
-        "{found:?}"
-    );
+fn renamed_dependency_of_a_pure_crate_is_refused_from_the_resolved_graph() {
+    // Whatever the manifest's spelling (inline, quoted or dotted key, or
+    // inherited from the workspace table), cargo resolves the rename.
+    let found = renamed_dependencies(&[
+        member("ironafs-rx", &["DeadlineError"]),
+        member("xtask", &["renamed_but_not_pure"]),
+        member("ironafs-cache", &[]),
+    ]);
     assert_eq!(
-        renamed_dependencies(
-            Path::new("Cargo.toml"),
-            "[package]\nname = \"a\" # package = no\n"
-        ),
-        []
+        found,
+        [Violation::RenamedDependency {
+            krate: "ironafs-rx".into(),
+            name: "DeadlineError".into()
+        }]
+    );
+}
+
+#[test]
+fn seams_check_refuses_a_path_inside_cfg_attr() {
+    let source = format!("{CONTROL}\n#[cfg_attr(all(), path = \"tests.rs\")]\nmod hidden;\n");
+    let found = check(&[core_file(&source)], SAMPLING);
+    assert!(
+        matches!(found.as_slice(), [Violation::PathAttribute { .. }]),
+        "{found:?}"
     );
 }
 

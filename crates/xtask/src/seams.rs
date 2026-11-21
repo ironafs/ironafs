@@ -19,8 +19,10 @@
 //!   is refused, not exempt. So that a home crate's name always means the
 //!   crate: a `use` or `extern crate` item naming a home crate with `as` or
 //!   `*` is refused, an item named like a home crate is refused, and a pure
-//!   crate's manifest may not rename a dependency (`package = ...`). A seam
-//!   trait's body provides no method.
+//!   crate may not name a dependency otherwise than its package (read from
+//!   cargo's resolved graph, so every manifest spelling of a rename is
+//!   seen). The variant rule matches names, not scopes; these refusals are
+//!   what make that enough. A seam trait's body provides no method.
 //! - **`deadline_built_from_a_fresh_sample`.** Every source of every crate
 //!   builds a `Deadline` only inside its one named sampling function; in
 //!   `ironafs-time` the constructors' names appear only where they are
@@ -38,7 +40,8 @@
 //!   module, `impl` or trait of a crate that names a constructor, and on no
 //!   other function that does.
 //!
-//! Both checks refuse a `#[path]` attribute and an `include!` anywhere,
+//! Both checks refuse an attribute holding `path = ...` (directly or in
+//! `cfg_attr`) and an `include!` anywhere,
 //! so every compiled file is where the walk reads it, as what it is, and
 //! none passes as test code under another name. `#[cfg(test)]` items, test modules their parent gates
 //! (coding standards rule 15) and `tests/` directories are left out. Both
@@ -57,7 +60,7 @@ use std::path::{Path, PathBuf};
 
 use crate::Error;
 use crate::deps::{self, Kind};
-use crate::metadata::{self, Workspace};
+use crate::metadata::{self, Member, Workspace};
 use crate::rust_source::{self, Token, TokenKind, ident, punct};
 
 #[cfg(test)]
@@ -124,9 +127,9 @@ pub(crate) enum Violation {
     /// An item in a pure crate named like a seam's home crate, which a
     /// path could take for the crate.
     HomeShadow { file: PathBuf, line: usize },
-    /// A pure crate's manifest renames a dependency (`package = ...`), so a
-    /// crate could be named in source by any name.
-    RenamedDependency { file: PathBuf, line: usize },
+    /// A pure crate names a dependency by a name that is not its
+    /// package's, so a crate could be named in source by any name.
+    RenamedDependency { krate: String, name: String },
     /// An `include!` of source from another file.
     IncludeMacro { file: PathBuf, line: usize },
     /// A seam trait that provides a method.
@@ -221,13 +224,11 @@ impl fmt::Display for Violation {
                      could take for the crate",
                 )
             }
-            Self::RenamedDependency { file, line } => {
-                at(formatter, file, line)?;
-                formatter.write_str(
-                    "a pure crate's manifest renames a dependency, so source could name a crate \
-                     by any name",
-                )
-            }
+            Self::RenamedDependency { krate, name } => write!(
+                formatter,
+                "{krate} names a dependency `{name}`, not its package's name: a pure crate \
+                 renames no dependency, so source could not name a crate by any name"
+            ),
             Self::IncludeMacro { file, line } => {
                 at(formatter, file, line)?;
                 formatter.write_str(
@@ -357,35 +358,22 @@ pub(crate) fn source_file(
     })
 }
 
-/// Each line of a pure crate's manifest that renames a dependency: a
-/// `package` key, inline or in a dependency table, but not the
-/// `[package]` header.
-pub(crate) fn renamed_dependencies(path: &Path, manifest: &str) -> Vec<Violation> {
-    manifest
-        .lines()
-        .enumerate()
-        .filter(|(_, text)| {
-            let code = text.split('#').next().unwrap_or("");
-            let mut rest = code;
-            // A `package` key: the word, then `=` after optional spaces,
-            // at a line's start or after `{` or `,` in an inline table.
-            while let Some(at) = rest.find("package") {
-                let (head, tail) = rest.split_at(at);
-                let before = head.trim_end();
-                let tail = tail.get("package".len()..).unwrap_or("");
-                let after = tail.trim_start();
-                if (before.is_empty() || before.ends_with('{') || before.ends_with(','))
-                    && after.starts_with('=')
-                {
-                    return true;
-                }
-                rest = tail;
-            }
-            false
-        })
-        .map(|(index, _)| Violation::RenamedDependency {
-            file: path.to_path_buf(),
-            line: index + 1,
+/// Each dependency a pure crate names otherwise than its package's name,
+/// from cargo's resolved graph: so every spelling of a rename (inline,
+/// quoted or dotted key, a dependency table, or inherited from the
+/// workspace's table) is seen, and so is a library target named otherwise.
+pub(crate) fn renamed_dependencies(members: &[Member]) -> Vec<Violation> {
+    members
+        .iter()
+        .filter(|member| deps::kind_of(&member.name) == Some(Kind::Pure))
+        .flat_map(|member| {
+            member
+                .renamed
+                .iter()
+                .map(|name| Violation::RenamedDependency {
+                    krate: member.name.clone(),
+                    name: name.clone(),
+                })
         })
         .collect()
 }
@@ -399,13 +387,12 @@ pub(crate) fn check(files: &[SourceFile], sampling: &[Sampling]) -> Vec<Violatio
     }
     for file in files {
         for index in 0..file.tokens.len() {
-            if attribute_end(&file.tokens, index).is_some() {
-                let open = if is_punct(&file.tokens, index + 1, '!') {
-                    index + 2
-                } else {
-                    index + 1
-                };
-                if is_ident(&file.tokens, open + 1, "path") {
+            if let Some(end) = attribute_end(&file.tokens, index) {
+                // `path = ...` anywhere in the attribute, `cfg_attr`
+                // included.
+                if (index..end).any(|at| {
+                    is_ident(&file.tokens, at, "path") && is_punct(&file.tokens, at + 1, '=')
+                }) {
                     violations.push(Violation::PathAttribute {
                         file: file.path.clone(),
                         line: line(&file.tokens, index),
@@ -1464,15 +1451,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     }
     let workspace = metadata::load(None, &[])?;
     let (files, mut violations) = workspace_files(&workspace)?;
-    for member in &workspace.members {
-        if deps::kind_of(&member.name) == Some(Kind::Pure) {
-            let manifest = member.dir.join("Cargo.toml");
-            let text = std::fs::read_to_string(&manifest)
-                .map_err(Error::path_io("read manifest", &manifest))?;
-            let shown = manifest.strip_prefix(&workspace.root).unwrap_or(&manifest);
-            violations.extend(renamed_dependencies(shown, &text));
-        }
-    }
+    violations.extend(renamed_dependencies(&workspace.members));
     violations.extend(check(&files, SAMPLING));
     if !violations.is_empty() {
         return Err(Error::Rules {

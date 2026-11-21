@@ -12,10 +12,11 @@
 //! by that run itself, which fails if it reads nothing.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::{CHECK, Sampling, SourceFile, Violation, check, renamed_dependencies, source_file};
 use crate::Error;
+use crate::metadata::Member;
 use crate::rust_source::TokenKind;
 
 /// The sampling function the plants use.
@@ -338,6 +339,16 @@ const CASES: &[Case] = &[
         at: Some("elsewhere"),
     },
     Case {
+        name: "a `path` inside `cfg_attr`, out of the walk's sight",
+        files: || {
+            core(&format!(
+                "{CONTROL}\n#[cfg_attr(all(), path = \"tests.rs\")] mod hidden;\n"
+            ))
+        },
+        kind: |found| matches!(found, Violation::PathAttribute { .. }),
+        at: Some("hidden"),
+    },
+    Case {
         name: "an `include!` of source from elsewhere",
         files: || core(&format!("{CONTROL}\ninclude!(\"../generated.rs\");\n")),
         kind: |found| matches!(found, Violation::IncludeMacro { .. }),
@@ -599,10 +610,23 @@ const CASES: &[Case] = &[
     },
 ];
 
-/// A pure crate's manifest that renames a dependency, inline and as a
-/// table, with the lines each rename is on.
-const RENAMED_MANIFEST: &str = "[package]\nname = \"ironafs-rx\"\n\n[dependencies]\nDeadlineError = { package = \"ironafs-time\", path = \"../ironafs-time\" }\n\n[dependencies.Other]\npackage = \"ironafs-time\"\n";
-const RENAMED_LINES: &[usize] = &[5, 8];
+/// A pure crate that names a dependency otherwise, as cargo's resolved
+/// graph reports it, beside a non-pure crate that may.
+fn renamed_members() -> Vec<Member> {
+    let member = |name: &str, renamed: &[&str]| Member {
+        name: name.into(),
+        id: name.into(),
+        dir: PathBuf::from(name),
+        lib_root: None,
+        target_kinds: vec!["lib".into()],
+        editions: vec!["2024".into()],
+        renamed: renamed.iter().map(|name| (*name).into()).collect(),
+    };
+    vec![
+        member("ironafs-rx", &["DeadlineError"]),
+        member("xtask", &["renamed"]),
+    ]
+}
 
 /// The recorded limits (5.3, point 2, "Limits"): a forged `from` with a
 /// count equal to `now`'s and an earlier instant, written through each of
@@ -625,7 +649,6 @@ fn location(found: &Violation) -> Option<(&Path, usize)> {
         Violation::SeamInPure { file, line, .. }
         | Violation::HomeImport { file, line }
         | Violation::HomeShadow { file, line }
-        | Violation::RenamedDependency { file, line }
         | Violation::IncludeMacro { file, line }
         | Violation::ProvidedMethod { file, line, .. }
         | Violation::Outside { file, line, .. }
@@ -642,6 +665,7 @@ fn location(found: &Violation) -> Option<(&Path, usize)> {
         | Violation::PathAttribute { file, line }
         | Violation::Allowance { file, line, .. } => Some((file.as_path(), *line)),
         Violation::Duplicate { .. }
+        | Violation::RenamedDependency { .. }
         | Violation::Missing { .. }
         | Violation::Unreadable { .. }
         | Violation::NothingScanned => None,
@@ -707,25 +731,16 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         }
     }
 
-    let found = renamed_dependencies(Path::new("Cargo.toml"), RENAMED_MANIFEST);
-    let lines: Vec<usize> = found
-        .iter()
-        .filter_map(location)
-        .map(|(_, line)| line)
-        .collect();
-    if lines != RENAMED_LINES
-        || !found
-            .iter()
-            .all(|found| matches!(found, Violation::RenamedDependency { .. }))
+    let found = renamed_dependencies(&renamed_members());
+    if found
+        != [Violation::RenamedDependency {
+            krate: "ironafs-rx".into(),
+            name: "DeadlineError".into(),
+        }]
     {
-        return Err(failure(
-            "a pure crate's manifest renames a dependency",
-            &found,
-        ));
+        return Err(failure("a pure crate renames a dependency", &found));
     }
-    report(
-        "caught: a pure crate's manifest renames a dependency, inline and as a table".to_owned(),
-    )?;
+    report("caught: a pure crate renames a dependency, and only the pure one".to_owned())?;
 
     for (name, source) in LIMITS {
         let files = core(&format!("{CONTROL}\n{source}"));
