@@ -23,6 +23,7 @@
 //! event of the same type cannot satisfy it.
 
 use std::fmt::Write as _;
+use std::io::Write as _;
 
 use super::super::RouteSocket;
 use crate::dump::harness::Command;
@@ -288,7 +289,8 @@ fn each_change_of_link_address_route_and_rule_is_seen_on_the_notify_socket() {
 fn a_burst_the_socket_does_not_read_is_an_overflow() {
     ip("link set lo up");
     let socket = RouteSocket::notify().unwrap();
-    let batch = std::env::temp_dir().join(format!("ironafs-os-burst-{}", std::process::id()));
+    // The batch goes to `ip -batch -` on its standard input: no file, so
+    // no path another user could have prepared.
     let mut lines = String::new();
     for index in 0..4000 {
         writeln!(lines, "address add 2001:db8:9::{index:x}/128 dev lo").unwrap();
@@ -296,9 +298,18 @@ fn a_burst_the_socket_does_not_read_is_an_overflow() {
     for index in 0..4000 {
         writeln!(lines, "address del 2001:db8:9::{index:x}/128 dev lo").unwrap();
     }
-    std::fs::write(&batch, lines).unwrap();
-    ip(&format!("-batch {}", batch.display()));
-    std::fs::remove_file(&batch).unwrap();
+    let mut child = Command::new("ip")
+        .args(["-batch", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(lines.as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success(), "ip -batch -");
     let mut buffer = vec![0_u8; 32_768];
     let overflowed = loop {
         match socket.receive(&mut buffer) {
