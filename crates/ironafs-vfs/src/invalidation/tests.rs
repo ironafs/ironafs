@@ -130,3 +130,38 @@ fn scope_orders_from_object_to_server() {
     assert!(Scope::Directory < Scope::Volume);
     assert!(Scope::Volume < Scope::Server);
 }
+
+#[test]
+fn covers_counts_both_names_of_a_rename() {
+    let rename = entries(Entries::Rename {
+        from: name(b"a"),
+        to: name(b"b"),
+    });
+    assert!(rename.covers(&entries(Entries::Name(name(b"a")))));
+    assert!(rename.covers(&entries(Entries::Name(name(b"b")))));
+    assert!(!rename.covers(&entries(Entries::Name(name(b"c")))));
+}
+
+#[test]
+fn covers_takes_a_rename_in_either_direction_as_the_same_names() {
+    let forward = entries(Entries::Rename {
+        from: name(b"a"),
+        to: name(b"b"),
+    });
+    let back = entries(Entries::Rename {
+        from: name(b"b"),
+        to: name(b"a"),
+    });
+    assert!(forward.covers(&back));
+    assert!(back.covers(&forward));
+}
+
+#[test]
+fn one_name_never_covers_a_rename() {
+    let rename = entries(Entries::Rename {
+        from: name(b"a"),
+        to: name(b"a2"),
+    });
+    assert!(!entries(Entries::Name(name(b"a"))).covers(&rename));
+    assert!(!entries(Entries::Name(name(b"a2"))).covers(&rename));
+}

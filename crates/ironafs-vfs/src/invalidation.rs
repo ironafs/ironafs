@@ -64,6 +64,17 @@ pub enum Entries {
     All,
 }
 
+impl Entries {
+    /// Whether a purge of these entries purges the entry named `name`.
+    fn purges(&self, name: &Name) -> bool {
+        match self {
+            Self::Name(held) => held == name,
+            Self::Rename { from, to } => from == name || to == name,
+            Self::All => true,
+        }
+    }
+}
+
 /// Whose rights changed (C17, point 3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Rights {
@@ -119,13 +130,18 @@ impl Effects {
     }
 
     /// Whether a purge of these effects also purges everything `other`
-    /// asks for.
+    /// asks for. An entry purge purges the names it holds: one name, both
+    /// names of a rename in either direction, or every entry.
     #[must_use]
     pub fn covers(&self, other: &Self) -> bool {
         let entries = match (&self.entries, &other.entries) {
             (_, None) | (Some(Entries::All), Some(_)) => true,
-            (None, Some(_)) => false,
-            (Some(ours), Some(theirs)) => ours == theirs,
+            (None | Some(Entries::Name(_) | Entries::Rename { .. }), Some(Entries::All))
+            | (None, Some(_)) => false,
+            (Some(ours), Some(Entries::Name(theirs))) => ours.purges(theirs),
+            (Some(ours), Some(Entries::Rename { from, to })) => {
+                ours.purges(from) && ours.purges(to)
+            }
         };
         let rights = match (self.rights, other.rights) {
             (_, None) | (Some(Rights::All), Some(_)) => true,
