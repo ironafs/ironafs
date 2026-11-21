@@ -221,7 +221,12 @@ jobs:
       - name: Run ironafs-os under Miri, host and aarch64 Linux
         # A run that ran nothing, or ignored a test, proves nothing: each
         # must report every test passed and none ignored, and the named
-        # wrapper and wipe tests must be among them.
+        # wrapper and wipe tests must be among them. The random site passes
+        # its buffer's exposed address, as the C call needs, so Miri runs
+        # with permissive provenance, which only silences its warning about
+        # that integer-to-pointer cast (the cast is the design, not a bug).
+        env:
+          MIRIFLAGS: -Zmiri-permissive-provenance
         run: |
           for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
             cargo +nightly-2026-11-01 miri test --locked -p ironafs-os --lib --target "$target" > "miri-$target.log" 2>&1
