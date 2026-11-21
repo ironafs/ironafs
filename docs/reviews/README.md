@@ -41,8 +41,16 @@ commit as the change ([ADR 0002](../adr/0002-ai-use-and-attribution.md)). Each
 record lists:
 
 - **every seat:** agent id, served model, effort and verdict;
-- **every finding:** what it was, and whether it was fixed, refuted (with the
-  evidence) or deferred (with where it is tracked).
+- **every finding:** what it was, its `origin:` (pre-existing, or
+  introduced by fix round N) and `kind:` (correctness, contract,
+  consistency between parts, missing mechanism, or other), and whether it
+  was fixed, refuted (with the evidence) or deferred (with where it is
+  tracked);
+- **every round:** each dispatch's quota headroom where the lane reports
+  it (no cost figures), and "uncalibrated on IronAFS" beside each verdict
+  from an uncalibrated pin ([workflow](../workflow.md) §2, "Model routing");
+- **from round 3 on:** the convergence note ([workflow](../workflow.md) §3,
+  step 7).
 
 Records are written from the lanes' output and redacted: no paths outside the
 repository, hostnames, cell names, keys or other projects. Raw transcripts are
