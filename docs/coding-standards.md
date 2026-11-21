@@ -212,14 +212,31 @@ number and is marked retired; new rules are appended.
         repository.
       - No dependence on test order; tests are safe to run in parallel.
     - **No retries, and a hang is a failure.**
-      - The runner's profiles retry nothing: a retry that passes hides a
-        determinism bug. Acceptance runs pass `--retries 0` explicitly,
-        because a command-line option or environment variable overrides the
-        profile.
+      - No test is ever retried: a retry that passes hides a determinism
+        bug. Acceptance runs pass `--retries 0` explicitly, because a
+        command-line option or environment variable overrides the profile.
+        `cargo xtask check-retries` fails on any profile, per-test
+        override, command or environment that sets retries above 0.
       - Nextest terminates a test that runs too long, so a deadlock fails
         instead of hanging (`.config/nextest.toml`).
+      - A timeout override cites the measured times it rests on. Heavy
+        tests join a thread-capped test group instead of getting a longer
+        timeout. A crate that runs the simulator has a per-test override
+        that terminates its tests after a stated number of slow periods.
       - Doc-tests run outside nextest. They get a deadline from their CI step;
         by hand, a run that does not finish is a failure.
+    - **A flaky test is a bug.**
+      - A test that passes and fails on the same revision gets an issue
+        with the seed, the machine and both runs. The pull request that
+        exposed it waits until the test is fixed, or until that issue is
+        linked as a blocker the owner accepts.
+      - A failing simulator seed is never flaky: it is a reproducer.
+      - Quarantine means ignoring or skipping a test, never retrying it, and
+        needs an issue and the owner's decision. A quarantined test stays
+        in the test inventory, marked with its issue, so it cannot vanish.
+      - The test strategy (`docs/specs/testing.md`, 5.4, points 5 and 6)
+        says where the retries check reads, how the inventory keeps the
+        mark, and what a scheduled job's failure may put in the issue.
     - **Platforms.** Code behind an OS `cfg` is tested on that OS. CI runs
       the tests on Linux and lints the Windows and macOS targets from Linux;
       the change that adds the first code behind a Windows or macOS `cfg`
