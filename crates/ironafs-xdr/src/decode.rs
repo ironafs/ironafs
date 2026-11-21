@@ -216,19 +216,31 @@ pub const fn array_reservations<'a, T: Decode<'a>>() -> Option<u64> {
     max(Some(1), T::RESERVATIONS)
 }
 
-/// `r` of a fixed-length array of `T`: its element slots, reserved through
-/// the ledger while it is decoded, as for a variable-length array.
+/// `r` of a fixed-length array of `N` elements of `T`: its element slots,
+/// reserved through the ledger while it is decoded, as for a
+/// variable-length array (5.2, point 9.3). An array of no elements
+/// reserves nothing, so its `r` is 0.
 #[must_use]
-pub const fn fixed_array_heap_ratio<'a, T: Decode<'a>>() -> Option<u64> {
-    slot_ratio::<T>(T::HEAP_RATIO)
+pub const fn fixed_array_heap_ratio<'a, T: Decode<'a>, const N: usize>() -> Option<u64> {
+    if N == 0 {
+        Some(0)
+    } else {
+        slot_ratio::<T>(T::HEAP_RATIO)
+    }
 }
 
-/// `q` of a fixed-length array of `T`: one reservation for its slots, which
-/// no count word backs, plus its elements'. Its elements are at least one
-/// unit each, so per unit that is at most 1 + `q(T)`.
+/// `q` of a fixed-length array of `N` elements of `T`: one reservation for
+/// its slots, which no count word backs, plus its elements'. Its elements
+/// are at least one unit each, so per unit that is at most 1 + `q(T)`
+/// (5.2, point 9.5). An array of no elements reserves nothing, so its `q`
+/// is 0.
 #[must_use]
-pub const fn fixed_array_reservations<'a, T: Decode<'a>>() -> Option<u64> {
-    out_of_line_reservations::<T>()
+pub const fn fixed_array_reservations<'a, T: Decode<'a>, const N: usize>() -> Option<u64> {
+    if N == 0 {
+        Some(0)
+    } else {
+        out_of_line_reservations::<T>()
+    }
 }
 
 /// `r` of a value of `T` held out of line: a one-element array

@@ -371,8 +371,8 @@ pub(crate) const PAIR: Message = alone("test.pair");
 impl<'a> Decode<'a> for Pair {
     const S_MIN: u64 = 2 * Label::S_MIN;
     const DEPTH: u32 = 1 + Label::DEPTH;
-    const HEAP_RATIO: Option<u64> = fixed_array_heap_ratio::<Label>();
-    const RESERVATIONS: Option<u64> = fixed_array_reservations::<Label>();
+    const HEAP_RATIO: Option<u64> = fixed_array_heap_ratio::<Label, 2>();
+    const RESERVATIONS: Option<u64> = fixed_array_reservations::<Label, 2>();
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         decoder.fixed_array("test.pair").map(Self)
@@ -781,13 +781,16 @@ impl<'a> Decode<'a> for Every {
     // The list of labels and the entry are each one level below.
     const DEPTH: u32 = 2;
     const HEAP_RATIO: Option<u64> = max(
-        max(array_heap_ratio::<Label>(), fixed_array_heap_ratio::<u32>()),
+        max(
+            array_heap_ratio::<Label>(),
+            fixed_array_heap_ratio::<u32, 2>(),
+        ),
         Entry::HEAP_RATIO,
     );
     const RESERVATIONS: Option<u64> = max(
         max(
             array_reservations::<Label>(),
-            fixed_array_reservations::<u32>(),
+            fixed_array_reservations::<u32, 2>(),
         ),
         Entry::RESERVATIONS,
     );

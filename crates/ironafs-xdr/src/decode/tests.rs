@@ -965,3 +965,45 @@ fn fixed_array_of_elements_without_an_empty_value_decodes() {
         ]
     );
 }
+
+/// A message of an empty fixed-length array of words, then a word.
+struct EmptyThenWord;
+
+impl<'a> super::Decode<'a> for EmptyThenWord {
+    const S_MIN: u64 = 4;
+    const DEPTH: u32 = 1;
+    const HEAP_RATIO: Option<u64> = super::max(super::fixed_array_heap_ratio::<u32, 0>(), Some(0));
+    const RESERVATIONS: Option<u64> =
+        super::max(super::fixed_array_reservations::<u32, 0>(), Some(0));
+
+    fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
+        decoder.fixed_array::<u32, 0>("test.m.none")?;
+        decoder.read_u32()?;
+        Ok(Self)
+    }
+}
+
+#[test]
+fn fixed_array_of_no_elements_has_no_ratio_and_reserves_nothing() {
+    assert_eq!(super::fixed_array_heap_ratio::<u32, 0>(), Some(0));
+    assert_eq!(super::fixed_array_reservations::<u32, 0>(), Some(0));
+    assert_eq!(super::fixed_array_heap_ratio::<u32, 3>(), Some(1));
+    assert_eq!(super::fixed_array_reservations::<u32, 3>(), Some(1));
+    // Overflow still shows through for a non-empty array.
+    assert_eq!(super::fixed_array_heap_ratio::<GreedyWord, 1>(), None);
+    assert_eq!(super::fixed_array_heap_ratio::<GreedyWord, 0>(), Some(0));
+    let message = Message {
+        name: "test.m",
+        cap: 4,
+        budget: 0,
+        secret: false,
+    };
+    assert!(super::proven::<EmptyThenWord>(&message));
+    let (result, seen) = decode_with!(
+        &message,
+        &[0, 0, 0, 7],
+        <EmptyThenWord as super::Decode>::decode
+    );
+    assert!(result.is_ok());
+    assert_eq!(seen, []);
+}
