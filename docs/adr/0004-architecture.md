@@ -770,7 +770,7 @@ The full record, with every finding and its disposition, is
   - Review rounds: class S, from families that wrote neither the
     amendment nor the decision: ADR 0005's scoped rounds 15 to 17, GPT
     `gpt-6.2-sol` (xhigh; the owner's choice over the strongest row's
-    `gpt-6.2-astra`) and GLM `glm-5.3` (high); the last round passed.
+    `gpt-6.2-astra`, recorded in that review record) and GLM `glm-5.3` (high); the last round passed.
     The owner accepted the amendment with ADR 0005 on 2026-11-21. The
     record is
     [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md).

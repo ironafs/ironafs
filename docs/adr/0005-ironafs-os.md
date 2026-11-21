@@ -2008,8 +2008,8 @@ decision and a change to this point (point 7).
   decision"). It was reviewed in the scoped rounds 15 to 17 (GPT
   `gpt-6.2-sol` at xhigh and GLM `glm-5.3` at high; see Review), with
   GPT on `gpt-6.2-sol` rather than the strongest row's
-  `gpt-6.2-astra` by the owner's choice, and the owner accepted it with
-  this ADR. It gains
+  `gpt-6.2-astra` by the owner's choice (recorded in the review record),
+  and the owner accepted it with this ADR. It gains
   the items this table holds that the list does not name: the resolver
   calls of C33, point 2; the random source of C5, point 1; the Linux
   mount call and FUSE descriptor hand-off of L7, point 1, both
@@ -2301,7 +2301,7 @@ The full record, with every round and the findings of the final rounds,
 is [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md).
 The ADR was drafted and fixed before it was published, so rounds 1 to
 14 each reviewed a frozen copy identified by its SHA-256, not a commit.
-Rounds 15 and 16 reviewed commits on the pull request's branch.
+Rounds 15 to 17 reviewed commits on the pull request's branch.
 
 - **Seats.** GPT (`gpt-6.2-astra`, xhigh) for design, the strongest-tier
   seat; GLM (`glm-5.3`, max) for security. Both are families that wrote
@@ -2334,7 +2334,7 @@ Rounds 15 and 16 reviewed commits on the pull request's branch.
   component, leaving every macOS and Windows reading open for the
   owner; C4 gains its trigger; the citations and the sweep are
   corrected. Two minors were deferred: the status line's pull request
-  number waits for the pull request, and the record's descriptions of
+  number, fixed once the pull request was opened (#101), and the record's descriptions of
   earlier findings were added in round 16's fix, except round 1's
   minor, which the record leaves undescribed.
 - **Round 16** (GPT `gpt-6.2-sol` xhigh and GLM `glm-5.3` high, the
