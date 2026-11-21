@@ -1,0 +1,507 @@
+// SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! The site reader of `check-os`: what each file of `ironafs-os` holds that
+//! ADR 0005's table counts, read from its tokens.
+//!
+//! A *site* is one `unsafe extern` block, one `unsafe` block or one `unsafe
+//! impl`, named by the `#[expect(unsafe_code, reason = "<site id>")]` on
+//! the item or statement that holds it (ADR 0005, point 6.1). For an
+//! extern block the reader records each declared function and the block's
+//! `#[link]` attribute; for a block, the one operation it holds (point
+//! 6.3). A block whose body is anything but one call of a path with plain
+//! arguments (names, literals, `&`, `&raw mut`, casts) is refused, so a
+//! second foreign call or a raw read cannot hide beside the recorded one:
+//! pointers are made, and values converted, in safe code around the block.
+//!
+//! The reader also refuses what could put code out of its sight or make
+//! one target's code differ from what the compiler's file list shows:
+//! macros defined in the crate, `include!` and `#[path]`, assembly, a
+//! `cfg` in a file that holds a site (other than the gate of its unit-test
+//! module), and `target_env` anywhere but the crate root's target
+//! allowlist, so a musl build compiles exactly the glibc build's code.
+
+use crate::rust_source::{Token, TokenKind, ident, matching, punct};
+
+#[cfg(test)]
+mod tests;
+
+pub(crate) const UNSAFE_ITEM: &str = "an unsafe function, trait or foreign-callable function: \
+                                      the crate defines none (ADR 0005, points 1.2 and 2)";
+pub(crate) const BLOCK_BODY: &str = "an unsafe block holds exactly one call of a path, with \
+                                     plain arguments, and nothing else (ADR 0005, point 6.3)";
+pub(crate) const EXTERN_FORM: &str = "a foreign declaration is written \
+                                      `unsafe extern \"<abi>\" { fn ...; }` (ADR 0005, point 2)";
+pub(crate) const EXTERN_ITEM: &str = "an extern block holds function declarations only \
+                                      (ADR 0005, point 2)";
+pub(crate) const LINK: &str = "a #[link] attribute stands only on a foreign declaration block \
+                               (ADR 0005, point 6.7)";
+pub(crate) const HIDDEN: &str = "macro_rules!, include!, #[path] and assembly could put code out \
+                                 of this check's sight (ADR 0005, point 6.7)";
+pub(crate) const CFG: &str = "a file that holds a site names cfg only as `#[cfg(test)] mod \
+                              tests;`, so each target's sites are the files the compiler reads \
+                              for it (ADR 0005, point 6.7)";
+pub(crate) const TARGET_ENV: &str = "target_env is named only in the crate root's target \
+                                     allowlist, so a musl build compiles the glibc build's code";
+pub(crate) const TWO_NAMES: &str = "one statement or item carries more than one \
+                                    #[expect(unsafe_code)] (ADR 0005, point 6.1)";
+pub(crate) const OUTSIDE: &str = "unsafe code, a foreign declaration or function, or a #[link] \
+                                  attribute outside ironafs-os (ADR 0005, point 1.5)";
+
+/// One function of an extern block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExternItem {
+    pub(crate) name: String,
+    /// Declared `safe fn`.
+    pub(crate) safe: bool,
+}
+
+/// What a site is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SiteKind {
+    /// An `unsafe extern` block, its `#[link]` arguments as `key=value`
+    /// pairs joined by `;`, and its functions in source order.
+    Extern {
+        link: Option<String>,
+        items: Vec<ExternItem>,
+    },
+    /// An `unsafe` block: the path it calls, as written, and its
+    /// arguments, each as its tokens' text joined by spaces.
+    Block {
+        operation: String,
+        arguments: Vec<String>,
+    },
+    /// An `unsafe impl`.
+    Impl,
+    /// An `unsafe fn` standing in for a foreign function under Miri: only
+    /// in a Miri stand-in, named `<site id>: Miri stand-in`.
+    StandInFn,
+}
+
+/// The suffix of the name a Miri stand-in's sites carry (ADR 0005, point
+/// 6.5): `#[expect(unsafe_code, reason = "<site id>: Miri stand-in")]`.
+pub(crate) const STAND_IN: &str = ": Miri stand-in";
+
+/// One site, its name (`None` if it carries no named expectation) and the
+/// line of its `unsafe`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Site {
+    pub(crate) id: Option<String>,
+    pub(crate) line: usize,
+    pub(crate) kind: SiteKind,
+}
+
+/// A rule broken at a line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Problem {
+    pub(crate) line: usize,
+    pub(crate) what: &'static str,
+}
+
+/// What one file holds.
+#[derive(Debug, Default)]
+pub(crate) struct Scan {
+    pub(crate) sites: Vec<Site>,
+    pub(crate) problems: Vec<Problem>,
+}
+
+/// Macros and attributes that read code from elsewhere or write machine
+/// code.
+const HIDING_WORDS: &[&str] = &[
+    "macro_rules",
+    "include",
+    "include_str",
+    "include_bytes",
+    "asm",
+    "global_asm",
+    "naked_asm",
+];
+
+/// Reads the sites and problems of one file of the crate; `root` says it
+/// is the library root, whose target allowlist may name `target_env`.
+pub(crate) fn scan(tokens: &[Token], root: bool) -> Scan {
+    let mut scan = Scan::default();
+    let allowlist = if root { allowlist_range(tokens) } else { None };
+    let mut extern_end = 0;
+    let mut cfg_lines = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        let problem = |what| Problem {
+            line: token.line,
+            what,
+        };
+        let Some(word) = ident(Some(token)) else {
+            continue;
+        };
+        // A raw identifier is a name, never a keyword: `r#unsafe` opens no
+        // block. But `r#cfg`, `r#path` and the other built-in names below
+        // are not keywords, so their raw spelling still names the built-in
+        // and is checked like the plain one.
+        let keyword = !token.raw;
+        match word {
+            "unsafe" if keyword && index >= extern_end => {
+                if let Some(end) = read_unsafe(tokens, index, &mut scan) {
+                    extern_end = end;
+                }
+            }
+            "extern" if keyword && !follows_unsafe(tokens, index) => {
+                scan.problems.push(problem(EXTERN_FORM));
+            }
+            "link" if opens_attribute(tokens, index) && !on_extern_block(tokens, index) => {
+                scan.problems.push(problem(LINK));
+            }
+            "path" if opens_attribute(tokens, index) => scan.problems.push(problem(HIDDEN)),
+            word if HIDING_WORDS.contains(&word) => scan.problems.push(problem(HIDDEN)),
+            "cfg" | "cfg_attr" if !is_test_gate(tokens, index) => cfg_lines.push(token.line),
+            "target_env"
+                if !allowlist
+                    .as_ref()
+                    .is_some_and(|range| range.contains(&index)) =>
+            {
+                scan.problems.push(problem(TARGET_ENV));
+            }
+            _ => {}
+        }
+    }
+    if !scan.sites.is_empty() {
+        scan.problems.extend(
+            cfg_lines
+                .into_iter()
+                .map(|line| Problem { line, what: CFG }),
+        );
+    }
+    scan
+}
+
+/// Every `unsafe`, foreign declaration or function, and `#[link]` in a
+/// file outside the crate. `extern crate` is allowed.
+pub(crate) fn outside_crate(tokens: &[Token]) -> Vec<Problem> {
+    let mut found = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        let flagged = match ident(Some(token)).filter(|_| !token.raw) {
+            Some("unsafe") => true,
+            Some("extern") => ident(tokens.get(index + 1)) != Some("crate"),
+            Some("link") => opens_attribute(tokens, index),
+            _ => false,
+        };
+        if flagged {
+            found.push(Problem {
+                line: token.line,
+                what: OUTSIDE,
+            });
+        }
+    }
+    found
+}
+
+/// Reads the site an `unsafe` at `index` opens into `scan`; returns the
+/// end of an extern block's body, inside which the reader skips the
+/// declarations' own `unsafe`.
+fn read_unsafe(tokens: &[Token], index: usize, scan: &mut Scan) -> Option<usize> {
+    let line = tokens.get(index).map_or(0, |token| token.line);
+    let start = statement_start(tokens, index);
+    let attributes = tokens.get(start..index).unwrap_or_default();
+    let names = expectation_names(attributes);
+    if names.len() > 1 {
+        scan.problems.push(Problem {
+            line,
+            what: TWO_NAMES,
+        });
+    }
+    let id = names.into_iter().next();
+    let mut push = |kind| {
+        scan.sites.push(Site {
+            id: id.clone(),
+            line,
+            kind,
+        });
+    };
+    let next = tokens.get(index + 1);
+    match (ident(next), punct(next)) {
+        (Some("extern"), _) => {
+            let abi = matches!(
+                tokens.get(index + 2).map(|token| &token.kind),
+                Some(TokenKind::Str(_))
+            );
+            if abi && ident(tokens.get(index + 3)) == Some("fn") {
+                scan.problems.push(Problem {
+                    line,
+                    what: UNSAFE_ITEM,
+                });
+                return None;
+            }
+            let open = index + 3;
+            let close = (abi && punct(tokens.get(open)) == Some('{'))
+                .then(|| matching(tokens, open, '{', '}'))
+                .flatten();
+            let Some(close) = close else {
+                scan.problems.push(Problem {
+                    line,
+                    what: EXTERN_FORM,
+                });
+                return None;
+            };
+            match extern_items(tokens.get(open + 1..close).unwrap_or_default()) {
+                Some(items) => push(SiteKind::Extern {
+                    link: link_arguments(attributes),
+                    items,
+                }),
+                None => scan.problems.push(Problem {
+                    line,
+                    what: EXTERN_ITEM,
+                }),
+            }
+            Some(close + 1)
+        }
+        (_, Some('{')) => {
+            let call = matching(tokens, index + 1, '{', '}')
+                .and_then(|close| tokens.get(index + 2..close))
+                .and_then(one_call);
+            match call {
+                Some((operation, arguments)) => push(SiteKind::Block {
+                    operation,
+                    arguments,
+                }),
+                None => scan.problems.push(Problem {
+                    line,
+                    what: BLOCK_BODY,
+                }),
+            }
+            None
+        }
+        (Some("impl"), _) => {
+            push(SiteKind::Impl);
+            None
+        }
+        (Some("fn"), _) if id.as_deref().is_some_and(|id| id.ends_with(STAND_IN)) => {
+            push(SiteKind::StandInFn);
+            None
+        }
+        _ => {
+            scan.problems.push(Problem {
+                line,
+                what: UNSAFE_ITEM,
+            });
+            None
+        }
+    }
+}
+
+/// Where the statement or item holding the token at `index` starts: just
+/// after the last `;`, `{` or `}` before it.
+fn statement_start(tokens: &[Token], index: usize) -> usize {
+    let before = tokens.get(..index).unwrap_or_default();
+    before
+        .iter()
+        .rposition(|token| matches!(punct(Some(token)), Some(';' | '{' | '}')))
+        .map_or(0, |at| at + 1)
+}
+
+/// The site ids of the `#[expect(unsafe_code, reason = "<id>")]`
+/// attributes among `tokens`.
+fn expectation_names(tokens: &[Token]) -> Vec<String> {
+    let mut names = Vec::new();
+    for (index, _) in tokens.iter().enumerate() {
+        let at = |offset: usize| tokens.get(index + offset);
+        let shape = punct(at(0)) == Some('#')
+            && punct(at(1)) == Some('[')
+            && ident(at(2)) == Some("expect")
+            && punct(at(3)) == Some('(')
+            && ident(at(4)) == Some("unsafe_code")
+            && punct(at(5)) == Some(',')
+            && ident(at(6)) == Some("reason")
+            && punct(at(7)) == Some('=')
+            && punct(at(9)) == Some(')')
+            && punct(at(10)) == Some(']');
+        if let (true, Some(TokenKind::Str(name))) = (shape, at(8).map(|token| &token.kind)) {
+            names.push(name.clone());
+        }
+    }
+    names
+}
+
+/// The `key = "value"` pairs of a `#[link(...)]` among `tokens`.
+fn link_arguments(tokens: &[Token]) -> Option<String> {
+    let start = tokens.iter().enumerate().position(|(index, _)| {
+        punct(tokens.get(index)) == Some('#')
+            && punct(tokens.get(index + 1)) == Some('[')
+            && ident(tokens.get(index + 2)) == Some("link")
+    })?;
+    let close = matching(tokens, start + 1, '[', ']')?;
+    let inside = tokens.get(start + 3..close).unwrap_or_default();
+    let pairs: Vec<String> = inside
+        .windows(3)
+        .filter_map(|window| match window {
+            [key, equals, value] if punct(Some(equals)) == Some('=') => {
+                match (ident(Some(key)), &value.kind) {
+                    (Some(key), TokenKind::Str(value)) => Some(format!("{key}={value}")),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    Some(pairs.join(";"))
+}
+
+/// The functions an extern block's body declares, or `None` if it holds
+/// anything else.
+fn extern_items(body: &[Token]) -> Option<Vec<ExternItem>> {
+    let mut items = Vec::new();
+    let mut at = 0;
+    while at < body.len() {
+        while punct(body.get(at)) == Some('#') {
+            at = matching(body, at + 1, '[', ']')? + 1;
+        }
+        if ident(body.get(at)) == Some("pub") {
+            at += 1;
+            if punct(body.get(at)) == Some('(') {
+                at = matching(body, at, '(', ')')? + 1;
+            }
+        }
+        let safe = match ident(body.get(at)) {
+            Some("safe") => {
+                at += 1;
+                true
+            }
+            Some("unsafe") => {
+                at += 1;
+                false
+            }
+            _ => false,
+        };
+        if ident(body.get(at)) != Some("fn") {
+            return None;
+        }
+        let name = ident(body.get(at + 1))?.to_owned();
+        let end = body
+            .get(at..)?
+            .iter()
+            .position(|token| matches!(punct(Some(token)), Some(';' | '{')))?
+            + at;
+        if punct(body.get(end)) != Some(';') {
+            return None;
+        }
+        items.push(ExternItem { name, safe });
+        at = end + 1;
+    }
+    Some(items)
+}
+
+/// The path and arguments of a block body that is exactly one call of a
+/// path with plain arguments, and an optional `;`.
+fn one_call(body: &[Token]) -> Option<(String, Vec<String>)> {
+    let mut at = 0;
+    let mut path = String::new();
+    if matches!(
+        body.first().map(|token| &token.kind),
+        Some(TokenKind::PathSep)
+    ) {
+        path.push_str("::");
+        at = 1;
+    }
+    path.push_str(ident(body.get(at))?);
+    at += 1;
+    while matches!(
+        body.get(at).map(|token| &token.kind),
+        Some(TokenKind::PathSep)
+    ) {
+        path.push_str("::");
+        path.push_str(ident(body.get(at + 1))?);
+        at += 2;
+    }
+    if punct(body.get(at)) != Some('(') {
+        return None;
+    }
+    let close = matching(body, at, '(', ')')?;
+    let mut arguments = Vec::new();
+    let mut argument: Vec<String> = Vec::new();
+    for token in body.get(at + 1..close)? {
+        let text = match &token.kind {
+            TokenKind::Ident(name) => name.clone(),
+            TokenKind::PathSep => "::".to_owned(),
+            TokenKind::Str(text) => format!("\"{text}\""),
+            TokenKind::Punct(',') => {
+                arguments.push(std::mem::take(&mut argument).join(" "));
+                continue;
+            }
+            TokenKind::Punct(next @ ('&' | '-')) => next.to_string(),
+            TokenKind::Punct(_) | TokenKind::Lifetime => return None,
+        };
+        argument.push(text);
+    }
+    if !argument.is_empty() {
+        arguments.push(argument.join(" "));
+    }
+    let rest = body.get(close + 1..).unwrap_or_default();
+    let ends = rest.is_empty() || (rest.len() == 1 && punct(rest.first()) == Some(';'));
+    ends.then_some((path, arguments))
+}
+
+/// Whether the word at `index` is the first inside `#[` or `#![`.
+fn opens_attribute(tokens: &[Token], index: usize) -> bool {
+    let before = |back: usize| index.checked_sub(back).and_then(|at| tokens.get(at));
+    punct(before(1)) == Some('[')
+        && (punct(before(2)) == Some('#')
+            || (punct(before(2)) == Some('!') && punct(before(3)) == Some('#')))
+}
+
+/// Whether the `extern` at `index` follows an `unsafe`.
+fn follows_unsafe(tokens: &[Token], index: usize) -> bool {
+    index
+        .checked_sub(1)
+        .and_then(|at| tokens.get(at))
+        .is_some_and(|token| !token.raw && ident(Some(token)) == Some("unsafe"))
+}
+
+/// Whether the attribute whose first word is at `index` is followed, past
+/// any further attributes, by `unsafe extern`.
+fn on_extern_block(tokens: &[Token], index: usize) -> bool {
+    let Some(mut at) = index
+        .checked_sub(1)
+        .and_then(|open| matching(tokens, open, '[', ']'))
+        .map(|close| close + 1)
+    else {
+        return false;
+    };
+    while punct(tokens.get(at)) == Some('#') {
+        match matching(tokens, at + 1, '[', ']') {
+            Some(close) => at = close + 1,
+            None => return false,
+        }
+    }
+    ident(tokens.get(at)) == Some("unsafe") && ident(tokens.get(at + 1)) == Some("extern")
+}
+
+/// Whether the `cfg` at `index` is `#[cfg(test)] mod tests;`.
+fn is_test_gate(tokens: &[Token], index: usize) -> bool {
+    let at = |offset: usize| tokens.get(index + offset);
+    opens_attribute(tokens, index)
+        && punct(at(1)) == Some('(')
+        && ident(at(2)) == Some("test")
+        && punct(at(3)) == Some(')')
+        && punct(at(4)) == Some(']')
+        && ident(at(5)) == Some("mod")
+        && ident(at(6)) == Some("tests")
+        && punct(at(7)) == Some(';')
+}
+
+/// The token range of the crate root's target allowlist: the attribute
+/// `#[cfg(not(any(...)))]` directly before the first `compile_error`.
+pub(crate) fn allowlist_range(tokens: &[Token]) -> Option<std::ops::Range<usize>> {
+    let call = tokens
+        .iter()
+        .position(|token| ident(Some(token)) == Some("compile_error"))?;
+    let close = call.checked_sub(1)?;
+    if punct(tokens.get(close)) != Some(']') {
+        return None;
+    }
+    let open = (0..close)
+        .rev()
+        .find(|&open| matching(tokens, open, '[', ']') == Some(close))?;
+    let hash = open.checked_sub(1)?;
+    let shape = punct(tokens.get(hash)) == Some('#')
+        && ident(tokens.get(open + 1)) == Some("cfg")
+        && punct(tokens.get(open + 2)) == Some('(')
+        && ident(tokens.get(open + 3)) == Some("not");
+    shape.then_some(hash..call)
+}

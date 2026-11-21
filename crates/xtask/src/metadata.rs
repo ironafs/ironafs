@@ -36,6 +36,11 @@ pub(crate) struct Member {
     pub(crate) target_kinds: Vec<String>,
     /// The edition of each target, in the order of `target_kinds`' targets.
     pub(crate) editions: Vec<String>,
+    /// Every dependency the manifest declares, as cargo parsed it: normal,
+    /// development, build, optional and target-specific alike, each as
+    /// `<kind> <name>` (`normal` when cargo gives no kind). Unlike the
+    /// resolved graph, this keeps development dependencies.
+    pub(crate) declared_dependencies: Vec<String>,
 }
 
 impl Member {
@@ -99,6 +104,25 @@ pub(crate) fn load(manifest: Option<&Path>, config: &[String]) -> Result<Workspa
     parse_workspace(&text)
 }
 
+/// A package's declared dependencies, each as `<kind> <name>`.
+///
+/// # Errors
+///
+/// Returns an error if the package has no `dependencies` array or a kind
+/// that is not a string or null.
+fn declared(package: &Value) -> Result<Vec<String>, Error> {
+    let mut found = Vec::new();
+    for dependency in array(package, "dependencies")? {
+        let kind = match dependency.get("kind") {
+            None | Some(Value::Null) => "normal",
+            Some(Value::String(kind)) => kind.as_str(),
+            Some(_) => return Err(Error::UnexpectedOutput(COMMAND)),
+        };
+        found.push(format!("{kind} {}", string(dependency, "name")?));
+    }
+    Ok(found)
+}
+
 /// Reads the workspace from `cargo metadata` output. Dependencies are
 /// followed by package id, never by the name a manifest gives them.
 ///
@@ -148,6 +172,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             .iter()
             .find(|node| string(node, "id").is_ok_and(|candidate| candidate == *id))
             .ok_or_else(unexpected)?;
+        let declared_dependencies = declared(package)?;
         members.push(Member {
             name: string(package, "name")?.to_owned(),
             id: (*id).to_owned(),
@@ -155,6 +180,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             lib_root,
             target_kinds,
             editions,
+            declared_dependencies,
         });
     }
 

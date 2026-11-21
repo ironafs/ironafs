@@ -64,6 +64,7 @@ fn member(root: &Path, name: &str, files: &[(&str, &str)]) -> Member {
         dir,
         target_kinds: vec!["lib".into()],
         editions: vec!["2024".into()],
+        declared_dependencies: Vec::new(),
     }
 }
 

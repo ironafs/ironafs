@@ -35,6 +35,10 @@ pub(crate) enum TokenKind {
     /// `::`
     PathSep,
     Punct(char),
+    /// The text between the quotes of a plain or raw string literal, as
+    /// written (escapes are not decoded). Only `tokens_with_strings` keeps
+    /// strings; `tokens` drops every literal.
+    Str(String),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -119,11 +123,28 @@ pub(crate) fn read(file: &Path) -> Result<Result<Vec<Token>, String>, Error> {
 /// Returns the line of an unterminated comment or literal, a literal with
 /// a suffix, a shebang line, or a frontmatter fence.
 pub(crate) fn tokens(source: &str) -> Result<Vec<Token>, LexError> {
+    lex(source, false)
+}
+
+/// Splits Rust source into tokens as `tokens` does, but keeps the text of
+/// each plain and raw string literal as a `TokenKind::Str`, for checks that
+/// read an attribute's string argument. Byte, C and character literals are
+/// still dropped.
+///
+/// # Errors
+///
+/// As `tokens`.
+pub(crate) fn tokens_with_strings(source: &str) -> Result<Vec<Token>, LexError> {
+    lex(source, true)
+}
+
+fn lex(source: &str, strings: bool) -> Result<Vec<Token>, LexError> {
     let mut lexer = Lexer {
         chars: source.chars().collect(),
         position: 0,
         line: 1,
         tokens: Vec::new(),
+        strings,
     };
     // The compiler drops a byte order mark at the start of a file.
     if lexer.at(0) == Some('\u{feff}') {
@@ -147,6 +168,8 @@ struct Lexer {
     position: usize,
     line: usize,
     tokens: Vec<Token>,
+    /// Whether plain and raw string literals are kept as tokens.
+    strings: bool,
 }
 
 impl Lexer {
@@ -243,7 +266,9 @@ impl Lexer {
                 '/' if self.at(1) == Some('*') => self.block_comment()?,
                 '"' => {
                     self.advance();
+                    let start = self.position;
                     self.quoted('"', "unterminated string", line)?;
+                    self.keep_string(start, self.position.saturating_sub(1), line);
                     self.literal_end(line)?;
                 }
                 '\'' => self.quote_or_lifetime(line)?,
@@ -261,6 +286,20 @@ impl Lexer {
             }
         }
         Ok(())
+    }
+
+    /// Keeps the characters from `start` to `end` as a string token, if
+    /// this lexer keeps strings.
+    fn keep_string(&mut self, start: usize, end: usize, line: usize) {
+        if self.strings {
+            let text: String = self
+                .chars
+                .get(start..end)
+                .unwrap_or_default()
+                .iter()
+                .collect();
+            self.push(TokenKind::Str(text), line);
+        }
     }
 
     fn block_comment(&mut self) -> Result<(), LexError> {
@@ -346,7 +385,10 @@ impl Lexer {
             .collect();
         match (word.as_str(), self.at(0), self.at(1)) {
             ("r" | "br" | "cr", Some('"' | '#'), _) if self.raw_string_follows() => {
-                self.raw_string(line)?;
+                let (start, end) = self.raw_string(line)?;
+                if word == "r" {
+                    self.keep_string(start, end, line);
+                }
                 self.literal_end(line)
             }
             ("r", Some('#'), Some(next)) if next == '_' || next.is_alphanumeric() => {
@@ -396,19 +438,23 @@ impl Lexer {
         self.at(offset) == Some('"')
     }
 
-    fn raw_string(&mut self, line: usize) -> Result<(), LexError> {
+    /// Skips a raw string whose prefix is consumed, and returns where its
+    /// text starts and ends.
+    fn raw_string(&mut self, line: usize) -> Result<(usize, usize), LexError> {
         let mut hashes = 0;
         while self.at(0) == Some('#') {
             self.position += 1;
             hashes += 1;
         }
         self.position += 1;
+        let start = self.position;
         loop {
             match self.advance() {
                 Some('"') => {
                     if (0..hashes).all(|offset| self.at(offset) == Some('#')) {
+                        let end = self.position - 1;
                         self.position += hashes;
-                        return Ok(());
+                        return Ok((start, end));
                     }
                 }
                 Some(_) => {}
@@ -497,6 +543,34 @@ pub(crate) fn ident(token: Option<&Token>) -> Option<&str> {
         Some(TokenKind::Ident(word)) => Some(word),
         _ => None,
     }
+}
+
+/// The index of the bracket that closes the `opening` bracket at `open`,
+/// counting nested pairs of the same kind; `None` if it is not closed or
+/// `open` holds no `opening` bracket.
+pub(crate) fn matching(
+    tokens: &[Token],
+    open: usize,
+    opening: char,
+    closing: char,
+) -> Option<usize> {
+    if punct(tokens.get(open)) != Some(opening) {
+        return None;
+    }
+    let mut depth = 0_usize;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        match punct(Some(token)) {
+            Some(next) if next == opening => depth += 1,
+            Some(next) if next == closing => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The character of a punctuation token.

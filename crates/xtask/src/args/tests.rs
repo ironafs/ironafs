@@ -119,6 +119,32 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             &["check-pure", "--self-test"][..],
             Task::CheckPure { self_test: true },
         ),
+        (&["check-os"][..], Task::CheckOs { self_test: false }),
+        (
+            &["check-os", "--self-test"][..],
+            Task::CheckOs { self_test: true },
+        ),
+        (
+            &["check-abi"][..],
+            Task::CheckAbi {
+                self_test: false,
+                target: None,
+            },
+        ),
+        (
+            &["check-abi", "--self-test"][..],
+            Task::CheckAbi {
+                self_test: true,
+                target: None,
+            },
+        ),
+        (
+            &["check-abi", "--target", "aarch64-unknown-linux-musl"][..],
+            Task::CheckAbi {
+                self_test: false,
+                target: Some("aarch64-unknown-linux-musl".into()),
+            },
+        ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Ok(task));
     }
@@ -138,6 +164,11 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
         (
             &["check-pure", "--all"][..],
             UsageError::UnexpectedArgument("--all".into()),
+        ),
+        (&["check-abi", "--target"][..], UsageError::MissingTarget),
+        (
+            &["check-abi", "--target", "x", "y"][..],
+            UsageError::UnexpectedArgument("y".into()),
         ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
