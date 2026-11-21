@@ -285,7 +285,7 @@ a cap that rests on an UNVERIFIED value is UNVERIFIED with it.
 
 | Cap | Bounds | Value from 5.1 | Checked |
 |---|---|---|---|
-| `dir.object_max` | the object's length | `dir.pages_max` × `dir.page_size` = 2,095,104 octets | before anything is read (5.4, point 1) |
+| `dir.object_max` | the object's length | `dir.pages_max` × `dir.page_size` = 2,095,104 octets | before anything is read (5.4, point 2) |
 | `dir.records_max` | record indexes in any object, chain steps, entries | `dir.pages_max` × `dir.records_per_page` = 65,472 | by the records present, which never exceed it (6, point 3; 5.4, point 6) |
 | `dir.name_max` | octets scanned for a terminator | to the end of the entry's page (5.1, point 13) | each name (5.4, point 9) |
 | `dir.budget` | bytes the decoder requests for one decode: the result and its working state | what the largest valid object needs, from the reservations of point 3 | before each request (6, point 6) |
@@ -306,10 +306,11 @@ a cap that rests on an UNVERIFIED value is UNVERIFIED with it.
    checks the new total before the request is made; nothing is
    subtracted when memory is freed `[OWN]`. So that the count never
    meets growth, each buffer is reserved once, fallibly, for a bound
-   computed from the length before decoding starts: entries and the
-   working state for the records present, name octets for the length
-   itself. A request that would pass `dir.budget` is `BudgetExceeded`; a
-   reservation within it that the allocator refuses is
+   computed from the length, after the header checks of 5.4, points 2
+   to 4 and before the walk of points 6 to 13 (5.4, point 4): entries
+   and the working state for the records present, name octets for the
+   length itself. A request that would pass `dir.budget` is
+   `BudgetExceeded`; a reservation within it that the allocator refuses is
    `AllocationFailed`. The value of `dir.budget` is a constant, fixed
    with the decoded type in the capture-backed revision as what these
    reservations need for an object of `dir.object_max` octets, so the
@@ -371,7 +372,13 @@ implementation, and no octet is read before the checks that guard it.
    pages present must always fail, since it would index past the object.
 4. **Every page's header.** Each page's tag is `dir.tag`, or `BadTag` with
    that page `[OWN]`. Strict for the same reason and with the same
-   question as point 3.
+   question as point 3. Only when every page's header has passed, and
+   before the walk of point 7 reads any bucket head, does the decoder
+   make the reservations of 5.2, point 3; one that fails ends decoding
+   with `BudgetExceeded` or `AllocationFailed` `[OWN]`. So an object of
+   `dir.object_max` octets meets the header checks before any buffer is
+   sized from its length, and a header error always comes before a
+   budget or allocation error.
 5. **Ignored fields.** The page map, the allocation bits, the flags, every
    reserved octet, and the octets of a span after the terminating zero
    are never read `[OWN]`. They are a writer's bookkeeping or undefined
@@ -449,7 +456,7 @@ implementation, and no octet is read before the checks that guard it.
       decides how `.` and `..` resolve.
 14. **The result** is the set of entries, each its name's octets, its
     vnode and its uniquifier, ordered by the record index of its first
-    record (5.6, point 1). Records no chain reaches are not entries and
+    record (5.6, point 2). Records no chain reaches are not entries and
     are not read `[OWN]`.
 15. **What is not checked here:** whether a vnode or uniquifier value is
     one a fileserver could issue (section 13, Q9), and whether a name can
@@ -833,4 +840,5 @@ others block the point they name.
 
 ## 14. Review
 
-Not yet reviewed. The record will be in `docs/reviews/`.
+The review record is
+[2026-11-21-m2a-56-directory-format](../reviews/2026-11-21-m2a-56-directory-format.md).
