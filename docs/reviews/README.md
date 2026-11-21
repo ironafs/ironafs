@@ -38,6 +38,7 @@ the evidence that refutes it.
 | [2026-11-21-m1-close-sweep](2026-11-21-m1-close-sweep.md) | The documentation sweep against ADR 0004 at M1's exit |
 | [2026-11-21-m2a-90-convergence](2026-11-21-m2a-90-convergence.md) | Issue #54: convergence rules for review rounds |
 | [2026-11-21-m2a-13-remainder](2026-11-21-m2a-13-remainder.md) | Issue #46: `check-pure`'s exact matrix of compiled crates, targets and profiles, and the crate root's form |
+| [2026-11-21-lane-calibration](2026-11-21-lane-calibration.md) | Issue #48: the review lanes calibrated on IronAFS ranges with planted defects (GLM 5.3 high and Gemini Carbon medium, first suite) |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
