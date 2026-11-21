@@ -10,7 +10,11 @@
 #[cfg(panic = "abort")]
 compile_error!("ironafs-sim needs unwinding panics: build it without panic = \"abort\"");
 
+pub mod child;
 pub mod replay;
+pub mod scenario;
 pub mod sched;
 pub mod stream;
+pub mod supervisor;
 pub mod trace;
+pub mod witness;

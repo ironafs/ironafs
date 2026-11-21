@@ -118,8 +118,9 @@ pub struct SchedPlants {
     /// Keep running the task that ran last while it is enabled, so each
     /// task runs its whole critical window alone.
     pub segregate: bool,
-    /// Seed the schedule stream with this value instead of the run's seed.
-    pub fixed_schedule: Option<u64>,
+    /// Seed every stream with this value instead of the run's seed, which
+    /// the header still prints: a change to a printed field alone.
+    pub fixed_seed: Option<u64>,
 }
 
 /// A run's parameters.
@@ -480,9 +481,8 @@ impl Run {
         replay: Option<Replay>,
         server: Option<Server>,
     ) -> Self {
-        let seed = config.seed;
+        let seed = config.plants.fixed_seed.unwrap_or(config.seed);
         let incarnation = config.incarnation;
-        let schedule_seed = config.plants.fixed_schedule.unwrap_or(seed);
         let state = State {
             holder: None,
             tasks: BTreeMap::new(),
@@ -515,7 +515,7 @@ impl Run {
                 rng: Arc::new(SeededRng::new(stream_seed(seed, "rng", incarnation))),
             }),
             config: config.clone(),
-            schedule: Stream::new(schedule_seed, "schedule", incarnation),
+            schedule: Stream::new(seed, "schedule", incarnation),
             last: None,
         }
     }

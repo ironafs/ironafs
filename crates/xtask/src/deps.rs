@@ -119,10 +119,11 @@ const DRIVER_MAY_USE: &[(&str, &[&str])] = &[
 /// For each crate, the third-party crates it may depend on directly.
 pub(crate) type ThirdPartyLists = &'static [(&'static str, &'static [&'static str])];
 
-/// The third-party crates each shipped crate may depend on directly. Every
-/// list starts empty: a third-party crate is added only after the owner's
-/// decision (coding standards rule 21), and a shipped crate missing from
-/// this table may use none. A foreign-function crate that `ironafs-gss`
+/// The third-party crates each shipped crate, and each test-only crate
+/// listed here, may depend on directly. Every list starts empty: a
+/// third-party crate is added only after the owner's decision (coding
+/// standards rule 21), and a shipped crate missing from this table may use
+/// none. A foreign-function crate that `ironafs-gss`
 /// uses is named here even when it is reached through another crate.
 const THIRD_PARTY: ThirdPartyLists = &[
     ("ironafs-xdr", &[]),
@@ -147,6 +148,9 @@ const THIRD_PARTY: ThirdPartyLists = &[
     ("ironafs-cloudfiles", &[]),
     ("ironafsd", &[]),
     ("ironafs-cli", &[]),
+    // Test-only, yet limited: the simulator is IronAFS's own code, and no
+    // async runtime enters it (ADR 0004, C3, point 5; issue #79).
+    ("ironafs-sim", &[]),
 ];
 
 /// The only crates through which cryptography and foreign-function crates
@@ -405,8 +409,9 @@ impl fmt::Display for Violation {
             Self::ThirdParty { from, to } => write!(
                 formatter,
                 "{from} depends on the third-party crate {to}, which its list in \
-                 crates/xtask/src/deps.rs does not name: a shipped crate uses a \
-                 third-party crate only after the owner's decision (coding standards rule 21)"
+                 crates/xtask/src/deps.rs does not name: a shipped crate, or a test-only \
+                 crate the lists name, uses a third-party crate only after the owner's \
+                 decision (coding standards rule 21)"
             ),
             Self::CryptoOutsideHome { from, via, to } => {
                 write!(formatter, "{from} depends on {to}")?;
@@ -485,20 +490,22 @@ pub(crate) fn kind_of(name: &str) -> Option<Kind> {
         .find_map(|(candidate, kind)| (*candidate == name).then_some(*kind))
 }
 
-/// The third-party crates a crate may depend on directly, if the crate is
-/// shipped: a shipped crate missing from `lists` may use none. Test-only
-/// crates and the automation are never shipped and are not limited.
+/// The third-party crates a crate may depend on directly: a shipped crate
+/// missing from `lists` may use none. Test-only crates and the automation
+/// are never shipped, and are limited only when `lists` names them.
 fn third_party_allowed(
     name: &str,
     kind: Kind,
     lists: ThirdPartyLists,
 ) -> Option<&'static [&'static str]> {
-    (!matches!(kind, Kind::TestOnly | Kind::Automation)).then(|| {
-        lists
-            .iter()
-            .find_map(|(candidate, allowed)| (*candidate == name).then_some(*allowed))
-            .unwrap_or_default()
-    })
+    let listed = lists
+        .iter()
+        .find_map(|(candidate, allowed)| (*candidate == name).then_some(*allowed));
+    if matches!(kind, Kind::TestOnly | Kind::Automation) {
+        listed
+    } else {
+        Some(listed.unwrap_or_default())
+    }
 }
 
 fn broken_rule(from: &str, from_kind: Kind, to: &str, to_kind: Kind) -> Option<Rule> {
