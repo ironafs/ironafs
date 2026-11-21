@@ -111,22 +111,101 @@ jobs:
           cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
           install -d "$cargo_bin"
           install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
-      - name: Prove the foreign declarations against this system's C headers
-        run: cargo --locked xtask check-abi
-      - name: Prove the declaration check catches planted mismatches
-        run: cargo --locked xtask check-abi --self-test
       - name: Run tests
         run: cargo nextest run --workspace --profile ci --retries 0 --no-tests fail --locked
       - name: Run doc-tests
         timeout-minutes: 5
         run: cargo test --doc --workspace --locked
 
+  os-linux:
+    name: os-linux (${{ matrix.target }})
+    # The real-call tests and the ABI check of ironafs-os on each Linux
+    # target ADR 0005 allows, each on its own architecture with its own C
+    # library's headers (point 5.6; sheet tests, point 6.4). Each lane
+    # names the target it proves and the sites it must have proved; a run
+    # that proves none fails. Ubuntu 26.04 lanes join when GitHub offers
+    # that runner image (issue #57's acceptance names it).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+            cc: musl-gcc
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
+            cc: musl-gcc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      TARGET: ${{ matrix.target }}
+      SITES: linux-clock linux-random
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust and the target
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustup target add "$TARGET"
+          rustc --version
+      - name: Install musl's C compiler wrapper and headers
+        if: matrix.cc == 'musl-gcc'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+          musl-gcc --version
+      - name: Install cargo-nextest
+        env:
+          ARCHIVE: ${{ matrix.nextest }}
+          ARCHIVE_SHA256: ${{ matrix.nextest_sha256 }}
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          curl --fail --silent --show-error --location --output "$ARCHIVE" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/$ARCHIVE"
+          printf '%s  %s\n' "$ARCHIVE_SHA256" "$ARCHIVE" | sha256sum -c -
+          tar -xzf "$ARCHIVE"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: Run ironafs-os's tests on the target, real system calls included
+        run: cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked
+      - name: Prove the target's foreign declarations against its C headers
+        env:
+          CC: ${{ matrix.cc || 'cc' }}
+        run: |
+          cargo --locked xtask check-abi --target "$TARGET" > check-abi.log
+          cat check-abi.log
+          grep -q "^check-abi: $TARGET: " check-abi.log
+          for site in $SITES; do
+            grep -q "$site (" check-abi.log
+          done
+      - name: Prove the declaration check catches planted mismatches
+        env:
+          CC: ${{ matrix.cc || 'cc' }}
+        run: cargo --locked xtask check-abi --self-test
+
   miri:
     name: miri
     # The Miri job of coding standards rule 5, with the first crate that
-    # holds unsafe (ADR 0005, point 6.5): the Rust around each site, the
-    # stand-in tests, and mem-wipe's own block. Tests that make a real
-    # system call are ignored under Miri, which cannot run them.
+    # holds unsafe (ADR 0005, point 6.5): each foreign call is replaced by
+    # its in-crate stand-in, so the wrappers' own pointers and checks run
+    # under Miri, and mem-wipe's own block.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -140,9 +219,22 @@ jobs:
           rustup toolchain install nightly-2026-11-01 --profile minimal --component miri,rust-src --no-self-update
           cargo +nightly-2026-11-01 miri --version
       - name: Run ironafs-os under Miri, host and aarch64 Linux
+        # A run that ran nothing, or ignored a test, proves nothing: each
+        # must report every test passed and none ignored, and the named
+        # wrapper and wipe tests must be among them.
         run: |
-          cargo +nightly-2026-11-01 miri test --locked -p ironafs-os --lib
-          cargo +nightly-2026-11-01 miri test --locked -p ironafs-os --lib --target aarch64-unknown-linux-gnu
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            cargo +nightly-2026-11-01 miri test --locked -p ironafs-os --lib --target "$target" > "miri-$target.log" 2>&1
+            cat "miri-$target.log"
+            grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "miri-$target.log"
+            for test in \
+              linux_clock::tests::read_clock_boot_advances_and_never_goes_back \
+              linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names \
+              linux_random::tests::arguments_pass_the_buffer_address_and_length_and_zeros_each_as_a_long \
+              mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257; do
+              grep -q "^test $test \.\.\. ok$" "miri-$target.log"
+            done
+          done
 
   trailers:
     name: trailers
@@ -171,19 +263,20 @@ jobs:
 
   ci-ok:
     name: ci-ok
-    needs: [lint, test, miri, trailers]
+    needs: [lint, test, os-linux, miri, trailers]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - name: Require lint, test, Miri and trailer check success
+      - name: Require lint, test, os-linux, Miri and trailer check success
         env:
           LINT_RESULT: ${{ needs.lint.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          OS_LINUX_RESULT: ${{ needs.os-linux.result }}
           MIRI_RESULT: ${{ needs.miri.result }}
           TRAILERS_RESULT: ${{ needs.trailers.result }}
         run: |
-          printf 'lint: %s\ntest: %s\nmiri: %s\ntrailers: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$MIRI_RESULT" "$TRAILERS_RESULT"
-          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$MIRI_RESULT" == success && "$TRAILERS_RESULT" == success ]]
+          printf 'lint: %s\ntest: %s\nos-linux: %s\nmiri: %s\ntrailers: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$OS_LINUX_RESULT" "$MIRI_RESULT" "$TRAILERS_RESULT"
+          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$OS_LINUX_RESULT" == success && "$MIRI_RESULT" == success && "$TRAILERS_RESULT" == success ]]
