@@ -869,9 +869,6 @@
         "headers": [
           "sys/statvfs.h"
         ],
-        "opaque": [
-          "statvfs._opaque_tail"
-        ],
         "extern_blocks": [
           {
             "link": null,

@@ -97,10 +97,6 @@ pub(crate) struct Code {
     /// with a C name: (constant, expression), for macros such as
     /// `CMSG_LEN(sizeof(int))`.
     pub(crate) expressions: Vec<(String, String)>,
-    /// The struct fields the ABI check binds by their struct's size alone
-    /// (`opaque`, optional): `struct.field`, each a trailing array of
-    /// integers the C libraries name differently (`statvfs`'s spares).
-    pub(crate) opaque: Vec<String>,
     pub(crate) extern_blocks: Vec<ExternBlock>,
     pub(crate) blocks: Vec<Block>,
     pub(crate) impls: usize,
@@ -327,7 +323,6 @@ fn parse_code(code: &Value) -> Result<Code, String> {
         headers: strings("headers")?,
         defines: defines(code)?,
         expressions: expressions(code)?,
-        opaque: opaque(code)?,
         extern_blocks,
         blocks,
         impls,
@@ -385,37 +380,6 @@ fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
                     "`expressions` maps {name:?} to {value:?}: a constant's name must map to an \
                      expression of names, numbers, spaces, balanced parentheses and the \
                      operators `*`, `+`, `-`, `|`, `<<` and `>>`"
-                ))
-            }
-        })
-        .collect()
-}
-
-/// The row's opaque fields (`opaque`, optional): `struct.field` names.
-fn opaque(code: &Value) -> Result<Vec<String>, String> {
-    let Some(opaque) = code.get("opaque") else {
-        return Ok(Vec::new());
-    };
-    let Value::Array(items) = opaque else {
-        return Err("`opaque` is not a list".to_owned());
-    };
-    items
-        .iter()
-        .map(|item| {
-            let name = item.as_str().unwrap_or_default();
-            let parts: Vec<&str> = name.split('.').collect();
-            let ok = parts.len() == 2
-                && parts.iter().all(|part| {
-                    !part.is_empty()
-                        && part
-                            .bytes()
-                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                });
-            if ok {
-                Ok(name.to_owned())
-            } else {
-                Err(format!(
-                    "`opaque` holds {item:?}, not a `struct.field` name"
                 ))
             }
         })

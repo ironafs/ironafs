@@ -17,8 +17,8 @@
 //!   with: another ABI string, an attribute on a foreign function (such as
 //!   `link_name`), a `packed` struct, a renaming import, a type alias, and
 //!   a C type name not imported from `core::ffi`; and by the generator, a
-//!   live member renamed opaque that no row names, and a struct of opaque
-//!   members alone.
+//!   live member renamed opaque that xtask's allowlist does not approve,
+//!   and a struct of opaque members alone.
 //!
 //! On Linux a second fixture, `struct sockaddr` from `<sys/socket.h>`
 //! (whose `sa_data` is `char[14]` in glibc and musl, while macOS adds a
@@ -133,10 +133,10 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
 /// and a phrase of the reader's error.
 const READER: &[(&str, &str, &str, &str)] = &[
     (
-        "a live member renamed opaque, which no row names",
+        "a live member renamed opaque, which the allowlist does not approve",
         "    tv_nsec: c_long,\n",
         "    _opaque_nsec: [c_long; 1],\n",
-        "its row does not name it",
+        "allowlist of opaque tails does not approve it",
     ),
     (
         "a struct of opaque members alone",

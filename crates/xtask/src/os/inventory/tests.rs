@@ -322,7 +322,6 @@ fn adopting(module: &str) -> Code {
         headers: Vec::new(),
         defines: Vec::new(),
         expressions: Vec::new(),
-        opaque: Vec::new(),
         structs: Vec::new(),
         constants: Vec::new(),
         stand_in: None,

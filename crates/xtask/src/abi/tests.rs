@@ -4,8 +4,8 @@
 //! Tests for the declaration reader and the C it generates.
 
 use super::{
-    CType, DataModel, Declarations, Function, Struct, c_source, canonical, declarations, identity,
-    missing_facts,
+    CType, DataModel, Declarations, Function, OPAQUE_TAILS, OpaqueTail, Struct, c_source,
+    canonical, declarations, identity, missing_facts,
 };
 use crate::rust_source::tokens_with_strings;
 
@@ -511,69 +511,102 @@ fn c_source_asserts_an_array_member_by_its_element_type_and_count() {
     }
 }
 
-/// The declarations of `source`, with `opaque` as the row's named opaque
-/// fields.
-fn read_with_opaque(source: &str, opaque: &[&str]) -> Declarations {
+/// The tail every case below approves: `s`'s `_opaque`, two `c_int`s
+/// after `a`.
+const TAIL: OpaqueTail = OpaqueTail {
+    row: "row",
+    structure: "s",
+    field: "_opaque",
+    after: "a",
+    element: "c_int",
+    count: 2,
+};
+
+/// The declarations of `source`, with `tails` the opaque tails xtask's
+/// allowlist approves for its row.
+fn read_with_opaque(source: &str, tails: &[OpaqueTail]) -> Declarations {
     let mut found = read(source);
-    found.opaque = opaque.iter().map(|name| (*name).to_owned()).collect();
+    found.opaque = tails.to_vec();
     found
 }
 
 #[test]
-fn c_source_binds_an_opaque_tail_only_by_the_struct_s_size_and_alignment() {
+fn c_source_binds_an_opaque_tail_by_where_the_c_member_before_it_ends_and_its_length() {
+    let tail = OpaqueTail {
+        structure: "statvfs",
+        field: "_opaque_tail",
+        after: "f_namemax",
+        count: 6,
+        ..TAIL
+    };
     let found = read_with_opaque(
         "use core::ffi::{c_int, c_ulong};\n\
          #[repr(C)]\nstruct statvfs { f_bsize: c_ulong, f_namemax: c_ulong, _opaque_tail: [c_int; 6] }\n",
-        &["statvfs._opaque_tail"],
+        &[tail],
     );
     let source = c_source("row", &[], &[], &[], &found, DataModel::Lp64).unwrap();
-    assert!(
-        source.lines().any(|line| line
-            == "_Static_assert(sizeof(struct statvfs) == 40, \"row: sizeof(struct statvfs)\");"),
-        "{source}"
-    );
-    assert!(
-        source.contains("offsetof(struct statvfs, f_namemax) == 8"),
-        "{source}"
-    );
+    for line in [
+        "_Static_assert(sizeof(struct statvfs) == 40, \"row: sizeof(struct statvfs)\");",
+        "_Static_assert(offsetof(struct statvfs, f_namemax) == 8, \"row: offsetof(struct statvfs, f_namemax)\");",
+        "_Static_assert(offsetof(struct statvfs, f_namemax) + sizeof(((struct statvfs *)0)->f_namemax) == 16, \"row: the start of statvfs's opaque tail\");",
+        "_Static_assert(sizeof(struct statvfs) - 16 == 24, \"row: the length of statvfs's opaque tail\");",
+    ] {
+        assert!(
+            source.lines().any(|found| found == line),
+            "{line}\n{source}"
+        );
+    }
     assert!(!source.contains("_opaque_tail"), "{source}");
 }
 
 #[test]
-fn c_source_refuses_an_opaque_field_its_row_does_not_name_or_in_the_wrong_place() {
-    let tail = "use core::ffi::{c_int, c_ulong};\n#[repr(C)]\nstruct s { a: c_ulong, _opaque: [c_int; 2] }\n";
-    for (source, opaque, error) in [
+fn c_source_refuses_an_opaque_field_the_allowlist_does_not_approve_as_written() {
+    let approved = "use core::ffi::{c_int, c_ulong};\n#[repr(C)]\nstruct s { b: c_ulong, a: c_ulong, _opaque: [c_int; 2] }\n";
+    for (source, tails, error) in [
         (
-            // A live member renamed opaque, which no row names.
-            tail,
+            // A live member renamed opaque, which the allowlist does not name.
+            approved,
             &[][..],
-            "struct s: `_opaque` is opaque, but its row does not name it in sites.json's `opaque`",
+            "struct s: `_opaque` is opaque, but xtask's allowlist of opaque tails does not approve it",
         ),
         (
-            "use core::ffi::c_int;\n#[repr(C)]\nstruct s { _opaque: [c_int; 2], a: c_int }\n",
-            &["s._opaque"][..],
-            "struct s: an opaque field (`_opaque`) is the last field, an array of integers",
+            // The member before the tail removed and the tail grown over it:
+            // size, alignment and the other offsets unchanged.
+            "use core::ffi::{c_int, c_ulong};\n#[repr(C)]\nstruct s { b: c_ulong, _opaque: [c_int; 4] }\n",
+            &[TAIL][..],
+            "struct s: the opaque tail `_opaque` is the last field, after `a`, and 2 of c_int, as xtask's allowlist approves it",
         ),
         (
-            "use core::ffi::c_int;\n#[repr(C)]\nstruct s { a: c_int, _opaque: c_int }\n",
-            &["s._opaque"][..],
-            "struct s: an opaque field (`_opaque`) is the last field, an array of integers",
+            "use core::ffi::{c_int, c_ulong};\n#[repr(C)]\nstruct s { b: c_ulong, a: c_ulong, _opaque: [c_int; 3] }\n",
+            &[TAIL][..],
+            "struct s: the opaque tail `_opaque` is the last field, after `a`, and 2 of c_int, as xtask's allowlist approves it",
         ),
         (
-            "use core::ffi::c_void;\n#[repr(C)]\nstruct s { a: u32, _opaque: [*mut c_void; 2] }\n",
-            &["s._opaque"][..],
-            "struct s: an opaque field (`_opaque`) is the last field, an array of integers",
+            "use core::ffi::{c_uint, c_ulong};\n#[repr(C)]\nstruct s { b: c_ulong, a: c_ulong, _opaque: [c_uint; 2] }\n",
+            &[TAIL][..],
+            "struct s: the opaque tail `_opaque` is the last field, after `a`, and 2 of c_int, as xtask's allowlist approves it",
+        ),
+        (
+            "use core::ffi::{c_int, c_ulong};\n#[repr(C)]\nstruct s { _opaque: [c_int; 2], a: c_ulong }\n",
+            &[TAIL][..],
+            "struct s: the opaque tail `_opaque` is the last field, after `a`, and 2 of c_int, as xtask's allowlist approves it",
         ),
         (
             // A struct whose every member is opaque checks no member.
-            "use core::ffi::c_int;\n#[repr(C)]\nstruct s { _opaque: [c_int; 6] }\n",
-            &["s._opaque"][..],
+            "use core::ffi::c_int;\n#[repr(C)]\nstruct s { _opaque: [c_int; 2] }\n",
+            &[TAIL][..],
             "struct s: every member is opaque, so no member would be checked",
         ),
         (
-            tail,
-            &["s._opaque", "t._opaque"][..],
-            "sites.json names the opaque field `t._opaque`, which the declarations do not hold",
+            approved,
+            &[
+                TAIL,
+                OpaqueTail {
+                    structure: "t",
+                    ..TAIL
+                },
+            ][..],
+            "xtask's allowlist approves the opaque tail `t._opaque`, which the declarations do not hold",
         ),
     ] {
         assert_eq!(
@@ -582,13 +615,28 @@ fn c_source_refuses_an_opaque_field_its_row_does_not_name_or_in_the_wrong_place(
                 &[],
                 &[],
                 &[],
-                &read_with_opaque(source, opaque),
+                &read_with_opaque(source, tails),
                 DataModel::Lp64
             )
             .unwrap_err(),
             error
         );
     }
+}
+
+#[test]
+fn the_allowlist_approves_only_statvfs_s_tail_after_f_namemax() {
+    assert_eq!(
+        OPAQUE_TAILS,
+        [OpaqueTail {
+            row: "linux-statvfs",
+            structure: "statvfs",
+            field: "_opaque_tail",
+            after: "f_namemax",
+            element: "c_int",
+            count: 6,
+        }]
+    );
 }
 
 #[test]

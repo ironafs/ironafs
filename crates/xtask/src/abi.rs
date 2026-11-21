@@ -21,12 +21,13 @@
 //!   field of the wrong type with the right size and offset fails; an
 //!   array member (`[T; N]`) by its address, `T (*)[N]`, so its element
 //!   type and count are both checked. A struct's last field may be an
-//!   opaque array of integers (its name starts `_opaque`, it is private,
-//!   and its row names it in sites.json's `opaque`): space a C library
-//!   fills with fields that are never read and whose names differ between
-//!   libraries or releases (`struct statvfs`'s spares), bound only by the
-//!   struct's size and alignment; a struct of opaque fields alone is
-//!   refused;
+//!   opaque array of integers (its name starts `_opaque` and it is
+//!   private): space a C library fills with fields that are never read and
+//!   whose names differ between libraries or releases (`struct statvfs`'s
+//!   spares). Only a tail `OPAQUE_TAILS` approves, by row, struct, the C
+//!   member it follows, element and count, may be opaque; it is bound by
+//!   where that C member ends and by its length to the struct's end; a
+//!   struct of opaque fields alone is refused;
 //! - each constant's value, against its C name, or against the C
 //!   expression sites.json maps it to (`expressions`), for a value a macro
 //!   gives, such as `CMSG_LEN(sizeof(int))`;
@@ -82,6 +83,33 @@ pub(crate) enum CType {
 /// bind it, so the named fields before it keep their offsets and types.
 const OPAQUE: &str = "_opaque";
 
+/// An opaque tail this check approves: in `row`'s declarations,
+/// `structure`'s last field `field`, following the C member `after`, an
+/// array of `count` `element`s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OpaqueTail {
+    pub(crate) row: &'static str,
+    pub(crate) structure: &'static str,
+    pub(crate) field: &'static str,
+    pub(crate) after: &'static str,
+    pub(crate) element: &'static str,
+    pub(crate) count: usize,
+}
+
+/// The opaque tails approved, each a class S change of this check, never
+/// of a row's own inventory entry: `struct statvfs`'s 24 bytes after
+/// `f_namemax` (glibc 2.28 `int __f_spare[6]`, glibc 2.41 `unsigned int
+/// f_type` and `int __f_spare[5]`, musl `unsigned int f_type` and `int
+/// __reserved[5]`, measured).
+pub(crate) const OPAQUE_TAILS: &[OpaqueTail] = &[OpaqueTail {
+    row: "linux-statvfs",
+    structure: "statvfs",
+    field: "_opaque_tail",
+    after: "f_namemax",
+    element: "c_int",
+    count: 6,
+}];
+
 /// A `#[repr(C)]` struct and its fields in order.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Struct {
@@ -111,9 +139,9 @@ pub(crate) struct Declarations {
     /// The names the declaration files import from `core::ffi`: only these
     /// spell C's types (a `c_int` from anywhere else is not C's `int`).
     pub(crate) ffi_names: Vec<String>,
-    /// The opaque fields the row names (`struct.field`, sites.json's
-    /// `opaque`): the only fields that may be opaque.
-    pub(crate) opaque: Vec<String>,
+    /// The opaque tails `OPAQUE_TAILS` approves for the row: the only
+    /// fields that may be opaque.
+    pub(crate) opaque: Vec<OpaqueTail>,
 }
 
 /// The sizes of C's integer types on the target.
@@ -759,7 +787,8 @@ fn struct_layout(
 }
 
 /// The assertions of one struct: its size and alignment, and each named
-/// field's offset and type (an opaque tail is bound by the size alone).
+/// field's offset and type; an approved opaque tail by where the C member
+/// before it ends and by the bytes from there to the struct's end.
 fn struct_assertions(
     item: &Struct,
     declarations: &Declarations,
@@ -790,19 +819,43 @@ fn struct_assertions(
     }
     for (index, ((field, field_type), offset)) in item.fields.iter().zip(offsets).enumerate() {
         if field.starts_with(OPAQUE) {
-            let named = format!("{name}.{field}");
-            if !declarations.opaque.contains(&named) {
+            let Some(tail) = declarations
+                .opaque
+                .iter()
+                .find(|tail| tail.structure == name && tail.field == field)
+            else {
                 return Err(format!(
-                    "struct {name}: `{field}` is opaque, but its row does not name it in \
-                     sites.json's `opaque`"
+                    "struct {name}: `{field}` is opaque, but xtask's allowlist of opaque tails \
+                     does not approve it"
+                ));
+            };
+            let before = index
+                .checked_sub(1)
+                .and_then(|previous| item.fields.get(previous))
+                .map(|(previous, _)| previous.as_str());
+            if index != last
+                || before != Some(tail.after)
+                || !tail_array(field_type, tail, declarations)
+            {
+                return Err(format!(
+                    "struct {name}: the opaque tail `{field}` is the last field, after `{}`, and \
+                     {} of {}, as xtask's allowlist approves it",
+                    tail.after, tail.count, tail.element
                 ));
             }
-            if index != last || !integer_array(field_type, declarations) {
-                return Err(format!(
-                    "struct {name}: an opaque field (`{field}`) is the last field, an array of \
-                     integers"
-                ));
-            }
+            let (length, _) = layout(field_type, declarations, model, 0)?;
+            let after = tail.after;
+            found.push((
+                format!(
+                    "offsetof(struct {name}, {after}) + sizeof(((struct {name} *)0)->{after}) == \
+                     {offset}"
+                ),
+                format!("the start of {name}'s opaque tail"),
+            ));
+            found.push((
+                format!("sizeof(struct {name}) - {offset} == {length}"),
+                format!("the length of {name}'s opaque tail"),
+            ));
             continue;
         }
         found.push((
@@ -817,15 +870,19 @@ fn struct_assertions(
     Ok(found)
 }
 
-/// Whether `found` is an array of integers (a scalar other than `void`).
-fn integer_array(found: &CType, declarations: &Declarations) -> bool {
-    let CType::Array { of, .. } = found else {
+/// Whether `found` is `tail`'s array: `count` of its integer `element`.
+fn tail_array(found: &CType, tail: &OpaqueTail, declarations: &Declarations) -> bool {
+    let CType::Array { of, count } = found else {
         return false;
     };
     let CType::Named(element) = of.as_ref() else {
         return false;
     };
-    matches!(resolve(element, declarations), Ok(Resolved::Scalar(name)) if name != "c_void" && name != "core::ffi::c_void")
+    let resolved = match resolve(element, declarations) {
+        Ok(Resolved::Scalar(name)) => name.strip_prefix("core::ffi::").unwrap_or(name),
+        _ => return false,
+    };
+    *count == tail.count && resolved == tail.element
 }
 
 /// The C11 file of assertions for one row.
@@ -882,15 +939,15 @@ pub(crate) fn c_source(
             None => {}
         }
     }
-    for named in &declarations.opaque {
+    for tail in &declarations.opaque {
         let held = declarations.structs.iter().any(|item| {
-            item.fields
-                .iter()
-                .any(|(field, _)| format!("{}.{field}", item.name) == *named)
+            item.name == tail.structure && item.fields.iter().any(|(field, _)| field == tail.field)
         });
         if !held {
             return Err(format!(
-                "sites.json names the opaque field `{named}`, which the declarations do not hold"
+                "xtask's allowlist approves the opaque tail `{}.{}`, which the declarations do \
+                 not hold",
+                tail.structure, tail.field
             ));
         }
     }
@@ -1292,7 +1349,11 @@ fn prove_row(
         Ok(found) => found,
         Err(error) => return failed(error),
     };
-    found.opaque.clone_from(&code.opaque);
+    found.opaque = OPAQUE_TAILS
+        .iter()
+        .filter(|tail| tail.row == row.id)
+        .copied()
+        .collect();
     let missing = missing_facts(&code.structs, &code.constants, &found);
     if !missing.is_empty() {
         return failed(format!(
