@@ -52,6 +52,9 @@ pub(in crate::linux_rtnetlink) struct Reply {
     /// The sender's address as written, and the length reported.
     pub(in crate::linux_rtnetlink) sender: sockaddr_nl,
     pub(in crate::linux_rtnetlink) name_length: socklen_t,
+    /// Writes no address at all and leaves the address length as the
+    /// caller set it (a call that reports success without a sender).
+    pub(in crate::linux_rtnetlink) untouched: bool,
 }
 
 thread_local! {
@@ -258,16 +261,23 @@ pub(in crate::linux_rtnetlink) unsafe fn recvmsg(
     let () = unsafe { core::ptr::copy_nonoverlapping(source, target, written) };
     let address: *mut sockaddr_nl = name.cast();
     let sender = queued.sender;
-    #[expect(unsafe_code, reason = "linux-rtnetlink: Miri stand-in")]
-    // SAFETY: the address buffer is valid for `msg_namelen` bytes, one
-    // `struct sockaddr_nl`, aligned, as promised; Miri checks.
-    let () = unsafe { core::ptr::write(address, sender) };
+    if !queued.untouched {
+        #[expect(unsafe_code, reason = "linux-rtnetlink: Miri stand-in")]
+        // SAFETY: the address buffer is valid for `msg_namelen` bytes, one
+        // `struct sockaddr_nl`, aligned, as promised; Miri checks.
+        let () = unsafe { core::ptr::write(address, sender) };
+    }
     let returned = if queued.bytes.len() > buffer.iov_len {
         MSG_TRUNC
     } else {
         0
     };
-    message.set_returned(queued.name_length, returned);
+    let name_length = if queued.untouched {
+        room
+    } else {
+        queued.name_length
+    };
+    message.set_returned(name_length, returned);
     #[expect(unsafe_code, reason = "linux-rtnetlink: Miri stand-in")]
     // SAFETY: as the read of `msg` above, for one write.
     let () = unsafe { core::ptr::write(msg, message) };

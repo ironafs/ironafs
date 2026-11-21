@@ -128,13 +128,14 @@ pub(crate) struct Received {
     pub(crate) flags: i32,
     /// The returned address length.
     pub(crate) name_length: usize,
-    /// The sender's family and port id, as the call wrote them.
+    /// The sender's family, as the call wrote it. Its port id is read
+    /// only once the address has passed the other checks.
     pub(crate) family: u16,
-    pub(crate) port: u32,
 }
 
 /// The length of a datagram the kernel sent whole, or why it is not
-/// returned.
+/// returned. `port` reads the sender's port id, and is called only after
+/// the address's length and family have passed (ADR 0005, sheet 23).
 ///
 /// # Errors
 ///
@@ -144,12 +145,17 @@ pub(crate) struct Received {
     all(not(target_os = "linux"), not(test)),
     expect(dead_code, reason = "used by the Linux site")
 )]
-pub(crate) fn checked(rules: Rules, received: &Received) -> Result<usize, RouteError> {
+pub(crate) fn checked(
+    rules: Rules,
+    received: &Received,
+    port: impl FnOnce() -> u32,
+) -> Result<usize, RouteError> {
     if received.name_length != rules.name_length || received.family != rules.family {
         return Err(RouteError::BadSender);
     }
-    if received.port != 0 {
-        return Err(RouteError::NotKernel(received.port));
+    let port = port();
+    if port != 0 {
+        return Err(RouteError::NotKernel(port));
     }
     if received.flags & rules.truncated != 0 || received.count > received.capacity {
         return Err(RouteError::Truncated);

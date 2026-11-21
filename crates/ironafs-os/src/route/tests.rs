@@ -23,19 +23,23 @@ const KERNEL: Received = Received {
     flags: 0,
     name_length: 12,
     family: 16,
-    port: 0,
 };
+
+/// The check of `received` from a sender whose port id is `port`.
+fn check(received: &Received, port: u32) -> Result<usize, RouteError> {
+    checked(RULES, received, || port)
+}
 
 #[test]
 fn a_whole_datagram_from_the_kernel_is_returned_with_its_length() {
-    assert_eq!(checked(RULES, &KERNEL).unwrap(), 100);
+    assert_eq!(check(&KERNEL, 0).unwrap(), 100);
     let empty = Received { count: 0, ..KERNEL };
-    assert_eq!(checked(RULES, &empty).unwrap(), 0);
+    assert_eq!(check(&empty, 0).unwrap(), 0);
     let full = Received {
         count: 4096,
         ..KERNEL
     };
-    assert_eq!(checked(RULES, &full).unwrap(), 4096);
+    assert_eq!(check(&full, 0).unwrap(), 4096);
 }
 
 #[test]
@@ -46,14 +50,14 @@ fn an_address_of_another_length_or_family_is_no_sender() {
             ..KERNEL
         };
         assert!(
-            matches!(checked(RULES, &short), Err(RouteError::BadSender)),
+            matches!(check(&short, 0), Err(RouteError::BadSender)),
             "{length}"
         );
     }
     for family in [0, 1, 2, 10, 17, u16::MAX] {
         let wrong = Received { family, ..KERNEL };
         assert!(
-            matches!(checked(RULES, &wrong), Err(RouteError::BadSender)),
+            matches!(check(&wrong, 0), Err(RouteError::BadSender)),
             "{family}"
         );
     }
@@ -62,25 +66,32 @@ fn an_address_of_another_length_or_family_is_no_sender() {
 #[test]
 fn a_port_other_than_the_kernel_s_is_refused_after_the_address_checks() {
     for port in [1, 4242, u32::MAX] {
-        let other = Received { port, ..KERNEL };
         assert!(
-            matches!(checked(RULES, &other), Err(RouteError::NotKernel(found)) if found == port),
+            matches!(check(&KERNEL, port), Err(RouteError::NotKernel(found)) if found == port),
             "{port}"
         );
-        // A port is read only from an address that passed the other two
-        // checks.
-        let short = Received {
-            port,
+    }
+    // The port is read only from an address that passed the other two
+    // checks: a read before them panics here.
+    let refuse_to_read = || -> u32 { panic!("the port was read before the address was checked") };
+    for unchecked in [
+        Received {
             name_length: 8,
             ..KERNEL
-        };
-        assert!(matches!(checked(RULES, &short), Err(RouteError::BadSender)));
-        let wrong = Received {
-            port,
+        },
+        Received {
             family: 2,
             ..KERNEL
-        };
-        assert!(matches!(checked(RULES, &wrong), Err(RouteError::BadSender)));
+        },
+        Received {
+            family: 0,
+            ..KERNEL
+        },
+    ] {
+        assert!(matches!(
+            checked(RULES, &unchecked, refuse_to_read),
+            Err(RouteError::BadSender)
+        ));
     }
 }
 
@@ -90,34 +101,20 @@ fn a_truncated_datagram_is_not_returned() {
         flags: 32,
         ..KERNEL
     };
-    assert!(matches!(
-        checked(RULES, &truncated),
-        Err(RouteError::Truncated)
-    ));
+    assert!(matches!(check(&truncated, 0), Err(RouteError::Truncated)));
     let with_others = Received {
         flags: 32 | 64 | 0x4000_0000,
         ..KERNEL
     };
-    assert!(matches!(
-        checked(RULES, &with_others),
-        Err(RouteError::Truncated)
-    ));
+    assert!(matches!(check(&with_others, 0), Err(RouteError::Truncated)));
     let longer = Received {
         count: 4097,
         ..KERNEL
     };
-    assert!(matches!(
-        checked(RULES, &longer),
-        Err(RouteError::Truncated)
-    ));
+    assert!(matches!(check(&longer, 0), Err(RouteError::Truncated)));
     // A forged sender is named as such even when its datagram is long.
-    let forged = Received {
-        flags: 32,
-        port: 7,
-        ..KERNEL
-    };
     assert!(matches!(
-        checked(RULES, &forged),
+        check(&truncated, 7),
         Err(RouteError::NotKernel(7))
     ));
 }
@@ -135,14 +132,17 @@ fn the_sweep_of_every_field_returns_only_the_kernel_s_whole_datagram() {
                             flags,
                             name_length,
                             family,
-                            port,
                         };
                         let valid = name_length == 12
                             && family == 16
                             && port == 0
                             && flags == 0
                             && count <= 4096;
-                        assert_eq!(checked(RULES, &received).is_ok(), valid, "{received:?}");
+                        assert_eq!(
+                            check(&received, port).is_ok(),
+                            valid,
+                            "{received:?}, port {port}"
+                        );
                     }
                 }
             }

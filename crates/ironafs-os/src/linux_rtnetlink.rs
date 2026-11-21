@@ -150,7 +150,9 @@ impl RouteSocket {
     /// the errno for any other failure.
     pub fn receive(&self, buffer: &mut [u8]) -> Result<usize, RouteError> {
         let capacity = buffer.len();
-        let mut sender = address(0);
+        // Family 0, not `AF_NETLINK`: an address the call did not write
+        // can never pass for the kernel's.
+        let mut sender = unwritten();
         let mut data = iovec {
             iov_base: buffer.as_mut_ptr().cast(),
             iov_len: capacity,
@@ -164,9 +166,8 @@ impl RouteSocket {
             flags: message.flags(),
             name_length: message.name_length(),
             family: sender.nl_family,
-            port: sender.nl_pid,
         };
-        checked(RULES, &received)
+        checked(RULES, &received, || sender.nl_pid)
     }
 }
 
@@ -179,6 +180,18 @@ fn address(groups: u32) -> sockaddr_nl {
         nl_pad: 0,
         nl_pid: 0,
         nl_groups: groups,
+    }
+}
+
+/// The receive's sender address before the call: every field zero, the
+/// family included, so only an address the call wrote can pass the
+/// checks.
+fn unwritten() -> sockaddr_nl {
+    sockaddr_nl {
+        nl_family: 0,
+        nl_pad: 0,
+        nl_pid: 0,
+        nl_groups: 0,
     }
 }
 
