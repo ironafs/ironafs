@@ -123,48 +123,69 @@ fn an_audit_gap_carries_the_audit_stream_and_its_own_message_id() {
 
 #[test]
 fn every_encoding_parses_names_well_and_stays_within_its_cap() {
-    Property::new("journald encodings are well formed and within the cap").check(
-        |source: &mut Source| (arbitrary_event(source), source.usize_in(0..=2_048)),
-        |(event, cap)| {
-            let sink = journald_encoder(Policy::Routine).with_cap(*cap);
-            match sink.encode(event) {
-                Ok(encoded) => {
-                    assert!(encoded.bytes().len() <= *cap);
-                    let fields = parse_journald(encoded.bytes()).unwrap();
-                    for (name, value) in &fields {
-                        assert!(is_journald_name(name), "{name}");
-                        assert!(
-                            value.iter().all(|byte| (0x20..=0x7e).contains(byte)),
-                            "{name} is not printable"
+    Property::new("journald encodings are well formed and within the cap")
+        .cases(4_096)
+        .check(
+            |source: &mut Source| (arbitrary_event(source), source.usize_in(0..=1_000)),
+            |(event, permille)| {
+                // The cap is a share of the event's whole encoding, so cuts,
+                // drops and refusals all occur.
+                let whole_len = journald_encoder(Policy::Routine)
+                    .encode(event)
+                    .unwrap()
+                    .bytes()
+                    .len();
+                let cap = &(whole_len * permille / 1_000);
+                let sink = journald_encoder(Policy::Routine).with_cap(*cap);
+                match sink.encode(event) {
+                    Ok(encoded) => {
+                        assert!(encoded.bytes().len() <= *cap);
+                        let fields = parse_journald(encoded.bytes()).unwrap();
+                        for (name, value) in &fields {
+                            assert!(is_journald_name(name), "{name}");
+                            assert!(
+                                value.iter().all(|byte| (0x20..=0x7e).contains(byte)),
+                                "{name} is not printable"
+                            );
+                        }
+                        let def = event.def();
+                        assert_eq!(
+                            field(&fields, "IRONAFS_EVENT"),
+                            Some(def.id.to_string().as_bytes())
                         );
+                        assert_eq!(
+                            field(&fields, "IRONAFS_EVENT_NAME"),
+                            Some(def.name.as_bytes())
+                        );
+                        assert_eq!(
+                            field(&fields, "IRONAFS_TRUNCATED").is_some(),
+                            encoded.truncated()
+                        );
+                        // A field the whole encoding writes and this one
+                        // leaves out was dropped: the message must say so.
+                        let whole = journald_encoder(Policy::Routine).encode(event).unwrap();
+                        let whole = parse_journald(whole.bytes()).unwrap();
+                        let dropped = whole.iter().any(|(name, _)| {
+                            name.starts_with("IRONAFS_F_") && field(&fields, name).is_none()
+                        });
+                        assert!(
+                            !dropped || encoded.truncated(),
+                            "a field was dropped unmarked"
+                        );
+                        for spec in def.fields.iter().filter(|spec| spec.required) {
+                            let name = format!("IRONAFS_F_{}", spec.name.to_ascii_uppercase());
+                            let omitted = spec.class == ironafs_events::DataClass::Identifier
+                                && def.stream == catalogue::Stream::Diagnostic;
+                            assert_eq!(field(&fields, &name).is_some(), !omitted, "{name}");
+                        }
                     }
-                    let def = event.def();
-                    assert_eq!(
-                        field(&fields, "IRONAFS_EVENT"),
-                        Some(def.id.to_string().as_bytes())
-                    );
-                    assert_eq!(
-                        field(&fields, "IRONAFS_EVENT_NAME"),
-                        Some(def.name.as_bytes())
-                    );
-                    assert_eq!(
-                        field(&fields, "IRONAFS_TRUNCATED").is_some(),
-                        encoded.truncated()
-                    );
-                    for spec in def.fields.iter().filter(|spec| spec.required) {
-                        let name = format!("IRONAFS_F_{}", spec.name.to_ascii_uppercase());
-                        let omitted = spec.class == ironafs_events::DataClass::Identifier
-                            && def.stream == catalogue::Stream::Diagnostic;
-                        assert_eq!(field(&fields, &name).is_some(), !omitted, "{name}");
+                    Err(EncodeError::OverSizeLimit { stream, id }) => {
+                        assert_eq!((stream, id), (event.def().stream, event.def().id));
+                        assert!(*cap < JOURNALD_MAX_DATAGRAM);
                     }
                 }
-                Err(EncodeError::OverSizeLimit { stream, id }) => {
-                    assert_eq!((stream, id), (event.def().stream, event.def().id));
-                    assert!(*cap < JOURNALD_MAX_DATAGRAM);
-                }
-            }
-        },
-    );
+            },
+        );
 }
 
 #[test]

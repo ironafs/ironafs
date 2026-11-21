@@ -342,10 +342,11 @@ Section 9 shows where each is kept and which test fails if it is broken.
    `take_suppressed` returns and clears the counts as `events.suppressed`
    events, one per subsystem with a non-zero count. A refused event is
    never lost without a count. `[ADR 0004 O3.3, O7.1: Working]`
-6. `LossCounters` counts, per reason, events not delivered: rate limited
-   (per subsystem), over the size limit, queue full, sink stalled, sink
-   unavailable, and truncated (delivered but cut). Callers record the
-   reasons this crate cannot see (queue full and the sink reasons).
+6. `LossCounters` counts, per reason, events not delivered: over the
+   size limit, queue full, sink stalled, sink unavailable, and truncated
+   (delivered but cut). Rate-limit refusals are counted by the limiter
+   (point 5), not here. Callers record the reasons this crate cannot see
+   (queue full and the sink reasons) and the encoders' results.
    `take_lost` returns and clears them as `events.lost` events.
    `[ADR 0004 O3.3, O7.3: Working]`
 7. Counters saturate at `u64::MAX`: a count is a clamped value (coding
@@ -446,10 +447,11 @@ Section 9 shows where each is kept and which test fails if it is broken.
 2. Otherwise the encoder finds the largest rendering length `L` such
    that, with every server text value rendered at most `L` bytes plus the
    marker (5.3, point 3) and `truncated` set, the message fits. It
-   searches by bisection over `0..` the longest rendering, at most 11
-   encodings.
-3. If even `L = 0` does not fit, it drops every optional field and
-   searches again.
+   searches by bisection over `0..` the longest rendering (at most 1,024
+   bytes, 5.3, point 2).
+3. If even `L = 0` does not fit, it drops every optional field, marks
+   `truncated`, tries the server text whole, and then searches again as
+   point 2 says. With point 1, that is at most 24 encodings of one event.
 4. If that does not fit either, it returns `OverSizeLimit` with the
    event's stream and id, and nothing else. The identity and required
    fields are never cut beyond point 2, so an encoding that is returned
@@ -510,13 +512,13 @@ Section 9 shows where each is kept and which test fails if it is broken.
 | O1.2: every field has a data class | `FieldSpec::class` is not optional; 5.4, point 2 | `catalogue::tests::every_field_has_an_allowed_class` |
 | O2.6: ids 16-bit, versions 8-bit, catalogue version | `EventDef` field types; 5.1 | `catalogue::tests::ids_are_unique_per_stream` |
 | O3.2, O9.2: role check, audit only from the daemon | 5.5, point 1; 5.1, point 6 | `event::tests::builder_refuses_a_role_the_definition_does_not_list`, `catalogue::tests::audit_events_come_only_from_the_daemon` |
-| O3.3, O7.3: refused records counted | 5.6, points 5 and 6 | `limit::tests::suppressed_events_are_counted`, `it::limit::every_refusal_is_counted` |
+| O3.3, O7.3: refused records counted | 5.6, points 5 and 6 | `limit::tests::suppressed_events_are_counted`, `limit::tests::loss_counters_record_and_take`, `it::limit::every_refusal_is_counted` |
 | O4.5: a direct write is never audit | 5.5, point 2 | `event::tests::direct_audit_is_refused` |
-| O5.1: no secret type as a field; marker | 5.2 | the `compile_fail` doc-tests on `FieldSource`; `it::redaction::secret_formatting_prints_the_marker` |
-| O5.3: server text never as it arrived | 5.3 | `field::tests::escape_*`, `it::server_text::server_text_never_reaches_the_output_raw` (shown failing on a planted pass-through) |
-| O5.4, O6.1: no policy relaxes escaping; identifiers omitted | 5.4 | `it::redaction::*` |
-| O7.2: per-subsystem limit | 5.6 | `limit::tests::*` |
-| ADR 0005 1.7: caps, marking, over-size | 5.10 | `it::fit::*`, `it::syslog::largest_*_fits_the_fallback_cap` |
+| O5.1: no secret type as a field; marker | 5.2 | the two `compile_fail` doc-tests on `FieldSource`; `it::redaction::formatting_a_secret_prints_the_marker` |
+| O5.3: server text never as it arrived | 5.3 | `field::tests::escape_*`, `it::server_text::server_text_never_reaches_the_output_raw` and `it::server_text::a_newline_in_server_text_cannot_add_a_journal_field` (both shown failing on a planted pass-through) |
+| O5.4, O6.1: no policy relaxes escaping; identifiers omitted | 5.4 | `redaction::tests::*`, `it::redaction::routine_logs_omit_identifiers_from_both_encodings`, `it::redaction::no_policy_changes_how_server_text_is_written` |
+| O7.2: per-subsystem limit | 5.6 | `limit::tests::subsystems_have_separate_buckets`, `it::limit::a_flood_admits_the_burst_and_counts_the_rest` |
+| ADR 0005 1.7: caps, marking, over-size | 5.10 | `it::fit::*`, `it::syslog::the_largest_over_size_event_fits_the_fallback_cap`, `it::syslog::the_largest_one_range_gap_fits_the_fallback_cap`, the cap properties in `it::journald` and `it::syslog` |
 
 ## 10. Tests
 
@@ -530,9 +532,11 @@ only `core` and `alloc`. Integration tests are in
 Written by hand from sections 5.8 and 5.9, in
 `crates/ironafs-events/tests/it/journald.rs` and `tests/it/syslog.rs`:
 the complete bytes of `volume.offline` with a server message holding a
-newline and a non-ASCII byte, under each policy, and of `server.reachable`
-as a direct write. One vector exercises the length-prefixed journald
-form.
+newline and a non-ASCII byte, under each policy, in both encodings; of
+`server.reachable` as a direct write (journald); and of `events.lost` as
+a direct write with no process id and an over-long host name (syslog).
+One vector in `src/journald/tests.rs` exercises the length-prefixed
+journald form.
 
 ### 10.2 Round-trip properties
 
@@ -557,7 +561,10 @@ fuzz target `ironafs_events_server_text` is added with the fuzz crate
 
 1. The largest `events.over_size` and the largest one-range `audit.gap`
    with the largest syslog header (64-byte host name, 48-byte
-   application name, 10-digit process id) encode within 480 octets.
+   application name, 10-digit process id) encode within 480 octets:
+   310 octets (a 150-octet header, a 59-octet message, 101 octets of
+   event fields) and 356 octets (152, 72 and 132), counted by hand from
+   5.9 and asserted exactly.
 2. A flood of 10,000 events from one subsystem at one instant admits the
    burst, and the suppressed count equals the rest exactly.
 

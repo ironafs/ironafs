@@ -81,6 +81,11 @@ fn server_text_never_reaches_the_output_raw() {
                 expected.starts_with(kept),
                 "{written:?} is not a prefix of {expected:?}"
             );
+            let mut whole_escapes = (0..=bytes.len()).map(|count| escape(&bytes[..count]));
+            assert!(
+                whole_escapes.any(|prefix| prefix == kept),
+                "{written:?} splits an escape"
+            );
         },
     );
 }
