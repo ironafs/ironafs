@@ -10,8 +10,9 @@ with the reason in the commit body.
 damage a plausible mistake in it could do. The class decides everything else:
 what must be checked, which models review it, and who may merge it. Routine
 changes stay fast; risky ones get more eyes. Claude Code runs the work as the
-controller; other model families write and review code so that no model is
-the only one checking its own work.
+controller and, through the subagents it dispatches, writes most of the code;
+other model families review it, so that no model is the only one checking
+its own work.
 
 ## 1. Classes: the ranking
 
@@ -59,11 +60,12 @@ lanes are not used.
 
 | Role | Who | How |
 |---|---|---|
-| **Controller** | the maintainer's Claude Code session (following the maintainer's private instructions) | Plans, briefs, routes, verifies findings, lands changes after the owner's approval. Writes code only for work only it can run. |
-| **Implementer** | codex CLI, `gpt-6.2-sol` | `codex exec` with a written brief; `medium` effort for mechanical I/P work, `high` for S and R; the model routing table governs (§2, "Model routing"). |
+| **Controller** | the maintainer's Claude Code session (following the maintainer's private instructions) | Plans, briefs, routes, verifies findings, lands changes after the owner's approval. Writes code itself only for work only it can run; other code comes from the implementers it dispatches. |
+| **Implementer** | Claude Code subagents, Opus 5.5 | Dispatched by the controller, one task at a time, with a written brief, test first. The default from M2a: the designs are Claude-written, so Claude implementing keeps one author family and leaves GLM and GPT free for the required and security seats. |
+| **Implementer for extra capacity** | codex CLI, `gpt-6.2-sol` | `codex exec` with a written brief, on a task separate from Claude's; `medium` effort for mechanical I/P work, `high` for S and R. Its seats exclude OpenAI and the design's family. |
 | **Implementer when codex is out of quota** | agy CLI (Gemini) | Same brief; a session allowlist that denies git. Brief paths must sit inside `--add-dir`. |
-| **First reviewer of codex-written code** | GLM 5.3 (`glm-review`) | Headless Claude Code on Z.ai's endpoint, read-only. |
-| **Second family when the class needs two** | Gemini Carbon via agy (`gemini-review`), or DeepSeek (`deepseek-review`) | DeepSeek off-peak only (not Mon–Fri 01–04 or 06–10 UTC). |
+| **First reviewer of implemented code** | GLM 5.3 (`glm-review`) | Headless Claude Code on Z.ai's endpoint, read-only. |
+| **Second family when the class needs two** | GPT read-only, Gemini Carbon via agy (`gemini-review`), DeepSeek (`deepseek-review`) or a Claude seat, whichever wrote none of the change and is not already the first reviewer | DeepSeek off-peak only (not Mon–Fri 01–04 or 06–10 UTC). |
 | **Design, rulings, research, refutations on work codex did not write** | GPT read-only: `codex exec -s read-only -m gpt-6.2-sol - < brief.md`; `-m gpt-6.2-astra -c model_reasoning_effort=xhigh` for the strongest row (§2, "Model routing") | GLM second when a second view is needed. |
 | **Claude seats** (review, reproduction, hard judgement, security) | Claude Code subagents: Opus by default; Mythos 5.2 (`claude-mythos-5-2`, Claude Code's `fable` alias) for the strongest row of §2's "Model routing", including every Claude security review | Never a required seat on Claude-written work. |
 
@@ -84,8 +86,8 @@ draft, gathered or synthesised research the change draws on, or proposed
 fixes that another family wrote in, as long as none of that family's text
 is in the change; such a family may hold a required seat, and the review
 record says what its earlier part was. Outside contributors' declared
-tools count. The controller writes code only for work
-only it can run, so most code comes from codex.
+tools count. Most code is written by Claude Code subagents the controller
+dispatches; codex adds capacity on separate tasks.
 
 **First reviewer, by author.** The table is an order of preference. Skip any
 family that wrote the design or the code. Each row's own order comes first;
@@ -97,7 +99,7 @@ seat.
 |---|---|
 | codex (OpenAI) | GLM |
 | agy (Google) | GLM |
-| Claude | GPT read-only, or GLM |
+| Claude | GLM, or GPT read-only |
 | outside contributor | GLM, or GPT read-only if the contributor declared GLM |
 | the owner, with no model writing | GLM, or GPT read-only |
 
@@ -212,9 +214,9 @@ other model pin in this file, `AI.md` and the skills.
 |---|---|---|---|---|---|
 | **Light:** optional helpers | `gpt-6.2-sol`, medium | Haiku (`claude-haiku-5-5`) | `gemini-3.8-flash-medium` | `glm-5.3-flash` | `deepseek-flash`, default |
 | **Light:** research gathering | `gpt-6.2-sol`, medium | Sonnet (`claude-sonnet-5-5`) | `gemini-4-argon-medium` | `glm-5.3`, high | `deepseek-flash`, default |
-| Class I and P implementation (`high` where it is not mechanical) | `gpt-6.2-sol`, medium | Opus (work only the controller can run) | `gemini-4-carbon-medium` (when codex is out of quota) | — | — |
+| Class I and P implementation (`high` where it is not mechanical) | `gpt-6.2-sol`, medium (extra capacity) | Opus (`claude-opus-5-5`), the default implementer | `gemini-4-carbon-medium` (when codex is out of quota) | — | — |
 | Class I and P required reviews, P contracts, refutations and verifications on I and P work, research synthesis that is not load-bearing | `gpt-6.2-sol`, high | Opus (`claude-opus-5-5`) | `gemini-4-carbon-medium` | `glm-5.3`, high | `deepseek-flash`, default |
-| Class S and R implementation | `gpt-6.2-sol`, high | Opus (controller-only work) | `gemini-4-carbon-high` (when codex is out of quota) | — | — |
+| Class S and R implementation | `gpt-6.2-sol`, high (extra capacity) | Opus (`claude-opus-5-5`), the default implementer | `gemini-4-carbon-high` (when codex is out of quota) | — | — |
 | Ordinary class S and R reviews, S design review before code, refutations on S and R work, reproduction, the consistency pass | `gpt-6.2-sol`, xhigh | Opus (`claude-opus-5-5`) | `gemini-4-carbon-high` | `glm-5.3`, high | `deepseek-flash`, default |
 | **Strongest:** the judgement seat, security reviews, class R designs, format freezes, architecture ADRs, promoted implementation, synthesis of a load-bearing research question | `gpt-6.2-astra`, xhigh | Mythos 5.2 (`claude-mythos-5-2`) | `gemini-4-carbon-high`, where eligible | `glm-5.3`, max | `deepseek-flash`, max, where eligible |
 
@@ -474,7 +476,13 @@ hold everything.
   - **Type:** `type:bug`, `type:design`, `type:task`, `type:research`.
   - **Area:** `area:rx`, `area:xdr`, `area:cache`, `area:auth`, `area:cli`,
     `area:fuse`, `area:fskit`, `area:smb`, `area:cloudfiles`, `area:docs`,
-    `area:process`.
+    `area:process`, `area:test`, `area:os`, `area:ops`.
+    - `area:test`: the simulator, test support, fuzzing, the test cell and
+      the harnesses;
+    - `area:os`: the shared operating-system bindings; each front end keeps
+      its own platform label;
+    - `area:ops`: events, the shared control IPC and configuration.
+      `area:cli` is for the commands and their output.
   - **Status:**
     - `owner-decision`: waits on the owner;
     - `option`: an idea not yet decided. Its body names its trigger: the
