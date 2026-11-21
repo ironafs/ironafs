@@ -1968,8 +1968,11 @@ decision and a change to this point (point 7).
   qualified), so long detail is truncated, marked and counted, and
   reaches the support bundle instead (Decision 1, point 7).
 - **Coding standards rule 5 changes** in the same pull request as this ADR:
-  "every crate inherits the workspace lints" gains its one named exception,
-  and rule 20 names the one `build.rs`.
+  "every crate inherits the workspace lints" gains its one named exception.
+  Rule 20 is not edited here: it changes with the layout pull request, a
+  separate change that is pending. Until then this ADR and O8, point 2,
+  are the written reason for this crate's `build.rs` that rule 20 asks
+  for (Decision 4).
 - **CI grows:** the ABI check and the per-site tests on Linux, macOS and
   Windows runners, a C compiler on each, the Miri job, and the inventory
   check. None of them is a Cargo dependency.

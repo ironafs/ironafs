@@ -40,7 +40,9 @@ number and is marked retired; new rules are appended.
    - A crate that needs it (FSKit, SSPI or other OS bindings) gets an ADR first.
      Check first whether a safe binding crate removes the need.
    - Every crate inherits the workspace lints (`[lints] workspace = true`);
-     a crate that does not is a finding.
+     a crate that does not is a finding. The one exception is `ironafs-os`
+     (ADR 0005, point 1.5): its manifest carries its own `[lints]` table,
+     equal to the workspace's except for `unsafe_code = "deny"`.
    - That crate's ADR says how it keeps the other workspace lint levels while
      lowering `unsafe_code` to `deny` for that crate only. Cargo cannot
      combine `[lints] workspace = true` with a crate-level override, and an
