@@ -61,6 +61,10 @@ jobs:
         run: cargo --locked xtask check-grants
       - name: Prove the confinement catches planted violations
         run: cargo --locked xtask check-grants --self-test
+      - name: Build the pure crates against core and alloc alone
+        run: cargo --locked xtask check-pure
+      - name: Prove the pure-crate build catches planted violations
+        run: cargo --locked xtask check-pure --self-test
 
   test:
     name: test
