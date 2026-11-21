@@ -13,8 +13,8 @@
 //! would hide a path from it: renames and globs of the standard library,
 //! imported or renamed built-in macros, macro path fragments, macros called
 //! and attributes built through a fragment, a `#` that does not open an
-//! attribute, `#[path]`, and the names `include` and `global_asm`
-//! anywhere. It refuses `unsafe` and `extern` too, which reach the
+//! attribute, `#[path]`, and the names `include`, `global_asm` and the
+//! printing macros anywhere. It refuses `unsafe` and `extern` too, which reach the
 //! operating system with no path at all.
 
 use std::path::{Path, PathBuf};
@@ -129,7 +129,9 @@ const HIDDEN_CLOCKS: &[&str] = &[
     "wait_timeout_while",
 ];
 
-/// Macros that write to the standard streams.
+/// Macros that write to the standard streams, refused wherever their name
+/// appears, called or not, since a macro can join a name to its `!` from a
+/// fragment.
 const PRINTING: &[&str] = &["print", "println", "eprint", "eprintln", "dbg"];
 
 /// Built-in macros this check finds by name, which an import could rename.
@@ -329,9 +331,9 @@ fn check_file(file: &Path, shown: &Path, violations: &mut Vec<Violation>) -> Res
 /// standard hash collections and their random state, printing macros,
 /// macro path fragments, macros called and attributes built through a
 /// fragment, a `#` not directly followed by `[` or `![`, `#[path]`, and the
-/// names `include` and `global_asm` anywhere. A raw identifier such as
-/// `r#unsafe` is a name, not the keyword, but `r#include` still names the
-/// macro.
+/// names `include`, `global_asm` and the printing macros anywhere. A raw
+/// identifier such as `r#unsafe` is a name, not the keyword, but
+/// `r#include` still names the macro.
 pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str)> {
     let mut found = Vec::new();
     let mut attribute_depth: Option<usize> = None;
@@ -411,8 +413,9 @@ pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str
                     found.push((line, word.clone(), RANDOM));
                 } else if word == "HashMap" || word == "HashSet" {
                     found.push((line, word.clone(), HASH_COLLECTION));
-                } else if is_macro && PRINTING.contains(&word.as_str()) {
-                    found.push((line, format!("{word}!"), STREAMS));
+                } else if PRINTING.contains(&word.as_str()) {
+                    let called = if is_macro { "!" } else { "" };
+                    found.push((line, format!("{word}{called}"), STREAMS));
                 } else if word == "include" {
                     let called = if is_macro { "!" } else { "" };
                     found.push((line, format!("include{called}"), INCLUDE));

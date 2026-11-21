@@ -125,7 +125,7 @@ fn clean_sources(fixture: &mut Fixture) {
         "src/codec.rs",
         Some(
             "use std::io::Read;\nuse std::collections::BTreeMap;\nuse core::time::Duration;\n\
-             use crate::report::print;\nuse self::inner::asm;\nlet r#unsafe = 1;\n\
+             use crate::report::show;\nuse self::inner::asm;\nlet r#unsafe = 1;\n\
              #[cfg(test)]\nmod tests;\n\
              pub fn f(_: Duration) -> &'static str { \"std::fs\" }\n",
         ),
@@ -720,7 +720,10 @@ const CASES: &[Case] = &[
                 "use std::println as say;\nfn f() { say!(\"x\"); }\n",
             );
         },
-        expect: &[|found| is_planted(found, "std::println")],
+        expect: &[
+            |found| is_planted(found, "std::println"),
+            |found| is_planted(found, "println"),
+        ],
     },
     Case {
         name: "include! imported from a renamed core",
@@ -831,6 +834,17 @@ const CASES: &[Case] = &[
             );
         },
         expect: &[|found| is_planted(found, "global_asm")],
+    },
+    Case {
+        name: "println! joined to its bang by a macro",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "macro_rules! pull { ($bang:tt $name:ident) => { $name $bang(\"x\"); }; }\n\
+                 fn f() { pull!(! println); }\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "println")],
     },
     Case {
         name: "a path attribute whose brackets are a macro fragment",

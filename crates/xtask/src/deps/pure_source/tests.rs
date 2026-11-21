@@ -124,6 +124,28 @@ fn hidden_names_find_include_and_global_asm_anywhere() {
 }
 
 #[test]
+fn hidden_names_find_printing_macro_names_anywhere() {
+    let source = "macro_rules! pull { ($bang:tt $name:ident) => { $name $bang(\"x\"); }; }\n\
+                  pull!(! println);\n\
+                  fn f(print: u8, eprint: u8) {}\n\
+                  use crate::report::eprintln;\n\
+                  let d = r#dbg;\n\
+                  dbg!(x);\n\
+                  fn ok(printed: u8, my_print: u8, dbg_like: u8) {}\n";
+    assert_eq!(
+        names(source),
+        [
+            (2, "println".into()),
+            (3, "print".into()),
+            (3, "eprint".into()),
+            (4, "eprintln".into()),
+            (5, "dbg".into()),
+            (6, "dbg!".into()),
+        ]
+    );
+}
+
+#[test]
 fn hidden_names_refuse_a_hash_that_does_not_open_an_attribute() {
     let source = "macro_rules! load { ($group:tt) => { # $group mod hidden; }; }\n\
                   load!([path = \"x\"]);\n\
@@ -147,7 +169,7 @@ fn hidden_names_leave_ordinary_code_alone() {
                   let path = \"x\";\n\
                   extern crate alloc;\n\
                   #[derive(Debug)]\nstruct S;\n\
-                  fn f(print: u8) -> u8 { print }\n\
+                  fn f(printed: u8) -> u8 { printed }\n\
                   let r#unsafe = 1;\nlet r#extern = r#unsafe;\n";
 
     assert_eq!(names(source), []);
@@ -237,7 +259,7 @@ fn scan_reads_only_ironafs_client_and_skips_only_gated_test_modules() {
                         "src/codec.rs",
                         "// std::fs\nfn f(p: &P) -> bool {\n    std::path::Path::new(p).exists()\n}\n\
                          #[cfg(test)]\nmod tests;\n\
-                         use crate::report::print;\nuse self::inner::asm;\nuse core::arch::asm as go;\n",
+                         use crate::report::show;\nuse self::inner::asm;\nuse core::arch::asm as go;\n",
                     ),
                     ("src/tests.rs", "use std::fs;\n"),
                     ("src/codec/tests.rs", "use std::net::UdpSocket;\n"),
