@@ -165,8 +165,9 @@ Not covered, and where it is:
    published. A hook that reads the generation during its call reads the
    old one `[OWN]`, from the issue's failure case "an event raised after
    a consumer has already used the old state".
-3. Hooks run on the monitor's thread and must not block on the network
-   or on a lock the source's readers hold `[OWN]`.
+3. Hooks run on the monitor's thread, or on the thread that reports a
+   resume (5.7, point 6), one at a time, and must not block on the
+   network or on a lock the source's readers hold `[OWN]`.
 4. The causes are: a change (5.1), a snapshot completed (5.7, point 4),
    and each loss of section 7, named.
 
@@ -285,7 +286,22 @@ any byte it covers is read, and every sum uses checked arithmetic.
    snapshot, abandoning one in progress. A resume is a loss: changes
    seen by the network while the machine slept may not reach the kernel
    until later, so nothing kept from before it is trusted.
-7. A move happens before anything that depends on the new state is read
+7. **The driver** `[OWN]`. One thread owns the notify socket. The
+   request socket, the monitor and the snapshot it runs share one lock,
+   so a resume reported from another thread takes its snapshot before the
+   call returns. A dump that does not end in order (links, then
+   addresses, then none) may still be running in the kernel on that
+   socket, so the request socket is made again before the next dump.
+   When the thread ends, for any reason, the source stops (5.2, point 4).
+8. **Where it lives** `[OWN]`, checked against ADR 0004, C4. The counter,
+   the hooks, the decoder and the state machine are a new pure crate,
+   `ironafs-netgen` (no dependencies; its consumers, pure crates among
+   them, read the counter's type). The thread is in the driver
+   `ironafs-net`, which C4, point 3, gives the UDP driver; the monitor is
+   the other network driver, and it uses only `ironafs-os`'s
+   `linux-rtnetlink` site. C4, point 1's table gains the row (section 13,
+   Q4).
+9. A move happens before anything that depends on the new state is read
    by a consumer (5.3, point 2). There remains a window between the
    kernel's change and the monitor reading its notification, in which a
    reader still sees the old generation; it is a residual like C23,
@@ -384,6 +400,10 @@ Not applicable: the monitor talks only to the local kernel.
 - **Q2. The fuzz target**, once the fuzzing engine's binding is decided.
 - **Q3. Resume detection**: who calls the resume input (the daemon's
   clock-pair check, ADR 0004 C37, point 4).
+- **Q4. The crate row**: C4, point 1's table gains `ironafs-netgen`, and
+  point 3's `ironafs-net` row gains the monitor; whether that is written
+  as an amendment of C4 (Working) with this specification or with the
+  M2a amendments (#53) is open.
 
 ## 14. Review
 
