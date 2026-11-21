@@ -380,9 +380,10 @@ Rules:
 ## 5. Where things run
 
 - Edit and build on the development machine (macOS) (toolchain pinned in `rust-toolchain.toml`).
-- Linux FUSE: a container or Linux VM. macOS FSKit: a macOS 26/27 machine or
-  VM. Windows (the SMB layer; Cloud Files later): Windows 10 and Windows 11
-  virtual machines.
+- Linux FUSE: a container or Linux VM. macOS FSKit: a macOS 27 machine or
+  VM on Apple silicon (ADR 0004, L8). Windows (the SMB layer; Cloud Files
+  later): Windows 10 and Windows 11 virtual machines. The release venues
+  are named in ADR 0004's supported-platform matrix (L36 to L39).
 - Every task that touches a platform layer names its venue; a claim about
   mount behaviour is only proven on that venue.
 
