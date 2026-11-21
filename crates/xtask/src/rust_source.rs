@@ -545,6 +545,34 @@ pub(crate) fn ident(token: Option<&Token>) -> Option<&str> {
     }
 }
 
+/// The index of the bracket that closes the `opening` bracket at `open`,
+/// counting nested pairs of the same kind; `None` if it is not closed or
+/// `open` holds no `opening` bracket.
+pub(crate) fn matching(
+    tokens: &[Token],
+    open: usize,
+    opening: char,
+    closing: char,
+) -> Option<usize> {
+    if punct(tokens.get(open)) != Some(opening) {
+        return None;
+    }
+    let mut depth = 0_usize;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        match punct(Some(token)) {
+            Some(next) if next == opening => depth += 1,
+            Some(next) if next == closing => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The character of a punctuation token.
 pub(crate) fn punct(token: Option<&Token>) -> Option<char> {
     match token.map(|token| &token.kind) {

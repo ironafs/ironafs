@@ -73,6 +73,7 @@ fn scan_reads_a_named_extern_block_and_block_with_their_items_and_operation() {
                 line: 16,
                 kind: SiteKind::Block {
                     operation: "clock_gettime".into(),
+                    arguments: vec!["id".into(), "time".into()],
                 },
             },
         ]
@@ -99,10 +100,67 @@ fn scan_refuses_a_block_with_anything_but_one_plain_call() {
 #[test]
 fn scan_keeps_a_raw_borrow_and_a_cast_as_plain_arguments() {
     let source = CLOCK.replace(
-        "(id, time)",
-        "(id, &raw mut local, len as usize, -1, core::ptr::null_mut)",
+        "clock_gettime(id, time)",
+        "abi::clock_gettime(id, &raw mut local, len as usize, -1, core::ptr::null_mut)",
     );
-    assert_eq!(problems(&source), [] as [&str; 0]);
+    let found = read(&source, false);
+    assert_eq!(found.problems, []);
+    assert_eq!(
+        found.sites.get(1).map(|site| site.kind.clone()),
+        Some(SiteKind::Block {
+            operation: "abi::clock_gettime".into(),
+            arguments: vec![
+                "id".into(),
+                "& raw mut local".into(),
+                "len as usize".into(),
+                "- 1".into(),
+                "core :: ptr :: null_mut".into(),
+            ],
+        })
+    );
+}
+
+#[test]
+fn scan_checks_raw_spellings_of_built_in_names_but_not_of_keywords() {
+    assert_eq!(
+        problems(&format!(
+            "{CLOCK}#[r#cfg(target_arch = \"x86_64\")]\nconst A: u8 = 1;\n"
+        )),
+        [CFG]
+    );
+    assert_eq!(problems("#[r#path = \"x.rs\"]\nmod x;"), [HIDDEN]);
+    assert_eq!(problems("r#include!(\"x.rs\");"), [HIDDEN]);
+    assert_eq!(
+        problems("fn f() { let r#unsafe = 1; let r#extern = 2; }"),
+        [] as [&str; 0]
+    );
+}
+
+#[test]
+fn scan_reads_an_unsafe_fn_only_as_a_named_miri_stand_in() {
+    let stand_in = read(
+        "#[expect(unsafe_code, reason = \"linux-clock: Miri stand-in\")]\n\
+         pub(super) unsafe fn clock_gettime(id: c_int, tp: *mut timespec) -> c_int { 0 }\n",
+        false,
+    );
+    assert_eq!(stand_in.problems, []);
+    assert_eq!(
+        stand_in
+            .sites
+            .first()
+            .map(|site| (site.id.clone(), site.kind.clone())),
+        Some((
+            Some("linux-clock: Miri stand-in".into()),
+            SiteKind::StandInFn
+        ))
+    );
+    assert_eq!(
+        problems(
+            "#[expect(unsafe_code, reason = \"linux-clock\")]\n\
+             pub(super) unsafe fn clock_gettime() -> c_int { 0 }\n"
+        ),
+        [UNSAFE_ITEM]
+    );
 }
 
 #[test]

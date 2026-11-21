@@ -44,6 +44,7 @@ fn clock_code() -> Code {
         blocks: vec![Block {
             kind: BlockKind::Call,
             operation: "clock_gettime".into(),
+            arguments: vec!["id".into(), "tp".into()],
         }],
         impls: 0,
     }

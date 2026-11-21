@@ -39,6 +39,21 @@ const fn replace(file: &'static str, from: &'static str, to: &'static str) -> Ed
     }
 }
 
+/// An edit that also compiles `file` for `compiled_on`.
+const fn replace_compiled(
+    file: &'static str,
+    from: &'static str,
+    to: &'static str,
+    compiled_on: &'static [&'static str],
+) -> Edit {
+    Edit {
+        file,
+        from,
+        to,
+        compiled_on,
+    }
+}
+
 const fn add(file: &'static str, to: &'static str, compiled_on: &'static [&'static str]) -> Edit {
     Edit {
         file,
@@ -73,7 +88,7 @@ fn rule(violation: &Violation, rule: &str) -> bool {
     matches!(violation, Violation::Rule { what, .. } if *what == rule)
 }
 
-const SYSCALL: &str = "unsafe { abi::syscall(number, pointer, length, FLAGS) }";
+const SYSCALL: &str = "abi::syscall(number, address, length, flags, unused3, unused4, unused5)";
 const WIPE_BLOCK: &str = "unsafe { core::ptr::write_volatile(byte, 0) }";
 const WIPE_NAME: &str = "#[expect(unsafe_code, reason = \"mem-wipe\")]\n";
 const STRAY_WIPE: &str = "fn zero(byte: *mut u8) {\n\
@@ -83,10 +98,72 @@ const STRAY_WIPE: &str = "fn zero(byte: *mut u8) {\n\
 
 const CASES: &[Case] = &[
     Case {
+        name: "a variadic call with fewer arguments than recorded (three after the number)",
+        edits: &[replace(
+            "src/linux_random.rs",
+            SYSCALL,
+            "abi::syscall(number, address, length, flags)",
+        )],
+        expect: &[|found| mismatch(found, "linux-random")],
+    },
+    Case {
+        name: "a volatile write of a value other than zero",
+        edits: &[replace(
+            "src/mem_wipe.rs",
+            WIPE_BLOCK,
+            "unsafe { core::ptr::write_volatile(byte, 1) }",
+        )],
+        expect: &[|found| mismatch(found, "mem-wipe")],
+    },
+    Case {
+        name: "a cfg spelled as a raw identifier in a file that holds a site",
+        edits: &[replace(
+            "src/linux_clock/abi/foreign.rs",
+            "use super::timespec;",
+            "use super::timespec;\n\n#[r#cfg(target_arch = \"x86_64\")]\nconst PLANTED: u8 = 0;",
+        )],
+        expect: &[|found| rule(found, CFG)],
+    },
+    Case {
+        name: "a Miri stand-in compiled for a target",
+        edits: &[replace_compiled(
+            "src/linux_clock/abi/stand_in.rs",
+            "static SECONDS",
+            "static SECONDS",
+            LINUX,
+        )],
+        expect: &[
+            |found| rule(found, super::STAND_IN_COMPILED),
+            |found| mismatch(found, "linux-clock: Miri stand-in"),
+        ],
+    },
+    Case {
+        name: "a Miri stand-in in a file not named stand_in.rs",
+        edits: &[add(
+            "src/linux_clock/abi/fake.rs",
+            "#[expect(unsafe_code, reason = \"linux-clock: Miri stand-in\")]\n\
+             pub(super) unsafe fn clock_gettime() -> c_int { 0 }\n",
+            &[],
+        )],
+        expect: &[
+            |found| matches!(found, Violation::OutsideModule { id, .. } if id == "linux-clock: Miri stand-in"),
+        ],
+    },
+    Case {
+        name: "an unsafe fn not named as a Miri stand-in",
+        edits: &[add(
+            "src/linux_clock/helper.rs",
+            "#[expect(unsafe_code, reason = \"linux-clock\")]\n\
+             pub(super) unsafe fn helper() -> c_int { 0 }\n",
+            LINUX,
+        )],
+        expect: &[|found| rule(found, super::scan::UNSAFE_ITEM)],
+    },
+    Case {
         name: "a declaration swapped for another, the block count unchanged",
         edits: &[
             replace(
-                "src/linux_clock/abi.rs",
+                "src/linux_clock/abi/foreign.rs",
                 "fn clock_gettime(",
                 "fn clock_settime(",
             ),
@@ -101,7 +178,7 @@ const CASES: &[Case] = &[
     Case {
         name: "a foreign function added to an existing extern block",
         edits: &[replace(
-            "src/linux_clock/abi.rs",
+            "src/linux_clock/abi/foreign.rs",
             "-> c_int;\n}",
             "-> c_int;\n    pub(super) fn clock_getres(clockid: c_int, res: *mut timespec) -> c_int;\n}",
         )],
@@ -119,7 +196,11 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "an item of an implemented row removed",
-        edits: &[replace("src/linux_random.rs", SYSCALL, "-1")],
+        edits: &[replace(
+            "src/linux_random.rs",
+            "unsafe { abi::syscall(number, address, length, flags, unused3, unused4, unused5) }",
+            "-1",
+        )],
         expect: &[|found| mismatch(found, "linux-random")],
     },
     Case {
@@ -127,7 +208,7 @@ const CASES: &[Case] = &[
         edits: &[replace(
             "src/linux_random.rs",
             SYSCALL,
-            "unsafe { abi::syscall(number, pointer, length, FLAGS); abi::syscall(number, pointer, length, FLAGS) }",
+            "abi::syscall(number, address, length, flags, unused3, unused4, unused5);\n        abi::syscall(number, address, length, flags, unused3, unused4, unused5)",
         )],
         expect: &[
             |found| rule(found, BLOCK_BODY),
@@ -170,9 +251,9 @@ const CASES: &[Case] = &[
     Case {
         name: "a cfg in a file that holds a site",
         edits: &[replace(
-            "src/linux_clock/abi.rs",
-            "/// `CLOCK_MONOTONIC`",
-            "#[cfg(target_arch = \"x86_64\")]\nconst PLANTED: u8 = 0;\n\n/// `CLOCK_MONOTONIC`",
+            "src/linux_clock/abi/foreign.rs",
+            "use super::timespec;",
+            "use super::timespec;\n\n#[cfg(target_arch = \"x86_64\")]\nconst PLANTED: u8 = 0;",
         )],
         expect: &[|found| rule(found, CFG)],
     },
@@ -194,8 +275,10 @@ const CASES: &[Case] = &[
 ///
 /// Returns the first case that did not end as planted.
 pub(super) fn run(
+    root: &Path,
     target_dir: &Path,
     crate_dir: &Path,
+    adr: &str,
     inventory: &Inventory,
     compiled: &BTreeMap<String, BTreeSet<PathBuf>>,
     output: &mut impl Write,
@@ -223,6 +306,14 @@ pub(super) fn run(
         }
     }
 
+    paired_case(&originals, adr, inventory, compiled)?;
+    report(
+        output,
+        "caught: a declaration and its call changed in the code and in sites.json alike, to one \
+         the ADR does not name"
+            .to_owned(),
+    )?;
+
     let mut emptied = compiled.clone();
     for files in emptied.values_mut() {
         files.retain(|file| file == Path::new("src/lib.rs"));
@@ -243,15 +334,135 @@ pub(super) fn run(
         "caught: a build that read only the crate root".to_owned(),
     )?;
 
+    allowlist_case(root, crate_dir)?;
+    report(
+        output,
+        "caught: a crate root guard without its vendor and pointer-width predicates".to_owned(),
+    )?;
+
     let cases = outside_cases(target_dir)?;
     report(
         output,
         format!(
             "check-os --self-test: the crate's own files passed and {} planted cases failed as \
              planted",
-            CASES.len() + 1 + cases
+            CASES.len() + 3 + cases
         ),
     )
+}
+
+/// A change made to the code and to `sites.json` alike, so the two agree:
+/// `clock_settime` declared and called in place of `clock_gettime`. Only
+/// the binding of the copy to the ADR's own row can catch it.
+fn paired_case(
+    originals: &BTreeMap<PathBuf, String>,
+    adr: &str,
+    inventory: &Inventory,
+    compiled: &BTreeMap<String, BTreeSet<PathBuf>>,
+) -> Result<(), Error> {
+    const CASE: &str = "a declaration changed in the code and in sites.json alike";
+    let edits = [
+        replace(
+            "src/linux_clock/abi/foreign.rs",
+            "fn clock_gettime(",
+            "fn clock_settime(",
+        ),
+        replace(
+            "src/linux_clock/abi.rs",
+            "use foreign::clock_gettime;",
+            "use foreign::clock_settime as clock_gettime;",
+        ),
+        replace(
+            "src/linux_clock.rs",
+            "abi::clock_gettime(",
+            "abi::clock_settime(",
+        ),
+    ];
+    let mut changed = inventory.clone();
+    for row in changed
+        .rows
+        .iter_mut()
+        .filter(|row| row.id == "linux-clock")
+    {
+        if let Some(code) = row.code.as_mut() {
+            for item in code
+                .extern_blocks
+                .iter_mut()
+                .flat_map(|block| &mut block.items)
+            {
+                "clock_settime".clone_into(&mut item.name);
+            }
+            for block in &mut code.blocks {
+                "abi::clock_settime".clone_into(&mut block.operation);
+            }
+        }
+    }
+    let found = check_edited(originals, &edits, &changed, compiled)?;
+    if !found.is_empty() {
+        return Err(failure(CASE, &found));
+    }
+    let problems = super::inventory::problems(&changed, adr);
+    let caught = !problems.is_empty()
+        && problems
+            .iter()
+            .all(|problem| problem.contains("clock_settime") && problem.contains("does not name"));
+    if caught {
+        Ok(())
+    } else {
+        Err(Error::SelfTest {
+            check: CHECK,
+            case: CASE,
+            found: problems,
+        })
+    }
+}
+
+/// The crate root's guard with its vendor, pointer-width, endian and ABI
+/// predicates removed must accept targets outside the allowlist whose cfg
+/// sets differ from every allowlisted one (32-bit, big-endian, other
+/// vendors), which `check-os` refuses.
+fn allowlist_case(root: &Path, crate_dir: &Path) -> Result<(), Error> {
+    const CASE: &str = "a crate root guard without its vendor and pointer-width predicates";
+    let lib = crate_dir.join("src/lib.rs");
+    let text = fs::read_to_string(&lib).map_err(Error::path_io("read crate root", &lib))?;
+    let mut weakened = text.clone();
+    for predicate in [
+        "target_pointer_width = \"64\",",
+        "target_endian = \"little\",",
+        "target_vendor = \"unknown\",",
+        "target_vendor = \"pc\",",
+    ] {
+        weakened = weakened.replace(predicate, "");
+    }
+    if weakened == text {
+        return Err(Error::SelfTest {
+            check: CHECK,
+            case: CASE,
+            found: vec!["the crate root has none of the predicates to remove".to_owned()],
+        });
+    }
+    let accepted = match super::allowlist::accepted_targets(root, &weakened)? {
+        Ok(accepted) => accepted,
+        Err(error) => {
+            return Err(Error::SelfTest {
+                check: CHECK,
+                case: CASE,
+                found: vec![error],
+            });
+        }
+    };
+    let caught = ["x86_64-unikraft-linux-musl", "x86_64-win7-windows-msvc"]
+        .iter()
+        .all(|target| accepted.contains_key(*target));
+    if caught {
+        Ok(())
+    } else {
+        Err(Error::SelfTest {
+            check: CHECK,
+            case: CASE,
+            found: accepted.keys().cloned().collect(),
+        })
+    }
 }
 
 /// The crate's `.rs` files, relative to its directory, with their text.
@@ -288,6 +499,11 @@ fn check_edited(
                 }
             }
             continue;
+        }
+        for target in edit.compiled_on {
+            if let Some(files) = compiled.get_mut(*target) {
+                files.insert(path.clone());
+            }
         }
         let text = texts
             .get_mut(&path)

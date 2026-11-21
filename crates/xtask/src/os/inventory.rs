@@ -59,7 +59,19 @@ const WRITES: &[&str] = &["write_volatile"];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Block {
     pub(crate) kind: BlockKind,
+    /// The path the block calls, as written: `abi::syscall`.
     pub(crate) operation: String,
+    /// Its arguments, as `check-os` reads them: each argument's tokens
+    /// joined by spaces. Recording them binds the call's shape, so a
+    /// different argument count, or a different operand, is a mismatch.
+    pub(crate) arguments: Vec<String>,
+}
+
+impl Block {
+    /// The function or method the block calls: its path's last segment.
+    pub(crate) fn callee(&self) -> &str {
+        self.operation.rsplit("::").next().unwrap_or_default()
+    }
 }
 
 /// One extern block of an implemented row: its `#[link]` arguments as
@@ -85,7 +97,7 @@ pub(crate) struct Code {
 }
 
 /// One row of the copy.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Row {
     pub(crate) number: String,
     pub(crate) id: String,
@@ -107,7 +119,7 @@ impl Row {
 }
 
 /// The whole copy.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Inventory {
     pub(crate) rows: Vec<Row>,
 }
@@ -247,9 +259,19 @@ fn parse_code(code: &Value) -> Result<Code, String> {
                     ));
                 }
             };
+            let arguments = array(block, "arguments")?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or("`arguments` holds a non-string".to_owned())
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             Ok(Block {
                 kind,
                 operation: text(block, "operation")?.to_owned(),
+                arguments,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -394,6 +416,14 @@ fn row_problems(row: &Row) -> Vec<String> {
         )),
         _ => {}
     }
+    let [_, foreign, ..] = &row.columns;
+    if row.open != foreign.contains("open owner decision") {
+        found.push(format!(
+            "{id}: `open` is {}, but the ADR's row {} an open owner decision",
+            row.open,
+            if row.open { "names no" } else { "names" }
+        ));
+    }
     if row.open && implemented {
         found.push(format!(
             "{id}: the ADR leaves this row open, so it cannot be implemented until a change \
@@ -408,19 +438,97 @@ fn row_problems(row: &Row) -> Vec<String> {
                 .any(|item| item.name == name)
         };
         for block in &code.blocks {
+            let callee = block.callee();
             let fits = match block.kind {
-                BlockKind::Call => declared(&block.operation),
-                BlockKind::Read => READS.contains(&block.operation.as_str()),
-                BlockKind::Adopt => ADOPTIONS.contains(&block.operation.as_str()),
-                BlockKind::Write => WRITES.contains(&block.operation.as_str()),
+                BlockKind::Call => declared(callee),
+                BlockKind::Read => READS.contains(&callee),
+                BlockKind::Adopt => ADOPTIONS.contains(&callee),
+                BlockKind::Write => {
+                    WRITES.contains(&callee)
+                        && block.arguments.last().map(String::as_str) == Some("0")
+                }
             };
             if !fits {
                 found.push(format!(
-                    "{id}: a {:?} block cannot hold `{}`",
-                    block.kind, block.operation
+                    "{id}: a {:?} block cannot hold `{}({})`",
+                    block.kind,
+                    block.operation,
+                    block.arguments.join(", ")
                 ));
             }
         }
+        found.extend(adr_binding_problems(row, code));
+    }
+    found
+}
+
+/// How an implemented row's code departs from what the ADR's own row
+/// approves: every declared function and every block's callee is named in
+/// the row's foreign-item or block column; a block with no `#[link]` is
+/// linked from the C library or libSystem, and a `#[link]` names the
+/// library the row does; the `safe fn` declarations are those the declared
+/// column allows; a row whose block column says "one" holds one site in
+/// `unsafe`; and the copy's open flag is the ADR's (an open owner
+/// decision). The prose of other block counts is bound by review.
+fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
+    let mut found = Vec::new();
+    let id = &row.id;
+    let [_, foreign, linked, declared, blocks] = &row.columns;
+    let approved = |name: &str| {
+        foreign.contains(&format!("{name}("))
+            || foreign.contains(&format!("`{name}`"))
+            || foreign.contains(&format!("::{name}`"))
+            || blocks.contains(&format!("::{name}`"))
+    };
+    for item in code.extern_blocks.iter().flat_map(|block| &block.items) {
+        if !approved(&item.name) {
+            found.push(format!(
+                "{id}: declares `{}`, which the ADR's row does not name (point 7.1)",
+                item.name
+            ));
+        }
+        let allowed = match declared.as_str() {
+            "`safe fn`" => item.safe,
+            "`unsafe fn`" => !item.safe,
+            _ => true,
+        };
+        if !allowed {
+            found.push(format!(
+                "{id}: `{}` is declared {}, which the ADR's row does not allow ({declared})",
+                item.name,
+                if item.safe { "safe" } else { "unsafe" }
+            ));
+        }
+    }
+    for block in &code.blocks {
+        if !approved(block.callee()) {
+            found.push(format!(
+                "{id}: a block calls `{}`, which the ADR's row does not name (point 7.1)",
+                block.operation
+            ));
+        }
+    }
+    for block in &code.extern_blocks {
+        let fits = match &block.link {
+            None => linked.contains("C library") || linked.contains("libSystem"),
+            Some(link) => link
+                .split(';')
+                .filter_map(|pair| pair.strip_prefix("name="))
+                .all(|name| linked.contains(name) || linked == "see point 5.4"),
+        };
+        if !fits {
+            found.push(format!(
+                "{id}: an extern block linked as {:?}, where the ADR's row says \"{linked}\"",
+                block.link
+            ));
+        }
+    }
+    let says_one = blocks == "one" || blocks.starts_with("one,") || blocks.starts_with("one (");
+    let held = code.blocks.len() + code.impls;
+    if says_one && held != 1 {
+        found.push(format!(
+            "{id}: holds {held} unsafe blocks and impls; the ADR's row says \"{blocks}\""
+        ));
     }
     found
 }
