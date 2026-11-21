@@ -788,7 +788,7 @@ point 7). The service never sends a datagram itself.
    | `recorded_since_advance` | `bool` | the cache, when a call records the current tuple (point 3); cleared by an advance | whether any call to the server has recorded the current suspect epoch |
    | `advance_pending` | `bool` | this specification (point 7) | an advance waits for the next tick |
    | `trust` | none, or trusted until an instant on the boot clock | raised only by the keepalive specification (#81, under C32, point 1); lowered here (point 11) | C32, points 1 and 3 |
-   | `lowerings` | `u64`, from 0, rising by 1 at every lowering, checked (section 6) | this specification (point 11) | the lowering count: an entry is served under trust only if its recorded lowering count equals it (point 5), so a raise of trust never covers an entry validated before a lowering (the keepalive specification, #81, its 5.6, point 7) `[OWN]` |
+   | `lowerings` | `u64`, from 0, rising by 1 at every lowering, checked (section 6); read and changed, with `trust`, only in a K step (point 11) | this specification (point 11) | the lowering count: an entry is served under trust only if its recorded lowering count equals it (point 5), so a raise of trust never covers an entry validated before a lowering (the keepalive specification, #81, its 5.6, point 7) `[OWN]` |
    | `hold` | count of live outgoing connections to the server, on any family, that fail ADR 0006 decision 1, point 9's condition | the connection layer, from each connection's `eligible` flag ([rx.md](rx.md), 5.6, point 1) | ADR 0006 D2.5 (point 12) |
    | `bucket` | the rate state of `cb.rate.key_units` | this specification (point 8) | C31, point 2 |
    | counters | fixed set (5.9) | this specification | diagnostics |
@@ -998,8 +998,9 @@ point 7). The service never sends a datagram itself.
     - an ABORT never advances a suspect epoch `[ADR 0006 D1.5: Firm]`:
       it moves trust to none, and raises `lowerings`, only;
     - a raised trust reaching its end without renewal: the boot clock
-      passes its instant (C32, point 4), or the keepalive specification
-      ends it at a clock episode (#81, its 5.6, point 7). It is applied at
+      passes its instant (C32, point 4), the network generation changes
+      (C32, point 1, "since the last network change"), or a clock
+      episode ends it (#81, its 5.6, point 7). It is applied at
       the first check that sees it; every serve of an entry of K, every
       keepalive send to K and every handling of a keepalive's outcome
       checks it first `[OWN]`: a lapse may hide a dropped break, so it
@@ -1013,6 +1014,14 @@ point 7). The service never sends a datagram itself.
     server may have been dropped, or a loss shown, in between. A raise
     never lowers `lowerings`, and covers only entries whose recorded
     lowering count is the current one (point 5).
+    **The K step** `[OWN]`. Every lowering, every end, every raise, the
+    read of `lowerings` a call records when it is sent (point 3), and the
+    read of `trust`, `hold` and `lowerings` a serve makes (point 5) is
+    one step over K's record, under its lock at the server level of C39,
+    point 4's order, with no RPC wait, disk write or kernel notification
+    under it: the keepalive specification's 5.6, point 10. So a lowering
+    is wholly before or wholly after a raise, never between its checks
+    and its write.
 12. **The hold and its exit** `[ADR 0006 D2.5: Working]`.
     - While `hold` > 0 on any key of the server, every key of the server
       is served as bounded revalidation (point 5), whatever `trust`

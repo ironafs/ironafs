@@ -314,8 +314,10 @@ is broken.
 2. A server key is **active** while the client holds a promise from it,
    or has a call in flight that may grant one. An active key gets a
    keepalive at once when it becomes active, then about every 60
-   seconds, and early after a network change, a resume or a lowering of
-   its trust, never more often than once per 10 seconds.
+   seconds, and early after a network change, a resume from sleep or
+   another clock episode, an advance of its suspect epoch, a pause of its
+   socket, or a lowering of its trust, never more often than once per 10
+   seconds.
 3. A keepalive's reply raises trust only if it completes the keepalive
    call, decodes exactly, arrives on the key's own socket generation with
    the key's fence values, network generation and clock episode
@@ -397,7 +399,10 @@ is broken.
    `[DES-011]`, at the address the client's own file-service calls to
    that server use on K's family (#65, its 5.1.1, point 5) `[OWN]`: that
    is the path a NAT mapping must stay open on for the server's calls
-   back (C30, "Why"; N1 §4.3, §5). A published reference page advises
+   back (C30, "Why"). A NAT may keep a UDP mapping alive only on the
+   inside host's outbound packets `[N1 §4.3: CONFIRMED]`, and may drop
+   packets from any remote address, or address and port, the inside host
+   has not sent to `[N1 §5: CONFIRMED]`. A published reference page advises
    firewall UDP timeouts of at least twenty minutes for callbacks to
    work well `[L1 afsd(8), "CAUTIONS": UNVERIFIED]`; IronAFS assumes no
    such configuration, and keeps the mapping open itself (5.6, point 5).
@@ -488,12 +493,13 @@ Other limits `[OWN]`:
 
 | Name | Value | Applies to | Why |
 |---|---|---|---|
-| `ka.interval` | 60 s | the longest gap between two keepalive sends to an active key in steady state (5.6, point 4) | the low end of C32, point 4's proposed 60 to 100 seconds: N1 allows a NAT a mapping timer of two minutes (N1 §4.3, REQ-5), and one keepalive per minute renews the mapping by the client's own outbound packets (N1 §4.3, REQ-6) with one interval to spare |
+| `ka.interval` | 60 s | the longest gap between two keepalive sends to an active key in steady state (5.6, point 4) | the low end of C32, point 4's proposed 60 to 100 seconds: a NAT's UDP mapping timer may be as short as two minutes `[N1 §4.3: CONFIRMED]`, and outbound packets refresh it `[N1 §4.3: CONFIRMED]`, so one keepalive per minute keeps the mapping with one interval to spare |
 | `ka.jitter` | 6 s | the gap is drawn uniformly from (`ka.interval` − `ka.jitter`) to `ka.interval`, from `Rng` | keepalives to many servers do not fall on one instant; the gap never exceeds `ka.interval`, so E stays two intervals |
-| `ka.evidence_max` (E) | 120 s | the longest age of a reply that raises trust, and how long a raise lasts (5.6, points 6 and 7) | C32, point 1's proposal, E = 2 × the keepalive interval; N1 §4.3's two-minute mapping timer |
+| `ka.evidence_max` (E) | 120 s | the longest age of a reply that raises trust, and how long a raise lasts (5.6, points 6 and 7) | C32, point 1's proposal, E = 2 × the keepalive interval; a mapping timer may be as short as two minutes `[N1 §4.3: CONFIRMED]` |
 | `ka.deadline` | 30 s | the keepalive call's deadline, on the boot clock | half an interval: a keepalive ends before the next is due, so at most one is in flight per key; on the boot clock, so a suspend ends it (a keepalive across a suspend can raise nothing, 5.6, point 6) |
 | `ka.idle_timeout` | 10 s | the call's T ([rx.md](rx.md), 5.7, point 12) | `rx.idle_timeout`'s least value: a server silent for 10 seconds on a 4-byte call has not answered it |
 | `ka.min_gap` | 10 s | the least time between two keepalive sends to one key, for any cause | an early cause (5.6, point 5), repeated by a flood or a flapping network, costs at most one keepalive per key per 10 seconds |
+| `ka.conn_idle` | 120 s | the idle time the keepalive connection is opened with ([rx.md](rx.md), 5.6, point 2: an outgoing connection retires after the idle time its user set) | twice `ka.interval`: the longest wait between a keepalive's outcome and the next send is `ka.interval` (5.6, point 5), so a connection in use never retires idle; one that does is a local outcome (5.6, point 8) |
 | `ka.calls_per_conn` | 4 calls | keepalives on one keepalive connection before it is closed | [rx.md](rx.md), 5.6, point 3: a keepalive takes only a channel that has carried no call, and a connection has four |
 | `ka.identity_share` | 2 048 pairs | live keepalive connections plus their reserved retired identities, all keys together | half of `rx.identity_bound` ([rx.md](rx.md), 5.2): keepalives for many servers can never take the identities that data calls need |
 | `ka.skew.warn` | 60 s | the absolute skew above which a warning is given (5.7, point 4) | the owner's decision of 2026-11-20 (the amendment of #53, point 3) |
@@ -517,7 +523,8 @@ Derived bounds:
   causes, when each connection carries its `ka.calls_per_conn` calls;
   and at most ⌈1 980 ÷ 216⌉ + 1 = 11 in steady state, when a new
   connection follows every four gaps of at least 54 seconds. All keys
-  together hold at most `ka.identity_share` (5.6, point 4).
+  together hold at most `ka.identity_share` (5.6, point 4), counted in
+  one fixed table of `ka.identity_share` slots (5.6, point 1).
 - **Rate.** At most one keepalive per key per `ka.min_gap`, each at most
   `ka.request` plus Rx's header and retransmissions within
   `ka.deadline`.
@@ -574,12 +581,22 @@ point 7). Then, in order; the first failure decides `[OWN]`:
    | `trust` | none, or trusted until an instant on the boot clock (callbacks.md's field) | raised only here (point 6); lowered by callbacks.md, 5.6, point 11, and by point 7's end | C32, points 1 and 3 |
    | `lowerings` | `u64`, rises by 1 at every lowering, checked (callbacks.md's field, 5.6, point 1) | callbacks.md, 5.6, point 11, which includes point 7's end | the lowering count; recorded by every call that records a fence tuple (callbacks.md, 5.6, point 3), so a raise can tell which promises it covers (point 7) |
    | `ka_due` | none, or a boot-clock deadline | points 4 and 5 | when the next keepalive may be sent |
-   | `ka_in_flight` | none, or the call's record: its send stamp once known, the K values it recorded (callbacks.md, 5.6, point 3), the network generation, and `lowerings`, all as at the send | point 4 | at most one keepalive in flight per K |
+   | `ka_in_flight` | none, or the call's record: the K values it recorded (callbacks.md, 5.6, point 3), the network generation, and `lowerings`, all as at the send | point 4 | at most one keepalive in flight per K |
+   | `ka_from` | none, or the stamp the next due time counts from (point 5) | point 5 | the reply's send stamp after a `Completed` outcome; otherwise the arrival of the housekeeping step that handled the outcome |
    | `ka_conn` | none, or the keepalive connection and the count of its channels used (0 to 4) | point 4 | the connection's identity is Rx's; this field never holds it |
    | `ka_failures` | `u8`, saturating at 255 | points 6 and 8 | consecutive failed keepalives, for the gap of point 5 |
    | `ka_last` | none, or the receive stamp and round trip of the last keepalive that raised trust | point 6 | `afs status` (5.9) |
    | `skew` | not measured; or no sample yet; or the last sample (5.7, point 3) with its receive stamp, and whether it is above `ka.skew.warn` | 5.7 | diagnostics only |
 
+   Besides the per-K fields, one client-wide table counts keepalive
+   wire identities `[OWN]`: `ka.identity_share` fixed slots, each free,
+   live (a keepalive connection that is open), or reserved until a
+   boot-clock instant (the instant the connection was closed plus R,
+   [rx.md](rx.md), 5.6, point 2). A slot whose instant has passed is
+   free. Opening a keepalive connection takes a free slot; closing it
+   marks the slot reserved. Rx keeps its own reservations (rx.md, 5.6,
+   point 2); this table only keeps keepalives within their share, and
+   errs on the side of holding a slot longer.
    Every field is fixed-size. No field is persisted: callbacks never
    persist across a restart `[ADR 0004 C26.3: Working]`, and neither
    does trust.
@@ -625,9 +642,10 @@ point 7). Then, in order; the first failure decides `[OWN]`:
      A keepalive start that Rx refuses (`StartRefused`) opens a new
      connection and is started there; nothing was sent (rx.md, section
      7);
-   - before opening a keepalive connection, the client counts the live
-     keepalive connections and their reserved retired identities; a new
-     one is opened only within `ka.identity_share`. Beyond it, or when
+   - the keepalive connection is opened with `ka.conn_idle` as its idle
+     time (5.2);
+   - a keepalive connection is opened only if the identity table (point
+     1) has a free slot. Without one, or when
      Rx fails the open with `IdentityExhausted` (rx.md, 5.6, point 1),
      no keepalive is sent: K's trust lapses at its end (point 7) and K
      stays in bounded revalidation, which is safe and costs only
@@ -640,26 +658,30 @@ point 7). Then, in order; the first failure decides `[OWN]`:
    - at most one keepalive per K is in flight. A cause that would make
      one due while one is in flight (point 5) makes the next one due
      when the current one ends, still no sooner than `ka.min_gap` after
-     its send;
+     `ka_from` (point 5);
    - **what the call records when it is sent:** the K values
      callbacks.md, 5.6, point 3, records for a keepalive (K's suspect
      epoch, the pause generation of K's family's socket, the resume
      generation), the network generation (C23, point 2), and K's
-     `lowerings`. It sets K's `recorded_since_advance` (callbacks.md,
-     5.6, point 3).
+     `lowerings`, read in one K step (point 10). It sets K's
+     `recorded_since_advance` (callbacks.md, 5.6, point 3).
 5. **When a keepalive is due** `[ADR 0004 C32.4: Working; OWN for the
    values]`:
    - **steady state:** while K is active, a keepalive is due a gap after
-     the previous keepalive's send, the gap drawn from `Rng` as
-     `ka.jitter` says (5.2);
+     `ka_from` (point 1), the gap drawn from `Rng` as `ka.jitter` says
+     (5.2);
    - **early causes:** K becoming active (point 2); a change of the
-     network generation; an episode (section 4); and a lowering of K's
-     trust by any cause (callbacks.md, 5.6, point 11, a failed keepalive
-     included). Each makes a keepalive due at once, but no sooner than
-     `ka.min_gap` after K's previous keepalive send;
+     network generation; an episode (section 4); an advance of K's
+     suspect epoch (callbacks.md, 5.6, point 6); a raise of the pause
+     generation of K's family's socket (callbacks.md, 5.6, point 9, row
+     P1); and a lowering of K's trust by any cause (callbacks.md, 5.6,
+     point 11, a failed keepalive included): every change that can fail
+     condition 4, 5 or 6 of point 6. Each makes a keepalive due at once,
+     but no sooner than `ka.min_gap` after `ka_from`;
    - **after failures:** while `ka_failures` is n ≥ 1, the gap after the
      previous send is the smaller of `ka.interval` and `ka.min_gap` ×
-     2ⁿ⁻¹, and an early cause cannot shorten it below that `[OWN]`: a
+     2ⁿ⁻¹, counted from `ka_from`, and an early cause cannot shorten it
+     below that `[OWN]`: a
      server that does not answer, or an attacker who makes every
      keepalive fail, costs a doubling gap up to one keepalive per
      interval. A published client probes servers it has marked down
@@ -669,10 +691,22 @@ point 7). Then, in order; the first failure decides `[OWN]`:
    - **inactive:** a K that is not active sends no keepalive. Its trust
      lapses at its end (point 7), and its record retires as callbacks.md,
      5.6, point 10, says.
-   Every due time is a boot-clock deadline counted from the previous
-   keepalive's send stamp, built by the core's sampling function (#71,
-   its 5.3, point 2; section 13, Q5). The housekeeping thread sends
-   keepalives (C39, point 1).
+   **What a due time counts from** `[OWN]`. Every due time is a
+   boot-clock deadline counted from `ka_from` and built by the core's
+   sampling function (#71, its 5.3, point 2). After a `Completed`
+   outcome, `ka_from` is the reply's send stamp, `first_sent` (#71, its
+   5.4, point 1), a source that function accepts. After any other
+   outcome, no send stamp exists (#71's `RpcError` carries none), and
+   `ka_from` is the arrival the housekeeping step that handles the
+   outcome records, as any ingress records its request's arrival; that
+   step runs after the call ended, so after any packet of it was sent,
+   and the gap from it is never shorter than the gap from the true send.
+   Before K's first keepalive, `ka_from` is none and a keepalive is due
+   at once. That housekeeping steps record an arrival is section 13,
+   Q5's amendment of #71; until it lands, the failure path has no
+   accepted `from`, and the code for it waits with the rest of this
+   version's code. The housekeeping thread sends keepalives (C39, point
+   1).
 6. **The one input that raises trust** `[ADR 0004 C24.7: Firm; C32.1:
    Working; ADR 0006 D2.4: Working]`. A keepalive's outcome raises K's
    trust if, and only if, every one of these holds when it is handled:
@@ -692,7 +726,9 @@ point 7). Then, in order; the first failure decides `[OWN]`:
    4. the fence check (callbacks.md, 5.6, point 2) finds K's three
       shared fence values, the suspect epoch, the pause generation of
       K's family's socket and the resume generation, unchanged since the
-      keepalive recorded them (callbacks.md, 5.6, points 3 and 11): no
+      keepalive recorded them (a keepalive names no object or volume, so
+      no per-object, per-volume or per-context value of the fence tuple
+      is part of its check) (callbacks.md, 5.6, points 3 and 11): no
       advance of K, no pause of the socket and no detected suspend or
       clock jump came between its send and now;
    5. the network generation is unchanged since the send (C23, point 2;
@@ -707,7 +743,9 @@ point 7). Then, in order; the first failure decides `[OWN]`:
       count; the receipt is within E of the send on the boot clock; and
       a fresh sample, taken when the raise is made, shows no more than E
       since the receipt and the same episode count as the receipt.
-   Then `trust` becomes "trusted until the receive stamp's boot instant
+   Conditions 3 to 7, the end check of point 7 and the write of `trust`
+   are one K step (point 10), so no lowering can fall between the check
+   and the raise. Then `trust` becomes "trusted until the receive stamp's boot instant
    plus E", or stays at a later instant it already holds `[OWN]`: a raise
    never moves the instant earlier. `ka_failures` becomes 0, and
    `ka_last` records the receive stamp and the round trip.
@@ -717,7 +755,8 @@ point 7). Then, in order; the first failure decides `[OWN]`:
    - a failure of conditions 3 to 7 is not a failure of the server: the
      reply is dropped as stale, `ka_failures` is unchanged, and a
      keepalive is due as point 5 says for the cause that changed (a
-     network change, an episode, an advance or a lowering) `[OWN]`.
+     network change, an episode, an advance, a pause or a lowering)
+     `[OWN]`.
    Nothing the callback service receives (C24, point 7), no other call's
    reply, no ABORT, no ICMP error and no server time raises trust
    (section 8).
@@ -745,8 +784,9 @@ point 7). Then, in order; the first failure decides `[OWN]`:
      any suspect epoch, and so stays inside ADR 0006 D1.5.
    - **End.** A raised trust ends when the boot clock passes its instant
      (C32, point 4: "trust lapses when no reply has arrived within E"),
-     and the seams specification ends it at an episode (#71, its 5.4,
-     point 1). Either end is a lowering: `trust` becomes none and
+     when the network generation changes (C32, point 1: trust holds only
+     "since the last network change"), and at an episode (the seams
+     specification, #71, its 5.4, point 1). Each end is a lowering: `trust` becomes none and
      `lowerings` rises `[OWN]`, so a lapse, which may hide a dropped
      break, needs every entry revalidated as any other lowering does.
      The end is applied at the first check that sees it, and every serve
@@ -760,11 +800,26 @@ point 7). Then, in order; the first failure decides `[OWN]`:
    every call's fence tuple (its 5.6, point 3), compares it in the first
    branch of its 5.6, point 5, and raises it at every lowering and at the
    end above (its 5.6, point 11).
-8. **A failed keepalive** `[ADR 0004 C32.4: Working]`. Every outcome
-   other than `Completed`, and a `Completed` reply that fails to decode,
-   is a failed keepalive: `Aborted`, `Timeout`, `DeadlineExceeded`,
-   `Fenced`, `Cancelled`, `ReplyTooLarge` and `ProtocolViolation`
-   ([rx.md](rx.md), section 7). Then:
+8. **A failed keepalive, and a local outcome** `[ADR 0004 C32.4:
+   Working; OWN for the split]`. The outcomes of a keepalive fall in two
+   sets, by whether the server could have been asked:
+   - **A failed keepalive:** a call that was handed to the transport and
+     ended without a valid reply: `Completed` with a reply that fails to
+     decode (5.4, point 2); `Aborted`; `Timeout`; `DeadlineExceeded` and
+     `KeyExhausted` with `sent_any` set; `ReplyTooLarge` ([rx.md](rx.md),
+     section 7). In the seams specification's terms (#71, its 5.4, point
+     2): `Aborted`, and `NoReply` with the causes `Deadline`, `PeerLost`,
+     `ReplyTooLarge` and `Security`.
+   - **A local outcome:** the server was not asked, or the client itself
+     ended the call: `StartRefused`, `IdentityExhausted`,
+     `DeadlineInvalid` and `ProtocolViolation`; `DeadlineExceeded` and
+     `KeyExhausted` with `sent_any` clear; `Fenced` and `Cancelled`, which
+     only the client causes; and, in the seams specification's terms,
+     every `NotSent` cause, and `NoReply` with the causes `Cancelled`,
+     `Closed`, `NetworkChanged` and `ClockFailed`. A network change and a
+     clock failure each end trust by themselves (point 7, "End"); the
+     others say nothing about the server.
+   For a failed keepalive:
    - K's trust is lowered as callbacks.md, 5.6, point 11, says for a call
      that ends without a valid reply, with its one exception, an ABORT
      on a connection that fails ADR 0006 D1.9's condition, which changes
@@ -780,25 +835,49 @@ point 7). Then, in order; the first failure decides `[OWN]`:
      that answers the keepalive with "unknown procedure" (−455 in the
      registry's rxgen table, `[K1 errors.html: UNVERIFIED]`) never gives
      the client trust, and is shown so in `afs status` (5.9).
-   A failed keepalive never advances a suspect epoch, never evicts, and
-   never changes another context's data (C24, points 3 and 6; ADR 0006
-   D1.5).
+   For a local outcome: trust is not lowered by it and `ka_failures` is
+   unchanged; it is counted by kind (5.9); the connection is closed if
+   Rx retired or fenced it, so the next keepalive opens a new one
+   (point 4); and the next keepalive is due `ka.min_gap` after `ka_from`
+   `[OWN]`. A local outcome that repeats (no identity slot, for example)
+   keeps K untrusted at its end (point 7), which is safe.
+   Neither set ever advances a suspect epoch, evicts, or changes another
+   context's data (C24, points 3 and 6; ADR 0006 D1.5).
 9. **What a keepalive does for assumption A14** `[OWN]`. A14 says the
    client learns of a lost callback "no later than its next call to that
-   server". The keepalive is such a call, made at least every
-   `ka.interval` while K is active. So, while A14 holds, a promise the
-   server dropped is served under trust for at most `ka.interval` plus
-   `ka.deadline` after the loss, and the keepalive's failure or a reset
-   then lowers trust (callbacks.md, 5.8). If A14 fails, this bound does
-   not hold; callbacks.md, 5.8, point 3, says what then changes.
-10. **Order** for one keepalive: sent (point 4, recording its values);
-    then its outcome; then point 6's checks, in the order listed, on the
-    housekeeping thread, with the fence check's clock comparison first
-    (callbacks.md, 5.6, point 2); then the raise, or point 8. A lowering
-    by any other cause that races the outcome is either before the
-    check, so condition 6 fails, or after the raise, so it lowers the
-    raised trust: no order lets a raise survive a lowering that was
-    recorded before it `[OWN]`.
+   server". The keepalive is such a call. While A14 holds, a promise the
+   server dropped is served under trust until the earlier of the next
+   keepalive's outcome, which shows the loss (a failure or a reset, and
+   so a lowering, callbacks.md, 5.8), and the end of the trust the last
+   raise set, E after its receipt (point 7). When keepalives go out on
+   schedule, the first is at most `ka.interval` plus `ka.deadline` after
+   the loss; when one is not sent (no identity slot, a failed clock
+   sample or deadline build, section 6, point 1), the second applies,
+   at most E after the last receipt. So the bound is at most the larger
+   of `ka.interval` + `ka.deadline` and E: 120 seconds with this
+   version's values. If A14 fails, this bound does not hold;
+   callbacks.md, 5.8, point 3, says what then changes.
+10. **The K step, and order** `[OWN]`. Every read or change of K's
+    `trust` and `lowerings` is one **K step**: it runs under K's record
+    lock, the server level of C39, point 4's lock order, held for that
+    step only, with no RPC wait, disk write or kernel notification
+    under it (C39, point 4). The K steps are: every lowering of
+    callbacks.md, 5.6, point 11, including point 7's ends; every raise;
+    the read of `lowerings` a call records when it is sent (point 4;
+    callbacks.md, 5.6, point 3); and the read of `trust`, `hold` and
+    `lowerings` a serve makes (callbacks.md, 5.6, point 5). A K step is
+    the same kind of single step as the callback service's tick
+    (callbacks.md, 5.6, point 14). The fence check's clock comparison
+    and the fresh sample of condition 7 are reads, not waits, and run
+    inside the raise's K step. So for one keepalive the order is: sent
+    (point 4, its values read in a K step); its outcome; then one K step
+    that applies any end that is due (point 7), checks conditions 3 to
+    7, and raises or does not. A lowering is a K step of its own, so it
+    is wholly before the raise's step, where condition 6 sees it, or
+    wholly after it, where it lowers the raised trust: no interleaving
+    lets a raise survive a lowering recorded before it. Conditions 1 and
+    2 are properties of the outcome, known before the step.
+
 
 ### 5.7 Server time
 
@@ -851,11 +930,12 @@ point 7). Then, in order; the first failure decides `[OWN]`:
 5. **What a server's time never does** `[OWN]`, under C37, points 1 and
    6, and C24, point 7:
    - it never sets or slews the system clock (C37, point 6);
-   - it never feeds a deadline: every deadline is on the boot or awake
-     clock (C37, point 1), counted from a stamp the client took (#71, its
-     5.3, point 2), so no call deadline, no keepalive due time, no E, no
-     T, no retransmission timer and no expiry the client counts is
-     computed from it;
+   - it never sets or lengthens a deadline: every deadline is on the
+     boot or awake clock (C37, point 1), counted from a stamp the client
+     took (#71, its 5.3, point 2), so no call deadline, no keepalive due
+     time, no E, no T and no retransmission timer is computed from it,
+     and its one use on an expiry is point 6's, which can only shorten a
+     promise's lifetime;
    - it never raises or lowers trust, advances a suspect epoch, makes an
      entry suspect, or changes a fence value: a server's clock says
      nothing about callback continuity, and a lowering on it would give
@@ -916,7 +996,8 @@ and, once measured, the skew.
 
 - **Counters,** per K and in aggregate: keepalives sent; trust raised;
   raises refused, by the condition of 5.6, point 6, that failed;
-  keepalives failed, by outcome; abort codes, by value class; replies
+  keepalives failed, by outcome; local outcomes, by kind (5.6, point
+  8); abort codes, by value class; replies
   malformed; `identity_skip`; connections opened and closed; trust
   lapsed at its end; lowerings by cause (those of callbacks.md, 5.6,
   point 11, and the lapse); skew samples taken and refused
@@ -947,8 +1028,9 @@ Every value read from a reply is untrusted (coding standards rule 2).
 1. **Due times and deadlines** are built by the seams specification's
    constructors from a stamp and a duration, with their checked
    arithmetic (#71, its 5.3, point 1, and its section 6); an overflow is
-   a failed build, and the keepalive is then not sent and is due again
-   after `ka.min_gap` from the next valid sample `[OWN]`.
+   a failed build, and the keepalive is then not sent: the housekeeping
+   step's arrival becomes `ka_from`, and the keepalive is due again
+   `ka.min_gap` after it `[OWN]`.
 2. **The gap** of 5.6, point 5: `ka.min_gap` × 2ⁿ⁻¹ is computed as a
    checked shift on `u64` nanoseconds, with n at most 255 by
    `ka_failures`'s saturation; a shift past 63 bits, or an overflow, is
@@ -1014,7 +1096,7 @@ cannot see it (ADR 0004, O23; ADR 0006, "Context").
 | A keepalive reviving a promise the server dropped, after an error showed the loss | a raise covers only entries validated since K's last lowering (5.6, point 7) |
 | An on-path attacker forging keepalive replies while dropping breaks | not stopped: the stated residual of C32 ("Why") and A13. Bounded by the promise's cut expiry (callbacks.md, 5.1.4) and by any reset or failed call that reaches the client |
 | An on-path attacker ending keepalives with forged ABORTs | a denial of trust only: each lowers trust to bounded revalidation (ADR 0006 D1.6), never advances an epoch or evicts (D1.5); the client's keepalives back off (5.6, point 5) |
-| A server or an on-path attacker lying about the server's time | the time feeds no deadline, no trust and no clock, and can only shorten a promise (5.7, points 5 and 6); in this version it is not even read (5.7, point 1) |
+| A server or an on-path attacker lying about the server's time | the time sets or lengthens no deadline, feeds no trust and no clock, and its one use on an expiry can only shorten a promise (5.7, points 5 and 6); in this version it is not even read (5.7, point 1) |
 | A server lying about its time to make the client set its clock | the client never sets the system clock (C37, point 6) |
 | Warning floods from a flapping or lying server clock | one skew event per K per `ka.skew.event_min` (5.7, point 4) |
 | Exhausting wire identities by making many servers active | keepalives use at most `ka.identity_share`; beyond it no keepalive is sent and those servers stay in bounded revalidation; data calls keep the other half of `rx.identity_bound` (5.6, point 4) |
@@ -1033,8 +1115,8 @@ cannot see it (ADR 0004, O23; ADR 0006, "Context").
 | C24, point 7: trust raised only by a reply to the client's own call, matched by its random identity | 5.6, point 6 | KA2, KA3, KA4 |
 | C26, point 2: expiry counted from the send on the boot clock | 5.7, point 6 (no server time lengthens it) | KA18 |
 | C30, points 1 and 3: the one socket; the connection key | 5.1.1, point 2; 5.6, point 4 | KA1 |
-| C32, point 1: per K, on the callback socket, no older than E, since the last network change or resume, matched by the random identity | 5.6, points 4 and 6 | KA2 to KA7 |
-| C32, point 2: bounded revalidation without fresh evidence | 5.6, points 2, 7 and 8 | KA8, KA9 |
+| C32, point 1: per K, on the callback socket, no older than E, since the last network change or resume, matched by the random identity | 5.6, points 4, 6, 7 and 10 | KA2 to KA8, KA21 |
+| C32, point 2: bounded revalidation without fresh evidence | 5.6, points 2, 7 and 8 | KA9, KA22 |
 | C32, point 4: keepalives to servers holding callbacks; trust lapses within E | 5.6, points 2, 5 and 7 | KA1, KA10, KA11 |
 | C32, point 5: resume checked when data is served | 5.6, point 6, conditions 4 and 7 (the fence check compares the clocks first) | KA5 |
 | C32, point 6: shown in `afs status` and the logs | 5.9 | KA15 |
@@ -1119,14 +1201,23 @@ bounded revalidation.
   sent after the episode, raises trust.
 - **KA6 Network change.** A keepalive is sent; the network generation
   changes; the reply arrives. No raise; a keepalive is due at
-  `ka.min_gap` after the first; its reply raises trust.
+  `ka.min_gap` after the first; its reply raises trust. Then, with K
+  trusted, the network generation changes again: trust ends at once and
+  `lowerings` rises; an entry validated before the change is served
+  bounded until revalidated.
 - **KA7 Fence moved in flight.** A keepalive is sent; a reset from the
   server (callbacks.md, row R1) advances K; the reply arrives. No raise.
   The same with a pause and resume of the socket in between.
-- **KA8 Stale reply.** A reply received 121 seconds after its send (the
-  simulator holds it). No raise. A reply received 10 seconds after its
-  send but handled 115 seconds after receipt raises trust that ends 5
-  seconds later.
+- **KA8 Evidence age.** In production a `Completed` keepalive is
+  received within `ka.deadline` of its send, which is less than E, so
+  condition 7's "receipt within E of the send" cannot fail through Rx;
+  it guards a later rise of `ka.deadline`. It is tested at the seam: a
+  scripted `Rpc` returns a `Reply` whose receive stamp is E + 1 second
+  after its send stamp: no raise, counted under condition 7. Through
+  Rx: a keepalive whose reply the simulated network holds past
+  `ka.deadline` ends `DeadlineExceeded` with `sent_any` set, a failed
+  keepalive. And a reply received 10 seconds after its send but handled
+  115 seconds after receipt raises trust that ends 5 seconds later.
 - **KA9 Coverage across a lowering.** K trusted; entry A validated.
   A status call to the server ends with an ABORT on an eligible
   connection: trust none, `lowerings` rises, no suspect epoch moves.
@@ -1170,6 +1261,19 @@ bounded revalidation.
   further event within `ka.skew.event_min` though the server flaps; a
   sample with a round trip of 3 seconds is skipped; a time inside the
   send-to-receive window gives 0.
+- **KA21 Raise against a racing lowering.** Under the simulator's
+  interleaving search, a keepalive's reply is handled while a status
+  call to the same server ends with `Timeout` on another thread, in
+  every order the scheduler can produce. In no run does K end trusted
+  with `lowerings` raised by the `Timeout` and `trust` set by that
+  keepalive; an entry validated after the `Timeout` is never served
+  under a trust that keepalive set.
+- **KA22 Local outcomes.** A keepalive start refused (`StartRefused`),
+  an open with no identity slot, a `NotSent(Admission)` and a
+  connection retired by Rx before the next keepalive: trust is not
+  lowered by any of them, `ka_failures` is unchanged, and the next
+  keepalive is due `ka.min_gap` later; a `Timeout` after the request was
+  sent is a failed keepalive and lowers trust.
 - **KA20 Hostile replies.** Every reply of the reject corpus, in turn:
   no panic, the outcomes of 10.3.
 
@@ -1263,14 +1367,14 @@ This specification's own choices:
 |---|---|---|---|
 | K1 | DOCUMENTATION | AFS Assigned Numbers Registry: the file service procedure table `rx/RXAFS.txt`, register of editions row E75 ([README](README.md)); the Rx service list `rxservice.txt` and the error tables `errors.html`, row E11. Rows whose source column names an implementation's change history are not used. A lead until a passage is allowlisted (section 13, Q2) | 2, 5.1, 5.5, 5.6 |
 | K2 | SPECIFICATION | T. Keiser et al., "AFS-3 Protocol Capabilities Query Mechanism", draft-keiser-afs3-capabilities-00, register of editions row E12: §4, §4.1, §5, §5.1, §6, §6.1 and §10 prose. Its appendices are excluded by name. A lead only | 5.1.2, 5.6, 5.7 |
-| N1 | SPECIFICATION | RFC 4787, "Network Address Translation (NAT) Behavioral Requirements for Unicast UDP", BCP 127, January 2007, register of editions row E76: §4.3 (REQ-5, REQ-6) and §5 | 5.1.1, 5.2, 10.5 |
+| N1 | SPECIFICATION | RFC 4787, "Network Address Translation (NAT) Behavioral Requirements for Unicast UDP", BCP 127, January 2007, register of editions row E76: §4.3 (REQ-5, REQ-6) and §5, both allowlisted there for facts about NATs, so those facts are CONFIRMED | 5.1.1, 5.2, 10.5 |
 | L1 | DOCUMENTATION | OpenAFS reference pages `afsd(8)` ("DESCRIPTION", "CAUTIONS" and the `-nosettime` and `-settime` options) and `fs_checkservers(1)` ("DESCRIPTION", "OPTIONS"), register of editions row E77. A lead only | 5.1.2, 5.6, 5.7 |
 | C | DECISION | [Claim record](../reviews/2026-11-20-adr-0004-claims.md) row `[DES-011]` (ports and services), re-read on 2026-11-21. The record has no row on keepalives or a server's time; its clock rows (`[DES-012]` to `[DES-017]`, `[DES-019]`) are C37's and C38's | 5.1 |
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; A13, A14; C6, C16, C18, C23, C24, C26, C30, C32, C37, C38, C39, C46 ([part 1](../adr/0004-architecture-1-core.md)); O1, O12, O23, O40, O50 ([part 3](../adr/0004-architecture-3-operations.md)); N3, N5, N9, N31 ([part 4](../adr/0004-architecture-4-negotiation.md)) | 1, 2, 5, 8, 9, 11 |
 | D2 | DECISION | [ADR 0006](../adr/0006-rx-unprotected-packets.md): decision 1, points 5, 6 and 9; decision 2, points 1, 2 and 4 | 1, 5.5, 5.6, 8, 9 |
 | D3 | DECISION | the amendment of ADR 0004 in issue #53, point 3 (proposed, not yet accepted), and the owner's decision of 2026-11-20 it carries | 1, 5.2, 5.7 |
 | D4 | DECISION | [callbacks.md](callbacks.md): 5.1.4, 5.4, 5.6 (points 1 to 5, 10 and 11), 5.8, 5.9, section 6, 10.5 and section 13; [rx.md](rx.md): 5.2, 5.6, 5.7, 5.12 and section 7; [xdr.md](xdr.md): 5.2 and 5.4 | 2, 5, 6, 7 |
-| D5 | DECISION | the VL and FS read specification (#65): its 5.1.1 (framing, services) and section 2, point 3 (procedures not used) | 5.1 |
+| D5 | DECISION | the VL and FS read specification (#65): its 5.1.1 (framing, services) and section 2, point 3 (procedures not used; its sentence on the time procedure is superseded by this specification, section 13, Q10) | 5.1 |
 | D6 | DECISION | the seams specification (#71): its 5.3, points 1 and 2 (`Stamp`, `Deadline`, episodes, the sampling function) and 5.4, point 1 (`Reply`, `ReplyEvidence`, the trust conditions) | 4, 5.6, 5.7, 6 |
 | D7 | DECISION | [ADR 0001](../adr/0001-licence-and-dont-copy.md), "Don't copy"; [coding standards](../coding-standards.md), rules 1 to 3, 15 and 20 | 6, 7, 10, 12 |
 | O | OWN | every point tagged `[OWN]`, with its reason in place | 5, 6, 7 |
@@ -1365,11 +1469,22 @@ server release, date, scenario and the evidence label EXECUTED.
   the same campaign as Q1.
 - **Q9. A server with several addresses.** The keepalive goes to the
   address the client's calls use. A NAT that filters by the remote
-  address (N1 §5) drops a server's calls from any other address of that
+  address `[N1 §5: CONFIRMED]` drops a server's calls from any other address of that
   server, and from another port. Recommendation: keep one address until
   the callback specification's TC5 shows where callbacks come from; if a
   server's callbacks come from another address, keep that address's
   mapping open too.
+
+- **Q10. The VL and FS read specification's note on the time
+  procedure.** #65, section 2, point 3, lists the file-service time
+  procedure (153) among the procedures not used in M2a, and leaves "the
+  keepalive and the server probe" to C32 and the callback
+  specification. This specification makes that procedure M2a's
+  keepalive (5.1.2). Recommendation: amend #65's point in its own pull
+  request so that it says the procedure is used, by this specification
+  only, as the keepalive, and that #65 decodes nothing of it. Blocks:
+  neither specification's content, only their agreement once both are
+  on `main`.
 
 ## 14. Review
 
