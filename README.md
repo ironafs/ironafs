@@ -83,8 +83,9 @@ uses too:
      (Linux)         (macOS)          (Windows)
 ```
 
-This is the intended shape, not code that exists. The architecture decision
-is the next design step.
+This is the intended shape, not code that exists. The architecture is
+decided in [ADR 0004](docs/adr/0004-architecture.md), accepted on
+2026-11-20.
 
 **Windows, planned:** an online `\\afs` path through Windows' own SMB client to
 an SMB 3.1.1 server of IronAFS's own on the local machine, behind a gate on
@@ -94,9 +95,8 @@ local machine beside Windows' own file sharing, on Windows 10 22H2 and
 Windows 11 24H2 and 26H2, to the client's first packet. A full SMB session has not been
 measured yet ([the UNC note](docs/research/2026-11-19-windows-unc-without-a-driver.md)).
 A Cloud Files replica may follow later as an optional offline companion,
-and is the Windows surface if the gate fails. This is the maintainer's
-decision of 2026-11-19, to be recorded in ADR 0004
-([#20](https://github.com/ironafs/ironafs/issues/20)).
+and is the Windows surface if the gate fails. ADR 0004 records this
+decision ([part 2](docs/adr/0004-architecture-2-os-layers.md), L15).
 
 ## Compatibility
 
