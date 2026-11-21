@@ -28,7 +28,9 @@
 //! the workspace's clippy and refuses any build script that does.
 //!
 //! The ban arrays are read in one format only (`read`); a ban key or a
-//! ban array line in any other form is refused, not skipped.
+//! ban array line in any other form is refused, not skipped. Keys are
+//! matched as TOML decodes them, so a quoted or escaped spelling of a ban
+//! key is refused too, and a quoted key that cannot be decoded is refused.
 //!
 //! What the bans cannot see is named in the root `clippy.toml`. The core's
 //! own rules (`ironafs-client` names no clock at all) are in `check-deps`,
@@ -263,13 +265,111 @@ fn key(trimmed: &str) -> Option<Lint> {
     }
 }
 
-/// The path of a ban written as `{ path = "...", ... }`, optionally
-/// followed by a comma, holding one entry.
+/// The path of a ban written as `{ path = "..." }` or
+/// `{ path = "...", reason = "..." }`, optionally followed by a comma: one
+/// inline table holding one entry. Neither string may hold a quote or an
+/// escape, so the text read is the text TOML decodes and nothing after the
+/// path can open another entry.
 fn entry(trimmed: &str) -> Option<&str> {
-    let rest = trimmed.strip_prefix("{ path = \"")?;
-    let (path, rest) = rest.split_once('"')?;
-    let closed = rest.ends_with('}') || rest.ends_with("},");
-    (closed && !rest.contains("path =")).then_some(path)
+    let plain = |text: &str| !text.contains(['"', '\\']);
+    let table = trimmed.strip_suffix(',').unwrap_or(trimmed);
+    let inner = table.strip_prefix("{ path = \"")?.strip_suffix(" }")?;
+    let (path, rest) = inner.split_once('"')?;
+    let reason = rest
+        .strip_prefix(", reason = \"")
+        .and_then(|reason| reason.strip_suffix('"'));
+    let readable = rest.is_empty() || reason.is_some_and(plain);
+    (plain(path) && readable).then_some(path)
+}
+
+/// The keys a TOML line starts with, each part decoded as TOML decodes it:
+/// a table header's (`[a.b]`, `[[a]]`) or a key's (`a."b" = ...`). A line
+/// that starts with no key gives none; one whose quoted part TOML could not
+/// decode gives `None`. The decoded keys, not their spelling, say whether a
+/// line names a ban.
+fn line_keys(trimmed: &str) -> Option<Vec<String>> {
+    let mut rest = trimmed.trim_start_matches('[').trim_start();
+    let mut keys = Vec::new();
+    loop {
+        let (key, after) = if let Some(quoted) = rest.strip_prefix('"') {
+            basic_string(quoted)?
+        } else if let Some(quoted) = rest.strip_prefix('\'') {
+            let (key, after) = quoted.split_once('\'')?;
+            (key.to_owned(), after)
+        } else {
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .unwrap_or(rest.len());
+            if end == 0 {
+                return Some(keys);
+            }
+            let (key, after) = rest.split_at(end);
+            (key.to_owned(), after)
+        };
+        keys.push(key);
+        match after.trim_start().strip_prefix('.') {
+            Some(next) => rest = next.trim_start(),
+            None => return Some(keys),
+        }
+    }
+}
+
+/// The text of a TOML basic string whose opening quote is already read,
+/// with its escapes decoded (TOML 1.0's, and 1.1's `\e` and `\xHH`), and
+/// what follows its closing quote; `None` if it is not closed or an escape
+/// is not one TOML decodes.
+fn basic_string(text: &str) -> Option<(String, &str)> {
+    let mut decoded = String::new();
+    let mut chars = text.char_indices();
+    while let Some((at, c)) = chars.next() {
+        match c {
+            '"' => return Some((decoded, text.get(at + 1..)?)),
+            '\\' => {
+                let (_, escape) = chars.next()?;
+                let digits = match escape {
+                    'x' => 2,
+                    'u' => 4,
+                    'U' => 8,
+                    _ => 0,
+                };
+                let simple = match escape {
+                    'b' => Some('\u{8}'),
+                    't' => Some('\t'),
+                    'n' => Some('\n'),
+                    'f' => Some('\u{c}'),
+                    'r' => Some('\r'),
+                    'e' => Some('\u{1b}'),
+                    '"' => Some('"'),
+                    '\\' => Some('\\'),
+                    _ => None,
+                };
+                if let Some(simple) = simple {
+                    decoded.push(simple);
+                } else if digits == 0 {
+                    return None;
+                } else {
+                    let hex: String = (0..digits)
+                        .map(|_| chars.next().map(|(_, digit)| digit))
+                        .collect::<Option<String>>()?;
+                    if !hex.chars().all(|digit| digit.is_ascii_hexdigit()) {
+                        return None;
+                    }
+                    decoded.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                }
+            }
+            _ => decoded.push(c),
+        }
+    }
+    None
+}
+
+/// Whether `text` names a ban key in any spelling clippy might read: either
+/// lint, singular or plural, with `-` or `_`, in any case.
+fn names_a_ban(text: &str) -> bool {
+    let text = text.to_ascii_lowercase().replace('_', "-");
+    ["disallowed-method", "disallowed-type"]
+        .iter()
+        .any(|stem| text.contains(stem))
 }
 
 /// Reads the `disallowed-methods` and `disallowed-types` arrays of
@@ -297,11 +397,9 @@ fn read(clippy_toml: &str) -> (Vec<(Lint, &str)>, Vec<Violation>) {
                 .is_some(),
             None => {
                 lint = key(trimmed);
-                let names_a_ban = ["disallowed-methods", "disallowed-types"]
-                    .iter()
-                    .chain(&["disallowed_methods", "disallowed_types"])
-                    .any(|name| trimmed.contains(name));
-                lint.is_some() || !names_a_ban
+                let named = line_keys(trimmed)
+                    .map(|keys| names_a_ban(trimmed) || keys.iter().any(|key| names_a_ban(key)));
+                lint.is_some() || named == Some(false)
             }
         };
         if !readable {

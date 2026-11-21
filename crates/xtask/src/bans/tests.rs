@@ -486,3 +486,57 @@ fn build_overrides_refuses_a_build_script_message_it_cannot_parse() {
         build_overrides(messages)
     );
 }
+
+#[test]
+fn unreadable_reports_a_ban_key_spelt_another_way() {
+    // TOML decodes each of these keys to a ban key clippy reads.
+    for text in [
+        "\"disallowed\\u002dmethods\" = [\n]\n",
+        "\"disallowed\\U0000002Dtypes\" = [\n]\n",
+        "\"disallowed\\u005fmethods\" = [\n]\n",
+        "[[\"disallowed\\u002dtypes\"]]\npath = \"a::B\"\n",
+        "'disallowed-methods' = [\n]\n",
+        "disallowed-method = [\n]\n",
+    ] {
+        let found = unreadable(text);
+        assert!(
+            matches!(found.as_slice(), [Violation::Unreadable { line: 1, .. }]),
+            "{text:?}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn unreadable_reports_a_quoted_key_it_cannot_decode() {
+    for text in ["\"a\\q\" = 1\n", "\"a\\u00\" = 1\n", "\"a = 1\n"] {
+        let found = unreadable(text);
+        assert!(
+            matches!(found.as_slice(), [Violation::Unreadable { line: 1, .. }]),
+            "{text:?}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn unreadable_accepts_other_quoted_keys() {
+    assert_eq!(
+        unreadable("\"doc\\u002dvalid-idents\" = [\"a\"]\n'x' = 1\n"),
+        []
+    );
+}
+
+#[test]
+fn unreadable_reports_an_entry_line_holding_more_than_one_ban() {
+    for text in [
+        "disallowed-methods = [\n  { path = \"a::b\" }, { \"path\" = \"c::d\" },\n]\n",
+        "disallowed-methods = [\n  { path = \"a::b\", reason = \"r\" }, { 'path' = \"c::d\" },\n]\n",
+        "disallowed-methods = [\n  { path = \"a\\u003a:b\", reason = \"r\" },\n]\n",
+        "disallowed-methods = [\n  { path = \"a::b\", reason = \"r\\\" }, {\" },\n]\n",
+    ] {
+        let found = unreadable(text);
+        assert!(
+            matches!(found.as_slice(), [Violation::Unreadable { line: 2, .. }]),
+            "{text:?}: {found:?}"
+        );
+    }
+}

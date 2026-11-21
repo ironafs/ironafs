@@ -134,6 +134,19 @@ const CASES: &[Case] = &[
         needs: |found| matches!(found.violation, Violation::Unreadable { .. }),
     },
     Case {
+        // TOML decodes the escape, so clippy reads the array as its bans.
+        name: "an escaped ban key in clippy.toml whose array has an unplanted ban",
+        place: Place::Root,
+        plant: |text| {
+            with_unplanted(text)
+                .replace("disallowed-methods = [", "\"disallowed\\u002dmethods\" = [")
+        },
+        expect: |found| {
+            found.file == ROOT_FILE && matches!(found.violation, Violation::Unreadable { .. })
+        },
+        needs: |_| true,
+    },
+    Case {
         // Clippy prefers `.clippy.toml` when both names are in a directory.
         name: "a root .clippy.toml with a ban no planted line reaches",
         place: Place::DotRoot,
