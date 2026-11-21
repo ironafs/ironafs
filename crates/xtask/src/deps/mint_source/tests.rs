@@ -138,3 +138,23 @@ fn may_name_holds_only_the_contract_the_composition_the_core_and_test_only_crate
         ]
     );
 }
+
+/// The token reader drops literals, so an ABI string never stands between
+/// the qualifiers and `fn`; a later private use of the mint is not read as
+/// part of the function.
+#[test]
+fn exposed_lines_read_an_abi_function_as_a_function() {
+    let source = "pub extern \"C\" fn callback() {}\n\
+                  pub unsafe extern \"C\" fn other(x: u8) -> u8 { x }\n\
+                  fn private() -> Mint { Mint::new() }\n\
+                  pub extern \"C\" fn leaks() -> ironafs_vfs::Mint { todo() }\n";
+    assert_eq!(exposed_of(source), vec![(4, "a public function")]);
+}
+
+#[test]
+fn exposed_lines_read_a_tuple_field_whose_type_starts_with_a_path_separator() {
+    assert_eq!(
+        exposed_of("pub struct W(pub ::ironafs_vfs::Mint);\n"),
+        vec![(1, "a public field")]
+    );
+}

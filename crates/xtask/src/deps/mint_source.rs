@@ -27,10 +27,26 @@
 //!   function or method, constant or static, type alias or field naming
 //!   it, or an exported macro whose body names it.
 //!
+//! **Open, which review holds until the second barrier is built:**
+//! - **An allowed crate handing the mint out without spelling it.** This
+//!   check reads tokens, so it does not see a mint that leaves an allowed
+//!   crate under another spelling: a private alias in a public signature
+//!   (`use ironafs_vfs::Mint as M; pub fn make() -> M`), a default type
+//!   parameter (`pub struct W<T = Mint>`), an `include!` in an allowed
+//!   crate (only the other crates are refused it), an exported macro that
+//!   calls a private factory, a trait's items, a trait implementation
+//!   (`Deref` to the mint, `From` or `Into` it), and an enum variant that
+//!   holds one. A layer could then mint without naming the type.
+//! - **The type ban of the contract specification, 5.11, point 3, is not
+//!   built.** It is what closes the item above: `clippy.toml` lists the
+//!   mint under `disallowed-types`, and its constructor and minting
+//!   methods (`Mint::new`, `Mint::caller`, `Mint::handle`) under
+//!   `disallowed-methods`, since clippy resolves a call whatever spelling
+//!   or inferred type reached it, while a type ban sees only types written
+//!   out. The allowed crates name them under `#[expect]`, and this check
+//!   refuses an `allow` or `expect` of either lint outside them.
+//!
 //! **Limits, which review holds:**
-//! - in an allowed crate, a trait's items, a trait implementation (`Deref`
-//!   to the mint, `From` or `Into` it) and an enum variant holding one are
-//!   not read as routes;
 //! - a procedural macro can build the identifier from a string. No
 //!   third-party crate, procedural or not, enters without the owner's
 //!   decision (the third-party lists), but a workspace procedural-macro
@@ -103,9 +119,8 @@ pub(super) fn hiding_lines(tokens: &[Token]) -> Vec<(usize, String)> {
 /// function or method signature, constant or static, type alias, or field
 /// (named or tuple) whose tokens name the mint, and an exported macro whose
 /// body does. A `pub(...)` restriction keeps an item inside the crate and
-/// is not a route. Not seen here, so held by review: a trait's items and a
-/// trait implementation (`Deref` to the mint, `From` or `Into` it), and an
-/// enum variant that holds one.
+/// is not a route. The routes this does not see are listed as open in the
+/// module documentation.
 pub(super) fn exposed_lines(tokens: &[Token]) -> Vec<(usize, &'static str)> {
     let mut found = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
