@@ -570,9 +570,13 @@ encoding is the simulator's specification's.
      `from`. So a forged or fresh `from` with a higher count than `now`
      cannot raise the latch, and a regression larger than the time since
      the arrival cannot stretch the deadline either. What a value check
-     cannot see is a `from` whose count and instant are not newer than
-     `now` but which is not the true arrival (a sample taken after the
-     arrival and before `now`); the call-site check covers it.
+     cannot see is a `from` whose count is equal to `now`'s and whose
+     instant is not later, but which is not the true arrival or send (a
+     sample taken after a failure or regression that followed the true
+     arrival, or a forged stamp with those values). It is not refused,
+     its latch equals the current count, and it hides that failure or
+     regression; only the call-site check below, which pins where `from`
+     comes from, bounds it.
    - **The call-site check (`xtask`'s
      `seams::deadline_built_from_a_fresh_sample`).** It parses the
      source of every workspace crate except `ironafs-time` (the syntax
@@ -617,17 +621,38 @@ encoding is the simulator's specification's.
        (a token scan), but a macro that assembles the path from
        fragments is not seen; and it checks `from` by field name, not by
        type flow, so it trusts that only the ingress writes a request's
-       `arrival`, once.
+       `arrival`, once, and that only the call owner writes a `Reply`'s
+       `first_sent`, once, from the `pre` sample of its hand-off (5.4,
+       point 4). `Reply`'s fields are public, so a wrong or forged
+       `Reply` whose `first_sent` is later than the true send but not
+       later than `now` passes both checks and would start a callback
+       lifetime late (C26, point 2); review covers who builds a `Reply`.
+       The planted self-tests include a forged `from` with a count equal
+       to `now`'s and an earlier instant, written through each of these
+       two limits, to show that the check does not catch it (they are
+       expected passes, recorded as the limits, not failures).
+     - **Scope.** The check sees only the workspace's own crates. Every
+       crate of the workspace is unpublished (`publish = false` in the
+       workspace manifest), so no crate outside it builds on
+       `ironafs-time`'s constructors through a registry; a crate that
+       copied or vendored them would be outside the check, and the
+       guarantee is the workspace's only. The constructors stay `pub`
+       because Rust has no visibility between `pub(crate)` and `pub`
+       that would reach the sampling functions in other crates.
 
    So, while samples fail, the code has no new `now` and builds no
    deadline. This rests on the check, not on a type: any crate may
    implement `Clock` (`ironafs-os`, `ironafs-sim`,
    `ironafs-test-support`), so a "fresh stamp" or "arrival stamp" type
    would need a public constructor that any crate could call, and would
-   add nothing the check does not give. Bypassing the check can at worst
-   build a deadline from a stale `now` or `from`, which the latch fails
-   at once, or from a forged one, which the value check refuses when it
-   is newer than `now`.
+   add nothing the check does not give. A way past the check (one of the
+   limits above) can build a deadline from a stale `now` or `from`,
+   which the latch fails at once; from a forged one newer than `now`,
+   which the value check refuses; or from a forged or wrong `from` with
+   a count equal to `now`'s and an instant not later, which nothing in
+   the type or the value check catches, so that deadline can hide a
+   failure or a regression after the true arrival. That last case is the
+   residual the call-site check and review exist for [OWN].
 
    A compile-fail doc-test in `ironafs-time` shows that a literal, a
    destructuring and a field write of a `Deadline` do not compile
@@ -2089,7 +2114,7 @@ listed with its crate.
 | C28, point 6; C29, point 9; N32, point 6 | 5.5, points 4, 6 and 7 | `ironafs-sim`: `disk::durable_replace_crash_at_every_cut`, `disk::one_ack_after_record_and_boundary`, `disk::restart_never_trusts_failed_sync`, `disk::marked_log_keeps_covered_suffix`, `disk::failed_sync_never_marks_covered`, `disk::no_ack_in_a_directory_not_made_this_incarnation`, `disk::root_parent_synced_at_construction` |
 | C32, points 1 and 4 | 5.4, point 1; 5.3, point 2 | `ironafs-sim`: `clock::keepalive_across_suspend_earns_no_trust`, `clock::keepalive_across_wall_jump_earns_no_trust`, `clock::trust_lapses_at_e_after_received` |
 | C32, point 5 | 5.3, point 2; 5.7, point 1; 5.8, point 2 | `ironafs-sim`: `clock::episode_marks_suspect_before_reply` (a suspend, a regression, a failed read and a wall jump) |
-| C37, points 4 and 5 | 5.3, points 1, 2 and 4; 5.6, point 5; 5.7, point 1 | `ironafs-sim`: `clock::failed_read_expires_every_deadline`, `clock::regression_expires_boot_deadlines_only`, `clock::latched_doubt_outlives_the_fault`, `clock::no_deadline_without_a_valid_sample`; `ironafs-time`: `deadline::stale_stamp_gives_an_already_failed_deadline`, `deadline::regression_between_from_and_now_fails_the_deadline`, `deadline::from_after_now_is_refused` (a higher count; a later instant on the deadline's clock) and the compile-fail doc-test that a `Deadline` cannot be built, destructured or edited outside the crate; `xtask`: `seams::deadline_built_from_a_fresh_sample` (planted: a kept `now`; a constructor outside the sampling function; a second allowed function; a module-level allowance; the constructor carried out by a closure and by a function pointer; a fresh `from`; a forged high-count `from`); the `Clock` conformance body |
+| C37, points 4 and 5 | 5.3, points 1, 2 and 4; 5.6, point 5; 5.7, point 1 | `ironafs-sim`: `clock::failed_read_expires_every_deadline`, `clock::regression_expires_boot_deadlines_only`, `clock::latched_doubt_outlives_the_fault`, `clock::no_deadline_without_a_valid_sample`; `ironafs-time`: `deadline::stale_stamp_gives_an_already_failed_deadline`, `deadline::regression_between_from_and_now_fails_the_deadline`, `deadline::from_after_now_is_refused` (a higher count; a later instant on the deadline's clock) and the compile-fail doc-test that a `Deadline` cannot be built, destructured or edited outside the crate; `xtask`: `seams::deadline_built_from_a_fresh_sample` (planted: a kept `now`; a constructor outside the sampling function; a second allowed function; a module-level allowance; the constructor carried out by a closure and by a function pointer; a fresh `from`; a forged high-count `from`; and, as recorded limits that pass, an equal-count forged `from` through a forged `.arrival` and through a forged `Reply`); the `Clock` conformance body |
 | C39, point 3 | 5.3, points 3 and 5; 5.4, points 7 and 8 | `ironafs-sync`: `queue_refuses_over_cap`, `oneshot_cancel_wakes`; `ironafs-os`: `waker_raise_at_check_to_sleep_boundary`; `ironafs-client`: `rpc::admission_lanes`, `rpc::control_lane_never_full_at_shutdown`; `ironafs-sim`: `inbound_queue_full_drops` |
 | C39, point 4 | 5.3, point 6; 5.6, point 9 | `ironafs-sim`: `lock_held_at_yield_fails`, `contended_lock_fails` |
 | C46, point 3 | 5.4, point 2 | `ironafs-client`: `errors::abort_code_needs_rpc_and_server` |
