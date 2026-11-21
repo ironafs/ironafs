@@ -53,6 +53,22 @@ jobs:
           install -m 0755 "${archive%.tar.gz}/cargo-deny" "$cargo_bin/cargo-deny"
       - name: Check dependencies
         run: cargo deny --locked check
+      - name: Check the clock and randomness bans fire
+        run: cargo --locked xtask check-bans
+      - name: Prove a removed or misspelt ban is caught
+        run: cargo --locked xtask check-bans --self-test
+      - name: Check the architecture's dependency rules
+        run: cargo --locked xtask check-deps
+      - name: Prove the dependency rules catch planted violations
+        run: cargo --locked xtask check-deps --self-test
+      - name: Check the rights evaluator's confinement
+        run: cargo --locked xtask check-grants
+      - name: Prove the confinement catches planted violations
+        run: cargo --locked xtask check-grants --self-test
+      - name: Build the pure crates against core and alloc alone
+        run: cargo --locked xtask check-pure
+      - name: Prove the pure-crate build catches planted violations
+        run: cargo --locked xtask check-pure --self-test
 
   test:
     name: test

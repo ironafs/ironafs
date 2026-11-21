@@ -13,6 +13,10 @@ mod tests;
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Task {
     Check,
+    CheckBans { self_test: bool },
+    CheckDeps { self_test: bool },
+    CheckGrants { self_test: bool },
+    CheckPure { self_test: bool },
     InstallHook { force: bool },
     UninstallHook,
     Trailers(TrailerMode),
@@ -60,7 +64,7 @@ impl fmt::Display for UsageError {
         }?;
         write!(
             formatter,
-            "\nusage: cargo xtask check | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
+            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
         )
     }
 }
@@ -74,6 +78,18 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
     let command = arguments.next().ok_or(UsageError::MissingCommand)?;
     let task = match command.to_str() {
         Some("check") => Task::Check,
+        Some("check-bans") => Task::CheckBans {
+            self_test: parse_self_test(&mut arguments)?,
+        },
+        Some("check-deps") => Task::CheckDeps {
+            self_test: parse_self_test(&mut arguments)?,
+        },
+        Some("check-grants") => Task::CheckGrants {
+            self_test: parse_self_test(&mut arguments)?,
+        },
+        Some("check-pure") => Task::CheckPure {
+            self_test: parse_self_test(&mut arguments)?,
+        },
         Some("hooks") => parse_hooks(&mut arguments)?,
         Some("trailers") => Task::Trailers(parse_trailers(&mut arguments)?),
         _ => return Err(UsageError::UnknownCommand(command)),
@@ -82,6 +98,14 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
         return Err(UsageError::UnexpectedArgument(argument));
     }
     Ok(task)
+}
+
+fn parse_self_test(arguments: &mut impl Iterator<Item = OsString>) -> Result<bool, UsageError> {
+    match arguments.next() {
+        Some(argument) if argument == OsStr::new("--self-test") => Ok(true),
+        Some(argument) => Err(UsageError::UnexpectedArgument(argument)),
+        None => Ok(false),
+    }
 }
 
 fn parse_trailers(

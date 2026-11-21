@@ -6,9 +6,9 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{self, Command, Stdio};
+use std::process::{self, Stdio};
 
-use crate::Error;
+use crate::{Command, Error};
 
 #[cfg(test)]
 mod tests;
@@ -77,7 +77,7 @@ fn needs_install(path: &Path, force: bool) -> Result<bool, Error> {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
                 Err(error) => error,
             };
-            Err(Error::hook_io(RESERVE_BACKUP, &backup)(error))
+            Err(Error::path_io(RESERVE_BACKUP, &backup)(error))
         }
         Err(error) => Err(error),
     }
@@ -95,16 +95,16 @@ fn install_hook(
         .create_new(true)
         .write(true)
         .open(&staged)
-        .map_err(Error::hook_io("create temporary hook", &staged))?;
+        .map_err(Error::path_io("create temporary hook", &staged))?;
     let written =
-        write_hook(&mut file, hook.command).map_err(Error::hook_io("write hook", &staged));
+        write_hook(&mut file, hook.command).map_err(Error::path_io("write hook", &staged));
     drop(file);
     let installed = written.and_then(|()| publish_hook(&staged, path, force, output));
     if force && installed.is_ok() {
         return Ok(());
     }
     let cleaned =
-        fs::remove_file(&staged).map_err(Error::hook_io("remove temporary hook", &staged));
+        fs::remove_file(&staged).map_err(Error::path_io("remove temporary hook", &staged));
     installed.and(cleaned)
 }
 
@@ -128,7 +128,7 @@ fn publish_hook(
 ) -> Result<(), Error> {
     if force {
         let backup = backup_foreign_hook(path)?;
-        let replaced = fs::rename(staged, path).map_err(Error::hook_io("replace hook", path));
+        let replaced = fs::rename(staged, path).map_err(Error::path_io("replace hook", path));
         if let Some(backup) = backup {
             let reported = writeln!(output, "moved existing hook to {}", backup.display())
                 .map_err(Error::io("report hook backup"));
@@ -144,7 +144,7 @@ fn publish_hook(
         {
             Ok(())
         }
-        result => result.map_err(Error::hook_io("install hook", path)),
+        result => result.map_err(Error::path_io("install hook", path)),
     }
 }
 
@@ -162,11 +162,11 @@ fn backup_foreign_hook(path: &Path) -> Result<Option<PathBuf>, Error> {
         .create_new(true)
         .write(true)
         .open(&backup)
-        .map_err(Error::hook_io(RESERVE_BACKUP, &backup))?;
+        .map_err(Error::path_io(RESERVE_BACKUP, &backup))?;
     drop(reservation);
     if let Err(error) = fs::rename(path, &backup) {
         let _ = fs::remove_file(&backup);
-        return Err(Error::hook_io("move hook to backup", &backup)(error));
+        return Err(Error::path_io("move hook to backup", &backup)(error));
     }
     Ok(Some(backup))
 }
@@ -187,7 +187,7 @@ fn uninstall_in(directory: &Path) -> Result<(), Error> {
     }
     for path in paths {
         if managed_hook_exists(&path)? {
-            fs::remove_file(&path).map_err(Error::hook_io("remove hook", &path))?;
+            fs::remove_file(&path).map_err(Error::path_io("remove hook", &path))?;
         }
     }
     Ok(())
@@ -197,17 +197,17 @@ fn managed_hook_exists(path: &Path) -> Result<bool, Error> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => {
             let mut header = [0; HOOK_HEADER.len()];
-            let mut file = File::open(path).map_err(Error::hook_io("open hook", path))?;
+            let mut file = File::open(path).map_err(Error::path_io("open hook", path))?;
             match file.read_exact(&mut header) {
                 Ok(()) if is_managed_hook(&header) => return Ok(true),
                 Ok(()) => (),
                 Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => (),
-                Err(error) => return Err(Error::hook_io("read hook", path)(error)),
+                Err(error) => return Err(Error::path_io("read hook", path)(error)),
             }
         }
         Ok(_) => (),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(Error::hook_io("inspect hook", path)(error)),
+        Err(error) => return Err(Error::path_io("inspect hook", path)(error)),
     }
     Err(Error::ForeignHook(path.to_path_buf()))
 }

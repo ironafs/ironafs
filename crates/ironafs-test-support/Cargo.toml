@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# A dev-dependency only: no shipped crate may depend on this one.
+[package]
+name = "ironafs-test-support"
+description = "IronAFS's seeded generator and shrinker for property tests, and seeded clocks and random bytes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+ironafs-time.workspace = true
+
+[lints]
+workspace = true
