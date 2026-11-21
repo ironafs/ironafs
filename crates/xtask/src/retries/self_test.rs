@@ -67,6 +67,7 @@ fn names(violation: &Violation, path: &str) -> bool {
         | Violation::Profile { file, .. }
         | Violation::ProfileTable { file, .. }
         | Violation::Escape { file, .. }
+        | Violation::Joined { file, .. }
         | Violation::Option { file, .. }
         | Violation::Environment { file, .. }
         | Violation::ConfigFile { file, .. } => file == path,
@@ -157,6 +158,58 @@ const CASES: &[Case] = &[
             )
         },
         expect: |found| matches!(found, Violation::Escape { .. }) && names(found, CARGO_CONFIG),
+    },
+    Case {
+        name: "a workflow escape behind a doubled backslash",
+        files: || {
+            with(
+                WORKFLOW,
+                Some(&CLEAN_WORKFLOW.replace(
+                    "run: cargo nextest run --profile ci --retries 0",
+                    "run: \"cargo nextest run --$'\\\\162'etries 2\"",
+                )),
+            )
+        },
+        expect: |found| matches!(found, Violation::Escape { .. }) && names(found, WORKFLOW),
+    },
+    Case {
+        name: "a workflow option split by a line-ending backslash",
+        files: || {
+            with(
+                WORKFLOW,
+                Some(&CLEAN_WORKFLOW.replace(
+                    "run: cargo nextest run --profile ci --retries 0",
+                    "run: |\n          cargo nextest run --re\\\ntries 2",
+                )),
+            )
+        },
+        expect: |found| matches!(found, Violation::Joined { .. }) && names(found, WORKFLOW),
+    },
+    Case {
+        name: "a workflow 0 followed by a backtick substitution",
+        files: || {
+            with(
+                WORKFLOW,
+                Some(&CLEAN_WORKFLOW.replace("--retries 0", "--retries 0` echo 2`")),
+            )
+        },
+        expect: |found| {
+            matches!(found, Violation::Option { value, .. } if value == "0`")
+                && names(found, WORKFLOW)
+        },
+    },
+    Case {
+        name: "a profile retries hidden by multiline strings ending in quotes",
+        files: || {
+            ci_retries(
+                "[profile.ci]\njunit = { path = \"\"\"a\"\"\"\", report-name = \"\"\"b\"\"\"\"\" }\n\
+                 retries = 2\n# \"\"\"",
+            )
+        },
+        expect: |found| {
+            matches!(found, Violation::Profile { value, .. } if value == "2")
+                && names(found, PROFILES)
+        },
     },
     Case {
         name: "an xtask command with the retries option at 2",

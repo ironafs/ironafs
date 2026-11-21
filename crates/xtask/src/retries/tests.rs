@@ -249,7 +249,7 @@ fn command_violations_catch_escapes_that_spell_a_name() {
 #[test]
 fn command_violations_pass_escapes_that_spell_no_name() {
     assert_commands(
-        "run: printf '%s  %s\\n' a b\nx = \"\\u00e9 \\\\u0072 \\t \\u{1f}\"\n",
+        "run: printf '%s  %s\\n' a b\nx = \"\\u00e9 \\t \\u{1f} \\n\\\n y\"\n",
         &[],
     );
 }
@@ -472,4 +472,96 @@ fn check_passes_this_repository() {
     let (found, read) = check(&root, &root.join("target")).expect("check runs");
     assert_eq!(found, []);
     assert!(read >= 3, "read {read} files");
+}
+
+#[test]
+fn command_violations_catch_escapes_behind_doubled_backslashes() {
+    for (text, spelled) in [
+        ("run: \"cargo nextest run --$'\\\\162'etries 2\"\n", 'r'),
+        ("run: \"cargo nextest run $'\\\\x2d'-retries 2\"\n", '-'),
+        ("run: \"cargo nextest run --$'\\\\\\\\x72'etries 2\"\n", 'r'),
+        ("x = \"--\\u{7_2}etries\"\n", 'r'),
+        ("x = \"\\\\u0072\"\n", 'r'),
+    ] {
+        let found = command_violations(text, Path::new(WORKFLOW));
+        assert!(found.contains(&escape(1, spelled)), "{text}: {found:?}");
+    }
+}
+
+#[test]
+fn command_violations_catch_a_name_split_by_a_line_ending_backslash() {
+    for text in [
+        "t = \"\"\"nextest run --re\\\n tries 2\"\"\"\n",
+        "\"NEXTEST_\\\n RETRIES\": \"2\"\n",
+        "run: cargo nextest run --re\\\r\ntries 2\n",
+    ] {
+        let found = command_violations(text, Path::new(WORKFLOW));
+        assert!(
+            found.contains(&Violation::Joined {
+                file: PathBuf::from(WORKFLOW),
+                line: 1,
+            }),
+            "{text}: {found:?}"
+        );
+    }
+    assert_commands(
+        "run: |\n  cargo nextest run \\\n    --retries 0 \\\n    --workspace\n",
+        &[],
+    );
+}
+
+#[test]
+fn command_violations_refuse_a_backtick_that_opens_a_substitution() {
+    for (text, expected) in [
+        (
+            "run: cargo nextest run --retries 0` echo 2`\n",
+            option(1, "0`"),
+        ),
+        (
+            "run: cargo nextest run --retries \"0` echo 2`\"\n",
+            option(1, "0`"),
+        ),
+        (
+            "run: NEXTEST_RETRIES=0` echo 2` cargo nextest run\n",
+            environment(1, "0`"),
+        ),
+        ("run: cargo nextest run --retries 0.5\n", option(1, "0.5")),
+    ] {
+        assert_commands(text, &[expected]);
+    }
+}
+
+#[test]
+fn command_violations_pass_a_zero_ending_prose_or_a_code_span() {
+    assert_commands(
+        "# Pass `--retries 0`. Always --retries 0. Or --retries 0: so.\n\
+         # The run passes `--retries 0`, and `NEXTEST_RETRIES=0`.\n",
+        &[],
+    );
+}
+
+#[test]
+fn profile_violations_read_quotes_before_a_multiline_closing_delimiter() {
+    for text in [
+        "[profile.ci]\nnote = \"\"\"a\"\"\"\"\nretries = 0\n",
+        "[profile.ci]\nnote = '''a''''\nretries = 0\n",
+        "[profile.ci]\nnote = \"\"\"a\"\"\"\"\"\nretries = 0\n",
+    ] {
+        assert_profiles(text, &[]);
+    }
+    assert_profiles(
+        "[profile.ci]\njunit = { path = \"\"\"a\"\"\"\", report-name = \"\"\"b\"\"\"\"\" }\n\
+         retries = 2\n# \"\"\"\n",
+        &[profile(3, "2")],
+    );
+    assert_eq!(
+        profile_violations(
+            "[profile.ci]\nnote = \"\"\"a\"\"\"\"\"\"\n",
+            Path::new(PROFILES)
+        ),
+        [Violation::Unreadable {
+            file: PathBuf::from(PROFILES),
+            error: "line 2: too many quotes before a closing delimiter".to_owned(),
+        }]
+    );
 }

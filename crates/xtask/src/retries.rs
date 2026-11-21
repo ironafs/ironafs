@@ -55,9 +55,11 @@ const VARIABLE: &str = "NEXTEST_RETRIES";
 const CONFIG_OPTIONS: &[&str] = &["--config-file", "--tool-config-file"];
 
 /// How a plain 0 may end in a command's text: alone, or closing the quotes
-/// or the code span it stands in. Anything else attached to it (a second
-/// quoted part, a variable) would join it in a shell.
-const PLAIN_ZEROS: &[&str] = &["0", "0\"", "0'", "0`"];
+/// it stands in. Anything else attached to it (a second quoted part, a
+/// variable) would join it in a shell. A backtick may close it only in a
+/// code span that opened before the name; elsewhere it opens a command
+/// substitution.
+const PLAIN_ZEROS: &[&str] = &["0", "0\"", "0'"];
 
 /// One place that could make nextest retry a test.
 #[derive(Debug, PartialEq, Eq)]
@@ -99,6 +101,9 @@ pub(crate) enum Violation {
         line: usize,
         spelled: char,
     },
+    /// A line-ending backslash right after a character of a name, which
+    /// could join the name across lines.
+    Joined { file: PathBuf, line: usize },
     /// The nextest configuration file cannot be read as TOML.
     Unreadable { file: PathBuf, error: String },
 }
@@ -160,6 +165,12 @@ impl fmt::Display for Violation {
                 formatter,
                 "{}:{line}: an escape spells `{spelled}`, which could hide a retries setting \
                  from this check; write the character itself",
+                file.display()
+            ),
+            Self::Joined { file, line } => write!(
+                formatter,
+                "{}:{line}: a line-ending backslash right after a name could join it across \
+                 lines, hiding a retries setting from this check; break the line between words",
                 file.display()
             ),
             Self::Unreadable { file, error } => write!(
@@ -240,6 +251,22 @@ fn toml_tokens(text: &str) -> Result<Vec<(Toml, usize)>, String> {
                     return Err(format!("line {start_line}: unterminated string"));
                 };
                 if starts(at, delimiter) {
+                    // A multiline string may end with one or two quotes of
+                    // its own before the closing delimiter.
+                    let run = characters
+                        .get(at..)
+                        .unwrap_or_default()
+                        .iter()
+                        .take_while(|&&quote| quote == character)
+                        .count();
+                    if multiline && run > 5 {
+                        return Err(format!(
+                            "line {line}: too many quotes before a closing delimiter"
+                        ));
+                    }
+                    let own = if multiline { run - delimiter.len() } else { 0 };
+                    content.extend(std::iter::repeat_n(character, own));
+                    at += own;
                     break;
                 }
                 if next == '\n' {
@@ -465,9 +492,39 @@ fn value_after(bytes: &[u8], from: usize) -> String {
     String::from_utf8_lossy(bytes.get(start..at).unwrap_or_default()).into_owned()
 }
 
+/// Whether a plain 0 was written: one of `PLAIN_ZEROS`, or a 0 closing the
+/// code span the name opened (`` `--retries 0` ``), either followed by one
+/// `.` or `:` ending a sentence. The value already stops at white space, so
+/// such a mark ends it, and `0.5` keeps its digits and fails.
+fn plain_zero(value: &str, in_code_span: bool) -> bool {
+    let value = value.strip_suffix(['.', ':']).unwrap_or(value);
+    PLAIN_ZEROS.contains(&value) || in_code_span && value == "0`"
+}
+
+/// The hex digits of a braced escape from `from`, `_` separators allowed,
+/// up to the closing `}`, and the length through it.
+fn braced_hex(bytes: &[u8], from: usize) -> Option<(char, usize)> {
+    let mut value = 0_u32;
+    let mut digits = 0;
+    let mut at = from;
+    loop {
+        match bytes.get(at) {
+            Some(b'}') if digits > 0 => break,
+            Some(b'_') => {}
+            Some(byte) if byte.is_ascii_hexdigit() && digits < 6 => {
+                value = value * 16 + char::from(*byte).to_digit(16)?;
+                digits += 1;
+            }
+            _ => return None,
+        }
+        at += 1;
+    }
+    Some((char::from_u32(value)?, at + 1 - from))
+}
+
 /// The character the escape whose backslash is at `at` spells, and the
 /// escape's length: `\xHH`, `\uHHHH`, `\u{H...}`, `\UHHHHHHHH`, or one to
-/// three octal digits. `\\` spells a backslash.
+/// three octal digits.
 fn escape_at(bytes: &[u8], at: usize) -> Option<(char, usize)> {
     let hex = |from: usize, most: usize| {
         let digits = bytes
@@ -482,10 +539,9 @@ fn escape_at(bytes: &[u8], at: usize) -> Option<(char, usize)> {
         Some((char::from_u32(value)?, digits))
     };
     match bytes.get(at + 1) {
-        Some(b'\\') => Some(('\\', 2)),
         Some(b'x') => hex(at + 2, 2).map(|(spelled, digits)| (spelled, 2 + digits)),
         Some(b'u') if bytes.get(at + 2) == Some(&b'{') => {
-            hex(at + 3, 6).map(|(spelled, digits)| (spelled, 3 + digits))
+            braced_hex(bytes, at + 3).map(|(spelled, length)| (spelled, 3 + length))
         }
         Some(b'u') => hex(at + 2, 4).map(|(spelled, digits)| (spelled, 2 + digits)),
         Some(b'U') => hex(at + 2, 8).map(|(spelled, digits)| (spelled, 2 + digits)),
@@ -518,23 +574,51 @@ pub(crate) fn command_violations(text: &str, file: &Path) -> Vec<Violation> {
         if byte == b'\n' {
             line += 1;
         }
-        if byte == b'\\'
-            && let Some((spelled, length)) = escape_at(bytes, at)
-        {
-            if spelled.is_ascii_alphanumeric() || matches!(spelled, '-' | '_' | '=') {
-                violations.push(Violation::Escape {
+        if byte == b'\\' {
+            // A run of backslashes is read at its last one: a doubled
+            // backslash in one layer (YAML, TOML, Rust) is a single one in
+            // the shell below it, which may still decode the escape.
+            let mut last = at;
+            while bytes.get(last + 1) == Some(&b'\\') {
+                last += 1;
+            }
+            // The character before must be part of a name, not the letter
+            // of an escape such as Rust's `\n\` line continuation.
+            let name_before = at
+                .checked_sub(1)
+                .and_then(|before| bytes.get(before))
+                .is_some_and(|before| before.is_ascii_alphanumeric() || b"_-".contains(before))
+                && at.checked_sub(2).and_then(|before| bytes.get(before)) != Some(&b'\\');
+            let mut after = last + 1;
+            if bytes.get(after) == Some(&b'\r') {
+                after += 1;
+            }
+            if name_before && bytes.get(after) == Some(&b'\n') {
+                violations.push(Violation::Joined {
                     file: file.to_path_buf(),
                     line,
-                    spelled,
                 });
             }
-            at += length;
+            if let Some((spelled, length)) = escape_at(bytes, last) {
+                if spelled.is_ascii_alphanumeric() || matches!(spelled, '-' | '_' | '=') {
+                    violations.push(Violation::Escape {
+                        file: file.to_path_buf(),
+                        line,
+                        spelled,
+                    });
+                }
+                at = last + length;
+            } else {
+                at = last + 1;
+            }
             continue;
         }
         for (name, is_option) in [(OPTION, true), (VARIABLE, false)] {
             if word_at(bytes, at, name) {
                 let value = value_after(bytes, at + name.len());
-                if !PLAIN_ZEROS.contains(&value.as_str()) {
+                let in_code_span =
+                    at.checked_sub(1).and_then(|before| bytes.get(before)) == Some(&b'`');
+                if !plain_zero(&value, in_code_span) {
                     let file = file.to_path_buf();
                     violations.push(if is_option {
                         Violation::Option { file, line, value }
