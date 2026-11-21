@@ -40,8 +40,9 @@
   - The April 2026 Windows update starts an evaluation mode. The policy
     is enforced only after a period of uptime and restarts, and the
     period resets if a cross-signed driver would fail.
-  - An update to the post (June 2026) raised the uptime from 100 to 250
-    hours; the restarts are 3 on Windows 11 and 2 on Server 2025 [3].
+  - Windows' servicing release of 9 June 2026 raised the uptime
+    threshold from 100 to 250 hours; the restarts are 3 on Windows 11
+    and 2 on Server 2025 [3].
   - By default, only drivers that passed the Windows Hardware
     Compatibility Program load, plus an explicit allow list of reputable
     cross-signed drivers.
@@ -62,7 +63,8 @@
   requirement that drivers leave the kernel [5].
 - **Microsoft can roll back a driver itself.** Cloud-initiated driver
   recovery "proactively rolls back problematic drivers delivered through
-  Windows Update" when Microsoft's quality evaluation rejects a driver,
+  Windows Update" when Microsoft's quality evaluation rejects a driver
+  and Windows Update can find a replacement that Microsoft approved,
   because otherwise "devices may remain on a low-quality driver for an
   extended period" [6].
   - The announcement (May 2026) scheduled manual validation for May to
@@ -80,14 +82,15 @@
   - The same page: "By running in user space, system extensions increase
     the stability and security of macOS" [7].
 - **What a user does** [8]:
-  1. Start up holding the power button until "Loading startup options"
-     appears.
-  2. Open Startup Security Utility in Recovery, and choose the startup
-     disk's security policy.
-  3. Choose Reduced Security, and enable "Allow user management of kernel
+  1. Shut down, then press and hold the power button until "Loading
+     startup options" appears.
+  2. Choose Options and continue into Recovery.
+  3. Open Startup Security Utility from the Utilities menu, select the
+     system, and open its security policy.
+  4. Choose Reduced Security, and enable "Allow user management of kernel
      extensions from identified developers" ("Allows installation of
      software that uses legacy kernel extensions").
-  4. Authorise the change with an administrator's password, and restart.
+  5. Authorise the change with an administrator's password, and restart.
 
   Reduced Security "Allows any version of signed operating system software
   ever trusted by Apple to run" [8].
@@ -252,13 +255,17 @@
 
 ### What this means for IronAFS (INFERRED)
 
-- A FUSE client pays FUSE's cost most on metadata: lookups, attribute
-  reads and creates, as in `ls -l` on a large directory, a build or
-  `find` [22]. How much of that cost the network hides depends on the
-  workload and the server; this note has no measurement of it.
-- On Linux, IronAFS starts with the kernel's entry and attribute caches
-  off and uses direct I/O (ADR 0004, L5). So every lookup and attribute
-  read reaches the daemon, which costs speed on exactly those workloads.
+- In the FAST 2017 tests, FUSE cost the most on metadata-heavy
+  workloads such as file creation [22]. Lookups, attribute reads and
+  creates are much of the work in `ls -l` on a large directory, a build
+  or `find` (INFERRED), so those are the workloads to measure. How much of FUSE's cost a network
+  client hides depends on the workload and the server; this note has no
+  measurement of it.
+- On Linux, IronAFS plans to start with zero entry and attribute
+  timeouts and direct I/O (ADR 0004, L5). With zero timeouts the kernel
+  does not reuse a cached lookup or attribute result, so it asks the
+  daemon again; that costs speed on exactly those workloads. Not yet
+  measured.
   - The other layers start conservative in their own ways: no kernel
     data cache on macOS (L11), and no leases or oplocks on SMB (L19).
   - Each relaxation needs acceptance evidence for isolation and callback
@@ -280,7 +287,7 @@ All accessed 2026-11-20.
    <https://techcommunity.microsoft.com/blog/windows-itpro-blog/advancing-windows-driver-security-removing-trust-for-the-cross-signed-driver-pro/4504818>
 4. Microsoft. "Microsoft recommended driver block rules." Microsoft Learn.
    <https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/design/microsoft-recommended-driver-block-rules>
-5. Microsoft. "Raising the bar together: Introducing the Driver Quality
+5. Microsoft. "Raising the bar together. Introducing the Driver Quality
    Initiative at WinHEC 2026." Windows Experience Blog, 14 May 2026.
    <https://blogs.windows.com/windowsexperience/2026/05/14/raising-the-bar-together-introducing-the-driver-quality-initiative-at-winhec-2026/>
 6. Microsoft. "Introducing Cloud-Initiated Driver Recovery for Windows
@@ -327,8 +334,9 @@ All accessed 2026-11-20.
 20. CrowdStrike. "Technical Details: Falcon Content Update for Windows
     Hosts." 20 July 2024.
     <https://www.crowdstrike.com/blog/falcon-update-for-windows-hosts-technical-details/>
-21. "FUSE Overview." The Linux kernel documentation, section "Aborting a
-    filesystem connection".
+21. "FUSE Overview." The Linux kernel documentation, sections "Kernel -
+    userspace interface" (deadlocks) and "Aborting a filesystem
+    connection".
     <https://docs.kernel.org/filesystems/fuse/fuse.html>
 22. Bharath Kumar Reddy Vangoor, Vasily Tarasov and Erez Zadok. "To FUSE
     or Not to FUSE: Performance of User-Space File Systems." *15th
