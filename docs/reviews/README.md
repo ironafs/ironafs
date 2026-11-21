@@ -31,6 +31,7 @@ the evidence that refutes it.
 | [2026-11-20-workflow-milestones](2026-11-20-workflow-milestones.md) | Milestones follow ADR 0004, O50 |
 | [2026-11-20-workflow-implementer](2026-11-20-workflow-implementer.md) | Issue #40: Claude implements from M2a; label rules and triage |
 | [2026-11-21-m2a-01-xdr-spec](2026-11-21-m2a-01-xdr-spec.md) | Issue #42: `docs/specs/`, its template and the XDR profile with caps |
+| [2026-11-21-m2a-63-testing](2026-11-21-m2a-63-testing.md) | Issue #63: the test strategy |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
