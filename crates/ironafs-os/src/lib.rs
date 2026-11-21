@@ -61,6 +61,7 @@ mod dump;
 mod fdpass;
 mod peer;
 mod random;
+mod space;
 
 #[cfg(target_os = "linux")]
 mod linux_clock;
@@ -72,6 +73,8 @@ mod linux_fdpass;
 mod linux_peercred;
 #[cfg(target_os = "linux")]
 mod linux_random;
+#[cfg(target_os = "linux")]
+mod linux_statvfs;
 mod mem_wipe;
 #[cfg(target_os = "linux")]
 mod unix_nodump;
@@ -89,8 +92,11 @@ pub use linux_fdpass::{receive_fd, send_fd};
 pub use linux_peercred::peer_credentials;
 #[cfg(target_os = "linux")]
 pub use linux_random::fill_random;
+#[cfg(target_os = "linux")]
+pub use linux_statvfs::available_space;
 pub use mem_wipe::wipe;
 pub use peer::{PeerCredentials, PeerError};
 pub use random::RandomError;
+pub use space::SpaceError;
 #[cfg(target_os = "linux")]
 pub use unix_nodump::disable_dumps;
