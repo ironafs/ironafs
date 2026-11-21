@@ -767,6 +767,10 @@ The full record, with every finding and its disposition, is
       list are unrelated. Unchanged.
     - The rule binds the same actors as before (the maintainer's
       session, contributors and their agents); no bot acts on it.
-  - Review rounds: pending, class S on the strongest row, from families
-    that wrote neither the amendment nor the decision. The record is
+  - Review rounds: class S, from families that wrote neither the
+    amendment nor the decision: ADR 0005's scoped rounds 15 to 17, GPT
+    `gpt-6.2-sol` (xhigh; the owner's choice over the strongest row's
+    `gpt-6.2-astra`) and GLM `glm-5.3` (high); the last round passed.
+    The owner accepted the amendment with ADR 0005 on 2026-11-21. The
+    record is
     [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md).

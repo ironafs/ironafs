@@ -3,8 +3,9 @@
 
 # 0005: `ironafs-os`, the crate for the operating-system calls that need `unsafe`
 
-Status: proposed (2026-11-21). Raised in issue #43; the ADR 0004
-amendment it needs is issue #49, in the same pull request.
+Status: accepted (2026-11-21), by the owner, after the review rounds
+recorded below. Raised in issue #43; the ADR 0004 amendment it needs
+is issue #49, in the same pull request (#101).
 
 ## Context
 
@@ -2004,10 +2005,11 @@ decision and a change to this point (point 7).
   executed evidence, each by the issue of the code that needs it.
 - **C5, point 5's list is amended in the same pull request** (owner,
   2026-11-20; C5 is Working; `docs/adr/README.md`, "Amending a working
-  decision"). It is to be reviewed as ADR 0004 was, on the strongest
-  row; that review is pending, and ADR 0004's Review entry records it
-  when done. So far it has had the scoped rounds 15 and 16 (GPT
-  `gpt-6.2-sol` and GLM `glm-5.3`; see Review). It gains
+  decision"). It was reviewed in the scoped rounds 15 to 17 (GPT
+  `gpt-6.2-sol` at xhigh and GLM `glm-5.3` at high; see Review), with
+  GPT on `gpt-6.2-sol` rather than the strongest row's
+  `gpt-6.2-astra` by the owner's choice, and the owner accepted it with
+  this ADR. It gains
   the items this table holds that the list does not name: the resolver
   calls of C33, point 2; the random source of C5, point 1; the Linux
   mount call and FUSE descriptor hand-off of L7, point 1, both
