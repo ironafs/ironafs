@@ -4,7 +4,8 @@
 //! Tests of `linux-peercred` (ADR 0005, sheet 13) that Miri runs too,
 //! through the call's stand-in: a socket pair in one process names this
 //! process. The length checks are `peer`'s. The tests that need the running
-//! kernel (another uid, a closed descriptor) are in `kernel`.
+//! kernel (another uid, miswrapped sockets) are in `kernel`; the failure
+//! paths, through the stand-in, in `stand_in`.
 
 use std::os::unix::net::UnixStream;
 
@@ -12,6 +13,8 @@ use super::{UCRED_LENGTH, peer_credentials};
 
 #[cfg(not(miri))]
 mod kernel;
+#[cfg(miri)]
+mod stand_in;
 
 #[test]
 fn peer_credentials_of_a_socket_pair_name_this_process() {

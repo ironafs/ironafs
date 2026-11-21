@@ -4,8 +4,22 @@
 //! The foreign declaration of site `linux-peercred`.
 
 use core::ffi::{c_int, c_void};
+use std::io;
+use std::os::unix::net::UnixStream;
 
 use super::socklen_t;
+
+/// Whether `stream` has a connected Unix peer: the standard library's
+/// `getpeername`, which a listener, an unconnected socket and a socket of
+/// another family fail.
+pub(in crate::linux_peercred) fn connected(stream: &UnixStream) -> io::Result<()> {
+    stream.peer_addr().map(drop)
+}
+
+/// The errno the last failed call on this thread set.
+pub(in crate::linux_peercred) fn last_error() -> io::Error {
+    io::Error::last_os_error()
+}
 
 // SAFETY: `int getsockopt(int sockfd, int level, int optname, void
 // *optval, socklen_t *optlen)`, as `getsockopt(2)` and `<sys/socket.h>`

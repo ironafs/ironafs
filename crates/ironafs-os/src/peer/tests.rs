@@ -53,6 +53,20 @@ fn checked_refuses_a_short_and_an_over_long_length() {
 }
 
 #[test]
+fn checked_refuses_the_ids_a_socket_with_no_peer_credentials_reports() {
+    // The kernel answers -1 for each id of a socket with no peer
+    // credentials; -1 is no user's or group's id.
+    for (uid, gid) in [(u32::MAX, 100), (1000, u32::MAX), (u32::MAX, u32::MAX)] {
+        let found = checked(Read {
+            uid,
+            gid,
+            ..read(Ok(()), UCRED)
+        });
+        assert!(matches!(found, Err(PeerError::NoCredentials)), "{found:?}");
+    }
+}
+
+#[test]
 fn checked_passes_a_failed_call_on_with_its_errno_whatever_the_length() {
     for returned in [0, UCRED] {
         match checked(read(Err(io::Error::from_raw_os_error(88)), returned)) {

@@ -4,8 +4,13 @@
 //! Site `linux-peercred` (ADR 0005, row 13 and sheet 13): a Unix stream
 //! peer's credentials, through `getsockopt(SOL_SOCKET, SO_PEERCRED)`.
 //!
-//! It takes only a `UnixStream`, so the option always applies to a
-//! connected `AF_UNIX` stream socket, the kind unix(7) names. The values are
+//! It takes a `UnixStream`, but safe Rust can wrap any descriptor as one,
+//! so it first asks the standard library for the peer's address, which a
+//! listener, an unconnected socket and a socket of another family do not
+//! have, and refuses the ids -1 the kernel reports for a socket with no
+//! peer credentials (a connected datagram socket that is not one of a
+//! pair). unix(7) gives credentials for connected `AF_UNIX` stream sockets
+//! and for stream and datagram socket pairs. The values are
 //! those the kernel recorded at `connect`, `listen` or `socketpair`
 //! (see [`PeerCredentials`]). Which peer may do what (who may send a token,
 //! ADR 0004, C43, point 4) is the caller's.
@@ -36,9 +41,12 @@ const _: () = assert!(UCRED_SIZE == 12 && UCRED_LENGTH as usize == UCRED_SIZE);
 ///
 /// # Errors
 ///
-/// [`PeerError::Failed`] if the call fails, with its errno, and
+/// [`PeerError::NotConnected`] if the socket has no connected peer (a
+/// listener or an unconnected socket wrapped as a stream),
+/// [`PeerError::Failed`] if the call fails, with its errno,
 /// [`PeerError::Length`] if it reports a length other than
-/// `struct ucred`'s.
+/// `struct ucred`'s, and [`PeerError::NoCredentials`] if the kernel holds
+/// none for the peer (a datagram socket that is not one of a pair).
 ///
 /// ```
 /// let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
@@ -48,6 +56,12 @@ const _: () = assert!(UCRED_SIZE == 12 && UCRED_LENGTH as usize == UCRED_SIZE);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn peer_credentials(stream: &UnixStream) -> Result<PeerCredentials, PeerError> {
+    // A `UnixStream` can be made from any descriptor in safe Rust. A
+    // listener, or an unconnected socket, has no peer address; for a
+    // listener `SO_PEERCRED` would answer with the listener's own
+    // credentials. The standard library's `getpeername` (`abi::connected`)
+    // also refuses a socket that is not a Unix one.
+    abi::connected(stream).map_err(PeerError::NotConnected)?;
     let mut credentials = ucred {
         pid: 0,
         uid: 0,
@@ -91,7 +105,7 @@ fn read(socket: BorrowedFd<'_>, credentials: &mut ucred, length: &mut socklen_t)
     let status = unsafe { abi::getsockopt(descriptor, level, option, value, size) };
     if status != 0 {
         // At once, with no call in between, on the thread that made it.
-        return Err(io::Error::last_os_error());
+        return Err(abi::last_error());
     }
     Ok(())
 }
