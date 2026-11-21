@@ -2021,7 +2021,7 @@ decision and a change to this point (point 7).
 token buffers (O28, point 2; row 24; owner, 2026-11-20). The same amendment names the safe
   log-transport module in C4, point 3's driver table (C4 is
   Working). The amendment is issue #49; it runs the supersession sweep,
-  adds `amended 2026-11-21 (#49)` to ADR 0004's status line and an
+  adds `amended 2026-11-21 (#101)` to ADR 0004's status line and an
   entry to its Review section. The text:
 
   > 5. `ironafs-os` holds the few calls that have no safe route: the

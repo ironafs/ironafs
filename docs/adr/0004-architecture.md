@@ -5,7 +5,7 @@
 
 Status: accepted (2026-11-20), by the owner, after the review rounds
 recorded below. Raised in issue #20. Amended 2026-11-20 (#32) and
-2026-11-21 (#49).
+2026-11-21 (#101).
 
 ## Context
 
@@ -705,8 +705,9 @@ The full record, with every finding and its disposition, is
   - Checked and unchanged: `README.md`, `AGENTS.md`, `CONTRIBUTING.md`,
     `AI.md`, the skills, and `docs/workflow.md` §2 and §6, which earlier
     pull requests brought in line (#23, #35, #36, #37, #39).
-- **Amendment, 2026-11-21 (#49, with ADR 0005 in the same pull
-  request): C5, point 5, and C4, point 3's row for `ironafs-os`.**
+- **Amendment, 2026-11-21 (#101, issue #49, with ADR 0005 in the
+  same pull request): C5, point 5, and C4, point 3's row for
+  `ironafs-os`.**
   - What changed: C5, point 5's list of calls with no safe route gains
     what ADR 0005's closed list holds and the point did not name: the
     operating system's random source (C5, point 1); the resolver calls
