@@ -74,8 +74,8 @@ higher class and says so.
 - **A large subject is split by subject,** not by size: one file per
   interface or per record, with a short parent that lists them.
 - **Vectors and corpora** live with the tests, under the crate that owns
-  the format (coding standards rule 15), not in `docs/specs/`. The
-  specification names their paths. A published conformance corpus has a
+  the format or interface (coding standards rule 15), not in
+  `docs/specs/`. The specification names their paths. A published conformance corpus has a
   directory of its own ("Published conformance corpora", below).
 
 ## Status
@@ -495,17 +495,24 @@ own.
      "Third-party material that is copied in").
    - **The licence text** in `LICENSES/`, under its SPDX id, or under a
      `LicenseRef-` id holding the publisher's own statement where SPDX
-     has none.
-   - **A `REUSE.toml` annotation** over the corpus directory, with the
-     publisher's copyright or public-domain statement and that licence
-     id, so that the files stay unmodified and `reuse lint` covers them.
+     has none. For a corpus the owner admits with an UNVERIFIED verdict,
+     the `LicenseRef-` file holds what was found: the publisher's
+     statement as published, or a line saying that none was found, with
+     the locators read and the date, and the owner's decision with its
+     date.
+   - **A `REUSE.toml` annotation** over the corpus's files and their
+     notices (not `SOURCE.md`, which carries its own header), with the
+     publisher's copyright or public-domain statement, or the publisher's
+     name where it states none, and that licence id, so that the files
+     stay unmodified and `reuse lint` covers them.
    - **A `docs/provenance.md` row:** the IronAFS path, the source pinned
      as point 3 sets out, the licence, and what was taken.
    - **Every notice the licence requires** (an Apache-2.0 `NOTICE` file,
      an attribution the publisher asks for), kept beside the files and
      carried into the release notices file (ADR 0001, "Releases").
-   - **A published crate** either leaves the corpus out of its package or
-     declares the combined licence expression (ADR 0001).
+   - **A published crate** either leaves the corpus, and the conformance
+     tests that read it, out of its package, or declares the combined
+     licence expression (ADR 0001).
 
    Missing or unresolved provenance blocks the merge (ADR 0001).
 3. **Pinned.** A corpus is one exact published version, never "the
@@ -519,22 +526,28 @@ own.
      reformatted or given a header. Test cases published only inside a
      document, such as an RFC's, are transcribed into one data file whose
      values are those of the document, with the document, its sections and
-     the errata checked named in the manifest; the pull request records a
-     second, independent reading of every value against the document.
+     the errata checked named in the manifest. A second, independent
+     reading of every value against the document is made before the
+     merge: who or what made it and its result are recorded in the
+     manifest and in the change's review record in `docs/reviews/`.
    - **A manifest,** `SOURCE.md` in the directory (IronAFS's own file,
      with its own SPDX header), records: the publisher and the set's name;
      its version, release or commit; the retrieval locator and date; the
-     SHA-256 of the archive as fetched, where there is one, and of each
-     file kept; each file left out and why; the number of vectors per file
-     that the tests expect to run and to skip; and the licence verdict and
-     provenance row.
+     SHA-256 of what was fetched (the archive, or the document a
+     transcription was read from) and of each file kept or transcribed;
+     each file left out and why; the number of vectors per file that the
+     tests expect to run and to skip; the second reading of a
+     transcription; and the licence verdict and provenance row.
    - **A new version** is a pull request of its own: the new files,
      digests, manifest and provenance row together, and the old ones
-     removed. Nothing fetches a corpus at build or test time.
+     removed. Point 2 is done again for the new version: its terms read
+     again, its notices checked, and any owner's decision taken again for
+     that version. Nothing fetches a corpus at build or test time.
 4. **Cited.** A specification names each corpus in its Tests section,
-   under a heading of its own after the reject corpus: the directory, the
-   manifest, the provenance row, and the requirements the corpus
-   exercises.
+   under a heading of its own after the reject corpus (after the
+   acceptance cases, in a specification that has no reject corpus): the
+   directory, the manifest, the provenance row, and the requirements the
+   corpus exercises.
    - A corpus is never a specification's golden vector, never the
      derivation of one, and never the only check of a requirement. Point 1
      of the list above stands: a standard's example values are not reused
@@ -551,23 +564,30 @@ own.
      corpus. They read the files from their stable path, and run in the
      normal test run, offline and deterministic (coding standards rule
      15).
-   - Every vector in every file kept is run. A vector that the interface
-     under test cannot express (for example a verification case, where
-     the crate has no verification interface) is skipped by a rule
-     written in the test, with its reason. The test counts the vectors it
-     ran and skipped, per file, and fails unless both counts match the
-     manifest, so an empty, truncated or misread file fails instead of
-     passing.
-   - A file that does not parse fails the test. A corpus file is never
-     edited to make a test pass: a mismatch is a defect in IronAFS, or a
-     question about the corpus raised as an issue.
+   - The test checks each vector file's SHA-256 against the manifest
+     before it reads the file, so a file edited in place fails.
+   - Every vector in every vector file kept is run. A vector that the
+     interface under test cannot express (for example a verification
+     case, where the crate has no verification interface) is skipped by a
+     rule written in the test, with its reason. The test counts the
+     vectors it ran and skipped, per file, and fails unless both counts
+     match the manifest, so an empty, truncated or misread file fails
+     instead of passing.
+   - A vector whose expected result the corpus leaves to the
+     implementation's policy (Project Wycheproof's `acceptable`) is run,
+     and the test asserts the one result that IronAFS's specification
+     requires for it, by a rule written in the test that cites the
+     specification's point. It never passes on either result.
+   - A vector file that does not parse fails the test. A corpus file is
+     never edited to make a test pass: a mismatch is a defect in IronAFS,
+     or a question about the corpus raised as an issue.
    - The code that reads a corpus is test code: in the crate's
      `tests/it/support.rs`, or in `ironafs-test-support` once a second
      crate needs it (rule 20).
-   - The specification's own tests (its golden vectors, property tests
-     and any independent vectors it names) check every requirement a
-     corpus exercises, so the conformance layer can be removed without
-     leaving a requirement untested.
+   - The specification's own tests (its golden vectors, property tests,
+     acceptance cases and any independent vectors it names) check every
+     requirement a corpus exercises, so the conformance layer can be
+     removed without leaving a requirement untested.
 
 ## Review class per kind
 
