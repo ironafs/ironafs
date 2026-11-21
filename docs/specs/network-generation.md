@@ -278,10 +278,22 @@ any byte it covers is read, and every sum uses checked arithmetic.
    other sequence number are stale and ignored. Each dump's records fill a
    fresh table; the live tables are not changed by a dump.
 3. Notifications received while a snapshot runs are applied to the live
-   tables, exactly as at any other time (point 5).
+   tables, exactly as at any other time (point 5). A link or address
+   notification also makes the snapshot **dirty**: it may describe a state
+   the dump read before or after it, so the snapshot is discarded and
+   taken again (a failed snapshot, 5.5, point 4), never merged. Route,
+   rule and nexthop notifications leave it: the tables hold neither.
 4. **Completion.** When the address dump's `NLMSG_DONE` arrives, the
-   fresh tables replace the live ones and the generation moves (cause:
-   snapshot). This move is required: a change between the subscription
+   driver sends a **barrier** on the notify socket: `NLMSG_NOOP` with
+   `NLM_F_REQUEST | NLM_F_ACK` and a sequence of its own, which the kernel
+   acknowledges on that socket, after every notification queued before
+   it (EXECUTED on the guest's kernel: the acknowledgement is an
+   `NLMSG_ERROR` of error 0 and that sequence). When the notify side reads
+   that acknowledgement, with the snapshot not dirty, the fresh tables
+   replace the live ones and the generation moves (cause: snapshot). So
+   the publication follows everything the notify socket received before
+   the dump ended, an overflow among them, on the one thread that reads
+   that socket. This move is required: a change between the subscription
    and the end of the dump may already be in the fresh tables, so its
    notification, read afterwards, looks like a refresh.
 5. **Notifications.**
@@ -306,16 +318,24 @@ any byte it covers is read, and every sum uses checked arithmetic.
    fresh tables after they were built. A resume is a loss too (changes
    seen by the network while the machine slept may not reach the kernel
    until later), but it leaves the notify socket's queue whole.
-7. **The driver** `[OWN]`. One thread owns the notify socket and makes
-   it again after its losses (point 6). A second thread owns the request
-   socket: it waits for the monitor to ask for a dump, and sends and
-   receives without the lock, which it takes only to hand a datagram
-   over. So no dump keeps notifications unread or a resume report
-   waiting; a kernel that never answered a dump would leave the
-   generation unavailable, never stale. A dump that does not end in order
-   (links, then addresses, then none) may still be running in the kernel
-   on that socket, so the request socket is made again before the next
-   dump. When either thread ends, or the owner drops the handle, the
+7. **The driver** `[OWN]`. One thread receives on the notify socket and
+   makes it again after its losses (point 6). A second thread receives on
+   the request socket: it waits for the monitor to ask for a dump, sends
+   and receives without the lock, which it takes only to hand a datagram
+   over, and sends the barrier. Both sockets are held under the lock. **No
+   receive blocks for ever:** a stop, a loss that abandons a dump, and a
+   resume each send a **wake** (`NLMSG_NOOP` with `NLM_F_REQUEST |
+   NLM_F_ACK`, sequence 0, never used otherwise) to the socket of each
+   thread that must look again; the kernel's acknowledgement returns its
+   receive. A socket is replaced only under the lock, and a stop is
+   decided under the lock before the wakes go to the sockets then in
+   place, so no receive can start that a stop's wake misses. Dropping the
+   handle stops the source and joins both threads. This needs no call
+   beyond `linux-rtnetlink`'s; a `poll` with a wake descriptor or a
+   receive timeout would each need a new site of ADR 0005. A dump that does not end in order
+   (links, then addresses, then the barrier) may still be running in the
+   kernel on that socket, so the request socket is made again before the
+   next dump. When either thread ends, or the owner drops the handle, the
    source stops (5.2, point 4).
 8. **Where it lives** `[OWN]`, checked against ADR 0004, C4. The counter,
    the hooks, the decoder and the state machine are a new pure crate,
@@ -353,7 +373,8 @@ any byte it covers is read, and every sum uses checked arithmetic.
 | after any of the three rows above | the notify socket is made again, joined, before the snapshot |
 | a datagram from a sender other than the kernel | ignored: the site does not return it, and it moves nothing (a local process could otherwise force moves) |
 | any other failed receive on the notify socket | move (failed); the notify socket is made again (joined before use), then a fresh snapshot; if it cannot be made, stopped |
-| dump truncated, malformed, interrupted (`NLM_F_DUMP_INTR`), answered with `NLMSG_ERROR`, or holding `NLMSG_OVERRUN` of any sequence | move (the cause); the snapshot restarts; 8 in a row: stopped. A dump datagram is checked whole before any of it is applied, so `NLMSG_DONE` never completes a snapshot ahead of bad bytes |
+| a link or address notification while a snapshot runs | the snapshot is dirty: discarded and taken again (a failed snapshot) |
+| dump truncated, malformed, interrupted (`NLM_F_DUMP_INTR`), answered with `NLMSG_ERROR` of its sequence, holding `NLMSG_OVERRUN` of any sequence, or holding anything of its sequence after its terminator | move (the cause); the snapshot restarts; 8 in a row: stopped. A dump datagram is checked whole before any of it is applied, so `NLMSG_DONE` never completes a snapshot ahead of bad bytes |
 | request socket send or receive failure | as a failed dump |
 | resume | move (resumed); fresh snapshot |
 | counter exhausted, the handle dropped, or a monitor thread ended | stopped: reads fail, every hook told |
