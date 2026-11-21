@@ -2058,4 +2058,5 @@ here (section 13, Q1).
 
 ## 14. Review
 
-Not yet reviewed. The record will be in `docs/reviews/`.
+Reviewed by GLM and DeepSeek in three rounds on 2026-11-21; the record
+is [2026-11-21-m2a-55-rx](../reviews/2026-11-21-m2a-55-rx.md).
