@@ -16,9 +16,6 @@ use core::fmt;
 
 use ironafs_time::{Stamp, WatchRef};
 
-#[cfg(test)]
-mod tests;
-
 /// A request's id on its binding, which completions and `cancel` name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RequestId(pub u64);

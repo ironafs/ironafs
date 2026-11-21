@@ -4,16 +4,15 @@
 //! Tests for the seeded clock: reads take no time, advance and suspend
 //! move the right clocks, overflow moves nothing, and reads fail on demand.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ironafs_time::{
-    AwakeInstant, BootInstant, Clock, ClockError, ClockKind, Deadline, Doubt, Registration, Stamp,
-    Waited, Waker, WallTime, Watch, WatchFull,
+    AwakeInstant, BootInstant, Clock, ClockError, ClockKind, Deadline, Doubt, Stamp, Waited,
+    WallTime,
 };
 
 use super::{SeededClock, TimeOverflow};
+use crate::Flag;
 
 fn at(boot: u64, awake: u64, wall_seconds: i64) -> SeededClock {
     SeededClock::starting_at(
@@ -126,27 +125,6 @@ fn from_seed_leaves_room_to_run() {
         let clock = SeededClock::from_seed(seed);
         clock.advance(Duration::from_hours(100 * 366 * 24)).unwrap();
     }
-}
-
-/// A flag a test sets by hand. The seeded clock's wait never blocks, so it
-/// registers no waker.
-#[derive(Default)]
-struct Flag(AtomicBool);
-
-impl Flag {
-    fn set() -> Self {
-        Self(AtomicBool::new(true))
-    }
-}
-
-impl Watch for Flag {
-    fn is_set(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
-    }
-    fn register(&self, _waker: Arc<dyn Waker>) -> Result<Registration, WatchFull> {
-        Ok(Registration::new(0))
-    }
-    fn deregister(&self, _registration: Registration) {}
 }
 
 #[track_caller]

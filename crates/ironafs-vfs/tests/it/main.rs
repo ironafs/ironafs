@@ -6,5 +6,6 @@
 //! Integration tests for `ironafs-vfs`, through its public API, where the
 //! standard library is available.
 
+mod ingress;
 mod invalidation;
 mod name;
