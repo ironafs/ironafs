@@ -144,6 +144,11 @@ impl<C: MonotonicClock> MonotonicDeadline<C> {
     /// The deadline `duration` after `now`, or `None` if that instant does
     /// not fit in 64-bit nanoseconds. A caller that gets `None` sets no
     /// deadline; it never clamps one.
+    ///
+    /// `now` must come from a valid sample: after any failed clock read, no
+    /// new deadline is set until a valid sample returns (ADR 0004, C37,
+    /// point 5; see [`Clock`](crate::Clock)). This function cannot tell,
+    /// so the caller keeps that rule.
     #[must_use]
     pub fn after(now: MonotonicInstant<C>, duration: Duration) -> Option<Self> {
         now.checked_add(duration).map(Self::at)

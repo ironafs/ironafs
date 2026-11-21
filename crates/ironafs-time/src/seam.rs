@@ -22,9 +22,29 @@ mod tests;
 /// virtual clocks under the simulator. The interface has no way to set a
 /// clock: the client never sets the system clock (C37, point 6).
 ///
-/// A read can fail. The caller then treats every outstanding deadline on
-/// that clock as expired and sets no new one until a read succeeds again
-/// (C37, point 5).
+/// # When a read fails
+///
+/// A read can fail, and the caller's duty then reaches past the clock that
+/// failed. ADR 0004, C37, point 5: "Startup is refused without a valid
+/// pair. If a later read fails, outstanding deadlines expire, callbacks
+/// become suspect, one event is logged per episode, and no new deadline is
+/// set until a valid sample returns." Point 4 adds: "A regression of a
+/// monotonic clock, or a failed sample, also treats every boot-clock
+/// deadline (callbacks, tokens, location lifetimes, locks) as possibly
+/// expired: a lock counts as lost until it is established again with the
+/// server, and a token is checked again before its next use."
+///
+/// So a failed read of any of the three clocks expires every outstanding
+/// deadline on both monotonic clocks and marks callbacks suspect, not only
+/// the deadlines on the clock that failed. One successful read afterwards
+/// does not end the episode: a new deadline is set only from a valid
+/// sample, which point 4 defines as an awake read bracketed by two boot
+/// reads, all three succeeding.
+///
+/// Nothing in this crate enforces this. `Clock` reports each read on its
+/// own, and [`MonotonicDeadline::after`](crate::MonotonicDeadline::after)
+/// builds a deadline from any instant it is given; the code that holds
+/// the clock keeps the episode and decides when a sample is valid.
 ///
 /// ```
 /// use ironafs_time::{AwakeInstant, BootInstant, Clock, ClockError, WallTime};
