@@ -14,5 +14,6 @@
 mod golden;
 mod reject;
 mod roundtrip;
+mod stack;
 mod support;
 mod types;
