@@ -12,12 +12,14 @@
 //! classification of the result.
 
 use core::ffi::c_long;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::linux_random::number::SYS_getrandom;
 
-/// The byte the next call writes.
-static NEXT: AtomicU8 = AtomicU8::new(1);
+/// How many calls wrote bytes before this one. The byte a call writes is
+/// this count's remainder by 255, plus one: never zero, and never the
+/// last call's (a wrapping byte counter would repeat 1 after 255).
+static CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// Fills the buffer at `address` as `getrandom` would.
 ///
@@ -45,7 +47,8 @@ pub(in crate::linux_random) unsafe fn syscall(
     if !shape {
         return -1;
     }
-    let value = NEXT.fetch_add(1, Ordering::Relaxed).max(1);
+    let calls = CALLS.fetch_add(1, Ordering::Relaxed);
+    let value = u8::try_from(calls % 255 + 1).unwrap_or(1);
     let pointer: *mut u8 =
         core::ptr::with_exposed_provenance_mut(usize::from_ne_bytes(address.to_ne_bytes()));
     #[expect(unsafe_code, reason = "linux-random: Miri stand-in")]
