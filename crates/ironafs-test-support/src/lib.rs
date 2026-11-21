@@ -25,14 +25,23 @@
 //! possible choices, and reads zero past the end of the input.
 //! [`Source::choice_bytes`] writes a run's choices in that layout.
 //!
+//! [`SeededClock`] and [`SeededRng`] implement the `Clock` and `Rng`
+//! interfaces of `ironafs-time` for tests and the simulator: virtual clocks
+//! that move only when the test moves them, and random bytes from a seed.
+//! Neither is ever a production source (coding standards rule 7).
+//!
 //! This crate is a dev-dependency only: no shipped crate depends on it.
 
 mod capture;
+mod clock;
 mod property;
+mod rng;
 mod shrink;
 mod source;
 mod splitmix64;
 
+pub use clock::{SeededClock, TimeOverflow};
 pub use property::{Counterexample, Property, Verdict};
+pub use rng::SeededRng;
 pub use source::Source;
 pub use splitmix64::SplitMix64;

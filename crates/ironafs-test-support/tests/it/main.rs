@@ -8,3 +8,4 @@
 mod bulk_bytes;
 mod property;
 mod regressions;
+mod seams;
