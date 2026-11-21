@@ -83,9 +83,7 @@ const CASES: &[Case] = &[
         name: "an expect attribute added to the canary",
         files: &[(
             "crates/ironafs-bans-canary/src/lib.rs",
-            "// SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>\n\
-             // SPDX-License-Identifier: GPL-3.0-or-later\n\
-             #![expect(clippy::disallowed_methods)]\n",
+            "#![expect(clippy::disallowed_methods)]\n",
         )],
         env: &[],
         needs: tampered,
@@ -122,6 +120,7 @@ fn lint_planted(
     for (file, text) in files {
         let path = dir.join(file);
         write_file(&path, &text.replace("{root}", &root))?;
+        #[cfg(unix)]
         executable(&path)?;
     }
     let workspace = metadata::load(Some(&dir.join("Cargo.toml")), &[])?;
@@ -132,17 +131,12 @@ fn lint_planted(
     })
 }
 
-/// Makes a planted script runnable, where the system has such a mode.
+/// Makes a planted script runnable.
 #[cfg(unix)]
 fn executable(path: &Path) -> Result<(), Error> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
         .map_err(Error::path_io("make runnable", path))
-}
-
-#[cfg(not(unix))]
-fn executable(_path: &Path) -> Result<(), Error> {
-    Ok(())
 }
 
 /// Proves the canary's workspace lints clean, and each planted evasion

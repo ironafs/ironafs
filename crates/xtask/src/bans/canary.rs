@@ -20,39 +20,44 @@ pub(crate) const DIR: &str = "crates/ironafs-bans-canary";
 
 /// The canary's manifest, exactly.
 pub(crate) fn manifest() -> String {
-    "# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>\n\
-     # SPDX-License-Identifier: GPL-3.0-or-later\n\
-     \n\
-     # Written by `cargo xtask check-bans`, which refuses any other text: no\n\
-     # crate may depend on this one.\n\
-     [package]\n\
-     name = \"ironafs-bans-canary\"\n\
-     description = \"Planted calls to every item coding standards rule 7 bans, linted with the workspace to prove the bans fire\"\n\
-     version.workspace = true\n\
-     edition.workspace = true\n\
-     rust-version.workspace = true\n\
-     license.workspace = true\n\
-     repository.workspace = true\n\
-     publish.workspace = true\n\
-     \n\
-     [features]\n\
-     planted = []\n\
-     \n\
-     [lints]\n\
-     workspace = true\n"
-        .to_owned()
+    MANIFEST.to_owned()
 }
 
+const MANIFEST: &str = "\
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Written by `cargo xtask check-bans`, which refuses any other text: no
+# crate may depend on this one.
+[package]
+name = \"ironafs-bans-canary\"
+description = \"Planted calls to every item coding standards rule 7 bans, linted with the workspace to prove the bans fire\"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+planted = []
+
+[lints]
+workspace = true
+";
+
 /// The lines of the canary's library before its planted lines.
-const HEADER: &str = "// SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>\n\
-     // SPDX-License-Identifier: GPL-3.0-or-later\n\
-     \n\
-     //! Planted calls to every item coding standards rule 7 bans, one per line,\n\
-     //! written by `cargo xtask check-bans`, which lints them with the workspace\n\
-     //! and refuses any other text. Built only with the `planted` feature.\n\
-     \n\
-     #![cfg(feature = \"planted\")]\n\
-     \n";
+const HEADER: &str = "\
+// SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Planted calls to every item coding standards rule 7 bans, one per line,
+//! written by `cargo xtask check-bans`, which lints them with the workspace
+//! and refuses any other text. Built only with the `planted` feature.
+
+#![cfg(feature = \"planted\")]
+
+";
 
 /// The canary's library, exactly: `HEADER`, then each planted line of
 /// `BANS`, in order. Each is kept on its line from rustfmt and marked
