@@ -551,3 +551,13 @@ fn simulator_procedures_start_deliveries_through_serve() {
     );
     assert_eq!(server.take_outgoing().len(), 3);
 }
+
+#[test]
+fn the_data_version_is_readable_without_a_call() {
+    let mut server = server();
+    assert_eq!(server.data_version(small()), Some(1));
+    peer_write(&mut server, small());
+    assert_eq!(server.data_version(small()), Some(2));
+    assert_eq!(server.data_version(Fid::new(100, 9, 9)), None);
+    assert_eq!(server.promise_holders(small()), []);
+}

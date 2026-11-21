@@ -320,6 +320,13 @@ impl FileServer {
         Some(bytes)
     }
 
+    /// The data version of `fid` as the server holds it now, for a
+    /// scenario's checks: no promise is granted.
+    #[must_use]
+    pub fn data_version(&self, fid: Fid) -> Option<u64> {
+        self.files.get(&fid).map(|file| file.data_version)
+    }
+
     /// The clients holding a callback promise on `fid`.
     #[must_use]
     pub fn promise_holders(&self, fid: Fid) -> Vec<ClientId> {
