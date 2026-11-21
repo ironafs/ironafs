@@ -4,10 +4,14 @@
 //! IronAFS's cache state (ADR 0004, C4, point 1) and the `Disk` interface
 //! over the state directory (C3, point 3; C4, point 7).
 //!
-//! For now it holds the interface only: [`Disk`], its error and the paths
-//! and plans it takes (seams and scheduling specification, 5.5). It is a
-//! pure crate: it holds formats, decisions and plans, and never calls
-//! `Disk` itself (`cargo xtask check-seams`).
+//! It holds:
+//! - the node table ([`NodeTable`]; C11): node ids, their keys and
+//!   aliases, anchor chains, pins and each context's mount-point bindings;
+//! - the `Disk` interface: [`Disk`], its error and the paths and plans it
+//!   takes (seams and scheduling specification, 5.5).
+//!
+//! It is a pure crate: it holds formats, decisions and plans, and never
+//! calls `Disk` itself (`cargo xtask check-seams`).
 
 #![no_std]
 
@@ -20,5 +24,8 @@ mod store_path;
 
 pub use disk::{Disk, DiskError, DiskOp, Durability, EntryKind, Plan, PlanStep, ReadRange, Space};
 pub use identity::{CellIndex, ContextKey, FileId, PathKind, Uniquifier, Version, Vnode, VolumeId};
-pub use node::{MAX_MOUNT_DEPTH, MountChain, NodeError};
+pub use node::{
+    DYNAMIC_ROOT, Limits, MAX_CONTEXTS, MAX_MOUNT_DEPTH, MAX_NODES, MountChain, NodeError,
+    NodeKind, NodeTable,
+};
 pub use store_path::{MAX_COMPONENTS, MAX_NAME_BYTES, StoreDir, StoreName, StorePath};

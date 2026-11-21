@@ -6,7 +6,7 @@
 
 use super::{MAX_MOUNT_DEPTH, MountChain};
 use crate::node::NodeError;
-use crate::{CellIndex, FileId, Uniquifier, VolumeId, Vnode};
+use crate::{CellIndex, FileId, Uniquifier, Vnode, VolumeId};
 
 fn mount_point(vnode: u32) -> FileId {
     FileId {
