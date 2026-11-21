@@ -421,9 +421,9 @@ is broken.
 - **Pause generation:** the per-socket counter Rx's driver raises before
   it stops reading and again before it reads after a pause
   ([rx.md](rx.md), 5.12, point 5).
-- **Resume generation:** a client-wide counter the serve path raises when
-  its comparison of the C37 clocks detects a suspend or a jump (5.6,
-  point 4).
+- **Resume generation:** a client-wide counter the fence check raises
+  when its comparison of the C37 clocks detects a suspend or a jump (5.6,
+  point 2).
 - **Fence tuple:** for an object of server key K, the values (the
   object's break counter, its volume's break counter, the suspect epoch
   of K, the pause generation of K's family's socket, the resume
@@ -440,7 +440,8 @@ is broken.
   suspect epochs and then confirms and acknowledges the work waiting on
   them.
 - **Work unit:** the cost the rate limits count: one per call, plus one
-  per file id the call names (5.2).
+  for each file id the call names in each cell it is looked up in (5.2;
+  5.4, point 6).
 - **Hint:** an input that may lower trust and is counted, never evidence
   (N5, point 2).
 
@@ -643,13 +644,13 @@ Other limits `[OWN]`:
 | `cb.request_max` | 65 536 bytes | the request cap the service registers with Rx | `rx.in.request_ceiling` ([rx.md](rx.md), 5.2): the largest break a server sends is MISSING (Q1), and a break above the cap costs the whole server's suspect epoch, so the cap is as high as Rx allows; Rx's per-peer and total caps bound the memory |
 | `cb.reply_max` | 1 024 bytes | the reply cap the service registers with Rx | the largest reply is `cb.identity.reply`; a small reply cap leaves Rx's per-peer budget to requests |
 | `cb.rate.key_units` | 4 096 work units per second | the rate at which one server key's break-class calls are processed at once; identity-class calls are not charged (5.6, point 8) | a work unit is one file id applied in one cell: one indexed lookup of that file id in the node table, and one counter change per context that holds it, so its work is bounded by the cache's count of contexts (#91); the genuine rate of a server's breaks is MISSING (Q4) |
-| `cb.rate.key_burst` | 8 192 work units | the bucket size for one server key | holds one break at `cb.callback.request`'s largest (2 731 units if a file id is 12 bytes) with room for more |
+| `cb.rate.key_burst` | 8 192 work units | the bucket size for one server key | holds one break at `cb.callback.request`'s largest from a source whose servers are in one cell (2 731 units if a file id is 12 bytes) with room for more; a largest break looked up in three or more cells, rare, passes the burst and goes to the over-limit path (row B3), which covers it with a server-wide advance and never discards it |
 | `cb.rate.total_units` | 32 768 work units per second, burst 65 536 | all break-class calls from known servers together | bounds the callback thread's time per second, so breaks from one server cannot starve the others or the service's other work |
 | `cb.unmatched.table_entries` | 256 sources | the per-source table for sources that match no known server | a fixed table, as Rx's drop table ([rx.md](rx.md), 5.9, point 4); one aggregate entry beyond it |
 | `cb.unmatched.units` | 1 024 work units per second per source, burst 4 096; 4 096 per second in total, burst 8 192 | break-class calls from sources that match no known server | such a break only suspends the files it names (5.6, point 9, row B2), so a low rate costs little; beyond it, the call is discarded (row B4) |
 | `cb.refuse.table_entries` | 256 sources | the per-source table for refusals | a fixed table; one aggregate entry beyond it |
 | `cb.refuse.rate` | 10 aborts per second per source, burst 20; 100 per second in total, burst 200 | the unsupported-operation aborts the service sends (5.7, point 1) | a refusal is 32 bytes, no larger than the smallest request that can carry a procedure number, so it is no amplifier; the rate makes the client a negligible reflector even then |
-| `cb.fair_batch` | 16 calls | break-class calls the callback thread takes before it takes one waiting call of the other queue (5.6, point 14) | a break flood cannot starve identity replies, while breaks keep almost all of the thread |
+| `cb.fair_batch` | 16 calls | break-class calls the callback thread takes before it takes one waiting identity-class call (5.6, point 14) | a break flood cannot starve identity replies, while breaks keep almost all of the thread |
 | `cb.advance_interval` | 1 s | the least time between two advance ticks (5.6, point 7) | bounds how often a sustained flood can move any one suspect epoch, and so how often it can fence a validation in flight (5.6, point 7); a genuine reset or over-limit call waits at most this long for its reply |
 | `cb.promise.lifetime_max` | 7 200 s | the longest promise lifetime the client relies on | a hostile server's expiry can be any value; cutting a promise only lowers trust (C24); a genuine promise longer than two hours costs one revalidation |
 | `cb.report_interval` | 60 s | how often the service hands its counts to the event catalogue | one summary event per interval, never one per call (5.9) |
@@ -774,7 +775,7 @@ point 7). The service never sends a datagram itself.
 
    | Field | Type | Written by | Meaning |
    |---|---|---|---|
-   | `suspect_epoch` | `u64`, taken from one client-wide counter that only rises; a new record starts at that counter's next value, and every advance takes the next value again | this specification (points 6 to 9) | the server's break counter of C16, point 2. No value is ever used twice, by any record, so an entry recorded under a retired record can never match a later one `[OWN]` |
+   | `suspect_epoch` | `u64`, taken from one client-wide counter that only rises; a new record starts at that counter's next value, and every advance takes the next value again. The counter is one atomic fetch-and-add with sequentially consistent ordering, the only way any thread takes a value, whether it creates a record or advances one; the value is taken before the record is published or the advance is visible, so no two takers ever get the same value `[OWN]` | this specification (points 6 to 9) | the server's break counter of C16, point 2. No value is ever used twice, by any record, so an entry recorded under a retired record can never match a later one `[OWN]` |
    | `recorded_since_advance` | `bool` | the cache, when a call records the current tuple (point 3); cleared by an advance | whether any call to the server has recorded the current suspect epoch |
    | `advance_pending` | `bool` | this specification (point 7) | an advance waits for the next tick |
    | `trust` | none, or trusted until an instant on the boot clock | raised only by the keepalive specification (#81, under C32, point 1); lowered here (point 11) | C32, points 1 and 3 |
@@ -791,17 +792,31 @@ point 7). The service never sends a datagram itself.
    Firm]`. The object's and volume's break counters are the cache's
    (#91), raised by rows B1 and B2; the suspect epoch is this record's;
    the pause generation is the driver's ([rx.md](rx.md), 5.12, point 5);
-   the resume generation is point 4's. The local endpoint generation is
+   the resume generation is the fence check's (below). The local endpoint generation is
    part of K: a rebinding makes a new K, whose record starts with no
    trust and no promise ([rx.md](rx.md), 5.12, point 7) `[OWN]`.
+   **The fence check** is one function used both where a reply is
+   installed and where an entry is served (points 3 and 4) `[OWN]`: it
+   first compares the C37 clocks, as C32, point 5, requires, and raises
+   the resume generation if the comparison shows a suspend or a jump not
+   seen before; then it reads the object's current fence tuple (the
+   pause generation read with no lock from the driver) and compares every
+   value with the recorded one. The comparison is edge-triggered: a
+   suspend or jump raises the resume generation once, and the same check
+   moves the comparison's baseline to the current clocks, so later
+   checks do not raise it again (the detection rule and its baseline are
+   C37's and the keepalive specification's, #81). Every install,
+   including a keepalive's (point 11), and every serve runs it, so a
+   call in flight across a suspend fails its fence even when no serve
+   comes between.
 3. **What a call records.** Every call the client sends to a server that
    can validate an entry or grant a promise (a status or data fetch, a
    bulk status, a keepalive) records, when it is sent, the fence tuple of
    each object it names (a keepalive, which names none, records K's
    three shared values), and sets K's `recorded_since_advance` `[ADR 0004
-   C16.2: Firm]`. Its reply is installed for an object only if that
-   object's fence tuple is unchanged, every value of it, when the reply
-   is installed; otherwise it fails its fence and C16, point 2, applies
+   C16.2: Firm]`. Its reply is installed for an object only if the fence
+   check (point 2) finds that object's fence tuple unchanged, every value
+   of it, when the reply is installed; otherwise it fails its fence and C16, point 2, applies
    (discarded, retried a bounded number of times, then `Stale`, and
    never handed to the request that started it). So a break that names
    the object, or its volume, while the fetch is in flight fails the
@@ -811,13 +826,8 @@ point 7). The service never sends a datagram itself.
    fetch, and an earlier one fails.
 4. **What the serve path compares** `[ADR 0004 C32.5: Working]`
    ([rx.md](rx.md), 5.12, point 5). On every serve of an entry from K,
-   before the answer is given, the cache first compares the C37 clocks,
-   as C32, point 5, requires: when the comparison shows a suspend or a
-   jump (the rule that detects one is C37's and the keepalive
-   specification's, #81), it raises the resume generation before it goes
-   on. It then reads the object's current fence tuple (the pause
-   generation read with no lock from the driver) and compares every value
-   with the entry's recorded tuple. A difference makes the entry
+   before the answer is given, the cache runs the fence check (point 2)
+   against the entry's recorded tuple. A difference makes the entry
    suspect: it is not delivered until it is revalidated by a call that
    recorded the current tuple `[ADR 0004 C24.2: Firm]`. The comparison is
    made on every serve, never only on an event, so it holds however late
@@ -880,12 +890,18 @@ point 7). The service never sends a datagram itself.
    at once (point 9). A call whose units are not is an over-limit call:
    it is not processed per file, and the keys of the servers its source
    could be wait for the tick (point 7; row B3). Identity-class calls
-   are not charged and never wait `[OWN]`: each is answered from a
-   prebuilt reply in O(1) (5.5, point 7), so none is ever more than the
-   service can process, and no identity call is dropped or delayed for
-   load. So no probe ever moves an epoch (C31's probe row): a flood of
-   probes reaches only Rx's own caps, whose overloads are rows O1 to O3,
-   as for any other packet.
+   are not charged, never wait for the tick and are never dropped by the
+   service `[OWN]`: each is answered from a prebuilt reply in O(1) (5.5,
+   point 7), so none is ever more than the service can process. Their
+   only wait is their queue's (point 14), which C24 bounds. So the
+   service itself never moves an epoch for a probe (C31's probe row).
+   What a probe flood can still do is what any flood of packets can:
+   fill Rx's per-peer or total caps. Rx then hands `Overload` events,
+   and rows O1 to O3 advance the affected keys at the tick, at most once
+   per `cb.advance_interval` and only if a call recorded the current
+   epoch (point 6). That advance is C31's rate-limit row, which applies
+   to whatever traffic reaches the cap, because Rx cannot tell a held
+   probe from a held break.
    A break from a known server is so never discarded: it is either
    applied per file or covered by a server-wide advance before its reply.
    A call from a source that matches no known server costs its units
@@ -931,6 +947,11 @@ point 7). The service never sends a datagram itself.
     call to it in flight `[OWN]`. Its keys' `advance_pending` work runs
     first. A retired key's addresses no longer make a source match.
 11. **What lowers trust** (`trust` becomes none), and nothing else does:
+    - a reply to the client's own call that shows the server reset the
+      client's callback state (C32, point 3): trust becomes none and every
+      key of the server advances, at once. Which reply shows it is MISSING
+      (Q1, TC2); until then no reply is read as one, which is safe only
+      because no reply grants a promise yet (5.1.3, point 2);
     - a break (rows B1 and B3) ends trust for no key: it suspends the
       files it names, and C32, point 3's "a break ... ends that" is that
       suspension, not a server-wide change `[OWN]`;
@@ -981,18 +1002,25 @@ point 7). The service never sends a datagram itself.
     R1, B0, B3, X1, M1, O1 and O3, the wait for the tick and the advance;
     then the reply, submitted to Rx. Rx may end the call at any point; the steps already done stand
     (row A1).
-14. **Queues.** The service takes Rx's deliveries into two FIFO queues of
-    fixed-size call records: break-class calls, and all others
-    `[OWN]`. The callback thread takes from the break-class queue first,
-    except that after every `cb.fair_batch` break-class calls it takes
-    one call from the other queue if one waits, so neither queue starves
-    the other. An identity-class or refused call costs O(1) (5.5, point
-    7; 5.7), so the other queue never holds back a break for longer than
-    that O(1) work once per `cb.fair_batch` breaks, and a break flood
-    cannot hold back a genuine server's probe for longer than
-    `cb.fair_batch` breaks' work at a time; both queues are bounded by Rx's live incoming
-    calls (5.2, "Derived bounds"). Rx's own events (`Overload`, `Pause`,
-    `Resume`, `AbortReceived`) are taken before either queue.
+14. **Queues.** The service sorts Rx's deliveries, by procedure number
+    and source in O(1), into three FIFO queues of fixed-size call records:
+    break-class calls; identity-class calls from known servers; and all
+    others (refusals and discards) `[OWN]`. The callback thread takes:
+    - from the break-class queue first, except that after every
+      `cb.fair_batch` break-class calls it takes one identity-class call
+      if one waits;
+    - from the identity-class queue when the break-class queue is empty;
+    - from the third queue only when both others are empty.
+    So a refusal or diagnostic flood never delays a break or a probe, a
+    break flood delays a probe by at most `cb.fair_batch` breaks' work per
+    identity call ahead of it, and each identity call ahead costs O(1). A
+    refused call starved by the others holds only its Rx charge, until
+    `rx.in.reply_deadline` ends it ([rx.md](rx.md), 5.7, point 14). All
+    three queues are bounded by Rx's live incoming calls (5.2, "Derived
+    bounds"). Rx's own events (`Overload`, `Pause`, `Resume`,
+    `AbortReceived`) are taken before any queue. **The tick** (point 7)
+    runs as one step on the callback thread: no event is taken and no call
+    is processed between its advance, its confirmations and its answers.
 
 ### 5.7 What is refused, and what is discarded
 
@@ -1017,7 +1045,8 @@ point 7). The service never sends a datagram itself.
 3. **Discarded without a reply.** A call is discarded (it ends with
    nothing sent and its record freed) when it is malformed (no procedure
    number; rows M1 and M2), an identity-class call from a source that is
-   not a known server (row I2), a break from a source
+   not a known server (row I2), an identity-class call over its message
+   cap (row I4), a break from a source
    that matches no known server over its rate (row B4), or a refusal
    over `cb.refuse.rate` `[ADR 0004 O15.4: Working]`. Rx has no action
    that ends an incoming call at once with nothing sent (section 13, Q8):
@@ -1098,14 +1127,19 @@ of a break, or the host UUID.
 
 Every value read from a request is untrusted (coding standards rule 2).
 
-1. **Work units.** 1 plus the count of file ids, in checked `u64`
-   addition; the count is already bounded by the array's cap (xdr.md,
-   5.2, point 6), so the sum fits.
+1. **Work units.** 1 plus the count of file ids times the count of cells
+   they are looked up in (5.4, point 6), in checked `u64` arithmetic; the
+   count is already bounded by the array's cap (xdr.md, 5.2, point 6) and
+   the cells by the configuration, so the result fits, and an overflow
+   is treated as over every bucket.
 2. **Buckets.** Each bucket holds a `u64` count of units and refills by
    the elapsed monotonic time times its rate, in checked arithmetic,
    capped at its burst; an overflow is treated as a full bucket.
-3. **`suspect_epoch`** takes the client-wide counter's next value, which
-   rises by 1 in checked arithmetic. At `u64::MAX` it cannot rise; the key is then served as if every entry were suspect for
+3. **`suspect_epoch`** takes the client-wide counter's next value by one
+   atomic fetch-and-add (5.6, point 1), which rises by 1 and is checked:
+   a take that would pass `u64::MAX` returns no value. Then no new record
+   is created, so no call to a server without a record is sent (it fails
+   with the generic failure), and for an advance: the key is served as if every entry were suspect for
    every serve, and the record is retired at the next opportunity
    `[OWN]`. Even at the most the ticks allow for every key together, this
    takes far longer than any daemon runs, so it is a guard, not a case.
@@ -1156,7 +1190,8 @@ sees the calls (ADR 0004, O23; ADR 0006, "Context").
 | The same, from the attacker's own address | no epoch moves: its address matches no known server (row O2); its breaks name only files (row B2) at its own rate |
 | Forcing global revalidation through Rx's unknown-source events and pauses | bounded: confirmations, and so resumes, happen only at ticks, so a family's pause generation rises at most twice per `cb.advance_interval` whatever the flood's bandwidth (5.6, point 7) |
 | Using the client as a reflector or amplifier | every reply goes through Rx's unverified-source budget (5.5); a refusal is 32 bytes and rate-limited per source and in total (5.7, point 1); identity calls from sources that match no known server get nothing (row I2) |
-| Forcing revalidation with forged probes | not possible: identity-class calls are not charged and never wait, so no probe moves an epoch (5.6, point 8); a probe flood reaches only Rx's caps (rows O1 to O3) |
+| Forcing revalidation with forged probes | the service moves no epoch for a probe (5.6, point 8). A probe flood that fills Rx's caps is an overload like any other, and moves the affected keys at most once per `cb.advance_interval`, only if a call recorded the current epoch (rows O1 to O3; 5.6, points 6 and 7): the same bound as section 8's other floods |
+| Spending the client's time and bandwidth on probes | not capped by the service: each answer is O(1), prebuilt and allocation-free, and the identity queue is served after breaks (5.6, point 14). To a peer Rx has not verified, replies are at most twice the bytes received ([rx.md](rx.md), 5.10, point 7); a peer that answers Rx's reachability test (a real host at that address, such as a hostile server) can draw replies at its own rate, bounded only by Rx's caps and the callback thread. Neither changes trust, epochs or data |
 | Serving data cached before a sleep or a clock jump | the serve path compares the C37 clocks first and raises the resume generation, which is in every fence tuple (5.6, points 2 and 4; C32, point 5) |
 | Reusing an old entry after its record retired and a new one was made | suspect epochs come from one client-wide counter that never repeats a value (5.6, point 1) |
 | Learning the client's state remotely | diagnostic procedures are refused like any unknown number (5.1.2, note 4); identity replies carry the host UUID, no address and no capability bit, and only to known servers (5.5, points 3 and 4) |
@@ -1233,8 +1268,8 @@ numbers it reads and the code it sends:
 | Id | Value | Bytes | Proves |
 |---|---|---|---|
 | G1 | the unsupported-operation code, −455 | `fffffe39` (2³² − 455) | the refusal's ABORT payload (5.5, point 6) |
-| G2 | the allowlist's numbers 204, 205, 206, 211, 212, 213, 214 | `000000cc`, `000000cd`, `000000ce`, `000000d3`, `000000d4`, `000000d5`, `000000d6` | the dispatcher reads the number as written |
-| G3 | TellMeAboutYourself, 65538 | `00010002` | a number above 2¹⁶ |
+| G2 | the numbers 204, 205, 206, 211, 212, 213, 214 | `000000cc`, `000000cd`, `000000ce`, `000000d3`, `000000d4`, `000000d5`, `000000d6` | the dispatcher reads the number as written |
+| G3 | TellMeAboutYourself, 65538, and ExtendedCallBack, 65543 | `00010002`, `00010007` (2¹⁶ + 2 and 2¹⁶ + 7) | numbers above 2¹⁶ are read as 32-bit, never truncated to 16 |
 
 Vectors for CallBack's arguments and for every reply wait on the
 capture-backed revision (Q1).
@@ -1355,10 +1390,14 @@ with a callback state record on the family named.
   TellMeAboutYourself from a known server: answered
   with the prebuilt replies, the vector one word of 0, the address list
   empty, the same bytes to every server; trust, epochs and entries
-  unchanged. The same calls from any other source: no packet. 100 000
-  identity calls per second from a known server's address for 10
-  simulated seconds: every one within its cap is answered, no epoch of
-  that server moves, and its entries stay servable.
+  unchanged. The same calls from any other source: no packet. Identity
+  calls from a known server's address at the highest rate Rx admits
+  without an overload, for 10 simulated seconds, while a reader keeps
+  recording that server's epoch: every one is answered, no epoch moves,
+  and its entries stay servable. Then the same at a rate that passes
+  Rx's per-peer cap: Rx hands `Overload` events naming that address, and
+  the server's epoch advances at most once per `cb.advance_interval`
+  (row O1), never more.
 - **C12 ABORT and BUSY on an incoming call** (ADR 0006, test 10, the
   service's part). A complete CallBack, then a matching ABORT, before and
   after the reply is submitted: the break's counters stand in both. An
@@ -1422,16 +1461,22 @@ with a callback state record on the family named.
   a simulated suspend (the boot clock moves while the awake clock does
   not) and, separately, a wall-clock jump, with no socket pause and no
   rebinding: the first serve after each raises the resume generation and
-  finds every entry suspect, before the answer is given; a validation in
-  flight across the suspend fails its fence.
+  finds every entry suspect, before the answer is given; later serves do
+  not raise it again. A validation sent before the suspend whose reply
+  arrives after it, with no serve between, fails its fence at install
+  and is not handed to its request; a keepalive in flight across it
+  raises no trust.
 - **C23 Retirement and recreation** (5.6, points 1 and 10). A server's
   record retires after `cb.key_idle` while the cache still holds entries
   recorded under it; a new call creates a new record and its reply
   grants a whole-volume promise: every older entry of that server is
   suspect at its next serve, since no suspect epoch value repeats.
 - **C24 Fairness** (5.6, point 14). A within-rate break flood from one
-  known server with probes from a second: each probe is answered after
-  at most `cb.fair_batch` breaks' work.
+  known server, a refusal and diagnostic flood from many sources, and
+  probes from a second known server, together: each probe is answered
+  after at most `cb.fair_batch` breaks' work per identity call ahead of
+  it, whatever the refusal backlog; the refusal backlog never delays a
+  break.
 - **C20 Rx's own drops.** Rx debug and version packets, and a call for an
   unregistered service id, from a known server's address: no packet in
   reply, no row reached (rx.md's tests carry the counters).
