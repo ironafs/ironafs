@@ -8,9 +8,13 @@
 //! secret-bearing message, where it happened. It never holds a value read
 //! from the input: no byte, no invalid word and no claimed length or count.
 //! The decoder builds an error from a secret-bearing message without a
-//! position at all, and the entry points strip one from any error a
-//! secret-bearing message's decoder passes on from a decode of its own,
-//! so no reporting boundary needs a redaction rule of its own.
+//! position at all, and the decode entry points strip one from any error
+//! a secret-bearing message's decoder passes on from a decode of its own,
+//! so no reporting boundary needs a redaction rule of its own. The encoder
+//! builds its errors without a position; the encode entry points return a
+//! value's own error as that code made it, so a handwritten encoder of a
+//! secret-bearing message does not pass on a positioned error from a
+//! decode it ran (section 7, point 2).
 
 use core::fmt;
 
@@ -166,8 +170,10 @@ impl Error {
     }
 
     /// The byte offset, from the start of the input, of the item that
-    /// failed. `None` for an encode error and for any error from a
-    /// secret-bearing message.
+    /// failed. `None` for an error the encoder builds and for any error a
+    /// decode entry point returns from a secret-bearing message; an encode
+    /// entry point returns a value's own error as it was made (section 7,
+    /// point 2).
     #[must_use]
     pub const fn offset(&self) -> Option<usize> {
         match self.position {
@@ -178,7 +184,7 @@ impl Error {
 
     /// For `MessageTooLarge`, the input's length; for `Truncated`, the
     /// bytes available from the offset; for `TrailingBytes`, their count.
-    /// `None` otherwise, and for any error from a secret-bearing message.
+    /// `None` otherwise, and as for [`Error::offset`].
     #[must_use]
     pub const fn extent(&self) -> Option<usize> {
         match self.position {

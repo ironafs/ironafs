@@ -101,7 +101,7 @@
 //!
 //! and seventeen do not:
 //!
-//! ```compile_fail
+//! ```compile_fail,E0080
 //! # use ironafs_xdr::{Classified, Decode, Decoder, Error, Message, MessageType, decode};
 //! # struct Level<T>(T);
 //! # impl<T> Classified for Level<T> {

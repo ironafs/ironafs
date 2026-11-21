@@ -306,6 +306,82 @@ fn put_opaque_refuses_over_cap_even_after_a_size_pass_that_passed() {
 }
 
 #[test]
+fn put_array_refuses_over_cap_even_after_a_size_pass_that_passed() {
+    /// No bound, cap 4 bytes.
+    const TIGHT: Cap = Cap {
+        name: "test.m.tight",
+        bound: None,
+        bytes: 4,
+    };
+    /// Sizes itself as one word, then writes two.
+    struct Wide;
+    impl Classified for Wide {
+        const SECRET: bool = false;
+    }
+
+    impl Encode for Wide {
+        fn encoded_len(&self) -> Result<u64, Error> {
+            Ok(4)
+        }
+
+        fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+            encoder.put_u64(1)
+        }
+    }
+    /// Sizes itself as 12 bytes, room for what its array writes, then
+    /// writes one element of 8 bytes under a cap of 4.
+    struct Sneaky;
+    impl Classified for Sneaky {
+        const SECRET: bool = false;
+    }
+
+    impl Encode for Sneaky {
+        fn encoded_len(&self) -> Result<u64, Error> {
+            Ok(12)
+        }
+
+        fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+            encoder.put_array(&TIGHT, &[Wide])
+        }
+    }
+    let mut out = Vec::new();
+    let error = encode_message(&MESSAGE, &Sneaky, &mut out).unwrap_err();
+    assert_error(
+        &error,
+        ErrorKind::CapExceeded,
+        Some("test.m.tight"),
+        Some(4),
+    );
+    assert_eq!(out, []);
+}
+
+#[test]
+fn put_array_refuses_a_count_over_its_bound() {
+    /// Sizes itself as the array, without its checks.
+    struct Four;
+    impl Classified for Four {
+        const SECRET: bool = false;
+    }
+
+    impl Encode for Four {
+        fn encoded_len(&self) -> Result<u64, Error> {
+            Ok(20)
+        }
+
+        fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+            encoder.put_array(&FEW, &[0_u32; 4])
+        }
+    }
+    let error = encode_with(&MESSAGE, &Four).unwrap_err();
+    assert_error(
+        &error,
+        ErrorKind::LengthOverBound,
+        Some("test.m.few"),
+        Some(3),
+    );
+}
+
+#[test]
 fn encoder_debug_shows_no_output_bytes() {
     /// Writes a key-like word, then formats the encoder.
     struct Peek;

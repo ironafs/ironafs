@@ -402,9 +402,9 @@ fn within(outer: &[u8], inner: &[u8]) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }
 
-/// P1, P2 and P8 for `sealed`: it round-trips, its decode copies nothing
-/// from the input and requests nothing, and its `Debug` text is the same
-/// for any two accepted inputs.
+/// P1 and P8 for `sealed`: it round-trips, its decode copies nothing from
+/// the input and requests nothing, and its `Debug` text is the same for
+/// any two accepted inputs. P2 is `sealed_accepted_inputs_are_canonical`.
 #[test]
 fn sealed_borrows_everything_and_shows_nothing() {
     let reference = {
@@ -436,4 +436,33 @@ fn sealed_borrows_everything_and_shows_nothing() {
         assert_eq!(format!("{:?}", decoded.serial), "BorrowedWord");
         assert_eq!(sealed_bytes(&decoded), bytes);
     });
+}
+
+/// P2 and P6 for `sealed`, on inputs made from its valid encodings as for
+/// the other types: every accepted input re-encodes to itself and borrows
+/// from it, no input, accepted or not, requests anything, and no error
+/// carries a position (section 7, point 2).
+#[test]
+fn sealed_accepted_inputs_are_canonical() {
+    Property::new("sealed: encode(decode(b)) = b")
+        .cases(1024)
+        .check(
+            |source| (sealed_parts(source), mutation(source)),
+            |(parts, mutation)| {
+                let input = mutate(sealed_bytes(&parts.sealed()), mutation);
+                let (decoded, seen) = traced::<Sealed<'_>>(&input);
+                assert_eq!(seen, []);
+                match decoded {
+                    Ok(decoded) => {
+                        assert!(within(&input, decoded.key.reveal()));
+                        assert!(within(&input, decoded.serial.reveal_bytes()));
+                        assert!(within(&input, decoded.tag.reveal()));
+                        assert_eq!(sealed_bytes(&decoded), input);
+                    }
+                    Err(error) => {
+                        assert_eq!((error.offset(), error.extent()), (None, None), "{error}");
+                    }
+                }
+            },
+        );
 }

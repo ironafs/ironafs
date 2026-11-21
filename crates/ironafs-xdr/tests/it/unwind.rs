@@ -5,7 +5,10 @@
 //! point 3): the bytes a component wrote before it unwound count against
 //! the message's size whoever catches the unwind, so the caller's
 //! allocation never grows or moves, and an unwind that leaves the encoder
-//! leaves the buffer wiped and empty.
+//! leaves the buffer empty in place. Whether its bytes were zeroed cannot
+//! be read through a safe `Vec<u8>` once it is empty, so the zeroing is
+//! proved by the encoder's unit test of its wipe
+//! (`zero_to_capacity_overwrites_contents_and_spare_capacity`), not here.
 
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
@@ -69,7 +72,8 @@ impl Encode for Catcher {
     }
 }
 
-/// A message that is one [`Bomb`]: its unwind leaves the encoder.
+/// A secret-bearing message that is one [`Bomb`]: its unwind leaves the
+/// encoder.
 struct Lone(Bomb);
 
 impl MessageType for Lone {
@@ -77,7 +81,7 @@ impl MessageType for Lone {
 }
 
 impl Classified for Lone {
-    const SECRET: bool = false;
+    const SECRET: bool = true;
 }
 
 impl Encode for Lone {
@@ -114,7 +118,7 @@ fn a_caught_unwind_leaves_the_count_of_what_the_component_wrote() {
 }
 
 #[test]
-fn an_unwind_out_of_the_encoder_leaves_the_buffer_wiped_in_place() {
+fn an_unwind_out_of_the_encoder_leaves_the_buffer_empty_in_place() {
     let (mut out, words) = full_buffer();
     out.push(0xaa);
     let before = (out.as_ptr(), out.capacity());

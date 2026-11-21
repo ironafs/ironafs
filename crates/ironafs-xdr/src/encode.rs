@@ -702,14 +702,31 @@ impl<T: Encode + ?Sized> Encoder<'_, T> {
     }
 
     /// Writes a variable-length array: its count word, then each element.
+    /// The count is checked against the declared bound before it is
+    /// written, and the bytes the elements actually wrote against the cap
+    /// after them, so an element that understates its size in
+    /// [`Encode::encoded_len`] cannot carry the array past its cap
+    /// unnoticed (5.5, point 2). The elements are not sized again here:
+    /// the size pass already did, once for the whole message.
     ///
     /// # Errors
     ///
-    /// As [`array_len`], then any element's error.
+    /// `LengthNotRepresentable` or `LengthOverBound` for the count; any
+    /// element's error; `CapExceeded` if the elements wrote more bytes than
+    /// the cap.
     pub fn put_array<C: Encode>(&mut self, cap: &Cap, elements: &[C]) -> Result<(), Error> {
-        array_len(cap, elements)?;
-        self.put_u32(word_length(cap, elements.len())?)?;
-        self.put_fixed_array(elements)
+        let count = word_length(cap, elements.len())?;
+        if cap.bound.is_some_and(|bound| count > bound) {
+            return Err(over_bound(cap));
+        }
+        self.put_u32(count)?;
+        let before = *self.remaining;
+        self.put_fixed_array(elements)?;
+        let written = before.saturating_sub(*self.remaining);
+        if written > u64::from(cap.bytes) {
+            return Err(cap_exceeded(cap));
+        }
+        Ok(())
     }
 
     /// Writes a fixed-length array: each element in order, through
