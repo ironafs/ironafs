@@ -30,12 +30,14 @@ the evidence that refutes it.
 | [2026-11-20-readme-adr-0004](2026-11-20-readme-adr-0004.md) | The README follows ADR 0004: goals, sources for the Why section, planned platforms and order of work |
 | [2026-11-20-workflow-milestones](2026-11-20-workflow-milestones.md) | Milestones follow ADR 0004, O50 |
 | [2026-11-20-workflow-implementer](2026-11-20-workflow-implementer.md) | Issue #40: Claude implements from M2a; label rules and triage |
+| [2026-11-21-adr-0005-review](2026-11-21-adr-0005-review.md) | Issues #43 and #49: ADR 0005 (`ironafs-os`) and the ADR 0004 C5 amendment |
 | [2026-11-21-m2a-10-clock-seam](2026-11-21-m2a-10-clock-seam.md) | Issue #58: the clock and randomness seam, `ironafs-time`, and the bans that keep rule 7 |
 | [2026-11-21-m2a-11-test-support](2026-11-21-m2a-11-test-support.md) | Issue #44: `ironafs-test-support`, the seeded generator and shrinker |
 | [2026-11-21-m2a-13-check-deps](2026-11-21-m2a-13-check-deps.md) | Issue #46: the `xtask` dependency, pure-crate and grant checks |
 | [2026-11-21-m2-plus-plan](2026-11-21-m2-plus-plan.md) | Issue #41: the M2+ plan and wave one's issue texts |
 | [2026-11-21-m1-close-sweep](2026-11-21-m1-close-sweep.md) | The documentation sweep against ADR 0004 at M1's exit |
 | [2026-11-21-m2a-90-convergence](2026-11-21-m2a-90-convergence.md) | Issue #54: convergence rules for review rounds |
+| [2026-11-21-m2a-13-remainder](2026-11-21-m2a-13-remainder.md) | Issue #46: `check-pure`'s exact matrix of compiled crates, targets and profiles, and the crate root's form |
 | [2026-11-21-m2a-11-remainder](2026-11-21-m2a-11-remainder.md) | Issue #44: the exhaustive sweep and wire-message variants |
 | [2026-11-21-commit-message-errata](2026-11-21-commit-message-errata.md) | Errata: squash messages on `main` that lack the disclosure line, and the wrapping style |
 
