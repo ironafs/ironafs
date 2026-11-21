@@ -4,13 +4,21 @@
 //! Tests for the site reader of `check-os`.
 
 use super::{
-    BLOCK_BODY, CFG, EXTERN_FORM, EXTERN_ITEM, ExternItem, HIDDEN, LINK, OUTSIDE, Scan, Site,
-    SiteKind, TARGET_ENV, TWO_NAMES, UNSAFE_ITEM, outside_crate, scan,
+    BLOCK_BODY, CFG, EXTERN_FORM, EXTERN_ITEM, ExternItem, HIDDEN, LIBRARY_SITE, LINK, OUTSIDE,
+    Place, Scan, Site, SiteKind, TARGET_ENV, TWO_NAMES, UNSAFE_ITEM, outside_crate, scan,
 };
 use crate::rust_source::tokens_with_strings;
 
 fn read(source: &str, root: bool) -> Scan {
-    scan(&tokens_with_strings(source).unwrap(), root)
+    read_at(source, if root { Place::Root } else { Place::Other })
+}
+
+fn read_at(source: &str, place: Place) -> Scan {
+    scan(&tokens_with_strings(source).unwrap(), place)
+}
+
+fn whats(scan: &Scan) -> Vec<&'static str> {
+    scan.problems.iter().map(|problem| problem.what).collect()
 }
 
 fn problems(source: &str) -> Vec<&'static str> {
@@ -292,4 +300,74 @@ fn outside_crate_finds_unsafe_foreign_blocks_and_link_attributes_only() {
             (6, OUTSIDE)
         ]
     );
+}
+
+/// The gates that choose a C library's declarations, as an `abi.rs` writes
+/// them (ADR 0005, point 5.2: `struct msghdr` and `struct cmsghdr` are
+/// declared per C library).
+const LIBRARY_GATES: &str = "#[cfg(target_env = \"gnu\")]\nmod gnu;\n\
+                             #[cfg(target_env = \"musl\")]\nmod musl;\n\
+                             #[cfg(target_env = \"gnu\")]\npub(super) use gnu::{cmsghdr, msghdr};\n\
+                             #[cfg(target_env = \"musl\")]\npub(super) use musl::{cmsghdr, msghdr};\n";
+
+#[test]
+fn scan_allows_target_env_in_an_abi_file_only_to_gate_a_c_library_module() {
+    assert_eq!(
+        whats(&read_at(LIBRARY_GATES, Place::Abi)),
+        Vec::<&str>::new()
+    );
+    for place in [Place::Other, Place::Library] {
+        assert_eq!(
+            whats(&read_at(LIBRARY_GATES, place)),
+            [TARGET_ENV; 4],
+            "{place:?}"
+        );
+    }
+    for planted in [
+        // A gate on anything but the module of its own library.
+        "#[cfg(target_env = \"musl\")]\nmod gnu;\n",
+        "#[cfg(target_env = \"musl\")]\npub(super) use gnu::msghdr;\n",
+        "#[cfg(target_env = \"musl\")]\npub use musl::msghdr;\n",
+        "#[cfg(target_env = \"musl\")]\npub(super) use musl as gnu;\n",
+        "#[cfg(target_env = \"musl\")]\nconst PLANTED: u8 = 0;\n",
+        "#[cfg(target_env = \"uclibc\")]\nmod uclibc;\n",
+        "#[cfg(not(target_env = \"musl\"))]\nmod gnu;\n",
+        "#[cfg(any(target_env = \"musl\", target_os = \"linux\"))]\nmod musl;\n",
+        "#[cfg_attr(target_env = \"musl\", path = \"x.rs\")]\nmod musl;\n",
+    ] {
+        assert!(
+            whats(&read_at(planted, Place::Abi)).contains(&TARGET_ENV),
+            "{planted}"
+        );
+    }
+}
+
+#[test]
+fn scan_refuses_any_site_in_a_c_library_declaration_file() {
+    // A library's file is compiled for one C library only, so a site there
+    // would make a musl build's sites differ from the glibc build's.
+    let found = read_at(CLOCK, Place::Library);
+    assert!(whats(&found).contains(&LIBRARY_SITE), "{found:?}");
+    assert!(!whats(&read_at(CLOCK, Place::Other)).contains(&LIBRARY_SITE));
+}
+
+#[test]
+fn place_of_names_the_root_the_abi_files_and_the_library_files() {
+    use super::place_of;
+    use std::path::Path;
+    assert_eq!(place_of(Path::new("src/lib.rs")), Place::Root);
+    assert_eq!(place_of(Path::new("src/linux_fdpass/abi.rs")), Place::Abi);
+    assert_eq!(
+        place_of(Path::new("src/linux_fdpass/abi/gnu.rs")),
+        Place::Library
+    );
+    assert_eq!(
+        place_of(Path::new("src/linux_fdpass/abi/musl.rs")),
+        Place::Library
+    );
+    assert_eq!(
+        place_of(Path::new("src/linux_random/number.rs")),
+        Place::Other
+    );
+    assert_eq!(place_of(Path::new("src/abi.rs")), Place::Other);
 }

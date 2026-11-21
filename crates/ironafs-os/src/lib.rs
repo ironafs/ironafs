@@ -67,18 +67,40 @@ compile_error!(
 );
 
 mod clock;
+mod dump;
+mod fdpass;
+mod peer;
 mod random;
 
 #[cfg(target_os = "linux")]
 mod linux_clock;
 #[cfg(target_os = "linux")]
+mod linux_dontdump;
+#[cfg(target_os = "linux")]
+mod linux_fdpass;
+#[cfg(target_os = "linux")]
+mod linux_peercred;
+#[cfg(target_os = "linux")]
 mod linux_random;
 mod mem_wipe;
+#[cfg(target_os = "linux")]
+mod unix_nodump;
 
 pub use clock::{ClockError, OsClock};
+pub use dump::DumpError;
+pub use fdpass::FdPassError;
 #[cfg(target_os = "linux")]
 pub use linux_clock::read_clock;
 #[cfg(target_os = "linux")]
+pub use linux_dontdump::SecretBuffer;
+#[cfg(target_os = "linux")]
+pub use linux_fdpass::{receive_fd, send_fd};
+#[cfg(target_os = "linux")]
+pub use linux_peercred::peer_credentials;
+#[cfg(target_os = "linux")]
 pub use linux_random::fill_random;
 pub use mem_wipe::wipe;
+pub use peer::{PeerCredentials, PeerError};
 pub use random::RandomError;
+#[cfg(target_os = "linux")]
+pub use unix_nodump::disable_dumps;

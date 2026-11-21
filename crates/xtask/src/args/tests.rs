@@ -145,6 +145,7 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
                 target: Some("aarch64-unknown-linux-musl".into()),
             },
         ),
+        (&["check-wipe"][..], Task::CheckWipe),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Ok(task));
     }

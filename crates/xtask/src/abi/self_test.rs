@@ -3,14 +3,16 @@
 
 //! `check-abi --self-test`: a fixture of declarations whose C facts are the
 //! same on every Unix target of the allowlist (`struct timespec`, `EINTR`,
-//! `close` and `strlen`) must compile, and each planted mismatch must be
-//! caught at the stage that owns it:
+//! `close`, `strlen`, and `struct rlimit` through the typedef `rlim_t`,
+//! whose spelling differs between C libraries at one size) must compile,
+//! and each planted mismatch must be caught at the stage that owns it:
 //!
 //! - by the C compiler, after the declarations were read and the C
 //!   generated (ADR 0005, point 5.6): a member type changed at the same
-//!   size and offset, a member's size changed, a constant changed by one, a
-//!   parameter's type changed and a return type changed. Each must fail
-//!   with the assertion that names it;
+//!   size and offset, a member's size changed, a constant changed by one
+//!   (one compared with a C expression too), a
+//!   parameter's type changed, a return type changed, and an alias of the
+//!   wrong size or sign. Each must fail with the assertion that names it;
 //! - by the declaration reader, which refuses what C cannot be compared
 //!   with: another ABI string, an attribute on a foreign function (such as
 //!   `link_name`), a `packed` struct, a renaming import, a type alias, and
@@ -29,16 +31,30 @@ use crate::rust_source::tokens_with_strings;
 
 const CHECK: &str = "check-abi";
 
-const HEADERS: &[&str] = &["errno.h", "string.h", "time.h", "unistd.h"];
+const HEADERS: &[&str] = &[
+    "errno.h",
+    "string.h",
+    "sys/resource.h",
+    "time.h",
+    "unistd.h",
+];
 
 const FIXTURE: &str = "use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};\n\
                        #[repr(C)]\n\
                        struct timespec {\n    tv_sec: c_long,\n    tv_nsec: c_long,\n}\n\
                        const EINTR: c_int = 4;\n\
+                       const TIMESPEC_SIZE: usize = 16;\n\
+                       type rlim_t = u64;\n\
+                       #[repr(C)]\n\
+                       struct rlimit {\n    rlim_cur: rlim_t,\n    rlim_max: rlim_t,\n}\n\
                        unsafe extern \"C\" {\n\
                        \x20   fn close(fd: c_int) -> c_int;\n\
                        \x20   fn strlen(s: *const c_char) -> usize;\n\
                        }\n";
+
+/// The fixture's constants compared with a C expression, as sites.json's
+/// `expressions` maps a value a macro gives.
+const EXPRESSIONS: &[(&str, &str)] = &[("TIMESPEC_SIZE", "sizeof(struct timespec)")];
 
 /// Mismatches the C compiler must refuse: the case, the text it replaces,
 /// and the assertion's label the compiler's error must carry.
@@ -62,6 +78,12 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
         "EINTR == 5",
     ),
     (
+        "a constant compared with a C expression changed by one",
+        "TIMESPEC_SIZE: usize = 16",
+        "TIMESPEC_SIZE: usize = 17",
+        "(sizeof(struct timespec)) == 17",
+    ),
+    (
         "a parameter's type changed",
         "fn close(fd: c_int)",
         "fn close(fd: c_uint)",
@@ -72,6 +94,18 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
         "*const c_char) -> usize",
         "*const c_char) -> isize",
         "(&strlen, ssize_t (*)(const char *)",
+    ),
+    (
+        "an alias of the wrong size",
+        "type rlim_t = u64",
+        "type rlim_t = u32",
+        "sizeof(rlim_t) == 4",
+    ),
+    (
+        "an alias of the wrong sign",
+        "type rlim_t = u64",
+        "type rlim_t = i64",
+        "(rlim_t)-1 < 0",
     ),
 ];
 
@@ -228,7 +262,18 @@ fn stage(source: &str, file: &Path) -> Result<Stage, Error> {
         return Ok(Stage::Reader(error));
     }
     let headers: Vec<String> = HEADERS.iter().map(|header| (*header).to_owned()).collect();
-    let c = match c_source("self-test", &headers, &found, DataModel::Lp64) {
+    let expressions: Vec<(String, String)> = EXPRESSIONS
+        .iter()
+        .map(|(name, expression)| ((*name).to_owned(), (*expression).to_owned()))
+        .collect();
+    let c = match c_source(
+        "self-test",
+        &[],
+        &headers,
+        &expressions,
+        &found,
+        DataModel::Lp64,
+    ) {
         Ok(c) => c,
         Err(error) => return Ok(Stage::Generator(error)),
     };

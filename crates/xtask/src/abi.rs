@@ -10,7 +10,8 @@
 //! foreign item, this check reads the row's declarations from the Rust
 //! source the compiler read for that target (every file under the row's
 //! module directory, `src/<module>/`: its `#[repr(C)]` structs, its
-//! constants and its extern blocks' functions, each named as C names it),
+//! constants, its type aliases and its extern blocks' functions, each
+//! named as C names it),
 //! generates a C11 file of compile-time assertions from them, and compiles
 //! it with the platform's own compiler and headers, warnings as errors:
 //!
@@ -18,16 +19,27 @@
 //!   `repr(C)` lays them out for the target's data model;
 //! - each field's type, by a `_Generic` selection with no default, so a
 //!   field of the wrong type with the right size and offset fails;
-//! - each constant's value;
+//! - each constant's value, against its C name, or against the C
+//!   expression sites.json maps it to (`expressions`), for a value a macro
+//!   gives, such as `CMSG_LEN(sizeof(int))`;
+//! - each type alias's size, alignment and sign: an alias names a C
+//!   typedef whose spelling differs between C libraries at one size
+//!   (`rlim_t`), and a member of that type is checked against the typedef;
 //! - each function's type, by a `_Generic` selection with no default on
 //!   its address against a pointer to the declared prototype.
 //!
-//! The C file is never linked into anything. The check proves the host
+//! The file asks for the POSIX and default declarations
+//! (`_DEFAULT_SOURCE`), not the GNU ones: under `_GNU_SOURCE` glibc
+//! declares `setrlimit`'s resource as an enum, where POSIX and musl declare
+//! `int`. A row whose declarations C shows only under `_GNU_SOURCE`
+//! (`struct ucred`, in glibc and musl) names it in sites.json's `defines`,
+//! the only feature macro the copy accepts. The C file is never linked into anything. The check proves the host
 //! target only: a target on which it has not run is MISSING evidence, and
 //! its sites do not ship there. `--self-test` compiles a host-portable
 //! fixture of the same shape and plants a member type changed at the same
-//! size and offset, a constant changed by one, a parameter's type changed
-//! and a return type changed, each of which must fail to compile.
+//! size and offset, a constant changed by one, a parameter's type changed,
+//! a return type changed and an alias of the wrong size or sign, each of
+//! which must fail to compile.
 
 mod self_test;
 
@@ -78,6 +90,8 @@ pub(crate) struct Declarations {
     /// negative).
     pub(crate) constants: Vec<(String, String)>,
     pub(crate) functions: Vec<Function>,
+    /// Each `type NAME = <scalar>;`: a C typedef the declarations name.
+    pub(crate) aliases: Vec<(String, CType)>,
     /// The names the declaration files import from `core::ffi`: only these
     /// spell C's types (a `c_int` from anywhere else is not C's `int`).
     pub(crate) ffi_names: Vec<String>,
@@ -130,17 +144,28 @@ pub(crate) fn declarations(
                 found.structs.push(item);
                 at = next;
             }
+            Some("type") => {
+                let (alias, next) = read_alias(tokens, at).ok_or_else(|| {
+                    format!("line {line}: a type alias that is not `NAME = <C scalar>;`")
+                })?;
+                // A C typedef's own name (`rlim_t`), never a scalar's: an
+                // alias named `c_long` or `u32` would make that name not
+                // mean what it says.
+                if scalar(&alias.0, DataModel::Lp64).is_some() || alias.0 == "c_void" {
+                    return Err(format!(
+                        "line {line}: a type alias named as a scalar, under which a name would \
+                         not mean what it says"
+                    ));
+                }
+                found.aliases.push(alias);
+                at = next;
+            }
             Some("const") => {
                 let (constant, next) = read_constant(tokens, at).ok_or_else(|| {
                     format!("line {line}: a constant that is not `NAME: TYPE = <integer>;`")
                 })?;
                 found.constants.push(constant);
                 at = next;
-            }
-            Some("type") => {
-                return Err(format!(
-                    "line {line}: a type alias, under which a name would not mean what it says"
-                ));
             }
             Some("use") => {
                 let end = tokens
@@ -344,6 +369,31 @@ fn read_constant(tokens: &[Token], at: usize) -> Option<((String, String), usize
     Some(((name, value), next + 2))
 }
 
+/// Reads `type NAME = <scalar>;` at `at`: a C typedef whose type differs
+/// between C libraries at one size (`rlim_t` is `unsigned long` in glibc
+/// and `unsigned long long` in musl), so the C side names the typedef and
+/// asserts its size, alignment and sign instead of one spelling.
+fn read_alias(tokens: &[Token], at: usize) -> Option<((String, CType), usize)> {
+    let name = ident(tokens.get(at + 1))?.to_owned();
+    if punct(tokens.get(at + 2)) != Some('=') {
+        return None;
+    }
+    let (aliased, next) = read_type(tokens, at + 3)?;
+    let CType::Named(scalar_name) = &aliased else {
+        return None;
+    };
+    scalar(
+        scalar_name
+            .strip_prefix("core::ffi::")
+            .unwrap_or(scalar_name),
+        DataModel::Lp64,
+    )?;
+    if punct(tokens.get(next)) != Some(';') {
+        return None;
+    }
+    Some(((name, aliased), next + 1))
+}
+
 /// Reads the functions of an extern block's body.
 fn read_functions(body: &[Token], found: &mut Declarations) -> Option<()> {
     let mut at = 0;
@@ -456,6 +506,7 @@ fn c_name(found: &CType, declarations: &Declarations, model: DataModel) -> Resul
                 .map(|(spelling, _)| spelling.to_owned())
                 .ok_or_else(|| format!("`{name}` has no C type this check knows")),
             Resolved::Struct(name) => Ok(format!("struct {name}")),
+            Resolved::Alias(name, _) => Ok(name.to_owned()),
         },
         CType::Pointer { constant, to } => {
             let base = c_name(to, declarations, model)?;
@@ -474,6 +525,9 @@ enum Resolved<'a> {
     Scalar(&'a str),
     /// A struct of the declaration files.
     Struct(&'a str),
+    /// A type alias of the declaration files (a C typedef), and the scalar
+    /// it aliases.
+    Alias(&'a str, &'a CType),
 }
 
 /// The primitive integer types, which no import can rename (renaming
@@ -486,7 +540,7 @@ const PRIMITIVES: &[&str] = &[
 /// a name imported from `core::ffi` or written `core::ffi::<name>`; a
 /// primitive integer is itself; any other name must be a struct the
 /// declaration files declare.
-fn resolve<'a>(name: &'a str, declarations: &Declarations) -> Result<Resolved<'a>, String> {
+fn resolve<'a>(name: &'a str, declarations: &'a Declarations) -> Result<Resolved<'a>, String> {
     if let Some(rest) = name.strip_prefix("core::ffi::") {
         return if rest.contains("::") {
             Err(format!("`{name}` is no type of core::ffi"))
@@ -509,13 +563,48 @@ fn resolve<'a>(name: &'a str, declarations: &Declarations) -> Result<Resolved<'a
     {
         return Ok(Resolved::Scalar(name));
     }
+    if let Some((_, aliased)) = declarations.aliases.iter().find(|(alias, _)| alias == name) {
+        return Ok(Resolved::Alias(name, aliased));
+    }
     if declarations.structs.iter().any(|item| item.name == name) {
         return Ok(Resolved::Struct(name));
     }
     Err(format!(
-        "`{name}` is neither imported from core::ffi, a primitive integer, nor a struct of the \
-         declaration files"
+        "`{name}` is neither imported from core::ffi, a primitive integer, nor a struct or type alias \
+         of the declaration files"
     ))
+}
+
+/// Whether a scalar is unsigned (`Some(true)`), signed (`Some(false)`), or
+/// differs by target (`c_char`).
+fn unsigned(name: &str) -> Option<bool> {
+    match name {
+        "c_char" => None,
+        "u8" | "u16" | "u32" | "u64" | "usize" | "c_uchar" | "c_ushort" | "c_uint" | "c_ulong"
+        | "c_ulonglong" => Some(true),
+        _ => Some(false),
+    }
+}
+
+/// Refuses an expression mapped to a constant the declarations do not
+/// hold, which would otherwise prove nothing.
+fn unmapped_expressions(
+    expressions: &[(String, String)],
+    declarations: &Declarations,
+) -> Result<(), String> {
+    for (name, _) in expressions {
+        if !declarations
+            .constants
+            .iter()
+            .any(|(constant, _)| constant == name)
+        {
+            return Err(format!(
+                "sites.json maps `{name}` to a C expression, but the declarations hold no such \
+                 constant"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The size and alignment of a type under `repr(C)`.
@@ -532,6 +621,12 @@ fn layout(
             Resolved::Scalar(name) => scalar(name, model)
                 .map(|(_, size)| (size, size))
                 .ok_or_else(|| format!("`{name}` has no C type this check knows")),
+            Resolved::Alias(name, aliased) => {
+                if depth > 8 {
+                    return Err(format!("type {name} nests too deep"));
+                }
+                layout(aliased, declarations, model, depth + 1)
+            }
             Resolved::Struct(name) => {
                 let item = declarations
                     .structs
@@ -575,14 +670,21 @@ fn struct_layout(
 /// Returns why a declaration has no C equivalent this check can state.
 pub(crate) fn c_source(
     row: &str,
+    defines: &[String],
     headers: &[String],
+    expressions: &[(String, String)],
     declarations: &Declarations,
     model: DataModel,
 ) -> Result<String, String> {
     let mut source = format!(
-        "/* Generated by `cargo xtask check-abi` for ironafs-os site {row}; never linked. */\n\
-         #define _GNU_SOURCE 1\n#define _DARWIN_C_SOURCE 1\n\
-         #include <stddef.h>\n#include <stdint.h>\n"
+        "/* Generated by `cargo xtask check-abi` for ironafs-os site {row}; never linked. */\n"
+    );
+    for define in defines {
+        let _ = writeln!(source, "#define {define} 1");
+    }
+    source.push_str(
+        "#define _DEFAULT_SOURCE 1\n#define _DARWIN_C_SOURCE 1\n\
+         #include <stddef.h>\n#include <stdint.h>\n",
     );
     if model == DataModel::Lp64 {
         source.push_str("#include <sys/types.h>\n");
@@ -593,6 +695,28 @@ pub(crate) fn c_source(
     let mut assert = |condition: String, what: String| {
         let _ = writeln!(source, "_Static_assert({condition}, \"{row}: {what}\");");
     };
+    for (name, aliased) in &declarations.aliases {
+        let (size, align) = layout(aliased, declarations, model, 0)?;
+        assert(
+            format!("sizeof({name}) == {size}"),
+            format!("sizeof({name})"),
+        );
+        assert(
+            format!("_Alignof({name}) == {align}"),
+            format!("_Alignof({name})"),
+        );
+        let CType::Named(aliased_name) = aliased else {
+            return Err(format!("`{name}` aliases a type that is not a scalar"));
+        };
+        let Resolved::Scalar(scalar_name) = resolve(aliased_name, declarations)? else {
+            return Err(format!("`{name}` aliases a type that is not a scalar"));
+        };
+        match unsigned(scalar_name) {
+            Some(true) => assert(format!("({name})-1 > 0"), format!("{name} is unsigned")),
+            Some(false) => assert(format!("({name})-1 < 0"), format!("{name} is signed")),
+            None => {}
+        }
+    }
     for item in &declarations.structs {
         let name = &item.name;
         let (size, align, offsets) = struct_layout(item, declarations, model, 0)?;
@@ -616,8 +740,12 @@ pub(crate) fn c_source(
             );
         }
     }
+    unmapped_expressions(expressions, declarations)?;
     for (name, value) in &declarations.constants {
-        assert(format!("{name} == {value}"), name.clone());
+        match expressions.iter().find(|(constant, _)| constant == name) {
+            Some((_, expression)) => assert(format!("({expression}) == {value}"), name.clone()),
+            None => assert(format!("{name} == {value}"), name.clone()),
+        }
     }
     for function in &declarations.functions {
         let returns = match &function.returns {
@@ -700,6 +828,8 @@ fn abi_of(model: DataModel) -> &'static str {
 /// name must be one of the row's structs. So an import in one file never
 /// vouches for a name in another.
 fn canonical(file: &Declarations, structs: &[String]) -> Result<Declarations, String> {
+    // `structs` holds the row's struct and type alias names: the names a
+    // declaration file declares for the whole row.
     let rewrite = |found: &CType| -> Result<CType, String> {
         fn walk(found: &CType, file: &Declarations, structs: &[String]) -> Result<CType, String> {
             match found {
@@ -717,7 +847,8 @@ fn canonical(file: &Declarations, structs: &[String]) -> Result<Declarations, St
                     } else {
                         Err(format!(
                             "`{name}` is neither imported from core::ffi in its own file, a \
-                             primitive integer, nor a struct of the declaration files"
+                             primitive integer, nor a struct or type alias of the declaration \
+                             files"
                         ))
                     }
                 }
@@ -748,6 +879,9 @@ fn canonical(file: &Declarations, structs: &[String]) -> Result<Declarations, St
             variadic: function.variadic,
             returns: function.returns.as_ref().map(&rewrite).transpose()?,
         });
+    }
+    for (name, aliased) in &file.aliases {
+        out.aliases.push((name.clone(), rewrite(aliased)?));
     }
     out.constants.clone_from(&file.constants);
     Ok(out)
@@ -827,13 +961,19 @@ fn row_declarations(
     }
     let structs: Vec<String> = files
         .iter()
-        .flat_map(|(_, one)| one.structs.iter().map(|item| item.name.clone()))
+        .flat_map(|(_, one)| {
+            one.structs
+                .iter()
+                .map(|item| item.name.clone())
+                .chain(one.aliases.iter().map(|(name, _)| name.clone()))
+        })
         .collect();
     let mut found = Declarations::default();
     for (file, one) in files {
         match canonical(&one, &structs) {
             Ok(one) => {
                 found.structs.extend(one.structs);
+                found.aliases.extend(one.aliases);
                 found.constants.extend(one.constants);
                 found.functions.extend(one.functions);
             }
@@ -1018,7 +1158,14 @@ fn prove_row(
             read_names.join(", ")
         ));
     }
-    let source = match c_source(&row.id, &code.headers, &found, model) {
+    let source = match c_source(
+        &row.id,
+        &code.defines,
+        &code.headers,
+        &code.expressions,
+        &found,
+        model,
+    ) {
         Ok(source) => format!("{source}{}", identity(target)),
         Err(error) => return failed(error),
     };

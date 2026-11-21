@@ -32,6 +32,7 @@ pub(super) enum Task {
         self_test: bool,
         target: Option<String>,
     },
+    CheckWipe,
     InstallHook {
         force: bool,
     },
@@ -83,7 +84,7 @@ impl fmt::Display for UsageError {
         }?;
         write!(
             formatter,
-            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | check-os [--self-test] | check-abi [--self-test | --target <triple>] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
+            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | check-os [--self-test] | check-abi [--self-test | --target <triple>] | check-wipe | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
         )
     }
 }
@@ -113,6 +114,7 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
             self_test: parse_self_test(&mut arguments)?,
         },
         Some("check-abi") => parse_check_abi(&mut arguments)?,
+        Some("check-wipe") => Task::CheckWipe,
         Some("hooks") => parse_hooks(&mut arguments)?,
         Some("trailers") => Task::Trailers(parse_trailers(&mut arguments)?),
         _ => return Err(UsageError::UnknownCommand(command)),

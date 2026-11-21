@@ -133,7 +133,9 @@ fn declarations_refuse_what_c_cannot_be_compared_with() {
 fn c_source_asserts_layout_member_types_constants_and_function_types() {
     let source = c_source(
         "linux-clock",
+        &[],
         &["time.h".into()],
+        &[],
         &read(CLOCK),
         DataModel::Lp64,
     )
@@ -164,7 +166,7 @@ fn c_source_lays_out_padding_as_repr_c_does() {
         "use core::ffi::{c_char, c_int, c_void};\n\
          #[repr(C)]\nstruct padded { a: c_char, b: c_int, c: c_char, d: *mut c_void }\n",
     );
-    let source = c_source("row", &[], &found, DataModel::Lp64).unwrap();
+    let source = c_source("row", &[], &[], &[], &found, DataModel::Lp64).unwrap();
     for line in [
         "_Static_assert(offsetof(struct padded, b) == 4, \"row: offsetof(struct padded, b)\");",
         "_Static_assert(offsetof(struct padded, c) == 8, \"row: offsetof(struct padded, c)\");",
@@ -183,6 +185,8 @@ fn c_source_takes_long_as_four_bytes_on_windows() {
     let source = c_source(
         "row",
         &[],
+        &[],
+        &[],
         &read("use core::ffi::c_long;\n#[repr(C)]\nstruct pair { a: c_long, b: c_long }\n"),
         DataModel::Llp64,
     )
@@ -198,12 +202,12 @@ fn c_source_resolves_type_names_by_identity_not_spelling() {
     for (source, error) in [
         (
             "#[repr(C)]\nstruct odd { a: String }\n",
-            "`String` is neither imported from core::ffi, a primitive integer, nor a struct of \
+            "`String` is neither imported from core::ffi, a primitive integer, nor a struct or type alias of \
              the declaration files",
         ),
         (
             "#[repr(C)]\nstruct odd { a: c_long }\n",
-            "`c_long` is neither imported from core::ffi, a primitive integer, nor a struct of \
+            "`c_long` is neither imported from core::ffi, a primitive integer, nor a struct or type alias of \
              the declaration files",
         ),
         (
@@ -213,22 +217,225 @@ fn c_source_resolves_type_names_by_identity_not_spelling() {
         ),
     ] {
         assert_eq!(
-            c_source("row", &[], &read(source), DataModel::Lp64),
+            c_source("row", &[], &[], &[], &read(source), DataModel::Lp64),
             Err(error.to_owned()),
             "{source}"
         );
     }
     let written_out = read("#[repr(C)]\nstruct ok { a: core::ffi::c_long }\n");
     assert!(
-        c_source("row", &[], &written_out, DataModel::Lp64)
+        c_source("row", &[], &[], &[], &written_out, DataModel::Lp64)
             .unwrap()
             .contains("_Generic(((struct ok *)0)->a, long: 1)")
     );
 }
 
+const RLIMIT: &str = "use core::ffi::c_int;\n\
+                      pub(super) type rlim_t = u64;\n\
+                      #[repr(C)]\n\
+                      pub(super) struct rlimit {\n pub(super) rlim_cur: rlim_t,\n pub(super) rlim_max: rlim_t,\n}\n\
+                      pub(super) const RLIMIT_CORE: c_int = 4;\n\
+                      unsafe extern \"C\" {\n\
+                      pub(super) fn setrlimit(resource: c_int, rlim: *const rlimit) -> c_int;\n}\n";
+
 #[test]
-fn declarations_refuse_a_type_alias() {
-    assert!(refused("type c_long = u32;").starts_with("line 1: a type alias"));
+fn declarations_read_a_type_alias_of_a_scalar() {
+    let found = read(RLIMIT);
+    assert_eq!(
+        found.aliases,
+        [("rlim_t".to_owned(), CType::Named("u64".into()))]
+    );
+    assert_eq!(
+        found.structs,
+        [Struct {
+            name: "rlimit".into(),
+            fields: vec![
+                ("rlim_cur".into(), CType::Named("rlim_t".into())),
+                ("rlim_max".into(), CType::Named("rlim_t".into())),
+            ],
+        }]
+    );
+}
+
+#[test]
+fn declarations_refuse_an_alias_of_anything_but_a_scalar() {
+    for source in [
+        "type handle = *mut c_void;",
+        "type stamp = timespec;",
+        "type pair = (u8, u8);",
+    ] {
+        assert_eq!(
+            refused(source),
+            "line 1: a type alias that is not `NAME = <C scalar>;`",
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn c_source_reads_an_alias_of_a_core_ffi_type_by_its_identity() {
+    let unsigned = c_source(
+        "row",
+        &[],
+        &[],
+        &[],
+        &read("type rlim_t = core::ffi::c_ulong;"),
+        DataModel::Lp64,
+    )
+    .unwrap();
+    assert!(
+        unsigned
+            .lines()
+            .any(|line| line == "_Static_assert((rlim_t)-1 > 0, \"row: rlim_t is unsigned\");"),
+        "{unsigned}"
+    );
+    let not_imported = c_source(
+        "row",
+        &[],
+        &[],
+        &[],
+        &read("type rlim_t = c_ulong;"),
+        DataModel::Lp64,
+    );
+    assert_eq!(
+        not_imported.unwrap_err(),
+        "`c_ulong` is neither imported from core::ffi, a primitive integer, nor a struct or type \
+         alias of the declaration files"
+    );
+}
+
+#[test]
+fn c_source_names_an_alias_by_its_c_typedef_and_asserts_its_size_alignment_and_sign() {
+    let source = c_source(
+        "unix-nodump",
+        &[],
+        &["sys/resource.h".into()],
+        &[],
+        &read(RLIMIT),
+        DataModel::Lp64,
+    )
+    .unwrap();
+    for line in [
+        "_Static_assert(sizeof(rlim_t) == 8, \"unix-nodump: sizeof(rlim_t)\");",
+        "_Static_assert(_Alignof(rlim_t) == 8, \"unix-nodump: _Alignof(rlim_t)\");",
+        "_Static_assert((rlim_t)-1 > 0, \"unix-nodump: rlim_t is unsigned\");",
+        "_Static_assert(sizeof(struct rlimit) == 16, \"unix-nodump: sizeof(struct rlimit)\");",
+        "_Static_assert(_Generic(((struct rlimit *)0)->rlim_max, rlim_t: 1), \"unix-nodump: type of rlimit.rlim_max\");",
+        "_Static_assert(_Generic(&setrlimit, int (*)(int, const struct rlimit *): 1), \"unix-nodump: type of setrlimit\");",
+    ] {
+        assert!(
+            source.lines().any(|found| found == line),
+            "{line}\n{source}"
+        );
+    }
+}
+
+#[test]
+fn c_source_asserts_a_signed_alias_is_signed() {
+    let source = c_source(
+        "row",
+        &[],
+        &[],
+        &[],
+        &read("type ssize_t = isize;"),
+        DataModel::Lp64,
+    )
+    .unwrap();
+    assert!(
+        source
+            .lines()
+            .any(|line| line == "_Static_assert((ssize_t)-1 < 0, \"row: ssize_t is signed\");"),
+        "{source}"
+    );
+}
+
+#[test]
+fn c_source_asks_for_the_posix_prototypes_not_the_gnu_ones() {
+    // Under _GNU_SOURCE glibc declares setrlimit's resource as an enum,
+    // whose compatible type is not `int`; POSIX and musl declare `int`.
+    let source = c_source(
+        "row",
+        &[],
+        &[],
+        &[],
+        &Declarations::default(),
+        DataModel::Lp64,
+    )
+    .unwrap();
+    assert!(source.contains("#define _DEFAULT_SOURCE 1\n"), "{source}");
+    assert!(!source.contains("_GNU_SOURCE"), "{source}");
+}
+
+#[test]
+fn c_source_defines_a_row_s_feature_macros_before_any_include() {
+    // glibc and musl declare `struct ucred` only under _GNU_SOURCE.
+    let source = c_source(
+        "linux-peercred",
+        &["_GNU_SOURCE".to_owned()],
+        &["sys/socket.h".to_owned()],
+        &[],
+        &Declarations::default(),
+        DataModel::Lp64,
+    )
+    .unwrap();
+    let define = source.find("#define _GNU_SOURCE 1\n").expect(&source);
+    assert!(define < source.find("#include").unwrap(), "{source}");
+}
+
+#[test]
+fn c_source_asserts_a_constant_named_by_an_expression_against_that_expression() {
+    // CMSG_LEN and CMSG_SPACE are macros: a constant can only be compared
+    // with what the macro gives, by the expression sites.json maps it to.
+    let source = c_source(
+        "linux-fdpass",
+        &[],
+        &["sys/socket.h".to_owned()],
+        &[(
+            "CMSG_LEN_ONE".to_owned(),
+            "CMSG_LEN(sizeof(int))".to_owned(),
+        )],
+        &read("const CMSG_LEN_ONE: usize = 20;\nconst SOL_SOCKET: c_int = 1;"),
+        DataModel::Lp64,
+    )
+    .unwrap();
+    for line in [
+        "_Static_assert((CMSG_LEN(sizeof(int))) == 20, \"linux-fdpass: CMSG_LEN_ONE\");",
+        "_Static_assert(SOL_SOCKET == 1, \"linux-fdpass: SOL_SOCKET\");",
+    ] {
+        assert!(
+            source.lines().any(|found| found == line),
+            "{line}\n{source}"
+        );
+    }
+}
+
+#[test]
+fn c_source_refuses_an_expression_for_no_constant() {
+    let error = c_source(
+        "row",
+        &[],
+        &[],
+        &[("MISSING".to_owned(), "sizeof(int)".to_owned())],
+        &read("const PRESENT: c_int = 1;"),
+        DataModel::Lp64,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        "sites.json maps `MISSING` to a C expression, but the declarations hold no such constant"
+    );
+}
+
+#[test]
+fn declarations_refuse_a_type_alias_named_as_a_scalar() {
+    for source in ["type c_long = u32;", "type u32 = u64;", "type c_void = u8;"] {
+        assert_eq!(
+            refused(source),
+            "line 1: a type alias named as a scalar, under which a name would not mean what it \
+             says",
+            "{source}"
+        );
+    }
 }
 
 #[test]
@@ -240,7 +447,7 @@ fn canonical_resolves_each_file_by_its_own_imports() {
         canonical(&using, &["s".to_owned()]).map(|found| found.structs.len()),
         Err(
             "`c_long` is neither imported from core::ffi in its own file, a primitive integer, \
-             nor a struct of the declaration files"
+             nor a struct or type alias of the declaration files"
                 .to_owned()
         )
     );

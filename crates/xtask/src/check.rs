@@ -65,6 +65,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         )
         .map_err(Error::io("report skipped check"))?;
     }
+    crate::wipe::run(output)?;
 
     check_reuse_result(
         Command::new("reuse").arg("lint").status(),

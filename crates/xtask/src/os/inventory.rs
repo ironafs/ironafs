@@ -91,6 +91,12 @@ pub(crate) struct Code {
     /// The C headers the row's declarations are written from, for the ABI
     /// check (ADR 0005, point 5.6).
     pub(crate) headers: Vec<String>,
+    /// The feature macros the ABI check defines before the headers.
+    pub(crate) defines: Vec<String>,
+    /// Constants the ABI check compares with a C expression rather than
+    /// with a C name: (constant, expression), for macros such as
+    /// `CMSG_LEN(sizeof(int))`.
+    pub(crate) expressions: Vec<(String, String)>,
     pub(crate) extern_blocks: Vec<ExternBlock>,
     pub(crate) blocks: Vec<Block>,
     pub(crate) impls: usize,
@@ -315,6 +321,8 @@ fn parse_code(code: &Value) -> Result<Code, String> {
     Ok(Code {
         module: text(code, "module")?.to_owned(),
         headers: strings("headers")?,
+        defines: defines(code)?,
+        expressions: expressions(code)?,
         extern_blocks,
         blocks,
         impls,
@@ -323,6 +331,65 @@ fn parse_code(code: &Value) -> Result<Code, String> {
         stand_in,
     })
 }
+
+/// The feature macros a row's ABI check defines (`defines`, optional):
+/// only those of `FEATURE_MACROS`, since each is written into the C file.
+fn defines(code: &Value) -> Result<Vec<String>, String> {
+    let Some(defines) = code.get("defines") else {
+        return Ok(Vec::new());
+    };
+    defines
+        .as_array()
+        .ok_or("`defines` is not an array")?
+        .iter()
+        .map(|value| match value.as_str() {
+            Some(name) if FEATURE_MACROS.contains(&name) => Ok(name.to_owned()),
+            _ => Err(format!(
+                "`defines` holds {value:?}, which is not a feature macro the ABI check accepts \
+                 ({})",
+                FEATURE_MACROS.join(", ")
+            )),
+        })
+        .collect()
+}
+
+/// The C expressions a row's ABI check compares constants with
+/// (`expressions`, optional): an object from a constant's name to an
+/// expression of names, numbers, spaces, `*`, `+` and parentheses, since
+/// each is written into the C file.
+fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
+    let Some(expressions) = code.get("expressions") else {
+        return Ok(Vec::new());
+    };
+    let Value::Object(members) = expressions else {
+        return Err("`expressions` is not an object".to_owned());
+    };
+    members
+        .iter()
+        .map(|(name, value)| {
+            let name_ok = !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+            let expression = value.as_str().unwrap_or_default();
+            let expression_ok = !expression.trim().is_empty()
+                && expression
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_ ()*+".contains(&byte));
+            if name_ok && expression_ok {
+                Ok((name.clone(), expression.to_owned()))
+            } else {
+                Err(format!(
+                    "`expressions` maps {name:?} to {value:?}: a constant's name must map to an \
+                     expression of names, numbers, spaces, `*`, `+` and parentheses"
+                ))
+            }
+        })
+        .collect()
+}
+
+/// The feature macros a row may ask the ABI check to define.
+const FEATURE_MACROS: &[&str] = &["_GNU_SOURCE"];
 
 /// A row's recorded Miri stand-in, if any.
 fn parse_stand_in(code: &Value) -> Result<Option<StandIn>, String> {

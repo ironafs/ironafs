@@ -17,6 +17,7 @@ mod os;
 mod pure;
 mod rust_source;
 mod trailers;
+mod wipe;
 
 use std::ffi::OsString;
 use std::fmt;
@@ -166,6 +167,7 @@ fn run_task(
         args::Task::CheckAbi { self_test, target } => {
             abi::run(self_test, target.as_deref(), output)
         }
+        args::Task::CheckWipe => wipe::run(output),
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
         args::Task::Trailers(mode) => trailers::run(mode, output),

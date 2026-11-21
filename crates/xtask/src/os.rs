@@ -20,7 +20,10 @@
 //!   other target the toolchain names fails with the crate's allowlist
 //!   error. The musl targets are not built here: the copy gives them the
 //!   glibc targets' statuses, and the crate names `target_env` only in its
-//!   allowlist, so a musl build compiles the glibc build's files.
+//!   allowlist and in the gates of a row's per-library declaration files,
+//!   which hold no site, so a musl build compiles the glibc build's sites
+//!   (`scan`). `check-abi` proves each library's declarations on its own
+//!   target.
 
 mod allowlist;
 pub(crate) mod inventory;
@@ -524,7 +527,6 @@ fn outside_violations(root: &Path, crate_dir: &Path) -> Result<Vec<Violation>, E
 pub(crate) fn crate_files(crate_dir: &Path) -> Result<(Vec<CrateFile>, Vec<Violation>), Error> {
     let mut files = Vec::new();
     let mut violations = Vec::new();
-    let root = Path::new("src").join("lib.rs");
     let (all, links) = crate::pure::package_files(crate_dir, &crate_dir.join("target"))?;
     for link in links {
         violations.push(Violation::Rule {
@@ -541,7 +543,7 @@ pub(crate) fn crate_files(crate_dir: &Path) -> Result<(Vec<CrateFile>, Vec<Viola
         let text = fs::read_to_string(&file).map_err(Error::path_io("read source file", &file))?;
         match rust_source::tokens_with_strings(&text) {
             Ok(tokens) => {
-                let scan = scan::scan(&tokens, path == root);
+                let scan = scan::scan(&tokens, scan::place_of(&path));
                 files.push(CrateFile { path, scan });
             }
             Err(error) => violations.push(Violation::Unreadable {
