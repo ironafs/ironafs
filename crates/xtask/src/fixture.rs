@@ -21,6 +21,8 @@ struct FixtureCrate {
     name: String,
     place: Place,
     dependencies: Vec<Dependency>,
+    /// The `[package]` table's edition line.
+    edition: String,
     /// Lines added to the `[package]` table.
     package_lines: String,
     manifest_tail: String,
@@ -63,9 +65,10 @@ const WORKSPACE: &str = "workspace";
 const OUTSIDE: &str = "outside";
 const VENDOR: &str = "vendor";
 
-/// The workspace manifest: every crate under `crates/`, with the workspace
-/// lints the crates inherit.
+/// The workspace manifest: every crate under `crates/`, with the edition
+/// and the lints the crates inherit.
 const WORKSPACE_MANIFEST: &str = "[workspace]\nresolver = \"3\"\nmembers = [\"crates/*\"]\n\n\
+                                  [workspace.package]\nedition = \"2024\"\n\n\
                                   [workspace.lints.rust]\nunsafe_code = \"forbid\"\n";
 
 /// A workspace crate's `[lints]` table unless a case changes it.
@@ -101,9 +104,17 @@ impl Fixture {
     }
 
     fn add(&mut self, name: &str, place: Place, dependencies: &[&str]) {
+        // A workspace crate inherits the workspace's edition; a crate
+        // outside it cannot.
+        let edition = if matches!(place, Place::Workspace(_)) {
+            "edition.workspace = true"
+        } else {
+            "edition = \"2024\""
+        };
         self.crates.push(FixtureCrate {
             name: name.to_owned(),
             place,
+            edition: edition.to_owned(),
             dependencies: Vec::new(),
             package_lines: String::new(),
             manifest_tail: String::new(),
@@ -134,6 +145,13 @@ impl Fixture {
         if let Some(found) = self.find(name) {
             found.package_lines.push_str(line);
             found.package_lines.push('\n');
+        }
+    }
+
+    /// Replaces the edition line of a crate's `[package]` table.
+    pub(crate) fn edition(&mut self, name: &str, line: &str) {
+        if let Some(found) = self.find(name) {
+            line.clone_into(&mut found.edition);
         }
     }
 
@@ -222,8 +240,8 @@ impl Fixture {
                 "0.0.0"
             };
             let mut text = format!(
-                "[package]\nname = \"{}\"\nversion = \"{version}\"\nedition = \"2024\"\n{}\n[dependencies]\n",
-                found.name, found.package_lines
+                "[package]\nname = \"{}\"\nversion = \"{version}\"\n{}\n{}\n[dependencies]\n",
+                found.name, found.edition, found.package_lines
             );
             for dependency in &found.dependencies {
                 match dependency {

@@ -34,6 +34,8 @@ pub(crate) struct Member {
     /// The kinds of every target, such as `lib`, `bin`, `custom-build` (a
     /// build script) or `test`.
     pub(crate) target_kinds: Vec<String>,
+    /// The edition of each target, in the order of `target_kinds`' targets.
+    pub(crate) editions: Vec<String>,
 }
 
 impl Member {
@@ -130,7 +132,9 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
         let dir = manifest.parent().ok_or_else(unexpected)?.to_path_buf();
         let mut lib_root = None;
         let mut target_kinds = Vec::new();
+        let mut editions = Vec::new();
         for target in array(package, "targets")? {
+            editions.push(string(target, "edition")?.to_owned());
             for kind in array(target, "kind")? {
                 let kind = kind.as_str().ok_or_else(unexpected)?;
                 if kind == "lib" {
@@ -150,6 +154,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             dir,
             lib_root,
             target_kinds,
+            editions,
         });
     }
 

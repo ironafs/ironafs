@@ -3,6 +3,10 @@
 
 //! The dependency rules of the architecture (ADR 0004, C4), checked on the
 //! resolved graph that `cargo metadata` reports.
+//!
+//! Every member's manifest inherits the workspace lints and the workspace
+//! edition, and every target is in the edition the source checks' token
+//! reader follows.
 
 mod pure_source;
 mod self_test;
@@ -160,6 +164,10 @@ const NAMED_FFI: &[&str] = &["ironafs-gss"];
 /// listed: `check-pure` forbids its unsafe code on the command line.
 const OWN_LINTS: &[&str] = &[];
 
+/// The edition every target of the workspace is compiled in: the one whose
+/// lexical rules the token reader of `rust_source` follows.
+const EDITION: &str = "2024";
+
 /// Known cryptography and foreign-function crates, which only the crates
 /// in `CRYPTO_HOMES` may reach.
 const CRYPTO_AND_FFI: &[&str] = &[
@@ -274,6 +282,14 @@ pub(crate) enum Violation {
         name: String,
         manifest: PathBuf,
     },
+    NoWorkspaceEdition {
+        name: String,
+        manifest: PathBuf,
+    },
+    Edition {
+        name: String,
+        edition: String,
+    },
     ForbiddenSource {
         file: PathBuf,
         line: usize,
@@ -345,6 +361,10 @@ fn through(formatter: &mut fmt::Formatter<'_>, via: &[String]) -> fmt::Result {
 }
 
 impl fmt::Display for Violation {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "coding standards rule 10: one arm per violation, each its rule's message"
+    )]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyWorkspace => write!(
@@ -408,6 +428,19 @@ impl fmt::Display for Violation {
                  `workspace = true`, and no multi-line string, so `unsafe` stays forbidden \
                  (AGENTS.md; ADR 0004, C5, point 5)",
                 manifest.display()
+            ),
+            Self::NoWorkspaceEdition { name, manifest } => write!(
+                formatter,
+                "{}: {name} does not inherit the workspace edition: write \
+                 `edition.workspace = true` in `[package]`, name the edition nowhere else, even \
+                 in a comment, and write no multi-line string, so the source checks read its \
+                 code as the compiler does",
+                manifest.display()
+            ),
+            Self::Edition { name, edition } => write!(
+                formatter,
+                "{name} has a target in the {edition} edition: every target is in the \
+                 {EDITION} edition, whose lexical rules the source checks follow"
             ),
             Self::ForbiddenSource {
                 file,
@@ -640,20 +673,100 @@ fn lint_violations(workspace: &Workspace, own_lints: &[&str]) -> Result<Vec<Viol
         if own_lints.contains(&member.name.as_str()) {
             continue;
         }
-        let manifest = member.dir.join("Cargo.toml");
-        let text = fs::read_to_string(&manifest)
-            .map_err(Error::path_io("read crate manifest", &manifest))?;
+        let (text, manifest) = read_manifest(workspace, member)?;
         if !inherits_workspace_lints(&text) {
             violations.push(Violation::NoWorkspaceLints {
                 name: member.name.clone(),
-                manifest: manifest
-                    .strip_prefix(&workspace.root)
-                    .unwrap_or(&manifest)
-                    .to_path_buf(),
+                manifest,
             });
         }
     }
     Ok(violations)
+}
+
+/// A member's manifest, and its path as shown, relative to the workspace
+/// root.
+///
+/// # Errors
+///
+/// Returns an error if the manifest cannot be read.
+fn read_manifest(workspace: &Workspace, member: &Member) -> Result<(String, PathBuf), Error> {
+    let manifest = member.dir.join("Cargo.toml");
+    let text =
+        fs::read_to_string(&manifest).map_err(Error::path_io("read crate manifest", &manifest))?;
+    let shown = manifest
+        .strip_prefix(&workspace.root)
+        .unwrap_or(&manifest)
+        .to_path_buf();
+    Ok((text, shown))
+}
+
+/// Every workspace member inherits the workspace edition, and every target
+/// of it is compiled in `EDITION`, as cargo reports it: the token reader
+/// follows that edition's lexical rules, and an older one reads `cr"` and
+/// other prefixes otherwise. Each edition other than `EDITION` is reported
+/// once per member.
+///
+/// # Errors
+///
+/// Returns an error if a manifest cannot be read.
+fn edition_violations(workspace: &Workspace) -> Result<Vec<Violation>, Error> {
+    let mut violations = Vec::new();
+    for member in &workspace.members {
+        let (text, manifest) = read_manifest(workspace, member)?;
+        if !inherits_workspace_edition(&text) {
+            violations.push(Violation::NoWorkspaceEdition {
+                name: member.name.clone(),
+                manifest,
+            });
+        }
+        let mut reported: Vec<&str> = Vec::new();
+        for edition in &member.editions {
+            if edition != EDITION && !reported.contains(&edition.as_str()) {
+                reported.push(edition);
+                violations.push(Violation::Edition {
+                    name: member.name.clone(),
+                    edition: edition.clone(),
+                });
+            }
+        }
+    }
+    Ok(violations)
+}
+
+/// Whether a manifest says `edition.workspace = true` (or
+/// `edition = { workspace = true }`) in its `[package]` table and names
+/// the edition on no other line, comments included: a target table can
+/// set its own edition. Whitespace is ignored; as for the lints, a
+/// manifest with a multi-line string is refused.
+fn inherits_workspace_edition(manifest: &str) -> bool {
+    if manifest.contains("\"\"\"") || manifest.contains("'''") {
+        return false;
+    }
+    let mut table: Option<String> = None;
+    let mut inherits = false;
+    for raw in manifest.lines() {
+        let line: String = raw
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .filter(|next| !next.is_whitespace())
+            .collect();
+        if let Some(header) = line.strip_prefix('[') {
+            let name = header.trim_start_matches('[').trim_end_matches(']');
+            table = Some(name.to_owned());
+        }
+        if !raw.contains("edition") {
+            continue;
+        }
+        let allowed = line == "edition.workspace=true" || line == "edition={workspace=true}";
+        if !allowed || table.as_deref() != Some("package") {
+            return false;
+        }
+        inherits = true;
+    }
+    inherits
 }
 
 /// Whether a manifest's `[lints]` table is exactly `workspace = true`, or
@@ -787,6 +900,7 @@ fn check(
 ) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
     let mut violations = graph_violations(workspace, third_party);
     violations.extend(lint_violations(workspace, OWN_LINTS)?);
+    violations.extend(edition_violations(workspace)?);
     let (found, scanned) = pure_source::scan(workspace)?;
     violations.extend(found);
     Ok((violations, scanned))

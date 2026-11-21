@@ -20,6 +20,7 @@ fn fixture_writes_manifests_dependencies_and_files() {
     );
     fixture.manifest_tail("ironafs-xdr", "[features]\nextra = [\"dep:other\"]\n");
     fixture.lints("ironafs-time", "\n[lints]\n");
+    fixture.edition("ironafs-time", "edition = \"2021\"");
     fixture.file("ironafs-xdr", "src/lib.rs", None);
     fixture.file("ironafs-xdr", "src/main.rs", Some("fn main() {}\n"));
     fixture.add_crate_at("tools/ironafs-cli", "ironafs-cli", &[]);
@@ -34,16 +35,17 @@ fn fixture_writes_manifests_dependencies_and_files() {
     assert_eq!(
         read("workspace/Cargo.toml"),
         "[workspace]\nresolver = \"3\"\nmembers = [\"crates/*\"]\n\n\
+         [workspace.package]\nedition = \"2024\"\n\n\
          [workspace.lints.rust]\nunsafe_code = \"forbid\"\n"
     );
     assert_eq!(
         read("workspace/crates/ironafs-time/Cargo.toml"),
-        "[package]\nname = \"ironafs-time\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+        "[package]\nname = \"ironafs-time\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
          [dependencies]\n\n[lints]\n"
     );
     assert_eq!(
         read("workspace/crates/ironafs-xdr/Cargo.toml"),
-        "[package]\nname = \"ironafs-xdr\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+        "[package]\nname = \"ironafs-xdr\"\nversion = \"0.0.0\"\nedition.workspace = true\n\n\
          [dependencies]\nironafs-time = { path = \"../../../workspace/crates/ironafs-time\" }\n\
          helper = { path = \"../../../outside/helper\" }\n\
          bytes = \"1\"\n\

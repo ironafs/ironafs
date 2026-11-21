@@ -12,17 +12,17 @@ const METADATA: &str = r#"{
   "packages": [
     {"name": "ironafs-a", "id": "path+file:///w/crates/ironafs-a#0.0.0", "source": null,
      "features": {}, "links": null, "manifest_path": "/w/crates/ironafs-a/Cargo.toml",
-     "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-a/src/lib.rs"}]},
+     "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-a/src/lib.rs", "edition": "2024"}]},
     {"name": "ironafs-b", "id": "path+file:///w/crates/ironafs-b#0.0.0",
      "features": {"std": [], "default": ["std"]}, "links": null, "manifest_path": "/w/crates/ironafs-b/Cargo.toml",
-     "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-b/src/lib.rs"}]},
+     "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-b/src/lib.rs", "edition": "2024"}]},
     {"name": "ironafs-c", "id": "path+file:///w/crates/ironafs-c#0.0.0",
      "features": {}, "links": null, "manifest_path": "/w/crates/ironafs-c/Cargo.toml",
-     "targets": [{"kind": ["bin"], "src_path": "/w/crates/ironafs-c/src/main.rs"}]},
+     "targets": [{"kind": ["bin"], "src_path": "/w/crates/ironafs-c/src/main.rs", "edition": "2024"}]},
     {"name": "ironafs-d", "id": "path+file:///w/crates/ironafs-d#0.0.0",
      "features": {}, "links": "native", "manifest_path": "/w/crates/ironafs-d/Cargo.toml",
-     "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-d/src/lib.rs"},
-                 {"kind": ["custom-build"], "src_path": "/w/crates/ironafs-d/build.rs"}]},
+     "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-d/src/lib.rs", "edition": "2024"},
+                 {"kind": ["custom-build"], "src_path": "/w/crates/ironafs-d/build.rs", "edition": "2018"}]},
     {"name": "outside", "id": "registry+https://example.invalid#outside@1.0.0",
      "source": "registry+https://example.invalid", "manifest_path": "/r/outside/Cargo.toml",
      "features": {}, "links": null,
@@ -85,6 +85,7 @@ fn member(name: &str, lib: Option<&str>, target_kinds: &[&str]) -> Member {
         dir: PathBuf::from(format!("/w/crates/{name}")),
         lib_root: lib.map(|file| PathBuf::from(format!("/w/crates/{name}/{file}"))),
         target_kinds: target_kinds.iter().map(|kind| (*kind).into()).collect(),
+        editions: target_kinds.iter().map(|_| "2024".into()).collect(),
     }
 }
 
@@ -101,7 +102,10 @@ fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
                 member("ironafs-a", Some("src/lib.rs"), &["lib"]),
                 member("ironafs-b", Some("src/lib.rs"), &["lib"]),
                 member("ironafs-c", None, &["bin"]),
-                member("ironafs-d", Some("src/lib.rs"), &["lib", "custom-build"]),
+                Member {
+                    editions: vec!["2024".into(), "2018".into()],
+                    ..member("ironafs-d", Some("src/lib.rs"), &["lib", "custom-build"])
+                },
             ],
             packages: vec![
                 package(
@@ -155,6 +159,7 @@ fn parse_workspace_rejects_output_without_a_resolved_graph() {
             "\"manifest_path\": \"/w/crates/ironafs-c",
         ),
         &METADATA.replace("\"links\": \"native\"", "\"links\": 1"),
+        &METADATA.replace(", \"edition\": \"2018\"", ""),
     ] {
         assert!(
             matches!(

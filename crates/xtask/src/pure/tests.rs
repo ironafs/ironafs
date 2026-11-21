@@ -333,6 +333,7 @@ fn workspace(packages: Vec<Package>) -> Workspace {
                     package.name
                 ))),
                 target_kinds: package.target_kinds.clone(),
+                editions: vec!["2024".into()],
             })
             .collect(),
         packages,

@@ -6,8 +6,9 @@
 use std::path::PathBuf;
 
 use super::{
-    CRATES, Kind, OWN_LINTS, Rule, THIRD_PARTY, ThirdPartyLists, Violation, graph_violations,
-    inherits_workspace_lints, kind_of, lint_violations,
+    CRATES, Kind, OWN_LINTS, Rule, THIRD_PARTY, ThirdPartyLists, Violation, edition_violations,
+    graph_violations, inherits_workspace_edition, inherits_workspace_lints, kind_of,
+    lint_violations,
 };
 use crate::metadata::{Member, Package, Workspace};
 
@@ -55,6 +56,7 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                 dir: PathBuf::from(format!("/w/crates/{name}")),
                 lib_root: None,
                 target_kinds: vec!["lib".into()],
+                editions: vec!["2024".into()],
             })
             .collect(),
         packages,
@@ -546,5 +548,67 @@ fn lint_violations_skip_only_the_crates_an_adr_lets_keep_their_own_lints() {
         }]
     );
     assert_eq!(lint_violations(&graph, &[]).unwrap().len(), 2);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn inherits_workspace_edition_accepts_only_the_inherited_edition_in_the_package_table() {
+    for manifest in [
+        "[package]\nname = \"a\"\nedition.workspace = true\n",
+        "[package]\nname = \"a\"\n  edition . workspace=true  # inherited\n[lints]\n",
+        "[package]\nedition = { workspace = true }\n",
+    ] {
+        assert!(inherits_workspace_edition(manifest), "{manifest}");
+    }
+    for manifest in [
+        "[package]\nname = \"a\"\n",
+        "[package]\nedition = \"2018\"\n",
+        "[package]\nedition = \"2024\"\n",
+        "[package]\nedition.workspace = false\n",
+        "edition.workspace = true\n[package]\nname = \"a\"\n",
+        "[package]\n[lib]\nedition.workspace = true\n",
+        "[package]\nedition.workspace = true\n[lib]\nedition = \"2018\"\n",
+        "[package]\nedition.workspace = true\n[[bin]]\nname = \"b\"\nedition = \"2018\"\n",
+        "[package]\nedition.workspace = true\nlib = { path = \"#\", edition = \"2018\" }\n",
+        "[package]\nedition.workspace = true # edition = \"2018\"\nx = 1 # the edition\n",
+        "[package]\nedition.workspace = true\nreadme = \"\"\"\nx\n\"\"\"\n",
+        "[package]\n# edition.workspace = true\n",
+    ] {
+        assert!(!inherits_workspace_edition(manifest), "{manifest}");
+    }
+}
+
+#[test]
+fn edition_violations_want_the_inherited_edition_and_the_edition_the_reader_follows() {
+    let root = std::env::temp_dir().join(format!("ironafs-xtask-edition-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut graph = workspace(&[("ironafs-a", &[]), ("ironafs-b", &[]), ("ironafs-c", &[])]);
+    graph.root.clone_from(&root);
+    for (member, manifest) in graph.members.iter_mut().zip([
+        "[package]\nedition.workspace = true\n",
+        "[package]\nedition = \"2018\"\n",
+        "[package]\nedition.workspace = true\n",
+    ]) {
+        member.dir = root.join("crates").join(&member.name);
+        std::fs::create_dir_all(&member.dir).unwrap();
+        std::fs::write(member.dir.join("Cargo.toml"), manifest).unwrap();
+    }
+    if let Some(member) = graph.members.get_mut(2) {
+        member.editions = vec!["2024".into(), "2021".into(), "2021".into()];
+    }
+
+    assert_eq!(
+        edition_violations(&graph).unwrap(),
+        [
+            Violation::NoWorkspaceEdition {
+                name: "ironafs-b".into(),
+                manifest: PathBuf::from("crates/ironafs-b/Cargo.toml"),
+            },
+            Violation::Edition {
+                name: "ironafs-c".into(),
+                edition: "2021".into(),
+            },
+        ]
+    );
     std::fs::remove_dir_all(&root).unwrap();
 }

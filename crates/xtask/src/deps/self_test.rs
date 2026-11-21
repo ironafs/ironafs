@@ -197,6 +197,16 @@ fn is_without_lints(violation: &Violation, name: &str) -> bool {
         if found == name && manifest == Path::new(&format!("crates/{name}/Cargo.toml")))
 }
 
+fn is_without_edition(violation: &Violation, name: &str) -> bool {
+    matches!(violation, Violation::NoWorkspaceEdition { name: found, manifest }
+        if found == name && manifest == Path::new(&format!("crates/{name}/Cargo.toml")))
+}
+
+fn is_edition(violation: &Violation, name: &str, edition: &str) -> bool {
+    matches!(violation, Violation::Edition { name: found, edition: at }
+        if found == name && at == edition)
+}
+
 /// A planted case: what it plants, and what it must produce. Each
 /// predicate must match at least one violation, and each violation at
 /// least one predicate.
@@ -982,6 +992,38 @@ const CASES: &[Case] = &[
         }],
     },
     Case {
+        name: "include! hidden by a C string prefix an older edition does not have",
+        plant: |fixture| {
+            fixture.edition(PLANTED_CRATE, "edition = \"2018\"");
+            plant_source(
+                fixture,
+                "macro_rules! drop_all { ($($t:tt)*) => {}; }\n\
+                 drop_all!(cr\"\\\" \");\n\
+                 include!(\"../../ironafs-net/src/lib.rs\"); // \"\n",
+            );
+        },
+        expect: &[
+            |found| is_without_edition(found, PLANTED_CRATE),
+            |found| is_edition(found, PLANTED_CRATE, "2018"),
+            |found| is_planted_text(found, 3, "include"),
+        ],
+    },
+    Case {
+        name: "a target in an older edition than its package",
+        plant: |fixture| {
+            fixture.manifest_tail("ironafs-xdr", "\n[lib]\nedition = \"2021\"\n");
+        },
+        expect: &[
+            |found| is_without_edition(found, "ironafs-xdr"),
+            |found| is_edition(found, "ironafs-xdr", "2021"),
+        ],
+    },
+    Case {
+        name: "a package in the workspace's edition named outright",
+        plant: |fixture| fixture.edition("ironafs-cache", "edition = \"2024\""),
+        expect: &[|found| is_without_edition(found, "ironafs-cache")],
+    },
+    Case {
         name: "a pure crate with an empty lints table",
         plant: |fixture| fixture.lints("ironafs-auth", "\n[lints]\n"),
         expect: &[|found| is_without_lints(found, "ironafs-auth")],
@@ -1001,7 +1043,10 @@ const CASES: &[Case] = &[
                 "\n[package.metadata.notes]\ntext = \"\"\"\n[lints]\nworkspace = true\n[notes]\n\"\"\"\n",
             );
         },
-        expect: &[|found| is_without_lints(found, "ironafsd")],
+        expect: &[
+            |found| is_without_edition(found, "ironafsd"),
+            |found| is_without_lints(found, "ironafsd"),
+        ],
     },
     Case {
         name: "a target-scoped lints table",
