@@ -40,6 +40,13 @@ pub struct Request {
 }
 
 impl Request {
+    /// Whether this is a snapshot's first dump, of links; else it is its
+    /// second, of addresses.
+    #[must_use]
+    pub fn is_links(&self) -> bool {
+        self.dump == Dump::Links
+    }
+
     /// The request's bytes, ready to send to the kernel.
     #[must_use]
     pub fn bytes(&self) -> [u8; 20] {
@@ -319,7 +326,10 @@ impl Monitor {
         self.sequence
     }
 
-    fn stop(&mut self) {
+    /// Stops the source: every consumer is told, the generation becomes
+    /// unavailable, and every later call fails. A driver whose thread ends
+    /// calls it, so readers never keep a generation nobody moves.
+    pub fn stop(&mut self) {
         self.stopped = true;
         self.snapshot = None;
         self.publisher.stop();

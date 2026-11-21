@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# A driver (ADR 0004, C4, point 3): the network-change monitor's thread,
+# over ironafs-os's route sockets, feeding ironafs-netgen's state machine.
+[package]
+name = "ironafs-net"
+description = "IronAFS's network drivers: the network-change monitor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ironafs-netgen.workspace = true
+ironafs-os.workspace = true
+
+[lints]
+workspace = true

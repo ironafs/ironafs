@@ -61,6 +61,7 @@ fn answer_snapshot(monitor: &mut Monitor) {
         panic!("no address dump after the link dump");
     };
     assert_eq!(addresses.dump, Dump::Addresses);
+    assert!(links.is_links() && !addresses.is_links());
     assert_ne!(addresses.sequence, links.sequence);
     let mut datagram = v4_address(addresses.sequence, 20, 0x80);
     datagram.extend(v6_address(addresses.sequence, 20, 0x80));
@@ -482,4 +483,18 @@ fn a_table_over_its_cap_treats_every_message_of_its_kind_as_a_change() {
     let before = current(&reader);
     monitor.notification(&up_link(0, 10)).unwrap();
     assert_eq!(current(&reader), before + 1);
+}
+
+#[test]
+fn stop_tells_every_consumer_and_refuses_everything_after() {
+    let (mut monitor, reader, seen) = started();
+    monitor.stop();
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(monitor.request(), None);
+    assert_eq!(monitor.notification(&[]), Err(Stopped));
+    assert_eq!(monitor.reply(&[]), Err(Stopped));
+    assert_eq!(monitor.lost(Loss::Resumed), Err(Stopped));
+    for each in &seen {
+        assert_eq!(each.stops(), 1);
+    }
 }
