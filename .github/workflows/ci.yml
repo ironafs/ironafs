@@ -115,11 +115,32 @@ jobs:
         run: cargo --locked xtask check-abi
       - name: Prove the declaration check catches planted mismatches
         run: cargo --locked xtask check-abi --self-test
+      - name: Prove mem-wipe's stores survive the release profile, x86_64 and aarch64 Linux
+        run: cargo --locked xtask check-wipe
       - name: Run tests
         run: cargo nextest run --workspace --profile ci --retries 0 --no-tests fail --locked
       - name: Run doc-tests
         timeout-minutes: 5
         run: cargo test --doc --workspace --locked
+      - name: Run the dump marker tests, with core files and with a piped collector
+        # ADR 0004, O26, point 5, and ADR 0005, sheets 11 and 12: each image
+        # goes to <dir>/core.<pid>, first written by the kernel, then through
+        # a pipe to tee, with core_pipe_limit above zero so the kernel waits
+        # for the collector. The tests run as root (the id-change and
+        # set-id exec tests need it), through nextest's target runner.
+        timeout-minutes: 10
+        run: |
+          dir="$RUNNER_TEMP/ironafs-cores"
+          mkdir -p "$dir"
+          chmod 0777 "$dir"
+          ulimit -c unlimited
+          export IRONAFS_CORE_DIR="$dir"
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="sudo --preserve-env=IRONAFS_CORE_DIR"
+          filter='test(/leaves_no_image|dump_of_an_unprotected|id_change|set_id_exec/)'
+          for pattern in "$dir/core.%p" "|/usr/bin/tee $dir/core.%p"; do
+            sudo sysctl -w kernel.core_pipe_limit=16 "kernel.core_pattern=$pattern"
+            cargo nextest run -p ironafs-os --profile ci --retries 0 --no-tests fail --locked --run-ignored only -E "$filter"
+          done
 
   miri:
     name: miri
