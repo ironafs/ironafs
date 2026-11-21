@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The weekly tier's manifest (docs/specs/testing.md, 5.5, point 1): one id
+# per line, each a job of .github/workflows/weekly.yml with a step named
+# "run <id>". The freshness check counts a run as complete only when its
+# first attempt ran every id here.
+build

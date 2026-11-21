@@ -48,6 +48,9 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         crate::grants::run(self_test, output)?;
         crate::pure::run(self_test, output)?;
     }
+    // The live freshness check needs the GitHub API and runs in CI; its
+    // self-test needs neither.
+    crate::freshness::run(true, output)?;
 
     check_reuse_result(
         Command::new("reuse").arg("lint").status(),

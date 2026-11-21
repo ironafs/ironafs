@@ -7,6 +7,7 @@ mod args;
 mod check;
 mod deps;
 mod fixture;
+mod freshness;
 mod grants;
 mod hooks;
 mod json;
@@ -45,6 +46,11 @@ enum Error {
         check: &'static str,
         violations: Vec<String>,
     },
+    /// A check could not run, so it verified nothing (exit status 2).
+    CouldNotRun {
+        check: &'static str,
+        reason: String,
+    },
     /// A self-test case did not end as planted.
     SelfTest {
         check: &'static str,
@@ -76,7 +82,7 @@ impl Error {
 
     fn exit_code(&self) -> i32 {
         match self {
-            Self::Usage(_) => 2,
+            Self::Usage(_) | Self::CouldNotRun { .. } => 2,
             Self::Failed { status, .. } => {
                 #[cfg(unix)]
                 {
@@ -123,6 +129,12 @@ impl fmt::Display for Error {
                     .iter()
                     .try_for_each(|violation| write!(formatter, "\n  {violation}"))
             }
+            Self::CouldNotRun { check, reason } => {
+                write!(
+                    formatter,
+                    "{check} could not run, so it verified nothing: {reason}"
+                )
+            }
             Self::SelfTest { check, case, found } => {
                 write!(
                     formatter,
@@ -146,6 +158,7 @@ fn run_task(
         args::Task::CheckDeps { self_test } => deps::run(self_test, output),
         args::Task::CheckGrants { self_test } => grants::run(self_test, output),
         args::Task::CheckPure { self_test } => pure::run(self_test, output),
+        args::Task::Freshness { self_test } => freshness::run(self_test, output),
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
         args::Task::Trailers(mode) => trailers::run(mode, output),

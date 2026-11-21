@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# The nightly tier (docs/specs/testing.md, 5.5). Its manifest is
+# tests/tiers/nightly.txt: each id there is a job of that name with a step
+# named "run <id>", and the freshness check (freshness.yml) counts a run
+# only when attempt 1 reported every id that way.
+#
+# Rules for every job added here (5.5, points 2, 4 and 9):
+# - `permissions: contents: read` and nothing else, and no secret;
+# - no artefact upload and no cache of anything a test produced or read;
+# - test output is captured by the xtask runner, never streamed to the log,
+#   and seeds come from the operating system's random source;
+# - no `concurrency` key: a dispatched run must never cancel a running
+#   nightly, and a failed run is never re-run to green.
+#
+# Slots, each added with its manifest id by the change that builds it:
+# - TODO(#75): property tests with fresh seeds, and fresh simulator seeds,
+#   through the xtask runner that captures and classifies their output;
+# - TODO(#45): each fuzz target for 10 minutes, one job per target, so a
+#   crash never skips the rest;
+# - TODO(#74): the coverage report;
+# - TODO(#73): mutation testing, sharded.
+# Until then the tier runs `build`, which proves the schedule fires and the
+# default branch builds on the current runner image.
+
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: run build
+        run: |
+          cargo build --workspace --all-targets --locked
+          # A build that produced nothing proves nothing: name each binary.
+          for binary in afs xtask; do
+            if [[ ! -x "target/debug/$binary" ]]; then
+              printf 'missing binary: %s\n' "$binary"
+              exit 1
+            fi
+            printf 'built: %s\n' "$binary"
+          done
