@@ -46,13 +46,15 @@ ADR 0004, C44, points 1 to 6 (**Firm**):
 >    in N36, N39 and N41. The message sets themselves are in the specification for
 >    IPC, written before the code.
 
-ADR 0004, C45, points 1 and 2 (**Firm**), the first sentences, which
-this framework serves:
+ADR 0004, C45, points 1 to 3 (**Firm**), the sentences this framework
+serves:
 
 > 1. **The control endpoint** is open to any local user. The caller is the
 >    peer the operating system reports. […]
 > 2. **The adapter endpoint** is open only to adapter processes the daemon
 >    itself registered. […]
+> 3. A binding is made only from a **daemon-owned registration.** […] A
+>    binding without one is refused. […]
 
 ADR 0004, C43, points 1 and 2 (**Firm**):
 
@@ -137,6 +139,9 @@ Section 9 shows where each is kept and which test fails if it is broken.
    - on Windows, the finite pipe pool and the one read made before the
      caller is attested (5.2, point 10; 5.4, point 1);
    - the order of checks on every frame, both directions (5.4);
+   - what every byte and every unit of work is charged to, per caller
+     and in all (5.2.1), and how ingress hands requests to the bounded
+     executor (5.6.4);
    - the one XDR definition set, its generator, the schema digest, and
      the one fuzz suite (5.6.1, 10.4);
    - the connection states and ordering rules (5.6.2, 5.6.3).
@@ -169,6 +174,8 @@ Section 9 shows where each is kept and which test fails if it is broken.
    Windows it reads exactly the 4-byte length prefix of the first frame
    first, because Windows attests a pipe client only after data has been
    read; nothing is decoded or answered until the caller is attested.
+   Every connection is admitted against the total and the handshake
+   limits before any byte is read, on every operating system.
 3. A frame is a 4-byte big-endian length followed by one XDR message.
    Every frame cap is a wire constant.
 4. The first frame each way is the handshake. `Hello` names the role, a
@@ -187,9 +194,17 @@ Section 9 shows where each is kept and which test fails if it is broken.
    generates the codecs with IronAFS's own parser; the generated code is
    checked in. The schema digest is SHA-256 over the set's canonical,
    LF-normalised bytes.
-9. Every byte the daemon holds for a connection is reserved from a global
-   budget before it is allocated, and every admitted request has its
-   terminal reply paid for before its handler runs.
+9. Every byte the daemon holds for a connection is reserved, before it
+   is allocated, from a global budget and from its caller's own budget,
+   and every admitted request has its terminal reply paid for before its
+   handler runs.
+10. Readers never run handlers. They serve callers in turns, one frame a
+    turn, and hand each admitted request to a bounded executor without
+    waiting; a full executor is a retryable `Busy`. Every request has a
+    deadline counted from its arrival.
+11. A secret leaves a client only through one operation of the checked
+    connection it was built for, and a daemon sends one only on a
+    connection its endpoint has admitted for it.
 
 ## 4. Terms
 
@@ -215,6 +230,14 @@ Section 9 shows where each is kept and which test fails if it is broken.
 - **Checked connection:** a client connection on which the endpoint's
   daemon check has passed and a valid `HelloReply` has been read on the
   same handle (5.4, point 16).
+- **Arrival:** the time, on the awake clock of ADR 0004, C37, point 1,
+  at which a frame's 4-byte length is complete (5.6.4). Every deadline
+  of this document runs on that clock, so a suspended machine expires
+  nothing.
+- **Turn:** one bounded step of an ingress thread for one connection
+  (5.6.4).
+- **Retryable:** said of a refusal that changed nothing and that the
+  same request, sent again later with a new request id, may pass.
 - **Definition set:** the XDR source files from which every IPC codec is
   generated (5.6.1).
 - **Wire constant:** a bound fixed by this or an endpoint specification,
@@ -322,11 +345,17 @@ struct HelloReply {                /* daemon to client, first frame */
    daemon can answer `ROLE_REFUSED` to any value instead of failing to
    decode `[OWN]`.
 3. `daemon_min` and `daemon_max` are filled in every reply, so a refused
-   client can say which version to install `[OWN]`.
+   client can say which version to install `[OWN]`. `daemon_max` is the
+   daemon's version on this endpoint and `daemon_min` the lowest version
+   it accepts there (5.3.2, points 3 and 5); a client checks their shape
+   (5.4, point 16).
 4. `instance_id` is sent in every reply. It is not a secret: every
    connecting caller is told it. It is what a client binds to its
    checked connection (ADR 0004, C43, point 2) and what an agent compares
    after a reconnect (ADR 0004, C42, point 3) `[ADR 0004 C44.2: Firm]`.
+   It names a run of the daemon and proves nothing about who sent it:
+   the operating system's check is the only evidence that the peer is
+   the daemon (5.4, point 16) `[OWN]`.
 5. `client_name` is a label the client chooses (`afs`, `aklog`). The
    daemon shows it in diagnostics, escaped, and never decides anything
    on it `[OWN]`.
@@ -376,6 +405,16 @@ struct Envelope {
    endpoint maps its daemon-to-adapter stream onto `EVENT` and its
    acknowledgements onto `NOTICE`, in its own specification `[OWN]`, so
    that one envelope serves both (ADR 0004, C44, point 1).
+5. **Numbers by kind, for a sender** `[OWN]`. The table above is the
+   whole rule; no other number is ever sent:
+   - `REQUEST` and `NOTICE` (client), `PART` and `EVENT` (daemon): a row
+     of that kind that the chosen version has;
+   - `REPLY` with `RESULT_OK`: the row of the request it answers;
+   - `REPLY` with `RESULT_ERROR`: the number of the request it answers,
+     copied from that request's envelope whether or not any row has it.
+     This is the schema-independent path of 5.1.5, point 1, and its body
+     is always an `ErrorReplyBody`;
+   - the closing notice and `CANCEL`: 0, the one use of that number.
 
 #### 5.1.5 Reply body
 
@@ -417,6 +456,10 @@ struct ErrorReplyBody {
    message holds at most 64 extensions (5.2, point 5), so the list always
    has room for all of them. It is empty only when there were none or the
    request was refused before its extensions were walked (5.4, point 12).
+   The tags are protocol metadata this format defines, copied from the
+   request as numbers; they are the one part of a request, with the
+   envelope's `number` and `request_id`, that a reply repeats (section 7,
+   point 2).
 3. A `PART`'s body is the row's part type alone.
 
 #### 5.1.6 Error
@@ -498,6 +541,24 @@ typedef Extension ExtensionList<16>;
    is stated per field; in this framework, `HelloResult`, `IpcError.code`
    and `IpcError.contract` are open `[OWN]`, because later releases add
    values a peer must be able to show.
+8. **A registered value is typed** `[OWN]`. Each tag's registration
+   names the XDR type of its `value`, a type of the definition set with
+   its own cap table. The bytes of `value` are one XDR message of that
+   type, with a cap of at most 1,024 bytes.
+   - A receiver that knows the tag (point 5) decodes the value with the
+     type's generated decoder, whole and with no trailing bytes, during
+     the walk of 5.4, point 12, so before any handler or consumer runs.
+     A value that does not decode is `Malformed`, fatal. An unknown tag's
+     value is never decoded: it is carried as bytes.
+   - A value type holds no `ExtensionList`, directly or in any component,
+     and no secret field; the generator refuses either (5.6.1, point 3).
+     So extensions do not nest, and the lists that 5.1.7, point 6 counts
+     are those of the body's own structures.
+   - The memory a message's known values may request when decoded is
+     part of the message's memory budget: the generator adds, to each
+     body type's budget, 16,384 bytes times the largest heap ratio
+     (xdr.md 5.2, point 9) of the value types registered for the types
+     in that body (5.2, point 7).
 
 ### 5.2 Caps
 
@@ -591,6 +652,13 @@ typedef Extension ExtensionList<16>;
    18,140 = 72,560, set at 73,728 (72 KiB) `[OWN]`. The generator's
    compile-time assertion is the check on each target; a layout that
    breaks the budget does not build there, and this table changes.
+   No tag is registered for `IpcError` in this version, so its budget
+   has no part for typed values (5.1.7, point 8); a body type with
+   registered tags adds that part. For each row the generator also emits
+   the row's **decode charge**: its request body's memory budget in
+   bytes, and the largest number of heap requests one decode of it can
+   make (xdr.md 5.2, point 9.5), the typed values' included. 5.2.1,
+   rule 2 reserves both before the body is decoded.
 8. **Policy budgets.** Each has a default and a hard ceiling. A
    configured value of 0 or above its ceiling, or one that breaks a rule
    in point 9, refuses the whole configuration: at start the daemon does
@@ -598,29 +666,47 @@ typedef Extension ExtensionList<16>;
 
    | Budget | Default | Ceiling | On excess |
    |---|---|---|---|
-   | Connections in handshake (Windows pre-attestation and `AwaitHello` together), all callers | 16 | 64 | close without reading (5.6.2) |
-   | Connections in `AwaitHello` per caller key (Linux and macOS, where the caller is known at accept) | 4 | 16 | close without reading |
+   | Connections in all: every connection from its accept until its release (5.6.2), in any state | 128 | 1,024; on Windows also point 10 | close without reading |
+   | Connections in handshake, all callers: `PreAttestation`, `AwaitHello` and `AwaitBinding`, and `Draining` entered from one of them | 16 | 64 | close without reading |
+   | Connections in handshake per caller key: `AwaitHello` and `AwaitBinding` on every operating system (on Windows from the capture), and `Draining` entered from one of them | 4 | 16 | close without reading further |
    | Open connections per caller key | 16 | 64 | `HelloReply` `BUSY`, then close |
-   | Open connections in all | 128 | 1,024; on Windows also point 10 | close without reading |
    | Listening pipe instances (Windows) | 2 | 8 | n/a: the daemon never creates more |
-   | Handshake deadline: from accept until `HelloReply` is queued | 5 s | 30 s | close; no reply |
-   | Frame deadline: from a frame's first byte until its last | 10 s | 60 s | close |
+   | Handshake deadline: from accept until the connection is `Open` or its refusal is queued | 5 s | 30 s | close; no reply |
+   | Frame deadline: from a frame's first byte until its last, read or discarded | 10 s | 60 s | close |
    | Write deadline: no byte of queued output written for this long | 30 s | 300 s | close; requests in flight are cancelled (5.6.3) |
+   | Closing deadline: from entering `Closing` until the connection is closed | 5 s | 30 s | close, whatever is still queued |
+   | Request deadline: from a `REQUEST`'s arrival until its result (5.6.4) | 60 s | 3,600 s | `DeadlineExceeded` (5.6.3, rule 3) |
    | Requests in flight per connection | 16 | 256 | `TooManyRequests` for the extra request; the connection stays |
-   | Parts per streaming request | 4,096 | 65,536 | the stream ends; its terminal reply reports the early end |
-   | Output queued per connection (encoded frames not yet written) | 2 MiB | 16 MiB | back-pressure (5.2.1, rule 4) |
-   | In-flight bytes, all connections (5.2.1) | 64 MiB | 1 GiB | `Busy` without running the request |
+   | Requests in flight per caller key, those still running after their connection closed included | 32 | 512 | `TooManyRequests`; the connection stays |
+   | Executor queue: admitted requests waiting for a worker, all callers (5.6.4) | 256 | 4,096 | `Busy`, retryable, counted; the connection stays |
+   | Parts per streaming request | 4,096 | the row's `parts_max` (point 11) | the stream ends; its terminal reply reports the early end |
+   | Part bytes per streaming request | 4 MiB | the row's `stream_bytes_max` (point 11) | the stream ends; its terminal reply reports the early end |
+   | Output queued per connection (encoded frames not yet written, each with its entry) | 2 MiB | 16 MiB | back-pressure (5.2.1, rule 4) |
+   | In-flight bytes per caller key (5.2.1) | 16 MiB | 256 MiB | as a failed reservation (5.2.1) |
+   | In-flight bytes, all connections (5.2.1) | 64 MiB | 1 GiB | as a failed reservation (5.2.1) |
+   | Live heap requests, all connections (5.2.1, rule 6) | 1,048,576 | 16,777,216 | as a failed reservation (5.2.1) |
 
-   An endpoint specification may set a lower ceiling for its endpoint, or
-   add budgets of its own (the adapter endpoint's credit), never a higher
-   ceiling `[OWN]`.
+   An endpoint specification may set a lower ceiling for its endpoint,
+   set a lower request deadline for a row, or add budgets of its own
+   (the adapter endpoint's credit), never a higher ceiling `[OWN]`.
 9. **Rules between budgets**, checked when the configuration is
-   validated `[OWN]`:
-   - connections in handshake ≤ open connections in all;
+   validated `[OWN]`. A is the admission allowance and R the endpoint's
+   largest single-request reservation (5.2.1, rules 1 and 2), both
+   computed from the configured values and the generator's constants:
+   - connections in handshake ≤ connections in all; connections in
+     handshake per caller key ≤ connections in handshake;
    - output queued per connection ≥ the endpoint's largest framed reply
-     frame plus T (5.2.1, rule 1), so one reply always fits;
-   - in-flight bytes ≥ (connections in handshake + open connections in
-     all) × the admission allowance (5.2.1, rule 1);
+     frame plus `ipc.overhead.frame`, so one reply or part always fits
+     an empty queue;
+   - in-flight bytes, all connections ≥ connections in all × A;
+   - in-flight bytes per caller key ≥ (open connections per caller key +
+     connections in handshake per caller key) × A + R, so a caller at
+     its connection limits can still run a request; and ≤ in-flight
+     bytes, all connections;
+   - requests in flight per caller key ≤ executor queue ÷ 4, so one
+     caller can fill at most a quarter of the queue;
+   - each streaming budget ≤ its row constants (point 11);
+   - closing deadline ≤ write deadline;
    - on Windows, point 10.
 10. **The Windows pipe pool.**
     - Windows accepts an instance count from 1 to 255, and 255 means no
@@ -635,89 +721,227 @@ typedef Extension ExtensionList<16>;
       largest finite count: a multi-session host runs one session agent
       per logon session beside short-lived `afs` commands, and the
       per-caller budgets, not a small pool, stop one user from taking
-      every instance `[OWN]`.
-    - Every instance counts against the pool from its creation until its
-      handle is closed: listening, in pre-attestation, in `AwaitHello`,
-      open, and disconnecting with an operation not yet at its terminal
-      completion (ADR 0005, sheet 18). Configuration is refused unless
-      listening instances + open connections in all ≤ 254 `[OWN]`; since
-      connections in handshake ≤ open connections in all (point 9),
-      unauthenticated handshakes fit inside it too. When every instance
-      is in use, the daemon creates none, and a new client's connect
-      finds the pipe busy.
+      every instance `[OWN]`. Below, P is the constant the wrapper
+      actually passes for the endpoint, 254 or the endpoint's lower one.
+    - **One count of instances** `[OWN]`. Every instance is in exactly
+      one of these states, and counts against P from its creation until
+      its handle is closed:
+
+      | Instance state | Counts as a listener | Counts as a connection (point 8) | Operations that may be outstanding |
+      |---|---|---|---|
+      | Listening | yes | no | one connect wait |
+      | `PreAttestation` | no | yes, and a handshake slot | one read, of at most 4 bytes |
+      | `AwaitHello`, `AwaitBinding` | no | yes, a handshake slot and a per-caller one | one read, one write |
+      | `Open`, `Closing` | no | yes | one read, one write |
+      | `Draining` | no | yes; and the handshake slots it held when it entered | those started before, each awaiting its terminal completion |
+
+      An instance is **released**, and only then leaves every count but
+      P's, when every operation started on it has reached its terminal
+      completion and it has been disconnected (ADR 0005, sheet 18). A
+      released instance is given a new connect wait or its handle is
+      closed.
+    - **Configuration is refused unless** listening instances +
+      connections in all ≤ P `[OWN]`. Connections in handshake are
+      inside connections in all (point 9), and `Draining` instances stay
+      in it until release, so every instance the daemon can hold is in
+      the sum, and a listener that became a connection can always be
+      replaced. When the connection count is at its budget the daemon
+      still listens; a client that connects then is disconnected without
+      a read (5.4, point 2).
+    - **Pipe buffers.** `ipc.pipe.buffer_in` = `ipc.pipe.buffer_out` =
+      4,096 bytes, constants in the wrapper, the same on every instance
+      (ADR 0005, sheet 17) `[OWN]`: the daemon's own buffers hold
+      frames, so the pipe needs no more than one page each way. The
+      system holds this storage, outside the in-flight budgets; its
+      nominal bound is P × 8,192 bytes (2,080,768 at 254). How Windows
+      rounds or reserves the two sizes is UNVERIFIED until the Windows
+      gate records it; nothing here is coded from it.
+    - **Outstanding operations** are at most the last column's: one
+      connect wait on a listener, one read and one write on a connected
+      instance, so at most 2 × P in all `[D2 sheet 18]`. Each operation's
+      block is inside the admission allowance (5.2.1, rule 1); its
+      buffer is one this connection has already reserved (the prefix,
+      envelope, frame or discard buffer for a read; a queued frame for a
+      write), at most one frame. So outstanding operations are bounded
+      in count and in bytes by the budgets of point 8. A block whose
+      completion never arrives stays counted, with its instance in
+      `Draining` (5.6.2).
+
+11. **Stream limits** (wire constants) `[OWN]`. A catalogue row of kind
+    streaming request declares `parts_max`, the most `PART` frames one
+    request may be answered with, and `stream_bytes_max`, the most bytes
+    of those frames' messages in all. Both are wire constants of the
+    row, in its cap table: the daemon never sends more, whatever its
+    configured budgets (point 8), and a client enforces both on what it
+    receives (5.4, point 19). The framework's ceilings, which the
+    generator applies to every row:
+
+    | Cap name | Bounds | Ceiling |
+    |---|---|---|
+    | `ipc.stream.parts.ceiling` | a row's `parts_max` | 65,536 |
+    | `ipc.stream.bytes.ceiling` | a row's `stream_bytes_max` | 16,777,216 (16 MiB) |
+
+    A result that can pass a row's limits is fetched by further
+    requests, as its endpoint specification says; a stream is one
+    bounded result, never an open-ended feed.
 
 #### 5.2.1 Reservation before allocation
 
-The in-flight budget of 5.2, point 8 counts every byte the daemon holds
-for connections. Each byte is reserved before it is allocated, never
-charged afterwards `[OWN]`, from coding standards rule 3 and ADR 0004,
-C39, point 3.
+The in-flight budgets of 5.2, point 8 count every byte the daemon holds
+for connections, in two accounts: one for all connections and one for
+each caller key. A reservation is made in both accounts or in neither,
+before the bytes are allocated and never afterwards `[OWN]`, from coding
+standards rule 3 and ADR 0004, C39, point 3. A reservation that either
+account cannot cover has failed. A connection whose caller is not yet
+known (Windows, `PreAttestation`) is charged in the global account only,
+and for its allowance only; the allowance is charged to its caller's
+account at the capture (5.4, point 2).
 
-1. **Admission.** Each accepted connection reserves an allowance: one
-   handshake buffer of 96 bytes (the larger handshake frame, framed), a
-   discard buffer of 4 KiB for refused frames, and one **reserved reply
-   slot** of T bytes. T is the largest framed terminal reply the daemon
-   may have to send without its handler having built it: the larger of
-   the framed `ErrorReplyBody` (18,160 bytes, 5.2, point 6) and the
-   largest early-end reply of the endpoint's streaming rows, computed by
-   the generator (5.6.1, point 3). If the budget cannot cover the
-   allowance, the connection is closed without reading and without a
-   reply; on Windows it never leaves pre-attestation admission.
-2. **Before a frame's body is read** (state `Open` only) the daemon
-   reserves `length` bytes, already checked against the cap, and T bytes
-   of **terminal capacity**, as one reservation. If the frame is a
-   `CANCEL` or a `NOTICE`, or is refused at 5.4, point 8, the terminal
-   capacity is released at once; for an admitted `REQUEST` it is that
-   request's. If the reservation fails, nothing is allocated for the
-   frame, and:
-   - a `length` below 16 is refused as `Truncated` (fatal) unread;
-   - otherwise exactly the 16 envelope bytes are read into the handshake
-     buffer, which is free once the connection is open, and 5.4, point 8
-     runs in full. A `REQUEST` that passes it raises the mark, has the
-     rest of its frame read and discarded through the discard buffer,
-     each chunk zeroed, and is answered `Busy` from the reserved reply
-     slot. A `NOTICE` is discarded the same way and counted. A valid
-     `CANCEL` goes to 5.4, point 9b.
+1. **Admission.** Each accepted connection reserves an allowance, A:
+   - the **record charge**: `ipc.overhead.connection` (4,096 bytes),
+     plus the configured requests in flight per connection ×
+     `ipc.overhead.request` (512 bytes), plus on Windows 2 ×
+     `ipc.overhead.operation` (256 bytes). It pays for the connection's
+     record, its 16-byte envelope buffer, its 96-byte handshake buffer
+     (the larger handshake frame, framed), its request table, the fixed
+     part of its output queue, its caller's account record (rule 7) and,
+     on Windows, the blocks of the one read and one write an instance
+     may have outstanding (5.2, point 10);
+   - 92 bytes, `Hello`'s memory budget (5.2, point 3), for the one heap
+     request its decode makes (`client_name`);
+   - a discard buffer of 4 KiB for refused frames;
+   - one **reserved reply slot** of T bytes. T is the largest framed
+     terminal reply the daemon may have to send without its handler
+     having built it: the larger of the framed `ErrorReplyBody` (18,160
+     bytes, 5.2, point 6) and the largest early-end reply of the
+     endpoint's streaming rows, computed by the generator (5.6.1,
+     point 3).
+
+   The three `ipc.overhead.*` values, and `ipc.overhead.frame` (64
+   bytes, rule 4), are ceilings fixed here. The code asserts at compile
+   time, on each target, that the types each one pays for are no
+   larger; a target where one is larger does not build, and this point
+   changes. The allowance makes a fixed number of heap requests,
+   `ipc.overhead.connection_requests` = 16 at most, counted under rule 6.
+   Everything in the allowance is allocated once, at admission, and
+   nothing in it grows. If either account cannot cover the allowance,
+   the connection is closed without reading and without a reply; on
+   Windows it never enters `PreAttestation`.
+2. **A frame after the handshake** (state `Open` or `AwaitBinding`). The
+   order of checks is 5.4, points 7 to 11; what each step holds:
+   - The 4 length bytes and the 16 envelope bytes are read into the
+     record's envelope buffer. Nothing is reserved for them, and no body
+     byte is read until the envelope, the catalogue and the caller's
+     authority have been checked (5.4, points 8 to 10).
+   - **A refusal that keeps the connection** (`UnknownMessage`,
+     `NotSupported`, `TooManyRequests`, the endpoint's authorisation
+     code, or `Busy` below) reserves nothing. The daemon reads exactly
+     the frame's remaining `length` − 16 bytes into the discard buffer,
+     a chunk at a time, zeroing each chunk before the next is read,
+     under the frame's own deadline, counted from its first byte; a
+     deadline that passes first closes the connection. Only then is the
+     refusal queued, as an `ErrorReplyBody` in the reserved reply slot.
+     While that slot holds an unwritten frame the daemon reads nothing
+     more from the connection, so a client is refused at most as fast
+     as it reads its refusals. The next frame therefore starts at the
+     right byte on every path.
+   - **An admitted `REQUEST`** makes one reservation: its body's
+     `length` − 16 bytes; T bytes of **terminal capacity**; and the
+     row's decode charge, bytes and heap requests (5.2, point 7). If it
+     fails, the request is refused as `Busy`, as above. The largest such
+     reservation an endpoint can make is R (5.2, point 9), which the
+     generator emits.
+   - **An admitted `NOTICE`** reserves its body bytes and its row's
+     decode charge. If that fails, the notice's body is discarded as
+     above and the row's declared overload rule applies (5.6.1,
+     point 4): `drop`, counted, or `fatal`. A notice has no reply to
+     carry `Busy`.
+   - A `CANCEL` has no body and reserves nothing.
+   - **After the body is decoded** the decode charge is reduced to what
+     the decoder's ledger recorded, bytes and heap requests (xdr.md 5.2,
+     point 9.2), and the rest is released. What remains is held until
+     the decoded value is dropped. A body's buffer is held as long as
+     any value borrows from it (xdr.md 5.1, point 8).
+   - These are the only results that depend on the memory then free: a
+     valid `REQUEST` answered `Busy`; a valid `NOTICE` dropped or fatal
+     as its row declares; and rules 3 and 4's `Busy`, stream end and
+     dropped event. A frame that is malformed, unknown or unauthorised
+     gets the same result whatever memory is free, because every such
+     check comes before the first reservation.
 3. **Handlers.** A handler reserves its largest working set before it
    allocates it, and a mutating handler before its first change. The
    working set of a non-streaming request includes its largest encoded
-   reply, so a reply, once built, never needs another reservation. A
-   failed reservation ends the request as `Busy`, nothing applied, from
-   its terminal capacity. An endpoint specification may name a request
-   whose reply after a committed effect differs (an outcome that cannot
-   be confirmed in time); its reply is still paid from the handler's
-   working set.
+   reply and that frame's queue entry, so a reply, once built, never
+   needs another reservation. A failed reservation ends the request as
+   `Busy`, nothing applied, from its terminal capacity. An endpoint
+   specification may name a request whose reply after a committed effect
+   differs (an outcome that cannot be confirmed in time); its reply is
+   still paid from the handler's working set.
 4. **Output.**
+   - Every queued frame is charged its framed size plus
+     `ipc.overhead.frame` for its queue entry, against the connection's
+     output budget and in both accounts.
    - An admitted request holds its terminal capacity until its one
-     `REPLY` is queued. Any terminal reply that is not the handler's own
-     built reply (an error, `Busy`, `Cancelled`, a stream's early end) is
-     encoded into it. When the handler's own reply is queued instead, the
+     `REPLY` is queued or suppressed (5.4, point 13). Any terminal reply
+     that is not the handler's own built reply (an error, `Busy`,
+     `Cancelled`, `DeadlineExceeded`, a stream's early end) is encoded
+     into it. When the handler's own reply is queued instead, the
      capacity is released.
-   - A `PART` and an `EVENT` reserve their bytes before they are
-     encoded. A `PART` whose reservation fails ends the stream; the
-     terminal reply reports the early end. An `EVENT` whose reservation
-     fails is dropped and counted under the endpoint's rule.
-   - The output cap is a back-pressure threshold, never a refusal of a
-     funded terminal reply. While a connection's queue is at or above
-     its cap, the daemon reads no frame from it, builds no `PART` for it
-     and queues no `EVENT` to it; a terminal `REPLY` whose bytes are
-     already reserved is still appended, after the frames already in the
-     queue. The queue can pass its cap only by the funded terminal
-     replies of requests already in flight, each within its own
-     reservation, so the global budget still holds.
-   - The reserved reply slot is outside the output cap and is used only
-     for point 2's `Busy` or for the closing notice (5.4, point 13). While
-     it holds an unwritten frame, nothing more is read from the
-     connection.
-5. **Release.** Every reservation is released exactly once, when its
-   bytes are freed, with the checked counters of section 6. A buffer the
-   operating system still owns (an overlapped read or write on Windows)
-   is freed, and its reservation released, only at that operation's
-   terminal completion (ADR 0005, sheet 18). A request that runs on after
-   its connection closes keeps its working set until it ends.
+   - **A `PART` or an `EVENT` is admitted whole or not at all.** It is
+     built only if the queue's occupancy plus the frame's whole charge
+     is at most the output budget, and its bytes are reserved before it
+     is encoded. A `PART` that does not fit waits: its handler blocks at
+     a cancellation point until the queue has room, the request is
+     cancelled, its deadline passes or the connection closes. A `PART`
+     whose reservation fails ends the stream; the terminal reply reports
+     the early end. An `EVENT` that does not fit, or whose reservation
+     fails, is dropped and counted under the endpoint's rule. So no
+     nonterminal frame takes the queue past its budget.
+   - While a connection's queue is at or above its budget, the daemon
+     reads no frame from it. A terminal `REPLY` whose bytes are already
+     reserved is still appended, after the frames already in the queue.
+     The queue can pass its budget only by the funded terminal replies
+     of requests already in flight, at most the requests-in-flight
+     budget of them, each within its own reservation, so both accounts
+     still hold.
+   - The reserved reply slot is outside the output budget and is used
+     only for rule 2's refusals or for the closing notice (5.4,
+     point 13). While it holds an unwritten frame, nothing more is read
+     from the connection.
+5. **Release.** Every reservation is released exactly once, in both
+   accounts, when its bytes are freed, with the checked counters of
+   section 6. A buffer the operating system still owns (an overlapped
+   read or write on Windows) is freed, and its reservation released,
+   only at that operation's terminal completion (ADR 0005, sheet 18). A
+   request keeps its request slots (per connection while the connection
+   lives, per caller key always), its executor place and every byte it
+   reserved until its worker has returned, whether or not its connection
+   is still open and whether or not a reply was sent (5.6.4, rule 5). A
+   connection keeps its allowance and its place in the connection counts
+   until its release (5.6.2).
+6. **What is measured.** The accounts count requested bytes, as the XDR
+   profile's ledger does (xdr.md 5.2, point 9), not the capacity an
+   allocator returns `[D3 §5.2.9]`. An allocator's overhead per request
+   and any surplus capacity are outside them. They are bounded
+   separately: every reservation states how many heap requests it
+   covers, and the sum is the live-heap-requests budget of 5.2, point 8,
+   reserved and released with the bytes. A deployment sizes memory from
+   the byte budget plus that count times its allocator's overhead.
+   Storage the operating system holds for a connection (socket buffers,
+   the pipe buffers of 5.2, point 10) is outside both and is bounded by
+   the connection count.
+7. **Caller accounts.** The account record of a caller key exists
+   exactly while the key has a live charge: a connection not yet
+   released, a reservation, or a request whose worker has not returned.
+   It is removed with its last charge, so the records are at most the
+   connections in all plus the requests still running after their
+   connection closed, and those are bounded by the executor (5.6.4).
+   No account, counter or mark outlives its last charge; the framework
+   keeps no history per caller `[OWN]`.
 
-So the ceiling is never passed, and every admitted request's terminal
-reply is paid for before its handler runs.
+So neither ceiling is passed, no caller can reserve more than its own
+budget, and every admitted request's terminal reply is paid for before
+its handler runs.
 
 ### 5.3 Versions
 
@@ -785,7 +1009,13 @@ reply is paid for before its handler runs.
    - 0xFFFF0000 to 0xFFFFFFFF are test numbers (point 8).
    - A catalogue row states: its number, its name, its kind (request,
      streaming request, event or notice), the version that introduced
-     it, its body types, and its cap table. The endpoint specification
+     it, its body types, and its cap table. A request row may be marked
+     a **binding row** (5.4, point 6) and may set a request deadline
+     below the configured one; a streaming row states `parts_max` and
+     `stream_bytes_max` (5.2, point 11); a notice row states its
+     overload rule, `drop` or `fatal` (5.2.1, rule 2); and each body
+     states whether it is secret-bearing and, for a daemon-to-client
+     body, who may receive it (5.5, point 6). The endpoint specification
      adds who may send it.
 3. **Extension tags** form one registry over the whole definition set,
    so one tag number means one extension everywhere `[OWN]`. 0 is never a
@@ -858,12 +1088,18 @@ so a looser input is a fault, not a peer's habit.
      the last message read `[P2 Remarks: CONFIRMED]`
      `[P3 1368: CONFIRMED]`. So on Windows the daemon reads exactly the 4
      bytes of `Hello`'s length prefix before it knows the caller, and
-     nothing more.
-   - The connection is in **pre-attestation** (5.6.2). It holds one of
-     the handshake budget's slots (5.2, point 8) and runs under the
-     handshake deadline. Its 4-byte buffer is the only byte cap in this
-     state, and the connection's admission allowance (5.2.1, rule 1) is
-     already reserved.
+     nothing more. The documentation establishes that a read must come
+     first; it does not say how many bytes that read must return. Four
+     bytes is ADR 0005, sheet 18's rule, the whole prefix and nothing
+     else `[D2 sheet 18]`. That a 4-byte read is enough on every
+     supported release, and whether a shorter one would be, is
+     UNVERIFIED until the Windows gate runs it (10.5).
+   - The connection is in **pre-attestation** (5.6.2). Before the read
+     is started it has passed point 2's first step: it holds a place in
+     the connection count and one of the handshake budget's slots (5.2,
+     point 8), and its admission allowance (5.2.1, rule 1) is reserved.
+     It runs under the handshake deadline. Its 4-byte buffer is the only
+     byte cap in this state.
    - The read of the prefix and the capture of the caller are one
      transition of the pipe driver, on one instance and one connection
      generation (ADR 0005, sheet 18). A read that completes with fewer
@@ -880,15 +1116,29 @@ so a looser input is a fault, not a peer's habit.
      instance's current one and the connection is still in
      pre-attestation; any other result is discarded and its buffer
      zeroed (5.5, point 7).
-   - Only after the caller is captured are point 2's limits applied and
-     the prefix checked as point 3 says.
-2. **Admission.** The handshake budget, the per-caller budgets and the
-   total of 5.2, point 8 are applied in that order, with the allowance of
-   5.2.1, rule 1. Over the handshake budget, the `AwaitHello` per-caller
-   budget or the total: the connection is closed without reading.
-   Over the open-per-caller budget: the daemon still reads `Hello`
-   (points 3 to 5) and replies `BUSY`, then closes, so the client can
-   tell "busy" from a fault `[OWN]`.
+   - Only after the caller is captured is point 2's second step applied
+     and the prefix checked as point 3 says.
+2. **Admission,** in two steps, each one atomic step under the
+   daemon's admission lock `[OWN]`:
+   - **At accept, before any read** (on Windows before the prefix read
+     is started; on Linux and macOS before the caller is read): the
+     connection count, then the handshake budget for all callers, then
+     the allowance of 5.2.1, rule 1 in the global account. A connection
+     that fails any of them is closed without a read and without a
+     reply, and is never counted. One that passes is counted in all
+     three from this step until its release.
+   - **When the caller is known** (Linux and macOS: at once, still
+     before any read; Windows: at the capture, before any byte after the
+     prefix is read): the handshake budget per caller key, then the
+     allowance in the caller's account. A connection that fails either
+     is closed without reading further and without a reply. So an
+     attested caller holds at most its own handshake budget of
+     handshake slots, on every operating system.
+   - The open-per-caller budget is applied at `Hello` (point 5). Over
+     it, the daemon still reads `Hello` (points 3 to 5) and replies
+     `BUSY`, then closes, so the client can tell "busy" from a fault
+     `[OWN]`. Such a connection is one of its caller's handshake slots
+     while it lasts, so the per-caller handshake budget bounds them.
 3. **The length** (on Windows, the buffered prefix): refuse 0, a value
    that is not a multiple of 4, and a value above `ipc.frame.hello`, or
    below 60, `Hello`'s smallest size. Each closes without a reply.
@@ -900,18 +1150,41 @@ so a looser input is a fault, not a peer's habit.
    `VERSION_MISMATCH`; the version rule of 5.3.2, points 3 or 5:
    `VERSION_MISMATCH` or `SCHEMA_MISMATCH`; the open-per-caller budget
    (point 2): `BUSY`.
-6. Reply `HelloReply`. With `ACCEPTED` the connection is `Open` at the
-   chosen version; with any other result the daemon closes after the
-   reply is written or the write deadline passes.
+6. Reply `HelloReply`. With any result but `ACCEPTED` the daemon closes
+   after the reply is written or the closing deadline passes. With
+   `ACCEPTED`, at the chosen version:
+   - on an endpoint whose catalogue has no binding row, the connection
+     is `Open`;
+   - on an endpoint whose catalogue has a **binding row** (5.3.3,
+     point 2), the connection is in `AwaitBinding` (5.6.2) `[ADR 0004
+     C45.2, C45.3: Firm]`. It is still a handshake connection: it keeps
+     its handshake slots and stays under the handshake deadline. In this
+     state the daemon admits only a `REQUEST` whose row is a binding
+     row, one at a time (a second while one is in flight is
+     `TooManyRequests`); it sends no `EVENT` and no `PART`; and any
+     other `REQUEST`, any `NOTICE` and any `CANCEL` is `NotBound`,
+     fatal. The connection becomes `Open` only when a binding row's
+     handler reports that the endpoint's registration and capability
+     checks passed, and that handler's `REPLY` is queued first. A
+     binding that fails is answered with the endpoint's code and the
+     connection is closed. An endpoint open only to registered peers
+     has a binding row: the generator refuses an adapter catalogue
+     without one (5.6.1, point 3). The role, the version and the digest
+     in `Hello` are public values and register nothing.
 
 **Each later frame (daemon)**
+
+No body byte is read before point 11. Points 7 to 10 use only the 4
+length bytes and the 16 envelope bytes, which the connection's record
+holds (5.2.1, rule 2), and they run the same way whatever memory is
+free.
 
 7. **Length:** refuse a value below 16 or not a multiple of 4
    (`BadFrameLength`), and a value above the largest cap of the frame
    classes a client may send on this endpoint (`FrameTooLarge`). Both are
-   fatal. The class's own cap is
-   checked once the kind is known (point 8).
-8. **Envelope.** Decode the 16 bytes. Then:
+   fatal. The class's own cap is checked once the kind is known
+   (point 8). The frame's arrival is recorded here (5.6.4, rule 2).
+8. **Envelope.** Read and decode exactly the 16 envelope bytes. Then:
    - an undeclared kind, or one the client may not send (`REPLY`,
      `PART`, `EVENT`): `MalformedEnvelope`;
    - `length` above the kind's frame class cap: `FrameTooLarge`;
@@ -922,35 +1195,49 @@ so a looser input is a fault, not a peer's habit.
    - `CANCEL`: `number` not 0, `request_id` 0, or `length` not exactly
      16: `MalformedEnvelope`;
    - `NOTICE`: `number` 0 or `request_id` not 0: `MalformedEnvelope`.
-   Every failure here is fatal (5.4, point 13).
+   Every failure here is fatal (5.4, point 13), and the body is never
+   read.
 9. **Catalogue.**
    - a. `REQUEST`: a number with no row of kind request or streaming
      request, or a row newer than the chosen version: `UnknownMessage`
      as its reply; the connection stays. A row the endpoint reserves
      and does not serve: `NotSupported`; the connection stays. Over the
-     requests-in-flight budget: `TooManyRequests`; the connection stays.
+     requests-in-flight budget of the connection or of its caller key:
+     `TooManyRequests`; the connection stays. In `AwaitBinding`, a row
+     that is not a binding row: `NotBound`, fatal (point 6).
    - b. `CANCEL`: if `request_id` names a request in flight on this
      connection, its handler is asked to stop; otherwise nothing is done
      and nothing is sent. A `CANCEL` is never counted against the
-     in-flight budget and never refused for an unknown or late id.
+     in-flight budget and never refused for an unknown or late id. It
+     is one turn's work like any other frame (5.6.4, rule 1).
    - c. `NOTICE`: a number with no row of kind notice, or a row newer
      than the chosen version: `UnknownMessage`, fatal, because a notice
      has no reply to carry it `[OWN]`.
 10. **Authorise**, from the row and the connection's caller, by the
-    endpoint's rule, before the body is decoded `[OWN]`, so a caller who
-    may not send a message never has its body parsed past the envelope.
-    A refusal of a `REQUEST` is its reply, with the endpoint's code; a
+    endpoint's rule, before the body is read `[OWN]`, so a caller who
+    may not send a message never has its body buffered or parsed. A
+    refusal of a `REQUEST` is its reply, with the endpoint's code; a
     refusal of a `NOTICE` is fatal.
-11. **Decode the body** with the row's generated decoder: xdr.md 5.4 in
-    full; each `version` field (5.1.7, point 2); the aggregate extension
-    bound as it goes (5.2, point 5); no trailing bytes. A failure is fatal
-    `[OWN]`: a body that does not decode means the client is broken or
-    hostile, and its later frames cannot be trusted to be aligned.
+11. **Reserve, read and decode the body.**
+    - A `REQUEST` refused at point 9a or 10 with the connection kept
+      has its body discarded unread by any decoder, exactly `length` −
+      16 bytes, and is then answered, as 5.2.1, rule 2 says.
+    - Otherwise the daemon makes the reservation of 5.2.1, rule 2. If
+      it fails, a `REQUEST` is refused as `Busy` in the same way, and a
+      `NOTICE` is discarded and follows its row's overload rule.
+    - Then it reads exactly `length` − 16 bytes under the frame deadline
+      and decodes them with the row's generated decoder: xdr.md 5.4 in
+      full; each `version` field (5.1.7, point 2); the aggregate
+      extension bound as it goes (5.2, point 5); no trailing bytes. A
+      failure is fatal `[OWN]`: a body that does not decode means the
+      client is broken or hostile.
 12. **Walk every extension list** in the body, all of them to the end,
     before anything is decided `[ADR 0004 N41.4: Firm]`:
     - tags out of order or duplicated in a list: `ExtensionOrder`, fatal;
     - a known tag (5.1.7, point 5) with the wrong critical bit:
       `ExtensionFlagMismatch`, fatal;
+    - a known tag's value is decoded as its registered type (5.1.7,
+      point 8); a failure is `Malformed`, fatal;
     - an unknown critical tag: the whole request is refused with
       `UnknownCriticalExtension` before any state changes; its reply
       still names every unknown non-critical tag found. A `NOTICE` with
@@ -958,34 +1245,55 @@ so a looser input is a fault, not a peer's habit.
     - an unknown non-critical tag: ignored, and named in the reply's
       `ignored` (5.1.5, point 2) `[ADR 0004 N41.9: Firm]`.
 13. **Fatal errors.** After the handshake, a fatal error ends the
-    connection. The daemon first queues, best effort from the reserved
-    reply slot, one **closing notice**: a `REPLY` with `number` 0 and
-    `request_id` 0 whose body is an `ErrorReplyBody` with the code. If the
-    slot is in use, nothing is sent. Then it stops reading, cancels the
-    requests in flight (5.6.3) and closes once the queue is written or
-    the write deadline passes `[OWN]`. In the handshake, a failure closes
-    as points 3 to 6 say.
-14. Only now does the handler run (or the notice's consumer).
+    connection, in one step under the connection's output lock `[OWN]`:
+    - the connection enters `Closing`, and from that step no frame is
+      ever appended to its queue or put in its reserved reply slot,
+      except the next item;
+    - in the same step the daemon puts one **closing notice** in the
+      reserved reply slot, to be written after every frame already
+      queued: a `REPLY` with `number` 0 and `request_id` 0 whose body
+      is an `ErrorReplyBody` with the code. If the slot already holds a
+      frame, no notice is sent;
+    - the daemon stops reading and cancels the requests in flight
+      (5.6.3, rule 3). A result that reaches its one-shot slot after
+      that step is **suppressed**: no `REPLY` is encoded or queued for
+      it, its buffers are released (and zeroed, if secret-bearing), and
+      it is counted. A change such a request had already committed
+      stays committed (5.6.3, rule 4). So the closing notice, when
+      sent, is the last frame, and frames queued before it keep their
+      order;
+    - the connection is closed when the queue and the slot are written,
+      or the write deadline or the closing deadline passes, whichever
+      is first. Its slots and reservations are held until its release;
+      each request's until its worker returns (5.2.1, rule 5).
+    The daemon's own stop closes each connection the same way, with
+    no notice. In the handshake, a failure closes as points 3 to 6 say.
+14. Only now is the request handed to the executor, without waiting
+    (5.6.4, rule 3), or the notice to its consumer. No handler runs on
+    the thread that read the frame.
 
 **The client**
 
-15. The client applies points 3, 4, 7, 11 and 12 to what the daemon sends,
-    with its own frame caps, and checks each envelope by kind and
-    direction `[OWN]`:
+15. The client applies points 3, 4, 7 and 12, and point 11's decode, to
+    what the daemon sends, with its own frame caps, and checks each
+    envelope by kind and direction `[OWN]`:
     - `REPLY`: its `request_id` names a request this connection sent that
       has no reply yet, and its number is that request's; after it the id
       is closed. A `REPLY` with `number` 0 and `request_id` 0 is the
       closing notice: the client reports its code against every
       outstanding request and closes;
     - `PART`: as `REPLY`, the row is streaming, and its reply has not
-      come;
+      come (and point 19);
     - `EVENT`: `request_id` 0, a row of kind event at the chosen version,
       and only in the state the endpoint specification allows it;
+    - a frame whose row is secret-bearing, on a connection that is not
+      a checked connection (point 17): refused before its body is read;
     - `REQUEST`, `CANCEL` or `NOTICE` from the daemon, or anything else:
       refused.
     Any refusal, and any decode error, fails the connection: the client
     closes it and reports every outstanding request as failed, never as
-    done `[ADR 0004 C46.4: Working]`.
+    done `[ADR 0004 C46.4: Working]`. A client holds at most one frame
+    of input at a time besides what point 19 stages.
 16. **The checked connection** `[ADR 0004 C43.1, C43.2: Firm]`. Before a
     client reads or sends any secret (5.5, point 6), on one connection
     handle:
@@ -993,18 +1301,49 @@ so a looser input is a fault, not a peer's habit.
     2. it runs the endpoint's daemon check through the operating system
        (for the control endpoint, the control endpoint specification's,
        after ADR 0004, C43, point 4);
-    3. it sends `Hello` and reads `HelloReply` on the same handle. The
-       reply is valid only if it decodes whole, its magic is right, its
-       result is `ACCEPTED`, and `chosen` is within both the client's
-       range and [`daemon_min`, `daemon_max`];
+    3. it sends `Hello` and reads `HelloReply` on the same handle, and
+       checks the whole reply against the `Hello` it sent and the
+       endpoint's rules. The reply is valid only if all of these hold
+       `[OWN]`:
+       - it decodes whole, its magic is right and its result is
+         `ACCEPTED`;
+       - the daemon's range has the shape its endpoint allows:
+         `daemon_min` ≤ `daemon_max`, both of one major version, and on
+         the control endpoint `daemon_max.minor` − `daemon_min.minor` is
+         0 or 1 (5.3.2, point 3), on the adapter endpoint `daemon_min` =
+         `daemon_max` (5.3.2, point 5);
+       - `chosen` is exactly the highest version that lies in both the
+         client's range and the daemon's, which the client computes
+         itself; a lower common version is refused, as is a `chosen`
+         outside either range;
+       - on the adapter endpoint, `chosen` is the client's one version
+         and the reply's `schema_digest` equals the client's own built
+         digest, byte for byte;
     4. it binds the reply's `instance_id` to this connection.
     These steps make one value, the checked connection. It is made per
-    connection, never cached or carried to a reconnect, and is the only
-    way to construct the encoder of a secret-bearing message (5.5,
-    point 6). A failure at any step ends the attempt with no secret read.
+    connection, never cached or carried to a reconnect, and it alone
+    offers the operations that read or send a secret (5.5, point 6). A
+    failure at any step ends the attempt with no secret read.
+    - **What authenticates what.** Step 2 is the authority: it alone
+      shows that the peer is the daemon. The instance id is the run's
+      name, bound to the handle that step 2 checked; a different or a
+      repeated id neither passes nor fails anything by itself. A client
+      that reconnects after a daemon restart runs all four steps again,
+      gets a new checked connection with the new id, and proceeds; one
+      whose step 2 fails gets nothing, whatever id the peer sends.
+    - **Downgrade.** The checks of step 3 stop a peer from choosing a
+      lower version than both sides share, or another adapter schema.
+      They cannot stop a peer from claiming a lower range than the real
+      daemon has; only step 2 does, by showing the peer is the daemon.
+      A daemon one minor ahead of a client is the intended case (5.3.2,
+      point 3), not a downgrade.
 17. A client that only reads non-secret state may skip step 2, as its
-    endpoint specification allows; the order of steps 1, 3 and 4 is the
-    same `[OWN]`.
+    endpoint specification allows; steps 1, 3 and 4 are the same, every
+    check of step 3 included `[OWN]`. Such a connection is not a checked
+    connection: it cannot send a request whose own body, reply or parts
+    are secret-bearing, and it refuses any secret-bearing frame it is
+    sent (point 15). What it reads is only as trustworthy as the
+    endpoint's address permissions make it.
 18. **Tolerances** `[ADR 0004 N41.3, N41.6, N41.8: Firm]`:
     - an unknown non-critical extension in a reply, part or event: kept
       and shown as unknown;
@@ -1012,11 +1351,42 @@ so a looser input is a fault, not a peer's habit.
       failed, "this daemon is newer; upgrade `afs`"; in a `PART`: the
       whole request's result is failed, none of its parts is shown or
       acted on, and the client still reads the remaining parts and the
-      reply (the connection stays); in an event: an unknown event;
+      reply within point 19's limits (the connection stays); in an
+      event: an unknown event;
     - an unknown error code or contract value: shown as its number plus
       `text`;
     - an unknown value in an open field (`HelloResult` included):
       "unknown (n)"; an unknown `HelloResult` is a refusal.
+19. **A stream, at the client** `[OWN]`. A client shows or acts on no
+    part of a stream until the stream's terminal `REPLY` has been
+    decoded and every check of points 12 and 18 has passed on every
+    part and on the reply `[ADR 0004 N41.6: Firm]`. Until then it
+    **stages** the parts, and it bounds what it stages:
+    - at most the row's `parts_max` parts and `stream_bytes_max` bytes
+      of part messages (5.2, point 11), counted with checked arithmetic
+      as each `PART`'s length is read, before its body is read. The
+      caller of the client library may set lower limits for a request,
+      never higher;
+    - an absolute **stream deadline** from the moment the `REQUEST` is
+      written: the client's request deadline, at most 3,600 s;
+    - staging storage is reserved before each part is read, from the
+      client's own budget, and is zeroed on release if the row is
+      secret-bearing.
+    A part that would pass a limit, a failed reservation, a failed
+    check, or the deadline fails the request: the client releases what
+    it staged, sends `CANCEL` once, and from then on reads that
+    request's remaining frames into a discard buffer without staging or
+    decoding their bodies. If the terminal `REPLY` has not come 10 s
+    (`ipc.client.cancel_grace`) after the `CANCEL`, or a further
+    `parts_max` parts have been discarded, the client fails the
+    connection. A daemon within this specification never triggers
+    either: it enforces the same row limits.
+20. **Every request, at the client,** has a request deadline the caller
+    of the client library sets, at most 3,600 s `[OWN]`. When it passes
+    without a `REPLY` the client reports the request as failed with an
+    unknown outcome (5.6.3, rule 4), sends `CANCEL`, and fails the
+    connection if the `REPLY` has not come within
+    `ipc.client.cancel_grace`.
 
 ### 5.5 Encoding
 
@@ -1037,29 +1407,83 @@ so a looser input is a fault, not a peer's habit.
    reserved field in an endpoint's type is that specification's, with its
    value on encode.
 5. A sender never puts a critical extension the chosen version predates
-   in any message, and never a message number the chosen version lacks
-   `[ADR 0004 N41.5: Firm]`.
-6. **Secret-bearing messages.** A catalogue row may mark its body
-   secret-bearing (xdr.md 5.1, point 8) `[D3 §5.1.8]`. Its encoder takes
-   the checked connection (5.4, point 16) as an argument, so it cannot be
-   called on any other connection: the compiler enforces C43, point 1 on
-   the client `[OWN]`. Its decoder follows xdr.md 5.1, point 8.
+   in any message `[ADR 0004 N41.5: Firm]`, and sends only the numbers
+   5.1.4, point 5 allows for the frame's kind `[OWN]`: a row of the
+   chosen version for a `REQUEST`, `NOTICE`, `PART`, `EVENT` or
+   `RESULT_OK` reply; the answered request's own number, row or not, for
+   a `RESULT_ERROR` reply; 0 for the closing notice and `CANCEL`. The
+   encoder of a closing notice or of a reply to a number without a row
+   accepts only an `ErrorReplyBody`.
+6. **Secret-bearing messages.** A catalogue row may mark any of its
+   bodies secret-bearing (xdr.md 5.1, point 8) `[D3 §5.1.8]`. Its
+   decoder follows xdr.md 5.1, point 8.
+   - **Client to daemon** `[ADR 0004 C43.1: Firm]`, the mechanism
+     `[OWN]`. Encoding and sending a secret-bearing `REQUEST` or
+     `NOTICE` is **one operation of the checked connection** (5.4,
+     point 16): it takes the message's fields, encodes them into a
+     staging buffer the connection owns (`ipc-tx-stage`, point 7), and
+     writes that buffer to the connection's own handle. Nothing else
+     can do either half: the generated encoder of a secret-bearing body
+     and its staging buffer are private to that operation, no function
+     returns the encoded bytes, and no function writes caller-supplied
+     bytes to a connection. So bytes encoded for one checked connection
+     cannot be sent on another, checked or not; a reconnect makes a new
+     checked connection (5.4, point 16) and must encode again.
+   - **Reading the credential.** An endpoint's function that reads
+     credential material to build a secret-bearing message takes the
+     checked connection it will be sent on, and what it returns can be
+     passed only to that connection's send operation (the type ties
+     the two) `[ADR 0004 C43.1: Firm]`: no credential is read before
+     the check, and none read for one connection is sent on another.
+   - **A request with a secret-bearing reply or part** can be sent only
+     through the checked connection as well, so a client never asks an
+     unchecked peer for a secret, and a client refuses a secret-bearing
+     frame on any other connection (5.4, point 15).
+   - **Daemon to client** `[OWN]`. A row marks a reply, part or event
+     body secret-bearing only if its endpoint specification states
+     which connections may receive it: the caller's authority for a
+     reply or part (5.4, point 10), and for an event the registration
+     that admitted the connection (on the adapter endpoint, the binding
+     of 5.4, point 6). The generator refuses the mark without that
+     declaration (5.6.1, point 3). The daemon encodes such a body, as
+     one operation of the connection that holds the request or the
+     subscription, straight into a buffer that connection owns
+     (`ipc-tx-daemon-stage`); the buffer is queued as it is, never
+     copied, and no function returns its bytes. A reply suppressed at
+     5.4, point 13 never leaves that buffer.
+   - A terminal reply built in terminal capacity or in the reserved
+     reply slot is always an `ErrorReplyBody`, which is never
+     secret-bearing: `text` holds no secret (5.1.6, point 2).
 7. **Named zeroisation places** `[ADR 0004 O28.2, O28.3: Firm]`. Secret
    bytes pass through transport buffers before and after the typed
-   value. Each place has a label, used in code at the place:
+   value, in both directions. Each place has a label, used in code at
+   the place. A side that cannot know a frame is secret-bearing before
+   it has read the envelope treats every buffer of that kind as secret,
+   on an endpoint whose catalogue has a secret-bearing message in that
+   direction `[OWN]`.
 
-   | Label | Buffer | Zeroed |
-   |---|---|---|
-   | `ipc-rx-frame` | the daemon's receive buffer for one frame, on an endpoint whose catalogue has a secret-bearing client message. It cannot know a frame is secret before the envelope, so every such buffer is treated as secret | before reuse or release, on every path: decoded, refused at any step, truncated, timed out, cancelled, connection closed, daemon stopping |
-   | `ipc-rx-pending` (Windows) | every read buffer of the pipe driver, the 4-byte prefix buffer included | before reuse or free, on every path (completed, cancelled, failed, discarded for a stale generation or a closed connection), and never before the operation's terminal completion (ADR 0005, sheet 18) |
-   | `ipc-rx-discard` | the daemon's discard buffer (5.2.1, rule 2) | each chunk before the next is read, and at release |
-   | `ipc-tx-daemon` (Windows) | a daemon write buffer of the pipe driver that holds a secret-bearing reply or event | as `ipc-rx-pending`, after terminal completion |
-   | `ipc-tx-stage` | the client's encoder output for a secret-bearing message | after the last byte is written or the write fails, and on cancel or close |
-   | `ipc-tx-pending` (Windows) | the client's overlapped write buffer, if it uses one | after terminal completion, on every path |
+   | Label | Side | Buffer | Zeroed |
+   |---|---|---|---|
+   | `ipc-rx-frame` | daemon | the receive buffer for one frame's body, on an endpoint with a secret-bearing client message | before reuse or release, on every path: decoded, refused at any step, truncated, timed out, cancelled, connection closed, daemon stopping; and not before every value that borrows from it is dropped |
+   | `ipc-rx-pending` (Windows) | daemon | every read buffer of the pipe driver, the 4-byte prefix buffer included | before reuse or free, on every path (completed, cancelled, failed, discarded for a stale generation or a closed connection), and never before the operation's terminal completion (ADR 0005, sheet 18) |
+   | `ipc-rx-discard` | daemon | the discard buffer (5.2.1, rule 2) | each chunk before the next is read, and at release |
+   | `ipc-tx-daemon-stage` | daemon | the encoder output for a secret-bearing reply, part or event, while it is built and while it is queued | after its last byte is written; and on every path that ends it unwritten or partly written: an encode error, a suppressed reply (5.4, point 13), a dropped event, a failed or timed-out write, the closing deadline, connection closed, daemon stopping |
+   | `ipc-tx-daemon` (Windows) | daemon | a write buffer of the pipe driver that holds such a frame (the same storage as `ipc-tx-daemon-stage` once a write is started) | as `ipc-rx-pending`: after terminal completion, on every path |
+   | `ipc-tx-stage` | client | the checked connection's staging buffer for a secret-bearing message | after the last byte is written or the write fails, on an encode error, and on cancel or close |
+   | `ipc-tx-pending` (Windows) | client | the client's overlapped write buffer, if it uses one | after terminal completion, on every path |
+   | `ipc-rx-client` | client | the receive buffer for one frame, on an endpoint with a secret-bearing daemon message | before reuse or release, on every path: decoded, refused, truncated, timed out, connection failed or closed; and not before every value that borrows from it is dropped |
+   | `ipc-rx-client-stage` | client | the staging storage of a stream whose row is secret-bearing (5.4, point 19) | at release, on every path: shown, failed, over a limit, cancelled, deadline, connection failed |
+   | `ipc-rx-client-discard` | client | the client's discard buffer (5.4, point 19) | each chunk before the next is read, and at release |
+   | `ipc-rx-client-pending` (Windows) | client | the client's overlapped read buffer, if it uses one | after terminal completion, on every path |
 
    Each buffer is sized once from the frame cap before it is filled and
    never grown by reallocation while it may hold secret bytes `[OWN]`,
-   so no copy is left behind (xdr.md 5.1, point 8). The token-specific
+   so no copy is left behind (xdr.md 5.1, point 8). No secret-bearing
+   frame is copied from one buffer to another on either side: the
+   encoder's output is the buffer that is queued and written, and the
+   receive buffer is the one the decoded value borrows from. Each
+   buffer above is inside a reservation of 5.2.1 on the daemon and
+   inside the client's own budget on the client. The token-specific
    places (what `aklog` reads to build a token) are the control endpoint
    specification's.
 8. **Secret-dependent comparisons:** none in the framework `[OWN]`. The
@@ -1070,17 +1494,30 @@ so a looser input is a fault, not a peer's habit.
 
 #### 5.6.1 One definition set, generated codecs
 
-1. **The definition set** is every file `crates/ironafs-ipc/schema/*.x`,
-   one directory with no subdirectories, holding every message of both
-   endpoints `[ADR 0004 C44.1: Firm]`. Test definitions (5.3.3, point 8)
-   live in `crates/ironafs-ipc/tests/schema/` and are not part of it
-   `[OWN]`.
+1. **The definition set** is the files of the one directory
+   `crates/ironafs-ipc/schema/`, holding every message of both endpoints
+   `[ADR 0004 C44.1: Firm]`. Test definitions (5.3.3, point 8) live in
+   `crates/ironafs-ipc/tests/schema/` and are not part of it `[OWN]`.
+   **Which files, exactly** `[OWN]`, so that every checkout on every
+   platform finds the same set under the same names:
+   - a file name is 3 to 64 ASCII bytes: a lower-case letter, then
+     lower-case letters, digits and `_`, then `.x` (as a pattern,
+     `[a-z][a-z0-9_]{0,61}\.x`). No other byte is allowed, so two names
+     never differ only in case, and a name has one spelling in every
+     file system's encoding;
+   - the generator lists the directory without following links. Every
+     entry must be a regular file with such a name. Any other entry (a
+     subdirectory, a symbolic link, whatever it points to, a special
+     file, or any other name, hidden files included) refuses the whole
+     set; nothing is skipped silently;
+   - an empty set is refused.
 2. **The generator** is IronAFS's own code in `xtask` (coding standards
    rule 21): its own parser of the notation the generator's
    specification sets, and two emitters, Rust now and Swift when the
    first Swift consumer exists `[ADR 0004 C44.1: Firm]`.
 3. **The generator refuses** `[OWN]`, besides everything xdr.md requires
    of a definition `[D3 §5.1, §5.2]`:
+   - a directory entry point 1 does not allow;
    - a byte that is not ASCII printable, tab, LF or a CR followed by LF;
      a lone CR; a file that does not end with LF;
    - a number, tag or code used twice in its registry, or one listed as
@@ -1090,19 +1527,32 @@ so a looser input is a fault, not a peer's habit.
      an extension list in a handshake type;
    - a non-critical extension registered on a request type and not
      advisory (5.1.7, point 4);
+   - an extension tag registered without a value type, or whose value
+     type is above 1,024 bytes, holds an `ExtensionList` or holds a
+     secret field (5.1.7, point 8);
+   - a streaming row without `parts_max` and `stream_bytes_max`, or with
+     either above its ceiling (5.2, point 11); a notice row without an
+     overload rule (5.2.1, rule 2);
+   - a secret-bearing reply, part or event body whose row does not
+     declare who may receive it (5.5, point 6); a secret-bearing
+     handshake type or `IpcError`;
+   - an adapter catalogue with no binding row, or a binding row whose
+     kind is not request (5.4, point 6);
    - a request row whose error arm is not `IpcError` (5.1.5, point 1);
    - a message whose largest size (5.2, point 6) is above its frame
      class's cap, or a frame class cap above `ipc.frame.ceiling`;
    - a variable item without a cap; a cap or memory budget the static
      proof of xdr.md 5.2, point 9 breaks.
-   It computes T for each endpoint (5.2.1, rule 1) and emits it.
+   It computes T and R for each endpoint (5.2.1, rules 1 and 2) and each
+   row's decode charge (5.2, point 7), and emits them.
 4. **What each definition declares** `[OWN]`, in the generator's
    notation: per catalogue row, the facts of 5.3.3, point 2; per
    extension tag, its number, the types it may appear in, its critical
    bit, its introducing version and, on a request type, whether it is
-   advisory; per enumeration field, whether it is open; per body, whether
-   it is secret-bearing; per variable item, its cap name and value; per
-   message, its memory budget.
+   advisory, and the type of its value (5.1.7, point 8); per enumeration
+   field, whether it is open; per body, whether it is secret-bearing
+   and, daemon to client, who may receive it; per variable item, its cap
+   name and value; per message, its memory budget.
 5. **Output is checked in** under `crates/ironafs-ipc/src/generated/`
    `[OWN]`. `cargo xtask ipc-gen` writes it; `cargo xtask ipc-gen
    --check` regenerates in memory and fails on any difference;
@@ -1113,14 +1563,18 @@ so a looser input is a fault, not a peer's habit.
 6. **The generator emits,** per message: the type; an encoder; a decoder
    that takes a byte slice and returns the value or a typed error and
    never panics; the caps and budgets as named constants; the catalogue
-   of each endpoint as a static table; T per endpoint; and the schema
-   digest as a constant `[OWN]`.
+   of each endpoint as a static table; T and R per endpoint; each row's
+   decode charge; and the schema digest as a constant `[OWN]`. The
+   encoder of a secret-bearing body is emitted private to the
+   connection operation of 5.5, point 6.
 7. **The schema digest** `[OWN]`, as issue #62 records the owner's
    decision of 2026-11-20 ("SHA-256 over the canonical, LF-normalised
    definition bytes"):
    - normalise each file of the set by replacing every CR LF pair with
      LF (the generator has already refused every other CR, point 3);
-   - order the files by file name, compared as bytes, ascending;
+   - order the files by file name, compared as bytes, ascending. The
+     file name is the entry's name in the directory, with no path, in
+     the ASCII bytes point 1 allows;
    - the canonical bytes are the ASCII text `ironafs-ipc-schema-1`, one
      LF, then for each file in order: the file name's length as an
      unsigned 32-bit big-endian integer, the file name's bytes, the
@@ -1130,8 +1584,10 @@ so a looser input is a fault, not a peer's habit.
      `[H1 §1, Figure 1: CONFIRMED]`, computed through `ironafs-crypto`
      (ADR 0004, C5, point 1; its first backend is issue #77).
    The lengths make the file boundaries unambiguous, the order makes the
-   result independent of the directory listing, and the normalisation
-   makes it independent of a checkout's line endings. Any change to the
+   result independent of the directory listing, the name rule of point 1
+   makes it independent of the file system's case folding and name
+   encoding, and the normalisation makes it independent of a checkout's
+   line endings. Any change to the
    bytes, comments included, changes the digest. One digest covers the
    whole set, so both endpoints carry the same value.
 8. **The additive check.** Once a version of the set has been frozen or
@@ -1148,27 +1604,56 @@ so a looser input is a fault, not a peer's habit.
 
 | State | Event | Next | Rule |
 |---|---|---|---|
-| Accepted (Linux, macOS) | caller read; admission passes (5.4, point 2) | `AwaitHello` | no byte read before the caller is known |
-| Accepted (Linux, macOS) | no caller, or admission fails | Closed | nothing read, nothing sent |
-| Accepted (Windows) | a handshake slot and the allowance are free | `PreAttestation` | otherwise closed without reading. The state records the instance's connection generation |
-| `PreAttestation` | the transition returns, for this generation, 4 prefix bytes and a captured caller; admission passes | `AwaitHello` | nothing decoded or answered in this state; the prefix is checked on leaving it (5.4, point 3) |
-| `PreAttestation` | the transition fails, admission fails, or the handshake deadline passes | Closed | no reply; a failed revert ends the daemon process (ADR 0005, sheet 19) |
+| Accepted (Linux, macOS) | admission's first step passes; the caller is read; its second step passes (5.4, point 2) | `AwaitHello` | no byte read before the caller is known |
+| Accepted (Linux, macOS) | either step fails, or no caller | Closed | nothing read, nothing sent |
+| Accepted (Windows) | admission's first step passes (5.4, point 2) | `PreAttestation` | otherwise disconnected without a read. The state records the instance's connection generation |
+| `PreAttestation` | the transition returns, for this generation, 4 prefix bytes and a captured caller; admission's second step passes | `AwaitHello` | nothing decoded or answered in this state; the prefix is checked on leaving it (5.4, point 3) |
+| `PreAttestation` | the transition fails, or admission's second step fails | Closed | no reply; nothing more read; a failed revert ends the daemon process (ADR 0005, sheet 19) |
+| `PreAttestation` | the handshake deadline passes with the read outstanding | `Draining` | the driver requests the read's cancellation; no reply |
 | `PreAttestation` | a transition result tagged with another generation | `PreAttestation` | discarded, buffer zeroed, bound to nothing |
-| Closed (from `PreAttestation`) | a transition result of this generation | Closed | discarded, buffer zeroed, bound to nothing |
-| `AwaitHello` | a valid `Hello`, version chosen | `Open` | `HelloReply` `ACCEPTED` queued first |
-| `AwaitHello` | any refusal of 5.4, points 3 to 5, or a deadline | Closed | `HelloReply` with its result where 5.4 gives one |
-| `Open` | `REQUEST` | `Open` | exactly one `REPLY`, always |
+| `Draining`, Closed (from `PreAttestation`) | a transition result of this generation | unchanged | discarded, buffer zeroed, bound to nothing |
+| `AwaitHello` | a valid `Hello`, version chosen; the endpoint has no binding row | `Open` | `HelloReply` `ACCEPTED` queued first |
+| `AwaitHello` | a valid `Hello`, version chosen; the endpoint has a binding row | `AwaitBinding` | `HelloReply` `ACCEPTED` queued first; still a handshake connection, under the handshake deadline |
+| `AwaitHello` | any refusal of 5.4, points 3 to 5, or a deadline | Closing | `HelloReply` with its result where 5.4 gives one |
+| `AwaitBinding` | a binding row's handler reports the endpoint's checks passed | `Open` | its `REPLY` queued first; no `EVENT` or `PART` before this |
+| `AwaitBinding` | a failed binding, any other frame (`NotBound`), any fatal error, or the handshake deadline | Closing | the binding's error reply or the closing notice, best effort |
+| `Open` | `REQUEST` | `Open` | exactly one `REPLY`, unless the connection closes first (5.4, point 13) |
 | `Open` | `CANCEL` | `Open` | 5.4, point 9b |
 | `Open` | `NOTICE` | `Open` | consumed; no reply |
-| `Open` | any fatal error (5.4, point 13) | Closing | the closing notice, best effort |
-| `Open` | the peer closes | Closed | requests in flight are cancelled (5.6.3, rule 4) |
-| `Open` | the daemon stops | Closing | no new frame read; queued frames written within the write deadline |
-| Closing | queue written, or the write deadline | Closed | every reservation released once (5.2.1, rule 5) |
+| `Open` | any fatal error (5.4, point 13) | Closing | the closing notice, best effort, last |
+| `Open`, `AwaitBinding` | the peer closes | Closed | requests in flight are cancelled (5.6.3, rule 3); what each had committed stays whole (5.6.3, rule 4) |
+| `Open`, `AwaitBinding` | the daemon stops | Closing | no new frame read; no notice |
+| Closing | queue and slot written, or the write deadline, or the closing deadline | Closed | nothing appended after entering Closing; later results suppressed (5.4, point 13) |
+| Closed | every transport operation has reached its terminal completion (Windows); at once (Linux, macOS) | released | the allowance and the connection's places in the counts are released once (5.2.1, rule 5) |
+| Closed (Windows) | an operation is still outstanding | `Draining` | the instance is not disconnected, reused or closed (ADR 0005, sheet 18) |
+| `Draining` (Windows) | the last terminal completion | released | buffers zeroed, then the instance is disconnected and may listen again |
 
-`PreAttestation` is left only through its own transition's result or a
-close. On a close the driver still waits for the transition's terminal
-completion before the instance is disconnected or reused (ADR 0005,
-sheet 18).
+1. `PreAttestation` is left only through its own transition's result or
+   a close. On a close the driver still waits for the transition's
+   terminal completion before the instance is disconnected or reused
+   (ADR 0005, sheet 18).
+2. **Release** is the one event that frees a connection's allowance,
+   its place in the connection count, and any handshake slot it still
+   holds. On Linux and macOS it follows the close at once. On Windows it
+   waits for every operation's terminal completion, however long that
+   takes `[D2 sheet 18]`.
+3. **`Draining` has no deadline that frees anything** `[OWN]`, after
+   ADR 0005, sheet 18: a block whose completion never arrives stays
+   counted. Cancellation is requested once, when the state is entered.
+   The cited documentation gives no bound on how long a cancelled pipe
+   read or write takes to complete: UNVERIFIED, measured at the Windows
+   gate (10.5). An instance still in `Draining` after one closing
+   deadline is counted as **stuck** and reported in an event and in the
+   daemon's status; it stays counted in the pool, in the connection
+   count and in the handshake slots it held. The daemon does not close
+   its handle, start anything on it, or restart itself because of it:
+   a restart would drop every user's tokens (ADR 0004, C42) to recover
+   one slot. Stuck instances are freed by their completion or by the
+   end of the process. If they fill a budget, new connections are
+   refused at admission and existing ones are unaffected; section 8
+   states this as part of the Windows residual.
+4. Requests may still be running when a connection is released; their
+   own charges follow 5.2.1, rule 5.
 
 #### 5.6.3 Ordering rules
 
@@ -1178,14 +1663,18 @@ sheet 18).
    streaming row's terminal reply says whether the stream was complete,
    cut by the parts budget, or cancelled; the endpoint specification
    gives each reply's field for this `[OWN]`.
-3. **Cancel or result.** A request's handler result and a `CANCEL` meet
-   at the request's one-shot result slot (ADR 0004, C39, point 3); the
-   first to arrive wins `[OWN]`. A result already produced is reported
-   unchanged, even if its `REPLY` is not yet queued, and the `CANCEL` does
-   nothing. A `CANCEL` that arrives first makes the handler stop at its
-   next cancellation point, and the reply is one of: `Cancelled`, with
-   nothing applied; the ordinary success reply of a change already
-   committed; or a stream's terminal reply reporting cancellation.
+3. **Cancel, deadline, close or result.** A request's handler result, a
+   `CANCEL`, the request deadline (5.6.4, rule 2) and the connection's
+   close meet at the request's one-shot result slot (ADR 0004, C39,
+   point 3); the first to arrive wins `[OWN]`. A result already produced
+   is reported unchanged, even if its `REPLY` is not yet queued, and a
+   later `CANCEL` or deadline does nothing. A `CANCEL` or a deadline
+   that arrives first makes the handler stop at its next cancellation
+   point, and the reply is one of: `Cancelled` or `DeadlineExceeded`,
+   with nothing applied; the ordinary success reply of a change already
+   committed; or a stream's terminal reply reporting the cut. A close
+   that arrives first stops the handler the same way and no reply is
+   sent (5.4, point 13).
 4. **A change is whole or absent.** A mutating request is either applied
    whole and acknowledged, or not applied `[OWN]`. An endpoint
    specification may name a request whose outcome can be unknown to the
@@ -1204,21 +1693,104 @@ sheet 18).
    them. Whether a dropped event is reported, and how, is the endpoint
    specification's `[OWN]`.
 
+#### 5.6.4 Ingress, turns and the executor
+
+ADR 0004, C39, points 2 and 3 `[ADR 0004 C39.2, C39.3: Working]`,
+applied to the IPC endpoints; the mechanisms are `[OWN]`.
+
+1. **Ingress threads only read.** The threads that serve the endpoints
+   read frames, run the checks of 5.4, points 7 to 13, handle `CANCEL`,
+   deadlines, closes and cleanup themselves, and write queued output.
+   They never run a handler and never wait: not for a peer (every read
+   and write is non-blocking or overlapped, and a partial frame's state
+   is kept in the connection's record), not for the executor (rule 3),
+   and not for memory (a failed reservation is a result, 5.2.1).
+   - **Turns.** An ingress thread serves the connections that have
+     input in turns. One turn serves one connection and does at most
+     one frame's work: the bytes of at most one frame that can be read
+     without waiting, that frame's checks, its decode and walk, its
+     handoff or refusal, or one discard chunk. Then the thread takes the
+     next turn. A frame cap bounds a turn's work.
+   - **Order of turns.** Turns go round-robin over the caller keys that
+     have a connection with input, one turn per key, and within a key
+     round-robin over that key's connections. A caller with many
+     connections, or one that sends an unbroken run of small, refused or
+     cancelled frames, gets one turn per round like every other caller;
+     every frame it sends, whatever its fate, costs it a turn.
+   - A connection in Windows `PreAttestation` has no caller key and
+     takes no turn: its one read belongs to the pipe driver and nothing
+     is decoded for it.
+   - Output is written in the same rounds, at most one frame's bytes
+     per connection per turn.
+2. **Arrival and the request deadline.** The ingress thread records a
+   frame's arrival when its 4-byte length is complete (5.4, point 7). An
+   admitted request's deadline is its arrival plus the request deadline
+   of 5.2, point 8, or its row's lower one; it is an absolute time on
+   the awake clock, fixed at admission and never extended. Time spent
+   reading the frame, waiting in the executor's queue and running all
+   count. The frame and write deadlines of 5.2, point 8 govern the
+   transport only.
+3. **Handoff without waiting.** After 5.4, point 12's checks the ingress
+   thread offers the request to the executor with one call that returns
+   at once. The executor is bounded: its workers are a fixed set (ADR
+   0004, C39, point 1) and its queue holds at most the executor-queue
+   budget of 5.2, point 8.
+   - If the queue is full, the request is answered `Busy` from its
+     terminal capacity, its reservations are released, and the refusal
+     is counted. `Busy` is retryable (section 4): nothing was applied.
+   - The queue is kept per caller key and served round-robin over the
+     keys, one request per key per round. A caller's requests in flight,
+     queued or running, are at most its per-caller budget, which is at
+     most a quarter of the queue (5.2, point 9). So a caller cannot
+     delay another caller's queued request by more than one request of
+     its own per round, and cannot fill the queue alone.
+   - A queued request whose deadline passes, whose `CANCEL` arrives or
+     whose connection closes before a worker takes it is removed
+     without running; nothing was applied.
+4. **The one-shot result slot.** Each admitted request has one slot
+   (ADR 0004, C39, point 3), completed exactly once, by whichever comes
+   first: the handler's result, a `CANCEL`, the request deadline, or
+   the connection's close (5.6.3, rule 3). The worker is given the
+   deadline and a cancel token and checks them at its cancellation
+   points; every wait a handler makes is bounded by the deadline.
+5. **A request is charged until its worker returns.** Completing the
+   slot sends or suppresses the reply; it does not free the request.
+   Its per-caller request slot, its executor place and every byte it
+   reserved stay charged until the worker has actually returned (or,
+   for a request removed from the queue, at once), also after its
+   reply was sent, after a `CANCEL` or deadline, and after its
+   connection closed and was released. Its per-connection slot is held
+   likewise while the connection lives. So work that outlives its
+   reply or its connection is bounded by the same budgets as live
+   work: at most the executor's workers plus its queue, and per caller
+   at most that caller's budget, which stops a caller from starting new
+   work by abandoning old.
+6. **No work past the worker's return.** When a handler returns, its
+   request's work has ended. An operation whose effect continues in the
+   daemon afterwards (a store that is "not yet stored", ADR 0004, C9)
+   continues under that subsystem's own bounded queues and budgets, as
+   its endpoint specification names, never under the request.
+
 ## 6. Arithmetic
 
 | Computation | Bound | At overflow or excess |
 |---|---|---|
 | `length` against a frame cap | caps ≤ 2,097,152 | refused before allocation |
 | framed size, `length` + 4 | `length` already ≤ the cap | `checked_add` all the same |
-| body input, `length` − 16 | after `length` ≥ 16 is checked | `checked_sub`; failure is `Truncated` |
+| body input, `length` − 16 | after `length` ≥ 16 is checked (5.4, point 7) | `checked_sub` all the same; a failure is `BadFrameLength` |
 | every XDR length, count and offset | xdr.md section 6, A1 to A12 | as xdr.md says |
 | running extension count + a list's count; running value bytes + a value's length | ≤ 64; ≤ 16,384 | `checked_add`; above the bound is `CapExceeded` |
 | request id against the mark | u64 compare, no arithmetic | n/a |
 | version choice: the previous minor | computed only when `minor` ≥ 1 | n/a: at `M.0` only `M.0` is accepted |
-| in-flight, output-queue and terminal-capacity counters | each ≤ its budget | `checked_add` before a reservation; subtraction only of what was added; a failure is `Busy` or back-pressure, never a wrap |
-| per-caller and total connection counters; requests in flight; parts sent | ≤ their budgets | compared before the increment; never wraps |
-| digest record lengths: file name (u32), content (u64) | a name above 2³² − 1 bytes or content above 2⁶⁴ − 1 bytes cannot exist in the set | the generator refuses the set (`try_from`) |
-| generator sizes: largest message size, T, budgets | caps < 2³² | 64-bit `checked_add` and `checked_mul`; overflow refuses the definition |
+| in-flight counters (global and per caller key), heap-request, output-queue and terminal-capacity counters | each ≤ its budget | `checked_add` before a reservation, in both accounts or neither; subtraction only of what was added; a failure is a failed reservation or back-pressure, never a wrap |
+| queue occupancy + a frame's whole charge (framed size + `ipc.overhead.frame`) | ≤ the output budget for a `PART` or `EVENT` | `checked_add`; above the budget the frame is not built |
+| the allowance A and the largest request reservation R, from configured values | budgets ≤ their ceilings | 64-bit `checked_add` and `checked_mul` at validation; overflow refuses the configuration |
+| arrival + the request deadline | deadline ≤ 3,600 s | the checked addition of `ironafs-time`'s deadline type; overflow refuses the request as `Internal` |
+| per-caller and total connection counters; requests in flight per connection and per caller key; executor queue entries; parts and part bytes sent | ≤ their budgets | compared before the increment; never wraps |
+| client: parts staged + 1; part bytes staged + a part's `length`; parts discarded + 1 | ≤ `parts_max`; ≤ `stream_bytes_max`; ≤ `parts_max` | `checked_add` before the part's body is read; above the bound fails the request (5.4, point 19) |
+| client: the highest common version | compares of (major, minor) pairs only | no arithmetic; `daemon_max.minor` − `daemon_min.minor` is computed only after `daemon_min` ≤ `daemon_max` is checked |
+| digest record lengths: file name (u32), content (u64) | a name is at most 64 bytes (5.6.1, point 1); content above 2⁶⁴ − 1 bytes cannot exist in the set | the generator refuses the set (`try_from`) |
+| generator sizes: largest message size, T, R, decode charges, budgets | caps < 2³² | 64-bit `checked_add` and `checked_mul`; overflow refuses the definition |
 
 `[OWN]` for every row. No decoder indexes a slice; every read goes
 through xdr.md's bounded cursor.
@@ -1238,24 +1810,35 @@ through xdr.md's bounded cursor.
    | 7 | `BadBodyVersion` | a `version` other than 1 | fatal | none changed |
    | 8 | `ExtensionOrder` | tags out of order or duplicated | fatal | none changed |
    | 9 | `ExtensionFlagMismatch` | a known tag with the wrong critical bit | fatal | none changed |
-   | 10 | `UnknownMessage` | a number with no row, or newer than the chosen version | open for a `REQUEST`; fatal for a `NOTICE` | none changed |
+   | 10 | `UnknownMessage` | a number with no row, or newer than the chosen version | open for a `REQUEST` (its body discarded, 5.2.1, rule 2); fatal for a `NOTICE` | none changed |
    | 11 | `NotSupported` | a reserved row the endpoint does not serve | open | none changed |
    | 12 | `UnknownCriticalExtension` | N41, point 4 | open | none: checked before the handler |
    | 13 | `TooManyRequests` | the requests-in-flight budget | open | none changed |
-   | 14 | `Busy` | a reservation failed (5.2.1) | open | none changed |
+   | 14 | `Busy` | a reservation failed (5.2.1), or the executor's queue was full (5.6.4, rule 3). Retryable | open | none changed |
    | 15 | `Cancelled` | 5.6.3, rule 3 | open | nothing applied |
-   | 16 | `ResultTooLarge` | a stream cut by the parts budget, where the row reports it as an error | open | reads only |
+   | 16 | `ResultTooLarge` | a stream cut by the parts or part-bytes budget, where the row reports it as an error | open | reads only |
    | 17 | `Contract` | the handler returned a C46 error, in `contract` | open | per that error |
    | 18 | `Internal` | a fault in the daemon | open | logged with a correlation id; `text` holds only that id |
+   | 19 | `DeadlineExceeded` | the request's deadline passed before its result (5.6.3, rule 3) | open | nothing applied, unless the endpoint specification names the request as one whose outcome can be unknown (5.6.3, rule 4) |
+   | 20 | `NotBound` | a frame other than a binding request before the endpoint's binding (5.4, point 6) | fatal | none changed |
 
    Handshake refusals are `HelloResult` values, not codes. A closed
    connection with no reply (no caller, a wrong magic, a refused length,
    a pre-attestation failure) has no code on the wire; the daemon counts
    it.
-2. **No input in errors.** An error carries its code, the specification's
-   constants and its `text`; never a value read from the input, and from
-   a secret-bearing message no offset or length (xdr.md section 7,
-   point 2) `[D3 §7.2]`.
+2. **No input in diagnostics.** An error's code, contract value and
+   `text`, and everything the daemon logs or counts about a refusal,
+   carry only the specification's constants; never a value read from
+   the input, and from a secret-bearing message no offset or length
+   (xdr.md section 7, point 2) `[D3 §7.2]`. Three items of **protocol
+   metadata** are not diagnostics and are repeated from the request by
+   the wire format itself `[OWN]`: the envelope's `number` and
+   `request_id`, which pair a reply with its request (5.1.4), and the
+   `ignored` tag numbers, which ADR 0004, N41, point 9 requires (5.1.5,
+   point 2). Each is an integer the envelope or an extension header
+   carried, never a field's content, and `ignored` holds only tags the
+   receiver does not know, so it never repeats a value of a registered
+   field. No other input reaches any reply.
 3. **Fail closed.** A request that cannot be decoded, authorised or
    understood whole changes nothing. A client that cannot decode a reply
    reports failure and acts on no part of it `[ADR 0004 N41.4, N41.6:
@@ -1274,19 +1857,55 @@ which is the daemon only if the daemon check passes.
 |---|---|---|
 | Any local user | malformed frames to crash the daemon or exhaust its memory | frame caps before allocation (5.2, point 2); xdr.md's caps, cursor and budgets; the aggregate extension bound (5.2, point 5); reservation before allocation (5.2.1); no panic (7, point 4); the fuzz targets (10.4) |
 | Any local user | claim another identity in a message | no message carries the caller; it comes from the operating system (5.4, point 1) |
-| Any local user | take every connection or slot | per-caller budgets before the total (5.2, point 8; 5.4, point 2); handshake and frame deadlines |
-| Any local user on Windows | hold the pre-attestation slots, which cannot be counted per caller | the handshake budget and deadline bound the hold; the residual is a denial of service to new connections for at most one handshake deadline per slot, repeatable. It is accepted and stated: Windows gives no caller before the first read (5.4, point 1) |
+| Any local user | take every connection or slot | the per-caller handshake and open-connection budgets on every operating system (5.2, point 8; 5.4, point 2); handshake and frame deadlines |
+| Any local user | take the shared memory, the readers or the executor while inside its connection limits | the per-caller byte account and request budget (5.2.1; 5.2, point 8); one turn per caller per round, whatever the frames are (5.6.4, rule 1); a per-caller share of the executor's queue, served round-robin (5.6.4, rule 3); requests charged until their worker returns (5.6.4, rule 5). Residual: many distinct callers together can fill the executor; each then gets a retryable `Busy` |
+| Any local user | keep work running by abandoning it | the request deadline from arrival; cancellation on close; slots and bytes held until the worker returns (5.6.4, rules 2, 4 and 5) |
+| Any local user on Windows | hold the pre-attestation slots, which cannot be counted per caller | bounded, not prevented: the **Windows pre-attestation residual**, stated below the table |
 | Any local user on Windows | have bytes acted on before the caller is known | only the 4-byte prefix is read, never decoded or answered, before the capture (5.4, point 1) |
 | A local user on Windows | swap clients between the prefix read and the capture | one driver-owned transition per instance and generation; stale results discarded (5.4, point 1; 5.6.2; ADR 0005, sheet 18) |
-| Any local user on Windows | exhaust the pipe's instances | a finite count of 254, never the unlimited value; per-caller budgets inside it (5.2, point 10) |
-| A process that takes the endpoint while the daemon is down | receive secrets | no secret before a checked connection (5.4, point 16; 5.5, point 6); the endpoint's address permissions (endpoint specification) |
-| A replayed or stale daemon identity | bind a secret to another run | the instance id is bound to the checked connection, per connection (5.4, point 16) |
-| A malicious or replaced daemon | feed a client bad replies | the client decodes with the same caps, matches every reply to an outstanding request, and fails the connection on any mismatch (5.4, point 15) |
-| A slow or stalled reader | hold the daemon's memory | output budget and write deadline; one frame of input at a time; the global budget (5.2.1) |
-| Any local user | exhaust the budget so requests go unanswered | terminal capacity reserved before the handler; the reserved reply slot; the low-memory path reads at most the envelope (5.2.1) |
-| Anyone reading freed memory | recover secret bytes from IPC buffers | the named zeroisation places on every path (5.5, point 7) |
+| Any local user on Windows | exhaust the pipe's instances | a finite count, never the unlimited value; one count of every instance in every state, `Draining` included; the connection and handshake limits applied before the prefix read; per-caller budgets inside them (5.2, point 10; 5.4, point 2) |
+| A process that takes the endpoint while the daemon is down | receive secrets | the operating system's daemon check, on every connection, before any credential is read (5.4, point 16); sending bound to the checked handle (5.5, point 6); the endpoint's address permissions (endpoint specification) |
+| A process that replays the daemon's instance id | pass as the daemon | the id authenticates nothing; only the operating system's check does (5.4, point 16) |
+| A peer that is not the daemon, or a faulty daemon | make a client use a lower version or another schema | the client recomputes the highest common version and checks the range's shape and, for adapters, the digest (5.4, point 16); a lower claimed range is stopped only by the daemon check |
+| Code in a client that holds two connections | send bytes encoded for the checked one on another | encode and send are one operation of the checked connection; no encoded secret leaves it (5.5, point 6) |
+| An attested but unregistered peer on the adapter endpoint | receive events or send requests | `AwaitBinding`: nothing but the binding exchange before the endpoint's registration and capability checks pass (5.4, point 6) |
+| A malicious or replaced daemon | feed a client bad replies, or an endless stream | the client decodes with the same caps, matches every reply to an outstanding request, and fails the connection on any mismatch (5.4, point 15); streams are staged within the row's part and byte limits and a deadline, and shown only when whole (5.4, point 19); every request has a client deadline (5.4, point 20) |
+| A slow or stalled reader | hold the daemon's memory | the output budget, checked against each whole frame; the write and closing deadlines; one frame of input at a time; both accounts (5.2.1) |
+| Any local user | exhaust the budget so requests go unanswered, or desynchronise the stream with refused frames | terminal capacity reserved before the handler; the reserved reply slot; every check before the first reservation, and a refused body discarded to its exact length (5.2.1, rule 2); the per-caller account |
+| Anyone reading freed memory | recover secret bytes from IPC buffers | the named zeroisation places, both sides and both directions, on every path (5.5, point 7) |
 | A newer peer | have half of a request applied | unknown critical extensions refuse it whole; non-critical ones may not change what is mutated (5.1.7, point 4; 5.4, point 12) |
 | A privileged helper handed a connection opened by another user | act as the opener | documented: the caller is fixed at `connect` (5.6.3, rule 5); the endpoint specification says whether it accepts inherited connections |
+
+**The Windows pre-attestation residual** `[OWN]`. Windows gives a pipe
+server no caller before the first read (5.4, point 1), so a connection
+in `PreAttestation` cannot be charged to anyone. Any local user can hold
+those connections. What bounds it, each stated on its own:
+
+1. **How many at once:** at most the handshake budget for all callers
+   (16 by default, 64 at most), and never more than the connection
+   count or the pool, because both limits are applied before the prefix
+   read is started (5.4, point 2). Open connections are not affected.
+2. **When the daemon gives up on one:** at the handshake deadline (5 s
+   by default) it requests the read's cancellation. That is a bound on
+   the request, not on the slot.
+3. **How long the slot stays taken:** until the cancelled read's
+   terminal completion, plus the disconnect (5.6.2, `Draining`). No
+   cited document bounds that time: UNVERIFIED, measured at the Windows
+   gate (10.5). It is expected to be short; this specification does not
+   rely on that, and a completion that never arrives leaves the slot
+   counted (5.6.2, point 3).
+4. **How often:** without limit. A user can take each slot again as soon
+   as it is released, so while the attack lasts new connections can be
+   refused indefinitely. The effect is confined to new connections on
+   that endpoint.
+5. **After the capture** nothing of this remains: from the moment the
+   caller is known the connection is one of that caller's handshake
+   slots, on Windows as elsewhere (5.4, point 2).
+
+The residual is the smallest this design allows, since one read must
+come before the capture. It is not yet in ADR 0004, O23's table, whose
+row for a malicious local IPC client says nothing remains (section 13,
+Q4).
 
 Not protected, by design: confidentiality against the kernel, root or
 the daemon's own account, and anything a process running as the same
@@ -1300,19 +1919,20 @@ caller can do, which is the same caller (ADR 0004, O23 and C41).
 | C44.1: one framing, one handshake, one definition set, generated codecs, one fuzz suite | 5.1; 5.6.1; 10.4 | `ipc_gen_check`; `handshake_golden` |
 | C44.2: the handshake carries a version range, the role and the instance id | 5.1.3 | `handshake_golden`; `hello_rejects` |
 | C44.3: untrusted in both directions; a long-lived format | 5.4, points 1 to 15 for both sides; 5.6.1, point 8 | reject corpus (daemon and client cases); `ipc_session_client`; `schema_additive_check` |
-| C44.4: only additions within a major; current and previous minor accepted | 5.3.2, points 2 to 4; 5.6.1, point 8 | `compat_previous_minor`; `version_choice`; `schema_additive_check` |
-| C44.5: adapters match exactly | 5.3.2, point 5 | `adapter_exact_version` |
+| C44.4: only additions within a major; current and previous minor accepted | 5.3.2, points 2 to 4; 5.4, point 16 (the client's own check of the choice); 5.6.1, point 8 | `compat_previous_minor`; `version_choice`; `hello_reply_checks`; `schema_additive_check` |
+| C44.5: adapters match exactly | 5.3.2, point 5; 5.4, point 16 (both sides check version and digest) | `adapter_exact_version`; `hello_reply_checks` |
 | C44.6: message sets specified before code | the generator reads only the definition set; endpoint specifications hold the sets | review; `ipc_gen_check` |
-| C45.2: the adapter endpoint only for registered adapters | the adapter endpoint specification's registration; here, the role check and the exact version and digest (5.4, point 5; 5.3.2, point 5) | `hello_rejects` (role 1 on the adapter endpoint, role 2 on the control endpoint); `adapter_exact_version` |
-| C45.1: the caller is the peer the OS reports | 5.4, point 1; 5.6.3, rule 5 | `caller_before_bytes`; `preauth_reads_four_bytes` (Windows gate) |
-| C43.1, C43.2: no secret before the daemon is checked; instance id bound to the checked connection | 5.4, point 16; 5.5, point 6 | `unchecked_cannot_encode_secret` (compile-fail); `checked_connection_per_handle` |
+| C45.2, C45.3: the adapter endpoint only for registered adapters; a binding only from the daemon's registration | `AwaitBinding`: only the binding exchange before the endpoint's registration and capability checks pass, and a generator that refuses an adapter catalogue without a binding row (5.4, point 6; 5.6.1, point 3); the checks themselves are the adapter endpoint specification's. Also the role check and the exact version and digest (5.4, point 5; 5.3.2, point 5) | `binding_before_open`; `generator_rejects` (adapter catalogue without a binding row); `hello_rejects` (role 1 on the adapter endpoint, role 2 on the control endpoint); `adapter_exact_version` |
+| C45.1: the caller is the peer the OS reports | 5.4, points 1 and 2; 5.6.3, rule 5 | `caller_before_bytes`; `admission_order`; `preauth_reads_four_bytes` (Windows gate) |
+| C43.1, C43.2: no secret read or sent before the daemon is checked; instance id bound to the checked connection | 5.4, points 15 to 17; 5.5, point 6 (send and credential read are operations of the checked connection) | `unchecked_cannot_encode_secret` and `secret_send_bound_to_handle` (compile-fail); `checked_connection_per_handle`; `unchecked_refuses_secret_frame`; the Windows gate's sheet 20 cases |
 | N41.1: versioned, bounded, tagged extension lists | 5.1.7; 5.2, points 3 and 5 | `generator_rejects` (missing `version` or `ext`); `ext_aggregate_bound` |
-| N41.2 to N41.6: critical bit; unknown handling both ways | 5.1.7; 5.4, points 12 and 18 | `critical_ext_refused_whole`; `client_ext_tolerance`; `ext_recognition` |
+| N41.2 to N41.6: critical bit; unknown handling both ways; a failed stream shown in no part | 5.1.7; 5.4, points 12, 18 and 19 | `critical_ext_refused_whole`; `client_ext_tolerance`; `ext_recognition`; `ext_value_typed`; `client_stream_budget` |
 | N41.7: the adapter contract uses the same shapes | 5.1.7 applies to every body of both endpoints; one generator (5.6.1, point 3) | `generator_rejects` (an adapter body without `version` or `ext`) |
 | N41.8: unknown error cause as code plus text | 5.1.6, point 3; 5.4, point 18 | `unknown_error_passthrough` |
-| N41.9: non-critical request extensions never change what is mutated; unknown ones named | 5.1.7, point 4; 5.1.5, point 2 | `generator_rejects` (non-advisory request tag); `noncritical_ext_named`; each endpoint's mutation test |
+| N41.9: non-critical request extensions never change what is mutated; unknown ones named | 5.1.7, point 4; 5.1.5, point 2; 7, point 2 | `generator_rejects` (non-advisory request tag); `noncritical_ext_named`; each endpoint's mutation test |
 | C5.5 as amended: peer credentials and the Windows pipe only through `ironafs-os` | 5.1.1; 5.4, point 1; ADR 0005's sheets | the `ironafs-os` inventory check of ADR 0005; `ironafs-ipc` stays pure (`check-pure`) |
-| C39.2, C39.3: bounded executor, one-shot result slots, queues bounded in bytes | 5.2, point 8; 5.2.1; 5.6.3, rule 3 | `stalled_reader`; `global_budget_exhausted`; `cancel_cases` |
+| C39.2: ingress separate from execution; handoff without blocking; a full executor is a counted, retryable error | 5.6.4, rules 1 and 3; 5.4, point 14 | `ingress_never_blocks`; `executor_full_retryable`; `fair_turns` |
+| C39.3: one-shot result slots with a deadline from arrival and a cancel token; every queue bounded in bytes | 5.6.4, rules 2, 4 and 5; 5.6.3, rule 3; 5.2, point 8; 5.2.1 | `request_deadline`; `charged_until_worker_returns`; `cancel_cases`; `stalled_reader`; `output_admission`; `global_budget_exhausted`; `caps_per_caller` |
 | O28.2, O28.3: zeroisation at named places | 5.5, point 7 | `secret_buffers_wiped` |
 
 ## 10. Tests
@@ -1339,6 +1959,26 @@ is 32 bytes of 0xA5, a stand-in digest; `11×16` is 16 bytes of 0x11.
 Endpoint golden vectors (control 1.0's bodies) are in the endpoint
 specifications.
 
+**The schema digest's canonical bytes** (5.6.1, point 7), for a set of
+two files `[OWN]`: `a_first.x`, whose content is `/* a */`, CR LF,
+`const A = 1;`, CR LF; and `b_second.x`, whose content is
+`const B = 2;`, LF. In `tests/vectors/schema_digest/`, with the
+canonical bytes in `canonical.bin` (98 bytes):
+
+| Part | Bytes, hexadecimal |
+|---|---|
+| the label and LF | `69726f6e6166732d6970632d736368656d612d31` `0a` |
+| first name: length 9, `a_first.x` | `00000009` `615f66697273742e78` |
+| first content: length 21, CR LF pairs now LF | `0000000000000015` `2f2a2061202a2f0a636f6e73742041203d20313b0a` |
+| second name: length 10, `b_second.x` | `0000000a` `625f7365636f6e642e78` |
+| second content: length 13 | `000000000000000d` `636f6e73742042203d20323b0a` |
+| SHA-256 of the 98 bytes | `16eb51dcacee49c585ed5adc922d691527d051b6ad91128d45c17ce8c58d046c` |
+
+The bytes were laid out by hand from 5.6.1, point 7 and the digest
+computed with a general-purpose SHA-256 tool, outside the Cargo build.
+These two files are a test fixture, not definitions: the vector tests
+the canonical form, not the parser.
+
 ### 10.2 Round-trip properties
 
 Over values from IronAFS's own seeded generator (ADR 0004, O47, point 2):
@@ -1355,6 +1995,10 @@ Over values from IronAFS's own seeded generator (ADR 0004, O47, point 2):
    that of the LF copy; a one-byte change, a renamed file, or a reordered
    listing of the same files gives the result the rules of 5.6.1, point 7
    give (different, different, the same).
+7. For every reservation sequence the seeded generator makes (admit,
+   refuse, decode, reply, cancel, close, in any order), each account
+   returns to zero when the last charge is released, the two accounts
+   never disagree, and no caller's account passes its budget.
 
 ### 10.3 Reject corpus
 
@@ -1365,7 +2009,9 @@ Each input, its result and the section it breaks:
   range with no accepted version; on the adapter endpoint, a range of two
   versions and a wrong digest; a 33-byte `client_name`; non-zero padding
   in `client_name`; trailing bytes; a second `Hello`; a `REQUEST` before
-  `Hello` (5.4, points 3 to 5);
+  `Hello` (5.4, points 3 to 5); on an endpoint with a binding row, a
+  non-binding `REQUEST`, a `NOTICE` and a `CANCEL` before the binding,
+  each `NotBound` (5.4, point 6);
 - daemon, after the handshake: `length` 4, 8, 12 (below an envelope),
   18 (not a multiple of 4), 65,540 (above the request cap); kind 0, 2, 3,
   4, 7; a `REQUEST` with number 0, with id 0, with an id equal to the
@@ -1373,17 +2019,35 @@ Each input, its result and the section it breaks:
   an id; a body `version` 0 and 2; tags 5 then 3, and 4 twice, in one
   list; 17 extensions in one list; 65 extensions over nested lists;
   16,385 value bytes over several lists; a 1,025-byte value; a known tag
-  with its critical bit flipped; an array count of 0xFFFFFFFF; trailing
-  bytes after a body (5.4, points 7 to 12);
+  with its critical bit flipped; a known tag whose value is not a whole
+  message of its registered type (short, trailing bytes, non-zero
+  padding); an array count of 0xFFFFFFFF; trailing bytes after a body;
+  a `REQUEST` of an unknown number, of an unauthorised row and of a row
+  over the in-flight budget, each with a 60,000-byte body, each
+  followed by a valid request that must be answered (5.4, points 7 to
+  12);
 - client: a `REPLY` for an id never sent, a second `REPLY` for one id, a
   `PART` for a non-streaming row, a `REPLY` whose number differs from
   its request's, an `EVENT` the endpoint does not allow in this state, a
   `REQUEST` from the daemon, a reply above the aggregate bound, a
-  `HelloReply` whose `chosen` lies outside the client's range (5.4,
-  points 15 and 16);
+  `HelloReply` whose `chosen` lies outside the client's range, or
+  inside both ranges and below their highest common version, or whose
+  daemon range is reversed, spans two majors or spans three minors; on
+  the adapter endpoint a `HelloReply` with a two-version daemon range or
+  another digest; a secret-bearing frame on an unchecked connection; a
+  stream of `parts_max` + 1 parts, and one of `stream_bytes_max` + 4
+  bytes (5.4, points 15, 16 and 19);
 - encoder: a listed value in an open field's unknown form; a request id
-  0; a message one byte over its cap (5.5, point 2);
-- generator: one bad definition per refusal of 5.6.1, point 3.
+  0; a message one byte over its cap (5.5, point 2); a `REQUEST` with
+  number 0 or a number the chosen version lacks; a `RESULT_OK` reply to
+  a number without a row; a closing notice with a body that is not an
+  `ErrorReplyBody` (5.5, point 5). The closing notice (number 0) and an
+  error reply echoing an unknown number are accepted, as 10.1's
+  vectors show;
+- generator: one bad definition per refusal of 5.6.1, point 3; and one
+  bad directory per rule of 5.6.1, point 1: a name with an upper-case
+  letter, a name with a non-ASCII byte, a 65-byte name, a subdirectory,
+  a symbolic link to a valid file, a hidden file, an empty directory.
 
 ### 10.4 Fuzz targets
 
@@ -1399,13 +2063,17 @@ cap in force:
 - `ironafs-ipc_session_daemon`: a sequence of frames into the daemon's
   connection state machine with a stub endpoint and a writer that may
   stall; at most one reply per request; no handler call before
-  authorisation or for a request with an unknown critical extension; the
-  live bytes the budget counts never above the in-flight ceiling, and
-  each allocation inside a reservation; the output queue above its cap
-  only by funded terminal replies (5.2.1, rule 4).
+  authorisation or for a request with an unknown critical extension; no
+  body byte read before authorisation; after every refusal that keeps
+  the connection, the next frame read at the right offset; the live
+  bytes each account counts never above its budget, and each allocation
+  inside a reservation; the output queue above its budget only by
+  funded terminal replies; nothing queued after a closing notice
+  (5.2.1, rules 2 and 4; 5.4, point 13).
 - `ironafs-ipc_session_client`: the same from the daemon's side into the
   client; no outstanding request reported done after a failed
-  connection.
+  connection; no part shown before its stream's terminal reply; staged
+  bytes never above the row's limits.
 - `xtask_ipc_schema`: text into the definition parser; anything accepted
   regenerates identically.
 
@@ -1422,16 +2090,47 @@ cap in force:
 - `adapter_exact_version`: an adapter `Hello` with the daemon's version
   and digest is accepted; one with another version, a two-version range,
   or another digest is refused with the right result and closed.
+- `hello_reply_checks`: a client against a stand-in daemon that answers
+  `ACCEPTED` with each bad reply of 10.3; every one fails the handshake
+  and no request is sent. A 1.1 client against a stand-in that claims
+  the range 1.0 to 1.1 and chooses 1.0 refuses; against a real 1.0
+  daemon it proceeds at 1.0.
+- `binding_before_open`: on a test endpoint with a binding row, an
+  attested peer with a valid `Hello` receives no `EVENT` and has no
+  request served before its binding succeeds; a failed binding closes;
+  the handshake deadline covers the wait; the connection counts as a
+  handshake slot until it is `Open`.
+- `admission_order`: with a stand-in transport that records every call,
+  a connection over the connection count, over the handshake budget, or
+  without room for its allowance is closed with zero reads, on each
+  operating system's transport (on the Windows stand-in, with no prefix
+  read started); one over its caller's handshake budget is closed with
+  no read after the caller is known.
 - `caller_before_bytes` (Linux, macOS): with a stand-in transport that
   records the order of calls, the caller is read before any read on the
   connection, and a connection with no caller is closed with zero bytes
   read.
 - `checked_connection_per_handle`: the checked connection cannot be made
   from a `HelloReply` read on another handle, nor reused after a
-  reconnect; a reconnect to a planted endpoint that passes the operating
-  system's check but sends another instance id gets nothing secret.
-- `unchecked_cannot_encode_secret`: a compile-fail test; a secret-bearing
-  encoder called without a checked connection does not build.
+  reconnect. A legitimate restart: the stand-in daemon restarts with a
+  new instance id and passes the operating system's check; the client
+  makes a new checked connection, sees the changed id, and sends its
+  secret on the new connection. A planted endpoint: the stand-in fails
+  the operating system's check and replays the earlier, genuine
+  instance id; no credential is read and nothing secret is sent. The
+  instance id decides neither case.
+- `unchecked_cannot_encode_secret`, `secret_send_bound_to_handle`:
+  compile-fail tests. A secret-bearing message cannot be encoded or sent
+  without a checked connection; its encoder and staging buffer cannot be
+  named outside the connection's send operation; a credential read for
+  one checked connection cannot be passed to another's send; nothing
+  read or encoded before a reconnect can be sent after it.
+- `unchecked_refuses_secret_frame`: an unchecked client fails the
+  connection on a secret-bearing reply, part or event before reading
+  its body, and cannot send a request whose reply is secret-bearing.
+- `ext_value_typed`: a known tag's value is decoded as its type before
+  the handler runs; a bad value is fatal and the recording endpoint
+  shows no handler call.
 - `ext_aggregate_bound`, `ext_recognition`, `critical_ext_refused_whole`,
   `noncritical_ext_named`, `client_ext_tolerance`,
   `unknown_error_passthrough`: N41's cases, with a recording endpoint
@@ -1443,25 +2142,83 @@ cap in force:
   when the mark is 5 (a later `REQUEST` with id 6 is accepted).
 - `closing_notice`: each fatal error after the handshake yields the
   closing notice when the slot is free and none when it is in use; the
-  client reports the code against every outstanding request.
+  client reports the code against every outstanding request. With
+  handlers that finish at every point around the fatal error, the
+  notice is the last frame written, no reply follows it, suppressed
+  replies are counted, and a stalled reader is closed at the closing
+  deadline.
+- `refusal_consumes_body`: 10.3's refused requests with bodies, on the
+  ordinary path and with the in-flight budget exhausted: the same code
+  each time (or `Busy` only for a request that was valid), the body
+  discarded in zeroed chunks, the following request answered; a
+  malformed or unknown `NOTICE` is fatal on both paths; a valid one
+  under exhaustion follows its row's overload rule.
+- `output_admission`: a `PART` and an `EVENT` that would take the queue
+  one byte past its budget are not built (the part waits, the event is
+  dropped and counted); the queue passes its budget only by funded
+  terminal replies.
 - `stalled_reader`, `global_budget_exhausted`, `slow_peer`,
   `caps_per_caller`: the budgets of 5.2, point 8 and the reservation
-  rules of 5.2.1, with allocator and counter checks.
+  rules of 5.2.1, with allocator and counter checks: one caller at its
+  byte budget gets `Busy` while a second caller's requests still run;
+  every allocation, the decoder's and `Hello`'s `client_name` included,
+  is inside a reservation of both accounts; the decode charge is
+  reduced to the ledger's total after the decode; heap requests stay
+  within their budget; a caller's account record is gone after its
+  last charge.
+- `fair_turns`, `ingress_never_blocks`: one caller with its full number
+  of connections sending small, unknown and cancelled frames without
+  pause, and a second caller with one connection: the second's request
+  is read within one round and its latency stays within a stated bound;
+  with every worker held by a stand-in handler, ingress still serves
+  `CANCEL`, closes and deadlines.
+- `executor_full_retryable`: with the queue full, a request is answered
+  `Busy` at once, counted, nothing applied, and the same request
+  succeeds when sent again; one caller cannot take more than its share
+  of the queue.
+- `request_deadline`: a handler held past the deadline: the reply is
+  `DeadlineExceeded`, counted from arrival (a frame sent slowly has less
+  time left); a queued request past its deadline never runs.
+- `charged_until_worker_returns`: a caller that sends its budget of
+  requests to a held handler and disconnects cannot start more from a
+  new connection until workers return; its bytes stay in its account
+  until then.
+- `client_stream_budget`: a stand-in daemon sends one part too many,
+  one byte too many, a part with an unknown critical extension followed
+  by more parts, and a stream that never ends: the client shows no part
+  in any case, sends one `CANCEL`, stages nothing further, and fails
+  the connection at the grace limit; a well-formed stream is shown only
+  after its terminal reply.
 - `config_bounds`: each policy budget at 0, at its ceiling, and one
   above; each rule of 5.2, point 9 broken; refused whole at start and on
   reload.
-- `secret_buffers_wiped`: each label of 5.5, point 7 on each path it
-  names, with a test hook that inspects the buffer at release.
+- `secret_buffers_wiped`: each label of 5.5, point 7, on the daemon and
+  on the client, on each path it names, with a test hook that inspects
+  the buffer at release; a test catalogue with a secret-bearing request,
+  reply, part and event covers both directions.
 - `ipc_gen_check`, `schema_digest_fixture`: `cargo xtask ipc-gen
   --check`; the digest of the checked-in set equals a value recorded by
   an independent procedure outside the Cargo build, over the canonical
-  bytes of 5.6.1, point 7.
+  bytes of 5.6.1, point 7; `schema_digest_files`: 10.1's two-file
+  vector, byte for byte, and each bad directory of 10.3.
 - `schema_additive_check`: from the first freeze.
 - **Windows gate** (with the Windows layer, on each supported floor;
   gaps until then):
   - `preauth_reads_four_bytes`: impersonation before any read fails with
     1368; after the 4-byte prefix it succeeds, and nothing beyond the
-    prefix has been read;
+    prefix has been read. The run records, per release, whether a
+    shorter read would also have sufficed (recorded, not relied on);
+  - `preauth_per_caller`: one user opens connections that each send
+    only the 4-byte prefix: after the capture that user holds at most
+    its per-caller handshake budget, the excess is closed with no
+    further read, and a second user still connects;
+  - `cancel_completion_time`: the time from the cancellation request to
+    the terminal completion of a cancelled prefix read, a cancelled
+    frame read and a cancelled write, measured over many runs and
+    recorded in 12.1; with a stand-in whose completion never arrives,
+    the instance stays in `Draining`, is reported stuck after the
+    closing deadline, stays in every count, and is never disconnected,
+    reused or closed;
   - short prefix completions: 1 then 3 bytes (attested after all 4);
     2 bytes then a close, 2 bytes then a stall past the deadline, a
     0-byte completion (each a failed transition, closed with no reply,
@@ -1470,9 +2227,23 @@ cap in force:
   - a disconnect, and a reconnect by another client, between the prefix
     read and the capture: the first identity is never bound to the second
     client;
-  - `pipe_pool`: 254 instances in use; a configuration whose listeners
-    plus total connections pass 254 is refused; the 255th connect finds
-    the pipe busy.
+  - `pipe_pool`: P instances in use, in every state of 5.2, point 10's
+    table, `Draining` included; a configuration whose listeners plus
+    connections in all pass P is refused; with the connection count at
+    its budget a new client is disconnected with no read; with every
+    instance in use a connect finds the pipe busy; the buffer sizes the
+    live pipe reports are recorded;
+  - **the daemon check, ADR 0005, sheet 20** (a shipping gate for every
+    secret-bearing message on Windows): the real daemon checked by an
+    ordinary, unprivileged user; a pipe of the same name held by another
+    user's process; the server exiting and being replaced between
+    connect and check; and the residual interval before the process is
+    opened, with the server's pid observed, independently of the check,
+    to be held by another process: the check must answer "not the
+    service" from a step that tells the connected pipe's server from
+    the replacement, before any credential is read. Sheet 20 sets what
+    counts as a pass; until it passes, no Windows client sends a
+    secret.
 
 ## 11. Revisit if
 
@@ -1488,6 +2259,14 @@ cap in force:
     enough to impersonate on a supported release, or that some release
     lets a pipe server identify its client before any read (5.4,
     point 1);
+  - the Windows gate measures a cancelled pipe operation's completion
+    time as long or unbounded in a case a local user can cause (5.6.2,
+    point 3), which would make the residual of section 8 larger than
+    stated;
+  - load tests show round-robin turns or the per-caller quarter of the
+    executor's queue starving a legitimate caller (5.6.4);
+  - a control result needs more than 65,536 parts or 16 MiB in one
+    stream (5.2, point 11);
   - a measured control reply comes near the 1 MiB cap, or an adapter
     frame needs more than the 2 MiB ceiling (5.2, point 2);
   - a multi-session Windows host needs more than 254 connections
@@ -1509,8 +2288,8 @@ cap in force:
 | P3 | DOCUMENTATION | Microsoft Learn, System Error Codes 1300 to 1699, register row E5: error 1368 | 5.4 |
 | P4 | DOCUMENTATION | Linux man-pages 6.19, unix(7), register row E6: socket option `SO_PEERCRED` | 5.1.1, 5.6.3 |
 | P5 | DOCUMENTATION | unix(4), macOS 26.7, register row E7: `LOCAL_PEERCRED` and the supported socket types | 5.1.1, 5.6.3 |
-| D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C4, C5, C39, C41 to C46 ([part 1](../adr/0004-architecture-1-core.md)); L35 ([part 2](../adr/0004-architecture-2-os-layers.md)); O16, O23, O28, O47 ([part 3](../adr/0004-architecture-3-operations.md)); N41 ([part 4](../adr/0004-architecture-4-negotiation.md)); S1 | all |
-| D2 | DECISION | [ADR 0005](../adr/0005-ironafs-os.md), accepted 2026-11-21: sheets 13 and 16 to 20; Consequences (the amendment of C5, point 5) | 1, 5.1.1, 5.2, 5.4, 5.5, 5.6.2 |
+| D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C4, C5, C9, C37, C39, C41 to C46 ([part 1](../adr/0004-architecture-1-core.md)); L35 ([part 2](../adr/0004-architecture-2-os-layers.md)); O16, O23, O28, O47 ([part 3](../adr/0004-architecture-3-operations.md)); N41 ([part 4](../adr/0004-architecture-4-negotiation.md)); S1 | all |
+| D2 | DECISION | [ADR 0005](../adr/0005-ironafs-os.md), accepted 2026-11-21: sheets 13 and 16 to 20; Consequences (the amendment of C5, point 5) | 1, 5.1.1, 5.2, 5.4, 5.5, 5.6.2, 8, 10.5 |
 | D3 | DECISION | [The XDR profile](xdr.md) | 5.1, 5.2, 5.4, 5.5, 5.6.1, 6, 7 |
 | D4 | DECISION | [Coding standards](../coding-standards.md), rules 1 to 3, 8, 9, 15, 20 and 21; the `wire-format` skill | 5, 6, 7, 10 |
 | D5 | DECISION | Issue #62: the owner's decisions of 2026-11-20 recorded there (the split, the two kinds of limit, the digest, the Windows pool and prefix rule) | 5.2, 5.6.1 |
@@ -1548,6 +2327,24 @@ of 10.5.
 - **Q3. The adapter endpoint's frame caps** (5.2, point 2). Set by the
   adapter endpoint specification (ADR 0004, S1), at most the ceiling.
   Blocks: enabling the adapter endpoint.
+- **Q4. ADR 0004, O23's row for a malicious local IPC client** says of
+  what remains: "None known". Section 8's Windows pre-attestation
+  residual is something that remains, and O23, rule 3 requires each
+  residual to be in the administrator's guide. O23 is Firm, so this
+  specification cannot change it. The owner decides between: (a) an
+  amendment of O23 that states the residual in that row, which this
+  specification recommends; (b) leaving O23 as it is and accepting the
+  residual here only, which leaves the two documents disagreeing; (c) a
+  further operating-system site in ADR 0005 that gives the daemon a
+  hint of the connecting process before any read, used for counting
+  only, which would shrink the residual at the cost of a new unsafe
+  site and a value that proves nothing. Blocks: marking this
+  specification `reviewed` on its Windows parts, and the Windows gate.
+  No public issue yet.
+- **Q5. How long a cancelled pipe operation takes to complete** (5.6.2,
+  point 3) is unverified. The Windows gate measures it
+  (`cancel_completion_time`). Blocks: stating a time bound for the
+  residual of section 8. Part of the Windows gate (M5-28, planned).
 
 ## 14. Review
 
