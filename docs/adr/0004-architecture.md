@@ -722,10 +722,17 @@ The full record, with every finding and its disposition, is
     "few calls that have no safe route", "small operating-system
     bindings", "closed list", "ironafs-os" and the ADR's number,
     "0004". The files that state C4's or C5's rule for this crate were
-    read at every hit: `AGENTS.md`, coding standards rule 5,
-    `crates/xtask/src/deps.rs` and its `pure_source.rs`, and
+    then read in full, at `aef2fac`: `AGENTS.md`,
+    `docs/coding-standards.md`, `crates/xtask/src/deps.rs`,
+    `crates/xtask/src/deps/pure_source.rs` and
     `crates/ironafs-time/src/lib.rs`. None restates C5, point 5's list
-    or C4, point 3's row, so none changes. `README.md` and
+    or C4, point 3's row, so none changes for this amendment. Coding
+    standards rule 5 does change in the same pull request, for a
+    different reason: it names `ironafs-os` as the one crate that does
+    not inherit the workspace lints (ADR 0005, point 1.5). The tests of
+    the dependency check (`crates/xtask/src/deps/tests.rs` and
+    `self_test.rs`) were read at their hits only: they use the name
+    `ironafs-os` in planted fixtures and state no rule. `README.md` and
     `docs/workflow.md` cite ADR 0004 for other decisions; the other hits
     are review records and research notes, which record their own dates
     and are not rewritten.

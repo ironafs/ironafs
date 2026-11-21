@@ -2004,7 +2004,10 @@ decision and a change to this point (point 7).
   executed evidence, each by the issue of the code that needs it.
 - **C5, point 5's list is amended in the same pull request** (owner,
   2026-11-20; C5 is Working; `docs/adr/README.md`, "Amending a working
-  decision"; reviewed as ADR 0004 was, on the strongest row). It gains
+  decision"). It is to be reviewed as ADR 0004 was, on the strongest
+  row; that review is pending, and ADR 0004's Review entry records it
+  when done. So far it has had the scoped rounds 15 and 16 (GPT
+  `gpt-6.2-sol` and GLM `glm-5.3`; see Review). It gains
   the items this table holds that the list does not name: the resolver
   calls of C33, point 2; the random source of C5, point 1; the Linux
   mount call and FUSE descriptor hand-off of L7, point 1, both
@@ -2119,12 +2122,12 @@ no macOS or Windows component's status: that is the owner's (below).
 | Linux kernel (`syscall` for `getrandom`; the socket, `mount`, `madvise` and `prctl` calls through the C library) | not linked: system calls | The kernel is itself a Major Component; IronAFS talks to it and links none of it (ADR 0001, "Out of scope"). | not needed | not needed | CONFIRMED (GPLv3 §1 names the kernel; ADR 0001) |
 | glibc (rows 1, 8, 11 to 15, 21 to 23) | dynamically | OPEN: the kernel, as each distribution packages it, or another component; packaging and boundary not verified | OPEN: not relied on | Reads on its ISO C and POSIX functions (official standards; glibc's own source is public); OPEN per Linux-specific function | System Library reading UNVERIFIED. Its licence is LGPL-2.1-or-later, which is GPLv3-compatible, so the outcome does not depend on the reading: compatibility CONFIRMED (licence) |
 | musl (static Linux build) | statically, into the binary | not assessed | not assessed | not assessed | The static build is assessed under musl's own licence (MIT, GPLv3-compatible) and its notices, which travel with the binary (ADR 0001, "Releases"), without relying on the System Libraries exception. CONFIRMED (licence); notices are the Linux packaging decision's |
-| macOS libSystem (clocks, dump limit, peer credentials, `poll`, `dns_sd`, unified logging) | dynamically | OPEN: ships with macOS; whether it is packaged with a Major Component (the kernel or the operating system's core) and not part of it is not verified. Apple's statement that it does not support statically linked binaries is UNVERIFIED (to be inspected at source). | OPEN: libSystem offers much more than enabling use with the kernel | OPEN: some calls are POSIX (`poll`, `clock_gettime`), others Apple's own (`clock_gettime_nsec_np`, `dns_sd`, unified logging); per interface, not verified | owner's decision; UNVERIFIED |
+| macOS libSystem (clocks, dump limit, peer credentials, `poll`, `dns_sd`, unified logging) | dynamically | OPEN: ships with macOS; whether it is packaged with a Major Component (the kernel or the operating system's core) and not part of it is not verified. Apple's statement that it does not support statically linked binaries is UNVERIFIED (to be inspected at source). | OPEN: libSystem offers much more than enabling use with the kernel | OPEN: some calls are POSIX (`poll`, `setrlimit`, `getsockopt`; rows 7, 11, 16), others Apple's own (`clock_gettime_nsec_np`, `dns_sd`, unified logging; rows 2, 7, 5); per interface, not verified | owner's decision; UNVERIFIED |
 | macOS Security.framework (`SecRandomCopyBytes`, row 9) | dynamically | OPEN, as for libSystem | OPEN: a framework with broad functions | OPEN: not verified for this interface | owner's decision; UNVERIFIED |
 | The macOS C shim | statically, IronAFS's own code | Part of the work, under GPL-3.0-or-later; it calls only libSystem. Built by the platform compiler, which is a Major Component when used to produce the work. | not needed | not needed | CONFIRMED (own code) |
-| Windows Kernel32.dll, Dnsapi.dll, Bcrypt.dll (rows 3, 6, 10) | dynamically (`raw-dylib`, no import library from a crate) | OPEN: ship with Windows and are its documented interfaces (Microsoft's function pages name each DLL; Context); packaging with a named Major Component and the boundary not verified | OPEN | OPEN: whether each called interface is a Standard Interface, and whether any public-source implementation of it exists (a third party's counts), is not verified | DLL names CONFIRMED; owner's decision; UNVERIFIED |
-| Windows DLL of row 4 (`QueryUnbiasedInterruptTimePrecise`) | dynamically | OPEN, as above | OPEN | OPEN, as above | Import target MISSING: the function's page names Kernel32.dll and lists API-set and KernelBase hosts, so point 5.4's link-and-run check sets it; owner's decision; UNVERIFIED |
-| Windows DLLs of rows 17 to 20 (expected Kernel32.dll and Advapi32.dll) | dynamically | OPEN, as above | OPEN | OPEN, as above | DLL names MISSING until point 5.4's check runs; owner's decision; UNVERIFIED |
+| Windows Kernel32.dll, Dnsapi.dll, Bcrypt.dll (rows 3, 6, 10) | dynamically (`raw-dylib`, no import library from a crate) | OPEN. Candidate: the Windows operating system's kernel and its system libraries as shipped with Windows (each DLL ships with Windows and is its documented interface: Microsoft's function pages name each DLL; Context). Whether each DLL is included in that component's normal packaging and is not part of it, and where the component's boundary lies, is not verified | OPEN | OPEN: whether each called interface is a Standard Interface, and whether any public-source implementation of it exists (a third party's counts), is not verified | DLL names CONFIRMED; owner's decision; UNVERIFIED |
+| Windows DLL of row 4 (`QueryUnbiasedInterruptTimePrecise`) | dynamically | OPEN. Candidate: the same as for Kernel32.dll (the Windows kernel and its system libraries as shipped with Windows); packaging and boundary not verified, and the assessment completes only once point 5.4's check names the import target | OPEN | OPEN: whether the called interface is a Standard Interface with a public-source implementation is not verified | Import target MISSING: the function's page names Kernel32.dll and lists API-set and KernelBase hosts, so point 5.4's link-and-run check sets it; owner's decision; UNVERIFIED |
+| Windows DLLs of rows 17 to 20 (expected Kernel32.dll and Advapi32.dll) | dynamically | OPEN. Candidate: the Windows kernel and its system libraries as shipped with Windows, for each DLL point 5.4's check names; packaging and boundary not verified, and the assessment completes only once that check names the import targets | OPEN | OPEN: whether each called interface is a Standard Interface with a public-source implementation is not verified | DLL names MISSING until point 5.4's check runs; owner's decision; UNVERIFIED |
 
 - **Owner item.** Whether the proprietary macOS and Windows components
   (libSystem, Security.framework and the Windows DLLs) meet the
@@ -2294,8 +2297,9 @@ no macOS or Windows component's status: that is the owner's (below).
 
 The full record, with every round and the findings of the final rounds,
 is [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md).
-The ADR was drafted and fixed before it was published, so each round
-reviewed a frozen copy identified by its SHA-256, not a commit.
+The ADR was drafted and fixed before it was published, so rounds 1 to
+14 each reviewed a frozen copy identified by its SHA-256, not a commit.
+Rounds 15 and 16 reviewed commits on the pull request's branch.
 
 - **Seats.** GPT (`gpt-6.2-astra`, xhigh) for design, the strongest-tier
   seat; GLM (`glm-5.3`, max) for security. Both are families that wrote
@@ -2327,5 +2331,16 @@ reviewed a frozen copy identified by its SHA-256, not a commit.
   definitions exactly and assesses (a) and each route of (b) per
   component, leaving every macOS and Windows reading open for the
   owner; C4 gains its trigger; the citations and the sweep are
-  corrected. One minor (the status line's pull request number) waits
-  for the pull request. A scoped verification follows.
+  corrected. Two minors were deferred: the status line's pull request
+  number waits for the pull request, and the record's descriptions of
+  earlier findings were added in round 16's fix.
+- **Round 16** (GPT `gpt-6.2-sol` xhigh and GLM `glm-5.3` high, the
+  scoped verification of `434e573..aef2fac`): GLM PASS with 1 minor;
+  GPT FAIL, 1 major and 4 minors (GLM's minor among them). The major:
+  the Windows rows named no candidate Major Component; each now names
+  one, the Windows kernel and its system libraries as shipped with
+  Windows, as a candidate only, with (a) still OPEN. The minors: the
+  libSystem row's call names, the ADR 0004 sweep's read-through and
+  rule 5, the review record's summaries, and the description of the
+  amendment's review above. All fixed in the next commit; its
+  verification is pending.
