@@ -505,3 +505,74 @@ fn rebinding_moves_the_charge_to_the_new_root() {
     assert_eq!(table.charge(context(1)), 0);
     assert!(!table.unbind(context(1), entry));
 }
+
+#[test]
+fn cross_refused_over_the_budget_leaves_the_table_unchanged() {
+    // A full table with one evictable node: the refused crossing makes no
+    // root, evicts nothing and spends no id.
+    let mut table = table(5);
+    let (entry, root) = entered(&mut table);
+    let mount = table.child(entry, root, Vnode(5), Uniquifier(1)).unwrap();
+    let spare = table.entry(CellIndex(2), PathKind::ReadOnly).unwrap();
+    assert_eq!(table.len(), 5);
+    let before = table.next_id;
+    assert_eq!(
+        table.cross(context(2), 1, mount, root_of(MOUNTED), Version::ReadOnly),
+        Err(NodeError::Busy)
+    );
+    assert_eq!(table.len(), 5);
+    assert_eq!(table.next_id, before);
+    assert!(table.kind(spare).is_some());
+    assert_eq!(
+        table.aliases(&root_of(MOUNTED)),
+        [] as [ironafs_vfs::NodeId; 0]
+    );
+    assert_eq!(table.charge(context(2)), 0);
+}
+
+#[test]
+fn cross_refused_over_the_context_limit_leaves_the_table_unchanged() {
+    let mut table = NodeTable::new(Limits {
+        nodes: 5,
+        contexts: 1,
+    })
+    .unwrap();
+    let (entry, root) = entered(&mut table);
+    let mount = table.child(entry, root, Vnode(5), Uniquifier(1)).unwrap();
+    let spare = table.entry(CellIndex(2), PathKind::ReadOnly).unwrap();
+    let before = table.next_id;
+    assert_eq!(
+        table.cross(context(2), BIG, mount, root_of(MOUNTED), Version::ReadOnly),
+        Err(NodeError::Busy)
+    );
+    assert_eq!(table.len(), 5);
+    assert_eq!(table.next_id, before);
+    assert!(table.kind(spare).is_some());
+    assert_eq!(
+        table.aliases(&root_of(MOUNTED)),
+        [] as [ironafs_vfs::NodeId; 0]
+    );
+}
+
+#[test]
+fn rebinding_at_the_budget_is_charged_the_net() {
+    // Context 1 holds exactly its budget of 3 (root, entry, dynamic root);
+    // moving the binding to another volume's root still holds 3.
+    let mut table = table(16);
+    let (entry, first) = entered(&mut table);
+    let second = table
+        .cross(
+            context(1),
+            3,
+            entry,
+            root_of(VolumeId(101)),
+            Version::ReadOnly,
+        )
+        .unwrap();
+    assert_ne!(first, second);
+    assert_eq!(table.charge(context(1)), 3);
+    assert_eq!(
+        table.binding(context(1), entry),
+        Some((second, Version::ReadOnly))
+    );
+}

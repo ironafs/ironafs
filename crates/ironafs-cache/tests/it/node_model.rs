@@ -15,7 +15,7 @@
 //!   are too (namespace specification, 5.6.1, point 8);
 //! - each context's charge is the number of distinct nodes its pins and
 //!   bindings reach (5.6.1, point 8), and a refused operation changes no
-//!   charge;
+//!   charge and makes or evicts no record;
 //! - the table never holds more records than its limit.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,6 +42,7 @@ enum Op {
         context: u64,
         pick: usize,
         volume: u32,
+        budget: u32,
     },
     Pin {
         context: u64,
@@ -90,6 +91,7 @@ fn op(
             context: source.u64_in(1..=contexts),
             pick: source.usize_in(0..=picks),
             volume: u32::try_from(source.u64_in(1..=2)).unwrap(),
+            budget: u32::try_from(source.u64_in(2..=budget_max)).unwrap(),
         },
         3 => Op::Pin {
             context: source.u64_in(1..=contexts),
@@ -351,6 +353,7 @@ fn apply(
             context: ctx,
             pick: index,
             volume,
+            budget,
         } => {
             let from = pick(nodes, index);
             let cell = match table.kind(from) {
@@ -365,7 +368,7 @@ fn apply(
                 uniquifier: Uniquifier(1),
             };
             let bound = table
-                .cross(context(ctx), 64, from, root, Version::ReadOnly)
+                .cross(context(ctx), budget, from, root, Version::ReadOnly)
                 .ok();
             if let Some(bound) = bound {
                 model.returned(table, bound)?;
@@ -442,13 +445,14 @@ fn run(case: &Case, contexts: u64, done: &mut [u64; 7]) -> Result<(), String> {
                 .collect()
         };
         let before = charges(&table);
+        let len = table.len();
         let outcome = apply(&mut table, &mut model, op, &nodes, contexts)
             .map_err(|error| format!("step {step} {op:?}: {error}"))?;
         if outcome == Outcome::Done {
             done[op.index()] += 1;
         }
-        if outcome != Outcome::Done && charges(&table) != before {
-            return Err(format!("step {step}: refused {op:?} changed charges"));
+        if outcome != Outcome::Done && (charges(&table) != before || table.len() != len) {
+            return Err(format!("step {step}: refused {op:?} changed the table"));
         }
         model
             .check(&table, case.nodes, contexts)
@@ -486,7 +490,7 @@ fn node_table_matches_its_reference_model_on_every_short_sequence() {
     // vnodes, four picks and budgets of 2 and 3, in a table of four
     // records; the sweep prints how many it ran and the bound.
     let mut done = [0; 7];
-    Exhaustive::new("node table, every three-operation sequence", 400_000).check(
+    Exhaustive::new("node table, every three-operation sequence", 500_000).check(
         |source| Case {
             nodes: 4,
             ops: (0..3).map(|_| op(source, 3, 2, 1, 2, 3)).collect(),

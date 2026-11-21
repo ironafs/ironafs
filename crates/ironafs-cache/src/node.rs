@@ -27,7 +27,8 @@
 //! - **Charges.** A pin or a binding is held by one context, and holds the
 //!   node and every node it names, transitively. Each node a context holds
 //!   is charged once to that context, against the budget the caller gives
-//!   (C11, point 10; 5.6.1, point 8). A new pin or binding over the budget,
+//!   (C11, point 10; 5.6.1, point 8). A rebinding is charged its net
+//!   change. A new pin or binding over the budget,
 //!   or a new node in a full table where nothing can be evicted, is refused
 //!   with [`NodeError::Busy`]. A held node is never evicted to make room.
 //!
@@ -106,7 +107,7 @@ pub enum NodeKind {
 }
 
 /// Why the node table refused a change. A refusal changes no pin, binding
-/// or charge.
+/// or charge, and makes or evicts no record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NodeError {
     /// Crossing would take a root past [`MAX_MOUNT_DEPTH`] mount points.
@@ -407,14 +408,37 @@ impl NodeTable {
             NodeKind::DynamicRoot | NodeKind::Root { .. } => return Err(NodeError::NotAnAnchor),
         };
         let key = Key::File(root, from);
-        let node = if let Some(&node) = self.keys.get(&key) {
-            let record = self.records.get(&node).ok_or(NodeError::UnknownNode)?;
-            if record.chain.as_deref() != Some(&chain) {
-                return Err(NodeError::KindConflict);
+        let existing = match self.keys.get(&key) {
+            Some(&node) => {
+                let record = self.records.get(&node).ok_or(NodeError::UnknownNode)?;
+                if record.chain.as_deref() != Some(&chain) {
+                    return Err(NodeError::KindConflict);
+                }
+                Some(node)
             }
-            node
-        } else {
-            self.make(
+            None => None,
+        };
+        let old = self
+            .contexts
+            .get(&context)
+            .and_then(|holder| holder.bindings.get(&from).map(|&(root, _)| root));
+        if let Some(node) = existing
+            && old == Some(node)
+        {
+            self.set_binding(context, from, node, version);
+            return Ok(node);
+        }
+        // Every check runs before the root is made, so a refusal evicts
+        // nothing and spends no id. A root names only its anchor, so a new
+        // root holds itself and what `from` holds.
+        let (prospective, unmade) = match existing {
+            Some(node) => (self.closure(node), 0),
+            None => (self.closure(from), 1),
+        };
+        self.check_hold(context, budget, &prospective, unmade, old)?;
+        let node = match existing {
+            Some(node) => node,
+            None => self.make(
                 key,
                 NodeKind::Root {
                     file: root,
@@ -423,20 +447,11 @@ impl NodeTable {
                 None,
                 None,
                 Some(Box::new(chain)),
-            )?
+            )?,
         };
-        let old = self
-            .contexts
-            .get(&context)
-            .and_then(|holder| holder.bindings.get(&from).copied());
-        if let Some((old_root, _)) = old
-            && old_root == node
-        {
-            self.set_binding(context, from, node, version);
-            return Ok(node);
-        }
-        self.hold(context, budget, node)?;
-        if let Some((old_root, _)) = old {
+        let closure = self.closure(node);
+        self.apply_hold(context, closure);
+        if let Some(old_root) = old {
             self.release(context, old_root);
         }
         self.set_binding(context, from, node, version);
@@ -668,22 +683,60 @@ impl NodeTable {
     /// charging each newly held node against `budget`.
     fn hold(&mut self, context: ContextKey, budget: u32, node: NodeId) -> Result<(), NodeError> {
         let closure = self.closure(node);
-        let holder = self.contexts.get(&context);
-        if holder.is_none() {
+        self.check_hold(context, budget, &closure, 0, None)?;
+        self.apply_hold(context, closure);
+        Ok(())
+    }
+
+    /// Whether `context` may hold `closure` and `unmade` nodes not yet in
+    /// the table within `budget`, once its hold on `releasing` (a root it
+    /// is rebinding away from) is dropped: the net charge is compared, so a
+    /// rebinding is never charged for both roots at once.
+    fn check_hold(
+        &self,
+        context: ContextKey,
+        budget: u32,
+        closure: &BTreeSet<NodeId>,
+        unmade: usize,
+        releasing: Option<NodeId>,
+    ) -> Result<(), NodeError> {
+        let Some(holder) = self.contexts.get(&context) else {
             let contexts = u32::try_from(self.contexts.len()).unwrap_or(u32::MAX);
             if contexts >= self.limits.contexts {
                 return Err(NodeError::Busy);
             }
-        }
+            let total = closure.len().checked_add(unmade).ok_or(NodeError::Busy)?;
+            return Self::within(total, budget);
+        };
+        let dropped: BTreeSet<NodeId> = releasing
+            .map_or_default(|root| self.closure(root))
+            .into_iter()
+            .filter(|node| holder.holds.get(node) == Some(&1))
+            .collect();
         let fresh = closure
             .iter()
-            .filter(|node| holder.is_none_or(|holder| !holder.holds.contains_key(node)))
+            .filter(|node| !holder.holds.contains_key(node) || dropped.contains(node))
             .count();
-        let charged = holder.map_or(0, |holder| holder.holds.len());
-        let total = charged.checked_add(fresh).ok_or(NodeError::Busy)?;
+        let total = holder
+            .holds
+            .len()
+            .checked_sub(dropped.len())
+            .and_then(|kept| kept.checked_add(fresh))
+            .and_then(|total| total.checked_add(unmade))
+            .ok_or(NodeError::Busy)?;
+        Self::within(total, budget)
+    }
+
+    fn within(total: usize, budget: u32) -> Result<(), NodeError> {
         if u32::try_from(total).map_or(true, |total| total > budget) {
-            return Err(NodeError::Busy);
+            Err(NodeError::Busy)
+        } else {
+            Ok(())
         }
+    }
+
+    /// Adds one hold of `context` on every node of `closure`.
+    fn apply_hold(&mut self, context: ContextKey, closure: BTreeSet<NodeId>) {
         let holder = self.contexts.entry(context).or_default();
         for target in closure {
             let count = holder.holds.entry(target).or_insert(0);
@@ -695,7 +748,6 @@ impl NodeTable {
                 self.evictable.remove(&target);
             }
         }
-        Ok(())
     }
 
     /// Removes one hold of `context` on `node` and everything it names.
