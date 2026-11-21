@@ -550,6 +550,8 @@ read passes it `[OWN]`. The checks run in this order.
       root as its target `[S5 "Usage rules": CONFIRMED]` `[ADR 0004
       C33.1: Working]`. A root target beside other SRV records is
       `Unusable` `[OWN]`: the record means nothing unless it stands alone.
+      Its lifetime is the lowest TTL of the SRV record and of the CNAME
+      records of the chain that led to it, as in point 8.1 `[OWN]`.
    3. **Conclusive negative.** All of these hold
       `[S4 §2.1, §2.2: CONFIRMED]`:
       - RCODE 3 (name error), or RCODE 0 with no applicable record;
@@ -752,9 +754,13 @@ read passes it `[OWN]`. The checks run in this order.
    start; on every network-generation change; and before every lookup,
    when the file's identity has changed since the last read (device,
    inode, size or modification time of the file the path resolves to, from
-   the standard library's metadata). A read that gives a different view
-   (kind or list) moves the **view generation**, which 5.6.7, point 3,
-   treats like a network change.
+   the standard library's metadata). A path whose metadata cannot be
+   read (the file is missing, unreadable, or a symbolic link whose target
+   is gone) has the identity "missing"; a change from a known identity
+   to "missing", or back, is a change, and the read then gives the view
+   of point 4 (none, while the file cannot be read). A read that gives a
+   different view (kind or list) moves the **view generation**, which
+   5.6.7, point 3, treats like a network change.
 
 #### 5.6.3 Choosing servers
 
@@ -943,10 +949,12 @@ so. Caches, the hold-down and coalescing are keyed by cell and service
    `NotLookedUp`, which is never cached (it would be sent to a
    top-level domain, and RFC 5864 forbids trying shorter names, so a
    single-label cell can be found only through configuration)
-   `[S10 §4: CONFIRMED]` for the last part; then the positive cache, the
-   negative cache and the failure hold-down are consulted, in that
-   order (5.6.7, points 6, 8 and 10). A cell in the negative cache is
-   not a cell for either service.
+   `[S10 §4: CONFIRMED]` for the last part; then the negative cache, the
+   positive cache and the failure hold-down are consulted, in that order
+   (5.6.7, points 6, 10 and 8). A hit in the negative cache ends a volume
+   location lookup "Not a cell" and a protection-server lookup "No
+   service" (point 7), without a query: a name that is not a cell has
+   neither service.
 2. **SRV first** `[ADR 0004 C33.1: Working]` `[S10 §5: CONFIRMED]`: a
    query for `_afs3-vlserver._udp.<cell>`, type SRV. A cell whose service
    name would be longer than `dns.name_max` cannot hold SRV records, so
@@ -998,9 +1006,10 @@ so. Caches, the hold-down and coalescing are keyed by cell and service
      lifetimes; if either negative has none, it has none
      `[ADR 0004 C12.3: Working]` `[S4 §5: CONFIRMED]`;
    - **No service** (a protection-server lookup only): the same
-     conditions, for `_afs3-prserver._udp.<cell>`. It is not a negative
-     of C12, point 3, and is never cached `[OWN]`: the client asks again
-     when it next needs the protection servers;
+     conditions, for `_afs3-prserver._udp.<cell>`, or the cell is in the
+     negative cache (point 1). It is not a negative of C12, point 3, and
+     is never cached `[OWN]`: the client asks again when it next needs
+     the protection servers, unless the negative cache answers first;
    - **Failed:** with the kind of the query that failed, or
      `DiscoveryOff`, `WithheldByScope`, `NoServer`, `NotLookedUp`,
      `Unusable`, `NoAddress`, `NetworkChanged`. Never cached as a
@@ -1041,10 +1050,12 @@ so. Caches, the hold-down and coalescing are keyed by cell and service
    `[S4 §5: CONFIRMED]`.
 6. **The negative cache** holds one entry per cell name: the name is not
    a cell, until its lifetime ends. It is filled only by a "Not a cell"
-   outcome with a lifetime, which only a volume location lookup gives
-   (5.6.6, points 4 and 7), never by "No service", a failure, a
+   outcome with a lifetime above 0, which only a volume location lookup
+   gives (5.6.6, points 4 and 7), never by "No service", a failure, a
    timeout, a truncated reply or an inconclusive one
-   `[ADR 0004 C12.3: Working]`. It is machine-wide and holds no context
+   `[ADR 0004 C12.3: Working]`. Filling it drops the cell's positive
+   entries for both services `[OWN]`, so no older answer outlives the
+   newer negative. It is machine-wide and holds no context
    or user data `[ADR 0004 C12.3: Working]`. A configuration that adds
    the cell explicitly wins over it at once
    `[ADR 0004 C33.1: Working]` (configuration is consulted first; the
@@ -1249,12 +1260,12 @@ Who can send or change the inputs:
 | C3, point 1: protocol code is pure | 5.6.1, points 1 and 2 | `cargo xtask check-pure` and the dependency check, with `ironafs-dns` listed as pure (section 13, Q3) |
 | C4, point 6: where the client lives | 5.6.1 | the dependency check: `ironafs-dns` depends on `ironafs-time` only |
 | C6, point 1: written from a specification with named sources | this document; every point labelled; section 12 | review of this specification (section 14) |
-| C12, point 3: negative cache only from a conclusive negative, no longer than its TTL, never from a timeout or error, cleared on a network change | 5.4, point 8.3; 5.6.6, points 4 and 7; 5.6.7, points 3, 5, 6 and 8 | acceptance cases T5, T6, T7, T8, T9, T17 and T31 (10.5) |
+| C12, point 3: negative cache only from a conclusive negative, no longer than its TTL, never from a timeout or error, cleared on a network change | 5.4, point 8.3; 5.6.6, points 4 and 7; 5.6.7, points 3, 5, 6 and 8 | acceptance cases T5, T6, T7, T8, T9, T17, T31 and T38 (10.5); reject R46 and R48 |
 | C33, point 1: configuration, then SRV, then AFSDB; priority first; sole "." means not offered | 5.6.6, points 2, 3 and 8; 5.6.7, point 6 | T2, T3, T4 and T18 (10.5); reject R27 (10.3) |
 | C33, point 3: only the local resolver; detected at run time; none required | 5.6.2; 5.6.3, point 3 | parser cases V1 to V12 (10.3); T1 and T10 |
 | C33, point 4: flat list only after confirmation; in order; documented timeouts; rechecked on change | 5.6.3, points 4 and 6; 5.6.4, point 3; 5.6.5, points 1 and 7 | T11, T12, T13 and T14 |
 | C33, point 5: explicit servers otherwise; VPN scope | 5.6.3, preamble and points 2 and 5; 5.6.4, point 5; 5.6.6, point 5 | T15, T16 and T16a |
-| C33, point 6: records and rankings expire together, dropped on a network change, late replies discarded | 5.6.5, point 5; 5.6.7, points 2 to 4 and 10 | T17, T19, T20, T32 and T36 |
+| C33, point 6: records and rankings expire together, dropped on a network change, late replies discarded | 5.6.5, point 5; 5.6.7, points 2 to 4 and 10 | T17, T19, T20, T32, T36 and T39 |
 | C33, point 8: switches; status of origin and of validation | 5.6.3, point 1; 5.6.4, points 1 and 2; 5.6.8 | T21 and T22 |
 | C34, point 3: IPv6 first, IPv4 fallback | 5.6.6, point 5 | T3 |
 | C37, point 1: boot clock for lifetimes, awake clock for retransmission | 5.6.5, point 7; 5.6.7, point 1 | T23 and T24 |
@@ -1427,6 +1438,7 @@ offset. Each is G3 or G5 changed as stated.
 | R45 | G5 with a second kept SOA, owner `test`, TTL 60 and MINIMUM 60 | conclusive negative, lifetime 60 | 5.4, points 6 and 8.3 |
 | R46 | G5 with MINIMUM `80 00 01 2c` | conclusive negative, lifetime 0, not cached | 5.4, point 8.3 |
 | R47 | G5 with one byte after the SOA's MINIMUM inside its RDLENGTH | `RdataLength` | 5.4, point 6 |
+| R48 | G7 reached through `_afs3-vlserver._udp.cell.test` CNAME `alias.cell.test` with TTL 0 | Not offered, lifetime 0, not cached | 5.4, point 8.2 |
 
 **Resolver configuration** cases, `crates/ironafs-dns/tests/it/resolv_conf.rs`
 (V1 to V12): stub only (`nameserver 127.0.0.53`) gives local resolver;
@@ -1586,6 +1598,15 @@ Each: start state, events in order, result.
   4,097 bytes with a wrong ID arrive from the server's address. Each is
   dropped as `Unmatched`; none fails the try; after the fifth, the query
   moves to TCP (5.6.5, point 6).
+- **T38.** A protection-server Servers entry for `cell.test` is cached
+  with lifetime 3,600; the volume location entry has expired. A volume
+  location lookup ends "Not a cell" with lifetime 300 (as T2). The
+  protection-server entry is dropped, and a protection-server lookup then
+  ends "No service" from the negative cache, with no query.
+- **T39.** Servers cached from T1. `/etc/resolv.conf` is deleted, with no
+  network change. The next lookup finds the identity "missing", reads the
+  view as none, moves the view generation and empties the caches; with no
+  explicit servers it ends `NoServer` and sends nothing.
 
 ### 10.6 Gaps
 
