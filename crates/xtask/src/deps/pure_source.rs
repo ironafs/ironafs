@@ -8,7 +8,9 @@
 //!
 //! The scan reads tokens, not a compiled crate, so it also refuses what
 //! would hide a path from it: renames and globs of the standard library,
-//! macro path fragments, `#[path]` and `include!`.
+//! imported or renamed built-in macros, macro path fragments, `#[path]` and
+//! `include!`. It refuses `unsafe` and `extern` too, which reach the
+//! operating system with no path at all.
 
 use std::path::{Path, PathBuf};
 
@@ -27,6 +29,14 @@ const WAIT: &str = "a wait with a timeout reads the system clock; time comes onl
 const RANDOM: &str = "the standard library's default hasher draws a random seed from the \
                       operating system; randomness comes only through the Rng interface of \
                       ironafs-time, so give the map a fixed hasher or use a BTreeMap";
+const HASH_COLLECTION: &str = "a pure crate names no standard hash collection: its default \
+                               hasher draws a random seed from the operating system, and a \
+                               type alias, a collect or a derived default seeds it without a \
+                               constructor's name; use a BTreeMap or a BTreeSet";
+const UNSAFE: &str = "unsafe code and foreign functions belong in ironafs-os, under its own \
+                      ADR (AGENTS.md)";
+const MACRO_PATH: &str = "an imported built-in macro can be renamed out of this check's sight; \
+                          call it by its own name";
 const FILES: &str = "files belong in a driver";
 const STREAMS: &str = "the standard streams belong in a binary; events go through ironafs-events";
 const THREADS: &str = "threads belong in ironafs-client or a driver";
@@ -57,6 +67,14 @@ const FORBIDDEN_TREES: &[(&str, &str)] = &[
     ("std::time::Instant", CLOCK),
     ("std::time::SystemTime", CLOCK),
     ("std::time::UNIX_EPOCH", CLOCK),
+    (
+        "std::path::absolute",
+        "an absolute path is made from the current directory, which belongs in a binary",
+    ),
+    (
+        "std::backtrace",
+        "a backtrace reads the environment and the program's own files",
+    ),
 ];
 
 /// Paths forbidden as written, because they would hide the ones above.
@@ -85,6 +103,15 @@ const FORBIDDEN_EXACT: &[(&str, &str)] = &[
     (
         "std::io::*",
         "a glob of std::io brings in its standard streams; name the items",
+    ),
+    (
+        "std::path",
+        "importing the module hides std::path::absolute from this check; name the items, \
+         such as std::path::Path",
+    ),
+    (
+        "std::path::*",
+        "a glob of std::path brings in std::path::absolute; name the items",
     ),
 ];
 
@@ -123,6 +150,13 @@ const SEEDED: &[&str] = &["new", "with_capacity", "default", "from", "from_iter"
 
 /// Macros that write to the standard streams.
 const PRINTING: &[&str] = &["print", "println", "eprint", "eprintln", "dbg"];
+
+/// Built-in macros this check finds by name, which an import could rename.
+const NAMED_MACROS: &[&str] = &["print", "println", "eprint", "eprintln", "dbg", "include"];
+
+/// Macros that write machine code, which reaches the operating system
+/// without a path or an `unsafe` block in the case of `global_asm!`.
+const ASSEMBLY: &[&str] = &["asm", "global_asm", "naked_asm"];
 
 /// Target kinds a scanned crate may have: its library and targets that are
 /// never shipped. A build script would run I/O at build time.
@@ -283,7 +317,13 @@ fn check_file(
                     found.push((std_path.line, std_path.path, reason));
                 }
             }
-            found.extend(hidden_names(&tokens));
+            for used in rust_source::use_paths(&tokens) {
+                let last = used.path.rsplit("::").next().unwrap_or_default();
+                if NAMED_MACROS.contains(&last) {
+                    found.push((used.line, used.path, MACRO_PATH));
+                }
+            }
+            found.extend(hidden_names(&tokens, kind));
             found.sort_by_key(|(line, _, _)| *line);
             violations.extend(found.into_iter().map(|(line, name, reason)| {
                 Violation::ForbiddenSource {
@@ -303,9 +343,13 @@ fn check_file(
 }
 
 /// Finds what reaches the operating system without a standard-library path
-/// the scan could see: hidden clocks, seeded hash maps, file methods,
-/// printing macros, macro path fragments, `#[path]` and `include!`.
-pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str)> {
+/// the scan could see: `unsafe`, `extern` and assembly, hidden clocks,
+/// seeded hash maps, printing macros, macro path fragments, `#[path]` and
+/// `include!`, and in a pure crate any standard hash collection and file
+/// methods. `ironafs-client` may name its own methods as it likes; a
+/// type-aware lint is the tool for file methods there.
+pub(super) fn hidden_names(tokens: &[Token], kind: Kind) -> Vec<(usize, String, &'static str)> {
+    let pure = kind == Kind::Pure;
     let mut found = Vec::new();
     let mut attribute_depth: Option<usize> = None;
     for (index, token) in tokens.iter().enumerate() {
@@ -354,15 +398,23 @@ pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str
                 let called = punct(after) == Some('(');
                 let after_path = before.is_some_and(|token| token.kind == TokenKind::PathSep);
                 let after_dot = punct(before) == Some('.');
-                if HIDDEN_CLOCKS.contains(&word.as_str()) {
+                let extern_crate = word == "extern" && ident(after) == Some("crate");
+                if word == "unsafe" || (word == "extern" && !extern_crate) {
+                    found.push((line, word.clone(), UNSAFE));
+                } else if is_macro && ASSEMBLY.contains(&word.as_str()) {
+                    found.push((line, format!("{word}!"), UNSAFE));
+                } else if HIDDEN_CLOCKS.contains(&word.as_str()) {
                     found.push((line, word.clone(), WAIT));
                 } else if word == "RandomState" {
                     found.push((line, word.clone(), RANDOM));
+                } else if pure && (word == "HashMap" || word == "HashSet") {
+                    found.push((line, word.clone(), HASH_COLLECTION));
                 } else if (word == "HashMap" || word == "HashSet")
                     && let Some(constructor) = seeded_constructor(tokens, index + 1)
                 {
                     found.push((line, format!("{word}::{constructor}"), RANDOM));
-                } else if FILE_METHODS.contains(&word.as_str())
+                } else if pure
+                    && FILE_METHODS.contains(&word.as_str())
                     && (after_path || (after_dot && called))
                 {
                     found.push((line, word.clone(), FILES));

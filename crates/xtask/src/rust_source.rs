@@ -317,11 +317,31 @@ impl Lexer {
 /// `self` gives the path it ends. A `std` that no `::` follows is listed as
 /// `std`.
 pub(crate) fn std_paths(tokens: &[Token]) -> Vec<StdPath> {
+    paths(tokens)
+        .into_iter()
+        .filter(|(found, _)| found.path == "std" || found.path.starts_with("std::"))
+        .map(|(found, _)| found)
+        .collect()
+}
+
+/// Lists every path a `use` or `extern crate` item names, whatever crate it
+/// starts at, with use trees expanded as in `std_paths`.
+pub(crate) fn use_paths(tokens: &[Token]) -> Vec<StdPath> {
+    paths(tokens)
+        .into_iter()
+        .filter_map(|(found, imported)| imported.then_some(found))
+        .collect()
+}
+
+/// Every path of `use` and `extern crate` items, and every expression path
+/// that starts at `std`, each marked with whether an item imported it.
+fn paths(tokens: &[Token]) -> Vec<(StdPath, bool)> {
     let mut paths = Vec::new();
     let mut index = 0;
     while let Some(token) = tokens.get(index) {
         let line = token.line;
         let mut found = Vec::new();
+        let mut imported = true;
         index = match &token.kind {
             TokenKind::Ident(word) if word == "use" => {
                 let start = index + 1;
@@ -339,6 +359,7 @@ pub(crate) fn std_paths(tokens: &[Token]) -> Vec<StdPath> {
                 use_tree(tokens, index + 2, String::new(), &mut found)
             }
             TokenKind::Ident(word) if word == "std" && starts_a_path(tokens, index) => {
+                imported = false;
                 if is(tokens, index + 1, &TokenKind::PathSep) {
                     expression_path(tokens, index, &mut found)
                 } else {
@@ -353,8 +374,7 @@ pub(crate) fn std_paths(tokens: &[Token]) -> Vec<StdPath> {
         paths.extend(
             found
                 .into_iter()
-                .filter(|path| path == "std" || path.starts_with("std::"))
-                .map(|path| StdPath { path, line }),
+                .map(|path| (StdPath { path, line }, imported)),
         );
     }
     paths

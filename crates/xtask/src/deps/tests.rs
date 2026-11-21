@@ -5,7 +5,10 @@
 
 use std::path::PathBuf;
 
-use super::{CRATES, Kind, Rule, THIRD_PARTY, Violation, graph_violations, kind_of};
+use super::{
+    CRATES, Kind, Rule, THIRD_PARTY, ThirdPartyLists, Violation, graph_violations,
+    inherits_workspace_lints, kind_of,
+};
 use crate::metadata::{Member, Package, Workspace};
 
 /// A workspace of the named members, each under `crates/`; every other
@@ -49,6 +52,18 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
             })
             .collect(),
         packages,
+    }
+}
+
+/// The rules with the repository's third-party lists.
+fn graph_violations_of(workspace: &Workspace) -> Vec<Violation> {
+    graph_violations(workspace, THIRD_PARTY)
+}
+
+fn third_party(from: &str, to: &str) -> Violation {
+    Violation::ThirdParty {
+        from: from.into(),
+        to: to.into(),
     }
 }
 
@@ -105,7 +120,7 @@ fn crate_table_names_every_crate_of_the_architecture_once() {
 #[test]
 fn graph_violations_fail_an_empty_workspace() {
     assert_eq!(
-        graph_violations(&workspace(&[])),
+        graph_violations_of(&workspace(&[])),
         [Violation::EmptyWorkspace]
     );
 }
@@ -113,7 +128,7 @@ fn graph_violations_fail_an_empty_workspace() {
 #[test]
 fn graph_violations_fail_an_unclassified_crate() {
     assert_eq!(
-        graph_violations(&workspace(&[("ironafs-time", &[]), ("ironafs-new", &[])])),
+        graph_violations_of(&workspace(&[("ironafs-time", &[]), ("ironafs-new", &[])])),
         [Violation::Unclassified("ironafs-new".into())]
     );
 }
@@ -149,7 +164,9 @@ fn graph_violations_pass_the_allowed_shape() {
         ("xtask", &["ironafs-sim"]),
     ]);
 
-    assert_eq!(graph_violations(&allowed), []);
+    // The repository's lists are empty; these admit what the shape uses.
+    let lists: ThirdPartyLists = &[("ironafs-os", &["libc"]), ("ironafs-net", &["outside"])];
+    assert_eq!(graph_violations(&allowed, lists), []);
 }
 
 #[test]
@@ -217,7 +234,7 @@ fn graph_violations_name_each_broken_rule() {
             ),
         ),
     ] {
-        assert_eq!(graph_violations(&workspace(members)), [expected]);
+        assert_eq!(graph_violations_of(&workspace(members)), [expected]);
     }
 }
 
@@ -231,7 +248,7 @@ fn graph_violations_follow_the_graph_through_other_crates() {
     ]);
 
     assert_eq!(
-        graph_violations(&members),
+        graph_violations_of(&members),
         [edge(
             "ironafs-fuse",
             &["ironafs-ipc", "ironafs-auth"],
@@ -244,7 +261,7 @@ fn graph_violations_follow_the_graph_through_other_crates() {
 #[test]
 fn graph_violations_fail_any_dependency_of_a_crate_with_none() {
     assert_eq!(
-        graph_violations(&workspace(&[
+        graph_violations_of(&workspace(&[
             ("ironafs-time", &["ironafs-events"]),
             ("ironafs-events", &[]),
         ])),
@@ -254,7 +271,7 @@ fn graph_violations_fail_any_dependency_of_a_crate_with_none() {
         }]
     );
     assert_eq!(
-        graph_violations(&workspace(&[("ironafs-events", &["outside"])])),
+        graph_violations_of(&workspace(&[("ironafs-events", &["outside"])])),
         [
             Violation::HasDependency {
                 name: "ironafs-events".into(),
@@ -279,7 +296,7 @@ fn graph_violations_follow_edges_through_packages_outside_the_workspace() {
     }
 
     assert_eq!(
-        graph_violations(&graph),
+        graph_violations_of(&graph),
         [
             Violation::NotAMember {
                 name: "helper".into(),
@@ -307,7 +324,7 @@ fn graph_violations_fail_a_member_outside_crates() {
     }
 
     assert_eq!(
-        graph_violations(&graph),
+        graph_violations_of(&graph),
         [Violation::OutsideCrates {
             name: "ironafs-cli".into(),
             dir: PathBuf::from("/w/ironafs-cli"),
@@ -316,28 +333,29 @@ fn graph_violations_fail_a_member_outside_crates() {
 }
 
 #[test]
-fn graph_violations_limit_third_party_crates_by_kind() {
+fn graph_violations_limit_third_party_crates_of_every_shipped_crate() {
     let graph = workspace(&[
         ("ironafs-xdr", &["bytes"]),
         ("ironafs-smb", &["bytes"]),
         ("ironafs-client", &["bytes"]),
         ("ironafs-net", &["bytes"]),
         ("ironafs-cli", &["bytes"]),
+        ("ironafs-sim", &["bytes"]),
+        ("xtask", &["bytes"]),
     ]);
 
     assert_eq!(
-        graph_violations(&graph),
+        graph_violations_of(&graph),
         [
-            Violation::ThirdParty {
-                from: "ironafs-xdr".into(),
-                to: "bytes".into(),
-            },
-            Violation::ThirdParty {
-                from: "ironafs-smb".into(),
-                to: "bytes".into(),
-            },
+            third_party("ironafs-xdr", "bytes"),
+            third_party("ironafs-smb", "bytes"),
+            third_party("ironafs-client", "bytes"),
+            third_party("ironafs-net", "bytes"),
+            third_party("ironafs-cli", "bytes"),
         ]
     );
+    let lists: ThirdPartyLists = &[("ironafs-client", &["bytes"])];
+    assert_eq!(graph_violations(&graph, lists).len(), 4);
 }
 
 #[test]
@@ -353,14 +371,16 @@ fn graph_violations_keep_cryptography_and_bindings_in_their_homes() {
             found.dependencies = vec!["id libc".into()];
         }
     }
+    let lists: ThirdPartyLists = &[
+        ("ironafs-crypto", &["ring"]),
+        ("ironafs-os", &["libc"]),
+        ("ironafs-net", &["wrapper"]),
+        ("ironafsd", &["ring"]),
+    ];
 
     assert_eq!(
-        graph_violations(&graph),
+        graph_violations(&graph, lists),
         [
-            Violation::ThirdParty {
-                from: "ironafs-crypto".into(),
-                to: "ring".into(),
-            },
             Violation::CryptoOutsideHome {
                 from: "ironafs-net".into(),
                 via: vec!["wrapper".into()],
@@ -376,7 +396,48 @@ fn graph_violations_keep_cryptography_and_bindings_in_their_homes() {
 }
 
 #[test]
-fn graph_violations_keep_layers_to_their_list_and_the_core_off_drivers() {
+fn graph_violations_let_ironafs_gss_reach_only_the_bindings_its_list_names() {
+    let mut graph = workspace(&[
+        ("ironafs-gss", &["gss-ffi", "openssl-sys"]),
+        ("ironafs-net", &["gss-ffi"]),
+    ]);
+    for found in &mut graph.packages {
+        if found.name == "gss-ffi" {
+            found.dependencies = vec!["id libc".into()];
+        }
+    }
+    graph.packages.push(Package {
+        id: "id libc".into(),
+        name: "libc".into(),
+        path: None,
+        member: false,
+        dependencies: Vec::new(),
+    });
+    let lists: ThirdPartyLists = &[
+        ("ironafs-gss", &["gss-ffi", "libc"]),
+        ("ironafs-net", &["gss-ffi", "libc"]),
+    ];
+
+    assert_eq!(
+        graph_violations(&graph, lists),
+        [
+            third_party("ironafs-gss", "openssl-sys"),
+            Violation::CryptoOutsideHome {
+                from: "ironafs-gss".into(),
+                via: vec![],
+                to: "openssl-sys".into(),
+            },
+            Violation::CryptoOutsideHome {
+                from: "ironafs-net".into(),
+                via: vec!["gss-ffi".into()],
+                to: "libc".into(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn graph_violations_keep_layers_and_drivers_to_their_lists_and_the_core_off_drivers() {
     let graph = workspace(&[
         (
             "ironafs-fuse",
@@ -384,7 +445,15 @@ fn graph_violations_keep_layers_to_their_list_and_the_core_off_drivers() {
         ),
         ("ironafs-auth", &[]),
         ("ironafs-vfs", &[]),
-        ("ironafs-os", &[]),
+        ("ironafs-os", &["ironafs-time", "ironafs-proto"]),
+        ("ironafs-time", &[]),
+        ("ironafs-proto", &[]),
+        (
+            "ironafs-net",
+            &["ironafs-rx", "ironafs-os", "ironafs-cache"],
+        ),
+        ("ironafs-rx", &[]),
+        ("ironafs-cache", &[]),
         ("ironafs-client", &["ironafs-smb"]),
         ("ironafs-smb", &[]),
         ("ironafs-sim", &["xtask"]),
@@ -392,9 +461,11 @@ fn graph_violations_keep_layers_to_their_list_and_the_core_off_drivers() {
     ]);
 
     assert_eq!(
-        graph_violations(&graph),
+        graph_violations_of(&graph),
         [
             edge("ironafs-fuse", &[], "ironafs-auth", Rule::LayerOutsideList),
+            edge("ironafs-os", &[], "ironafs-proto", Rule::DriverOutsideList),
+            edge("ironafs-net", &[], "ironafs-cache", Rule::DriverOutsideList),
             edge("ironafs-client", &[], "ironafs-smb", Rule::CoreOnDriver),
             edge("ironafs-sim", &[], "xtask", Rule::OnAutomation),
         ]
@@ -402,13 +473,37 @@ fn graph_violations_keep_layers_to_their_list_and_the_core_off_drivers() {
 }
 
 #[test]
-fn third_party_lists_name_every_pure_and_layer_crate_and_start_empty() {
+fn third_party_lists_name_every_shipped_crate_and_start_empty() {
     for (name, kind) in CRATES {
         let listed = THIRD_PARTY.iter().find(|(listed, _)| listed == name);
-        if matches!(kind, Kind::Pure | Kind::Layer) {
-            assert_eq!(listed.map(|(_, allowed)| allowed.len()), Some(0), "{name}");
-        } else {
+        if matches!(kind, Kind::TestOnly | Kind::Automation) {
             assert!(listed.is_none(), "{name}");
+        } else {
+            assert_eq!(listed.map(|(_, allowed)| allowed.len()), Some(0), "{name}");
         }
+    }
+}
+
+#[test]
+fn inherits_workspace_lints_accepts_only_the_inherited_table() {
+    for manifest in [
+        "[package]\nname = \"a\"\n\n[lints]\nworkspace = true\n",
+        "[package]\nname = \"a\"\n[lints] # inherited\n  workspace=true  # yes\n[features]\n",
+        "lints.workspace = true\n[package]\nname = \"a\"\n",
+        "lints = { workspace = true }\n[package]\nname = \"a\"\n",
+    ] {
+        assert!(inherits_workspace_lints(manifest), "{manifest}");
+    }
+    for manifest in [
+        "[package]\nname = \"a\"\n",
+        "[package]\nname = \"a\"\n[lints]\n",
+        "[package]\nname = \"a\"\n[lints]\nworkspace = false\n",
+        "[package]\nname = \"a\"\n[lints.rust]\nunsafe_code = \"allow\"\n",
+        "[package]\nname = \"a\"\n[lints]\nworkspace = true\n[lints.rust]\nunsafe_code = \"allow\"\n",
+        "[package]\nname = \"a\"\n[lints]\nworkspace = true\nrust = { unsafe_code = \"allow\" }\n",
+        "[package]\nname = \"a\"\n# [lints]\n# workspace = true\n",
+        "[package]\nlints.workspace = true\n",
+    ] {
+        assert!(!inherits_workspace_lints(manifest), "{manifest}");
     }
 }

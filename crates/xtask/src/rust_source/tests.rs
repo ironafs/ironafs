@@ -3,7 +3,7 @@
 
 //! Tests for the Rust token reader and the `std` paths it finds.
 
-use super::{LexError, Token, TokenKind, std_paths, tokens};
+use super::{LexError, Token, TokenKind, std_paths, tokens, use_paths};
 
 fn idents(source: &str) -> Vec<String> {
     tokens(source)
@@ -152,6 +152,30 @@ fn std_paths_see_through_raw_identifiers_and_list_a_bare_std() {
             ("std::net".into(), 2),
             ("std".into(), 3),
             ("std".into(), 4),
+        ]
+    );
+}
+
+#[test]
+fn use_paths_list_every_imported_path_from_any_crate_and_no_expression_path() {
+    let source = "use std::include as pull;\n\
+                  extern crate core as c;\n\
+                  use c::{println as say, fmt::Write};\n\
+                  let x = std::fs::read(p);\n\
+                  use crate::local::print;\n";
+
+    let found: Vec<(String, usize)> = use_paths(&tokens(source).unwrap())
+        .into_iter()
+        .map(|found| (found.path, found.line))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("std::include".into(), 1),
+            ("core".into(), 2),
+            ("c::println".into(), 3),
+            ("c::fmt::Write".into(), 3),
+            ("crate::local::print".into(), 5),
         ]
     );
 }

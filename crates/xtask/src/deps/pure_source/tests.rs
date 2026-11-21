@@ -32,6 +32,10 @@ fn forbidden_names_io_clocks_and_aliases_but_not_values() {
         "std::time::UNIX_EPOCH",
         "std::time::*",
         "std::time",
+        "std::path",
+        "std::path::*",
+        "std::path::absolute",
+        "std::backtrace::Backtrace::capture",
         "std::*",
         "std",
     ] {
@@ -47,6 +51,8 @@ fn forbidden_names_io_clocks_and_aliases_but_not_values() {
         "std::fmt",
         "std::netlink",
         "std::collections::BTreeMap",
+        "std::path::Path",
+        "std::path::PathBuf",
     ] {
         assert_eq!(
             forbidden(path, Kind::Pure),
@@ -65,35 +71,37 @@ fn forbidden_lets_only_the_composition_crate_use_threads() {
     assert!(forbidden("std::time::Instant", Kind::Composition).is_some());
 }
 
-fn names(source: &str) -> Vec<(usize, String)> {
-    hidden_names(&tokens(source).unwrap())
+fn names(source: &str, kind: Kind) -> Vec<(usize, String)> {
+    hidden_names(&tokens(source).unwrap(), kind)
         .into_iter()
         .map(|(line, name, _)| (line, name))
         .collect()
 }
 
+const HIDDEN: &str = "thread::sleep(d);\n\
+                      let x = r.recv_timeout(d);\n\
+                      let m = HashMap::new();\n\
+                      let n = HashSet::<u8>::with_capacity(4);\n\
+                      let s: RandomState = h;\n\
+                      if path.exists() {}\n\
+                      let p = Path::canonicalize;\n\
+                      println!(\"x\");\n\
+                      macro_rules! v { ($i:ident) => { $i::fs::read(p) }; }\n\
+                      include!(\"other.rs\");\n\
+                      #[cfg_attr(test, path = \"other.rs\")]\nmod other;\n\
+                      #![path = \"x\"]\n\
+                      unsafe extern \"C\" { safe fn getpid() -> i32; }\n\
+                      core::arch::global_asm!(\"nop\");\n";
+
 #[test]
 fn hidden_names_find_what_reaches_the_system_without_a_std_path() {
-    let source = "thread::sleep(d);\n\
-                  let x = r.recv_timeout(d);\n\
-                  let m = HashMap::new();\n\
-                  let n = HashSet::<u8>::with_capacity(4);\n\
-                  let s: RandomState = h;\n\
-                  if path.exists() {}\n\
-                  let p = Path::canonicalize;\n\
-                  println!(\"x\");\n\
-                  macro_rules! v { ($i:ident) => { $i::fs::read(p) }; }\n\
-                  include!(\"other.rs\");\n\
-                  #[cfg_attr(test, path = \"other.rs\")]\nmod other;\n\
-                  #![path = \"x\"]\n";
-
     assert_eq!(
-        names(source),
+        names(HIDDEN, Kind::Pure),
         [
             (1, "sleep".into()),
             (2, "recv_timeout".into()),
-            (3, "HashMap::new".into()),
-            (4, "HashSet::with_capacity".into()),
+            (3, "HashMap".into()),
+            (4, "HashSet".into()),
             (5, "RandomState".into()),
             (6, "exists".into()),
             (7, "canonicalize".into()),
@@ -102,6 +110,31 @@ fn hidden_names_find_what_reaches_the_system_without_a_std_path() {
             (10, "include!".into()),
             (11, "#[path]".into()),
             (13, "#[path]".into()),
+            (14, "unsafe".into()),
+            (14, "extern".into()),
+            (15, "global_asm!".into()),
+        ]
+    );
+}
+
+#[test]
+fn hidden_names_in_ironafs_client_name_seeding_constructors_and_no_file_methods() {
+    assert_eq!(
+        names(HIDDEN, Kind::Composition),
+        [
+            (1, "sleep".into()),
+            (2, "recv_timeout".into()),
+            (3, "HashMap::new".into()),
+            (4, "HashSet::with_capacity".into()),
+            (5, "RandomState".into()),
+            (8, "println!".into()),
+            (9, "$i::".into()),
+            (10, "include!".into()),
+            (11, "#[path]".into()),
+            (13, "#[path]".into()),
+            (14, "unsafe".into()),
+            (14, "extern".into()),
+            (15, "global_asm!".into()),
         ]
     );
 }
@@ -110,13 +143,17 @@ fn hidden_names_find_what_reaches_the_system_without_a_std_path() {
 fn hidden_names_leave_ordinary_code_alone() {
     let source = "let a = entry.metadata;\n\
                   let b = map.get(&k).exists;\n\
-                  let c: HashMap<u8, u8, Fixed> = HashMap::with_hasher(Fixed);\n\
+                  let c: BTreeMap<u8, u8> = BTreeMap::new();\n\
                   macro_rules! w { () => { $crate::f() }; }\n\
                   let path = \"x\";\n\
+                  extern crate alloc;\n\
                   #[derive(Debug)]\nstruct S;\n\
                   fn f(print: u8) -> u8 { print }\n";
 
-    assert_eq!(names(source), []);
+    assert_eq!(names(source, Kind::Pure), []);
+    let client = "let c: HashMap<u8, u8, Fixed> = HashMap::with_hasher(Fixed);\n\
+                  if node.exists() { node.metadata() }\n";
+    assert_eq!(names(client, Kind::Composition), []);
 }
 
 #[test]

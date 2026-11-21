@@ -45,34 +45,43 @@ fn in_home(path: &str) -> String {
         .to_owned()
 }
 
-/// A workspace with the evaluator defining every guarded name, and code in
-/// each allowed path that uses them.
-fn after() -> Fixture {
-    let mut fixture = before();
-    fixture.add_crate(HOME, &[]);
-    // An associated type names the type without carrying it anywhere.
+/// The evaluator module: every guarded name defined, the first as a type
+/// with `visibility`, and an operator on it whose associated type names
+/// `Self`.
+fn evaluator(visibility: &str) -> String {
     let first = guarded();
-    let definitions: String = CONFINEMENT
+    CONFINEMENT
         .guarded
         .iter()
         .enumerate()
         .map(|(index, name)| {
             if index == 0 {
-                format!("pub struct {name}(u32);\n")
+                format!("{visibility} struct {name}(u32);\n")
             } else {
-                format!("pub fn {name}() {{}}\n")
+                format!("pub(crate) fn {name}() {{}}\n")
             }
         })
         .chain([format!(
-            "impl core::ops::Not for {first} {{\n    type Output = {first};\n    \
-             fn not(self) -> {first} {{ self }}\n}}\n"
+            "impl core::ops::Not for {first} {{\n    type Output = Self;\n    \
+             fn not(self) -> Self {{ self }}\n}}\n"
         )])
-        .collect();
+        .collect()
+}
+
+/// A workspace with the evaluator defining every guarded name visible only
+/// inside its crate, and code in each allowed path that uses them.
+fn after() -> Fixture {
+    let mut fixture = before();
+    fixture.add_crate(HOME, &[]);
     let uses = format!(
         "use crate::grants::{{{}}};\n",
         CONFINEMENT.guarded.join(", ")
     );
-    fixture.file(HOME, &in_home(CONFINEMENT.evaluator), Some(&definitions));
+    fixture.file(
+        HOME,
+        &in_home(CONFINEMENT.evaluator),
+        Some(&evaluator("pub(crate)")),
+    );
     for allowed in CONFINEMENT.allowed {
         if allowed.ends_with('/') {
             fixture.file(HOME, &format!("{}inner.rs", in_home(allowed)), Some(&uses));
@@ -172,6 +181,65 @@ const CASES: &[Case] = &[
         expect: |found| is_renamed(found, &format!("crates/{HOME}/{}", allowed_file())),
     },
     Case {
+        name: "an associated type of another type naming a guarded name",
+        build: || {
+            let mut fixture = after();
+            let source = format!(
+                "pub trait Carry {{ type Assoc; }}\n\
+                 impl Carry for u32 {{ type Assoc = crate::grants::{}; }}\n",
+                guarded()
+            );
+            fixture.file(HOME, &allowed_file(), Some(&source));
+            fixture
+        },
+        expect: |found| is_renamed(found, &format!("crates/{HOME}/{}", allowed_file())),
+    },
+    Case {
+        name: "a type alias inside a function that returns impl Trait",
+        build: || {
+            let mut fixture = after();
+            let source = format!(
+                "pub fn f() -> impl Sized {{\n    type Hidden = crate::grants::{};\n    0_u8\n}}\n",
+                guarded()
+            );
+            fixture.file(HOME, &allowed_file(), Some(&source));
+            fixture
+        },
+        expect: |found| is_renamed(found, &format!("crates/{HOME}/{}", allowed_file())),
+    },
+    Case {
+        name: "a guarded definition visible outside its crate",
+        build: || {
+            let mut fixture = after();
+            fixture.file(
+                HOME,
+                &in_home(CONFINEMENT.evaluator),
+                Some(&evaluator("pub")),
+            );
+            fixture
+        },
+        expect: |found| is_public(found, CONFINEMENT.evaluator),
+    },
+    Case {
+        name: "a guarded definition with a macro's visibility",
+        build: || {
+            let mut fixture = after();
+            let source = format!(
+                "macro_rules! define {{ ($v:vis) => {{ $v struct {}(u32); }}; }}\n",
+                guarded()
+            );
+            let tail = evaluator("pub(crate)");
+            let rest = tail.lines().skip(1).collect::<Vec<_>>().join("\n");
+            fixture.file(
+                HOME,
+                &in_home(CONFINEMENT.evaluator),
+                Some(&format!("{source}define!(pub);\n{rest}\n")),
+            );
+            fixture
+        },
+        expect: |found| is_public(found, CONFINEMENT.evaluator),
+    },
+    Case {
         name: "the evaluator's crate without the evaluator module",
         build: || {
             let mut fixture = after();
@@ -197,6 +265,10 @@ const CASES: &[Case] = &[
 
 fn is_outside(violation: &Violation, path: &str) -> bool {
     matches!(violation, Violation::Outside { file, .. } if file == Path::new(path))
+}
+
+fn is_public(violation: &Violation, path: &str) -> bool {
+    matches!(violation, Violation::Public { file, .. } if file == Path::new(path))
 }
 
 fn is_renamed(violation: &Violation, path: &str) -> bool {

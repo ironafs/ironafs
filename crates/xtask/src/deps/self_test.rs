@@ -8,18 +8,27 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::{Rule, Violation, check, graph_violations};
+use super::{Rule, ThirdPartyLists, Violation, check, graph_violations};
 use crate::Error;
 use crate::fixture::{self, Fixture};
 use crate::metadata::Workspace;
 
 const CHECK: &str = "check-deps";
 
+/// The third-party lists the fixtures are checked with. The repository's
+/// lists are all empty, so these admit what the clean fixture uses, to
+/// prove that an entry admits what it names and nothing else.
+const FIXTURE_THIRD_PARTY: ThirdPartyLists = &[
+    ("ironafs-os", &["libc"]),
+    ("ironafs-gss", &["gss-ffi", "libc"]),
+];
+
 /// A workspace the rules allow, with one crate of each kind, a development
 /// dependency on a test-only crate, a foreign-function crate in
-/// `ironafs-os`, pure crates that name allowed standard-library paths and
-/// gated unit-test modules that name forbidden ones, and an
-/// `ironafs-client` that uses threads.
+/// `ironafs-os` and, through a crate its list names, in `ironafs-gss`,
+/// pure crates that name allowed standard-library paths and gated
+/// unit-test modules that name forbidden ones, and an `ironafs-client` that
+/// uses threads and a method of its own named like a file method.
 fn clean() -> Fixture {
     let mut fixture = Fixture::default();
     for (name, dependencies) in [
@@ -56,6 +65,7 @@ fn clean() -> Fixture {
         ),
         ("ironafs-os", &["ironafs-time", "libc"]),
         ("ironafs-net", &["ironafs-rx", "ironafs-os"]),
+        ("ironafs-gss", &["ironafs-time", "gss-ffi"]),
         (
             "ironafs-fuse",
             &[
@@ -83,6 +93,7 @@ fn clean() -> Fixture {
         fixture.add_crate(name, dependencies);
     }
     fixture.add_third_party("libc", &[]);
+    fixture.add_third_party("gss-ffi", &["libc"]);
     fixture.manifest_tail(
         "ironafs-cache",
         "\n[dev-dependencies]\nironafs-sim = { path = \"../ironafs-sim\" }\n\
@@ -108,7 +119,7 @@ fn clean_sources(fixture: &mut Fixture) {
         "ironafs-proto",
         "src/codec.rs",
         Some(
-            "use std::io::Read;\nuse std::collections::BTreeMap;\n\
+            "use std::io::Read;\nuse std::collections::BTreeMap;\nuse std::path::Path;\n\
              #[cfg(test)]\nmod tests;\n\
              #[derive(Debug)]\npub struct Entry { pub metadata: u32 }\n\
              pub fn f(e: &Entry) -> u32 { e.metadata }\n",
@@ -134,7 +145,9 @@ fn clean_sources(fixture: &mut Fixture) {
         "src/lib.rs",
         Some(
             "use std::thread::{self, JoinHandle};\n\
-             pub fn run(f: fn()) -> JoinHandle<()> { thread::spawn(f) }\n",
+             pub fn run(f: fn()) -> JoinHandle<()> { thread::spawn(f) }\n\
+             pub struct Node;\nimpl Node { pub fn exists(&self) -> bool { true } }\n\
+             pub fn present(node: &Node) -> bool { node.exists() }\n",
         ),
     );
 }
@@ -162,6 +175,16 @@ fn is_source(violation: &Violation, in_file: &str, name: &str) -> bool {
 
 fn is_planted(violation: &Violation, name: &str) -> bool {
     is_source(violation, PLANTED, name)
+}
+
+fn is_third_party(violation: &Violation, from: &str, to: &str) -> bool {
+    matches!(violation, Violation::ThirdParty { from: found_from, to: found_to }
+        if found_from == from && found_to == to)
+}
+
+fn is_without_lints(violation: &Violation, name: &str) -> bool {
+    matches!(violation, Violation::NoWorkspaceLints { name: found, manifest }
+        if found == name && manifest == Path::new(&format!("crates/{name}/Cargo.toml")))
 }
 
 /// A planted case: what it plants, and what it must produce. Each
@@ -387,15 +410,68 @@ const CASES: &[Case] = &[
         ],
     },
     Case {
+        name: "ironafs-client on a third-party crate",
+        plant: |fixture| {
+            fixture.add_third_party("socket2", &[]);
+            fixture.depend("ironafs-client", "socket2");
+        },
+        expect: &[|found| is_third_party(found, "ironafs-client", "socket2")],
+    },
+    Case {
+        name: "a driver on a third-party crate",
+        plant: |fixture| {
+            fixture.add_third_party("socket2", &[]);
+            fixture.depend("ironafs-net", "socket2");
+        },
+        expect: &[|found| is_third_party(found, "ironafs-net", "socket2")],
+    },
+    Case {
+        name: "a binary on a third-party crate",
+        plant: |fixture| {
+            fixture.add_third_party("clap", &[]);
+            fixture.depend("ironafsd", "clap");
+        },
+        expect: &[|found| is_third_party(found, "ironafsd", "clap")],
+    },
+    Case {
+        name: "ironafs-gss on a foreign-function crate its list does not name",
+        plant: |fixture| {
+            fixture.add_third_party("openssl-sys", &[]);
+            fixture.depend("ironafs-gss", "openssl-sys");
+        },
+        expect: &[
+            |found| is_third_party(found, "ironafs-gss", "openssl-sys"),
+            |found| {
+                matches!(found, Violation::CryptoOutsideHome { from, via, to }
+                    if from == "ironafs-gss" && via.is_empty() && to == "openssl-sys")
+            },
+        ],
+    },
+    Case {
+        name: "ironafs-os on a workspace crate outside its list",
+        plant: |fixture| fixture.depend("ironafs-os", "ironafs-proto"),
+        expect: &[|found| {
+            is_edge(
+                found,
+                "ironafs-os",
+                "ironafs-proto",
+                Rule::DriverOutsideList,
+            )
+        }],
+    },
+    Case {
         name: "a cryptography crate outside ironafs-crypto and ironafs-os",
         plant: |fixture| {
             fixture.add_third_party("ring", &[]);
             fixture.depend("ironafs-client", "ring");
         },
-        expect: &[|found| {
-            matches!(found, Violation::CryptoOutsideHome { from, via, to }
-                if from == "ironafs-client" && via.is_empty() && to == "ring")
-        }],
+        expect: &[
+            |found| {
+                matches!(found, Violation::CryptoOutsideHome { from, via, to }
+                    if from == "ironafs-client" && via.is_empty() && to == "ring")
+            },
+            |found| is_third_party(found, "ironafs-client", "ring"),
+        ],
     },
     Case {
         name: "a foreign-function crate reached through another third-party crate",
@@ -403,10 +479,13 @@ const CASES: &[Case] = &[
             fixture.add_third_party("wrapper", &["libc"]);
             fixture.depend("ironafsd", "wrapper");
         },
-        expect: &[|found| {
-            matches!(found, Violation::CryptoOutsideHome { from, via, to }
-                if from == "ironafsd" && via == &["wrapper"] && to == "libc")
-        }],
+        expect: &[
+            |found| {
+                matches!(found, Violation::CryptoOutsideHome { from, via, to }
+                    if from == "ironafsd" && via == &["wrapper"] && to == "libc")
+            },
+            |found| is_third_party(found, "ironafsd", "wrapper"),
+        ],
     },
     Case {
         name: "ironafs-time with a dependency",
@@ -552,14 +631,143 @@ const CASES: &[Case] = &[
         expect: &[|found| is_planted(found, "recv_timeout")],
     },
     Case {
-        name: "a hash map seeded by the operating system",
+        name: "a standard hash map in a pure crate",
         plant: |fixture| {
             plant_source(
                 fixture,
                 "use std::collections::HashMap;\nfn f() { let _ = HashMap::<u8, Vec<u8>>::new(); }\n",
             );
         },
-        expect: &[|found| is_planted(found, "HashMap::new")],
+        expect: &[|found| is_planted(found, "HashMap")],
+    },
+    Case {
+        name: "a hash map behind a type alias",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "type M = std::collections::HashMap<u8, u8>;\nfn f() -> M { M::new() }\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "HashMap")],
+    },
+    Case {
+        name: "a hash map built by collect",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "fn f(i: I) -> usize { let m: HashMap<u64, u32> = i.collect(); m.len() }\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "HashMap")],
+    },
+    Case {
+        name: "a hash set in a derived default",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "#[derive(Default)]\npub struct S { seen: HashSet<u8> }\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "HashSet")],
+    },
+    Case {
+        name: "a seeded hash map in ironafs-client",
+        plant: |fixture| {
+            fixture.file(
+                "ironafs-client",
+                "src/lib.rs",
+                Some("fn f() { let _ = HashMap::<u8, u8>::new(); }\n"),
+            );
+        },
+        expect: &[|found| is_source(found, CLIENT, "HashMap::new")],
+    },
+    Case {
+        name: "an absolute path from the current directory",
+        plant: |fixture| {
+            plant_source(fixture, "fn f(p: &P) { let _ = std::path::absolute(p); }\n");
+        },
+        expect: &[|found| is_planted(found, "std::path::absolute")],
+    },
+    Case {
+        name: "std::path imported as a module",
+        plant: |fixture| plant_source(fixture, "use std::path;\n"),
+        expect: &[|found| is_planted(found, "std::path")],
+    },
+    Case {
+        name: "a backtrace",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "fn f() { let _ = std::backtrace::Backtrace::capture(); }\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "std::backtrace")],
+    },
+    Case {
+        name: "include! renamed by an import",
+        plant: |fixture| plant_source(fixture, "use std::include as pull;\npull!(\"x.rs\");\n"),
+        expect: &[|found| is_planted(found, "std::include")],
+    },
+    Case {
+        name: "println! renamed by an import",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "use std::println as say;\nfn f() { say!(\"x\"); }\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "std::println")],
+    },
+    Case {
+        name: "include! imported from a renamed core",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "extern crate core as c;\nuse c::include as pull;\npull!(\"x.rs\");\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "c::include")],
+    },
+    Case {
+        name: "unsafe foreign functions in a pure crate",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "unsafe extern \"C\" { safe fn getpid() -> i32; }\npub fn pid() -> i32 { getpid() }\n",
+            );
+        },
+        expect: &[
+            |found| is_planted(found, "unsafe"),
+            |found| is_planted(found, "extern"),
+        ],
+    },
+    Case {
+        name: "assembly without an unsafe block",
+        plant: |fixture| plant_source(fixture, "core::arch::global_asm!(\"nop\");\n"),
+        expect: &[|found| is_planted(found, "global_asm!")],
+    },
+    Case {
+        name: "a foreign-function definition in ironafs-client",
+        plant: |fixture| {
+            fixture.file(
+                "ironafs-client",
+                "src/lib.rs",
+                Some("pub extern \"C\" fn callback() {}\n"),
+            );
+        },
+        expect: &[|found| is_source(found, CLIENT, "extern")],
+    },
+    Case {
+        name: "a pure crate with an empty lints table",
+        plant: |fixture| fixture.lints("ironafs-auth", "\n[lints]\n"),
+        expect: &[|found| is_without_lints(found, "ironafs-auth")],
+    },
+    Case {
+        name: "a binary that overrides the workspace lints",
+        plant: |fixture| {
+            fixture.lints("ironafsd", "\n[lints.rust]\nunsafe_code = \"allow\"\n");
+        },
+        expect: &[|found| is_without_lints(found, "ironafsd")],
     },
     Case {
         name: "the standard library's random hasher state",
@@ -693,7 +901,7 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         members: Vec::new(),
         packages: Vec::new(),
     };
-    let found = graph_violations(&empty);
+    let found = graph_violations(&empty, FIXTURE_THIRD_PARTY);
     if found != [Violation::EmptyWorkspace] {
         return Err(failure("an empty workspace", &found));
     }
@@ -738,5 +946,5 @@ fn check_fixture(
     case: &'static str,
 ) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
     let workspace = fixture.load(dir, CHECK, case)?;
-    check(&workspace)
+    check(&workspace, FIXTURE_THIRD_PARTY)
 }

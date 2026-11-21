@@ -50,6 +50,10 @@ const DEFINING: &[&str] = &[
     "struct", "enum", "union", "type", "trait", "fn", "const", "static",
 ];
 
+/// Words that may stand between a visibility and a defining keyword, as in
+/// `pub(crate) const unsafe fn`.
+const QUALIFIERS: &[&str] = &["const", "async", "unsafe", "safe", "extern", "default"];
+
 /// One broken confinement rule.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Violation {
@@ -60,6 +64,11 @@ pub(crate) enum Violation {
         name: &'static str,
     },
     Renamed {
+        file: PathBuf,
+        line: usize,
+        name: &'static str,
+    },
+    Public {
         file: PathBuf,
         line: usize,
         name: &'static str,
@@ -89,6 +98,12 @@ impl fmt::Display for Violation {
                 formatter,
                 "{}:{line}: gives {name} another name, which would carry it outside the \
                  evaluator unguarded (ADR 0004, N28, point 2)",
+                file.display()
+            ),
+            Self::Public { file, line, name } => write!(
+                formatter,
+                "{}:{line}: defines {name} visible outside its crate: write `pub(crate)` or \
+                 narrower, so the compiler keeps it inside (ADR 0004, N28, point 2)",
                 file.display()
             ),
             Self::EvaluatorMissing(file) => write!(
@@ -205,8 +220,10 @@ fn check(
 }
 
 /// In a file where the guarded names may appear, records each one that is
-/// defined, and reports each one given another name: by `as`, or inside a
-/// type alias outside an `impl` or `trait` block.
+/// defined and reports each definition visible outside the crate, and each
+/// one given another name: by `as`, or inside any type alias, an associated
+/// type of an `impl` or `trait` block included. An associated type can name
+/// `Self` instead.
 fn check_allowed(
     confinement: &Confinement,
     shown: &Path,
@@ -214,29 +231,12 @@ fn check_allowed(
     defined: &mut Vec<&'static str>,
     violations: &mut Vec<Violation>,
 ) {
-    // Whether each open brace began an `impl` or `trait` block.
-    let mut blocks: Vec<bool> = Vec::new();
-    let mut item_is_impl = false;
     let mut in_alias = false;
     let mut previous: Option<&str> = None;
     for (index, token) in tokens.iter().enumerate() {
         match &token.kind {
-            TokenKind::Punct('{') => {
-                blocks.push(item_is_impl);
-                item_is_impl = false;
-            }
-            TokenKind::Punct('}') => {
-                blocks.pop();
-                item_is_impl = false;
-            }
-            TokenKind::Punct(';') => {
-                in_alias = false;
-                item_is_impl = false;
-            }
-            TokenKind::Punct('=') if previous_alias(tokens, index) => {
-                in_alias = !blocks.iter().any(|is_impl| *is_impl);
-            }
-            TokenKind::Ident(word) if word == "impl" || word == "trait" => item_is_impl = true,
+            TokenKind::Punct(';') => in_alias = false,
+            TokenKind::Punct('=') if previous_alias(tokens, index) => in_alias = true,
             TokenKind::Ident(word) => {
                 if let Some(name) = confinement.guarded.iter().find(|name| **name == word) {
                     let renamed = matches!(
@@ -251,6 +251,13 @@ fn check_allowed(
                         });
                     } else if previous.is_some_and(|keyword| DEFINING.contains(&keyword)) {
                         defined.push(*name);
+                        if !crate_private(tokens, index.saturating_sub(1)) {
+                            violations.push(Violation::Public {
+                                file: shown.to_path_buf(),
+                                line: token.line,
+                                name,
+                            });
+                        }
                     }
                 }
             }
@@ -260,6 +267,50 @@ fn check_allowed(
             TokenKind::Ident(word) => Some(word),
             _ => None,
         };
+    }
+}
+
+/// Whether the definition whose keyword is at `keyword` is visible only
+/// inside its crate: no visibility, or `pub(...)`. Anything else before the
+/// keyword and its qualifiers, `pub` or a macro's `$vis` among them, is not.
+fn crate_private(tokens: &[Token], keyword: usize) -> bool {
+    let mut at = keyword;
+    loop {
+        let Some(before) = at.checked_sub(1) else {
+            return true;
+        };
+        at = before;
+        match tokens.get(at).map(|token| &token.kind) {
+            Some(TokenKind::Ident(word)) if QUALIFIERS.contains(&word.as_str()) => {}
+            Some(TokenKind::Punct(';' | '{' | '}' | ']')) | None => return true,
+            Some(TokenKind::Punct(')')) => {
+                let mut depth = 0_usize;
+                loop {
+                    match tokens.get(at).map(|token| &token.kind) {
+                        Some(TokenKind::Punct(')')) => depth += 1,
+                        Some(TokenKind::Punct('(')) => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        None => return false,
+                        Some(_) => {}
+                    }
+                    let Some(before) = at.checked_sub(1) else {
+                        return false;
+                    };
+                    at = before;
+                }
+                return at
+                    .checked_sub(1)
+                    .and_then(|before| tokens.get(before))
+                    .is_some_and(
+                        |token| matches!(&token.kind, TokenKind::Ident(word) if word == "pub"),
+                    );
+            }
+            Some(_) => return false,
+        }
     }
 }
 

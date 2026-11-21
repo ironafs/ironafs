@@ -8,6 +8,7 @@ mod pure_source;
 mod self_test;
 
 use std::fmt;
+use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -103,11 +104,23 @@ const LAYER_MAY_USE: &[&str] = &[
 /// point 1).
 const NO_DEPENDENCIES: &[&str] = &["ironafs-time", "ironafs-events"];
 
-/// The third-party crates each pure and layer crate may depend on
-/// directly. Every list starts empty: a third-party crate is added only
-/// after the owner's decision (coding standards rule 21), and a crate
-/// missing from this table may use none.
-const THIRD_PARTY: &[(&str, &[&str])] = &[
+/// The workspace crates each driver depends on directly. A layer may use
+/// `ironafs-os`, so what `ironafs-os` reaches, a layer reaches too.
+const DRIVER_MAY_USE: &[(&str, &[&str])] = &[
+    ("ironafs-os", &["ironafs-time"]),
+    ("ironafs-net", &["ironafs-rx", "ironafs-time", "ironafs-os"]),
+    ("ironafs-gss", &["ironafs-time", "ironafs-os"]),
+];
+
+/// For each crate, the third-party crates it may depend on directly.
+pub(crate) type ThirdPartyLists = &'static [(&'static str, &'static [&'static str])];
+
+/// The third-party crates each shipped crate may depend on directly. Every
+/// list starts empty: a third-party crate is added only after the owner's
+/// decision (coding standards rule 21), and a shipped crate missing from
+/// this table may use none. A foreign-function crate that `ironafs-gss`
+/// uses is named here even when it is reached through another crate.
+const THIRD_PARTY: ThirdPartyLists = &[
     ("ironafs-xdr", &[]),
     ("ironafs-rx", &[]),
     ("ironafs-rxkad", &[]),
@@ -121,14 +134,25 @@ const THIRD_PARTY: &[(&str, &[&str])] = &[
     ("ironafs-events", &[]),
     ("ironafs-crypto", &[]),
     ("ironafs-time", &[]),
+    ("ironafs-client", &[]),
+    ("ironafs-net", &[]),
+    ("ironafs-gss", &[]),
+    ("ironafs-os", &[]),
     ("ironafs-fuse", &[]),
     ("ironafs-smb", &[]),
     ("ironafs-cloudfiles", &[]),
+    ("ironafsd", &[]),
+    ("ironafs-cli", &[]),
 ];
 
 /// The only crates through which cryptography and foreign-function crates
 /// enter the build (ADR 0004, C4, point 4, and C5).
 const CRYPTO_HOMES: &[&str] = &["ironafs-crypto", "ironafs-os"];
+
+/// Crates that may reach the foreign-function crates their third-party
+/// list names, and no others: Kerberos and GSS come from each system's own
+/// library (ADR 0004, C5, point 4).
+const NAMED_FFI: &[&str] = &["ironafs-gss"];
 
 /// Known cryptography and foreign-function crates, which only the crates
 /// in `CRYPTO_HOMES` may reach.
@@ -201,6 +225,7 @@ pub(crate) enum Rule {
     ShippedOnTestOnly,
     CoreOnDriver,
     OnAutomation,
+    DriverOutsideList,
 }
 
 /// One broken rule.
@@ -238,6 +263,10 @@ pub(crate) enum Violation {
     ShippedTarget {
         name: String,
         target: String,
+    },
+    NoWorkspaceLints {
+        name: String,
+        manifest: PathBuf,
     },
     ForbiddenSource {
         file: PathBuf,
@@ -286,6 +315,11 @@ impl Rule {
             Self::OnAutomation => {
                 "only the repository's automation depends on xtask, which is never shipped \
                  (ADR 0004, C4, point 3)"
+            }
+            Self::DriverOutsideList => {
+                "a driver is thin: of the workspace it depends only on the crates its list in \
+                 crates/xtask/src/deps.rs names, so a layer cannot reach the rest through \
+                 ironafs-os (ADR 0004, C4, points 3 and 4)"
             }
         }
     }
@@ -340,7 +374,7 @@ impl fmt::Display for Violation {
             Self::ThirdParty { from, to } => write!(
                 formatter,
                 "{from} depends on the third-party crate {to}, which its list in \
-                 crates/xtask/src/deps.rs does not name: a pure or layer crate uses a \
+                 crates/xtask/src/deps.rs does not name: a shipped crate uses a \
                  third-party crate only after the owner's decision (coding standards rule 21)"
             ),
             Self::CryptoOutsideHome { from, via, to } => {
@@ -356,6 +390,13 @@ impl fmt::Display for Violation {
                 formatter,
                 "{name} has a {target} target: a pure crate and ironafs-client ship only their \
                  library, and a build script would run I/O at build time (ADR 0004, C3, point 1)"
+            ),
+            Self::NoWorkspaceLints { name, manifest } => write!(
+                formatter,
+                "{}: {name} does not inherit the workspace lints: write `[lints]` with \
+                 `workspace = true`, so `unsafe` stays forbidden (AGENTS.md; ADR 0004, C5, \
+                 point 5)",
+                manifest.display()
             ),
             Self::ForbiddenSource {
                 file,
@@ -394,10 +435,15 @@ pub(crate) fn kind_of(name: &str) -> Option<Kind> {
 }
 
 /// The third-party crates a crate may depend on directly, if the crate is
-/// limited.
-fn third_party_allowed(name: &str, kind: Kind) -> Option<&'static [&'static str]> {
-    matches!(kind, Kind::Pure | Kind::Layer).then(|| {
-        THIRD_PARTY
+/// shipped: a shipped crate missing from `lists` may use none. Test-only
+/// crates and the automation are never shipped and are not limited.
+fn third_party_allowed(
+    name: &str,
+    kind: Kind,
+    lists: ThirdPartyLists,
+) -> Option<&'static [&'static str]> {
+    (!matches!(kind, Kind::TestOnly | Kind::Automation)).then(|| {
+        lists
             .iter()
             .find_map(|(candidate, allowed)| (*candidate == name).then_some(*allowed))
             .unwrap_or_default()
@@ -433,7 +479,10 @@ fn package<'a>(workspace: &'a Workspace, id: &str) -> Option<&'a Package> {
 /// Checks the crate table and every rule against each crate's transitive
 /// normal and build dependencies, followed through every package of the
 /// resolved graph, workspace member or not.
-pub(crate) fn graph_violations(workspace: &Workspace) -> Vec<Violation> {
+pub(crate) fn graph_violations(
+    workspace: &Workspace,
+    third_party: ThirdPartyLists,
+) -> Vec<Violation> {
     if workspace.members.is_empty() {
         return vec![Violation::EmptyWorkspace];
     }
@@ -464,7 +513,7 @@ pub(crate) fn graph_violations(workspace: &Workspace) -> Vec<Violation> {
         let Some(from_kind) = kind_of(&member.name) else {
             continue;
         };
-        violations.extend(direct_violations(workspace, member, from_kind));
+        violations.extend(direct_violations(workspace, member, from_kind, third_party));
         for (to, via) in reachable(workspace, &member.id, &|_| true) {
             let Some(to_kind) = kind_of(&to.name).filter(|_| to.member) else {
                 continue;
@@ -482,9 +531,17 @@ pub(crate) fn graph_violations(workspace: &Workspace) -> Vec<Violation> {
             // Through third-party crates only: a workspace crate on the way
             // is checked as the start of its own walk, and the homes may
             // use these crates.
-            let third_party = |found: &Package| !found.member;
-            for (to, via) in reachable(workspace, &member.id, &third_party) {
-                if !to.member && CRYPTO_AND_FFI.contains(&to.name.as_str()) {
+            let named = if NAMED_FFI.contains(&member.name.as_str()) {
+                third_party_allowed(&member.name, from_kind, third_party).unwrap_or_default()
+            } else {
+                &[]
+            };
+            let outside = |found: &Package| !found.member;
+            for (to, via) in reachable(workspace, &member.id, &outside) {
+                if !to.member
+                    && CRYPTO_AND_FFI.contains(&to.name.as_str())
+                    && !named.contains(&to.name.as_str())
+                {
                     violations.push(Violation::CryptoOutsideHome {
                         from: member.name.clone(),
                         via,
@@ -498,41 +555,124 @@ pub(crate) fn graph_violations(workspace: &Workspace) -> Vec<Violation> {
 }
 
 /// The rules on a member's direct dependencies: none at all for some
-/// crates, a third-party list for pure and layer crates, and the workspace
-/// crates a layer may use.
-fn direct_violations(workspace: &Workspace, member: &Member, kind: Kind) -> Vec<Violation> {
+/// crates, a third-party list for every shipped crate, and the workspace
+/// crates a layer or a driver may use.
+fn direct_violations(
+    workspace: &Workspace,
+    member: &Member,
+    kind: Kind,
+    third_party: ThirdPartyLists,
+) -> Vec<Violation> {
     let mut violations = Vec::new();
     let dependencies =
         package(workspace, &member.id).map_or(&[][..], |found| found.dependencies.as_slice());
+    let driver_list = DRIVER_MAY_USE
+        .iter()
+        .find_map(|(name, allowed)| (*name == member.name).then_some(*allowed));
     for dependency in dependencies.iter().filter_map(|id| package(workspace, id)) {
+        let to = dependency.name.as_str();
         if NO_DEPENDENCIES.contains(&member.name.as_str()) {
             violations.push(Violation::HasDependency {
                 name: member.name.clone(),
                 dependency: dependency.name.clone(),
             });
         }
-        if !dependency.member {
-            if third_party_allowed(&member.name, kind)
-                .is_some_and(|allowed| !allowed.contains(&dependency.name.as_str()))
+        let rule = if !dependency.member {
+            if third_party_allowed(&member.name, kind, third_party)
+                .is_some_and(|allowed| !allowed.contains(&to))
             {
                 violations.push(Violation::ThirdParty {
                     from: member.name.clone(),
                     to: dependency.name.clone(),
                 });
             }
+            None
         } else if kind == Kind::Layer
-            && !LAYER_MAY_USE.contains(&dependency.name.as_str())
-            && !BEHIND_THE_CORE.contains(&dependency.name.as_str())
+            && !LAYER_MAY_USE.contains(&to)
+            && !BEHIND_THE_CORE.contains(&to)
         {
+            Some(Rule::LayerOutsideList)
+        } else if kind == Kind::Driver && !driver_list.unwrap_or_default().contains(&to) {
+            Some(Rule::DriverOutsideList)
+        } else {
+            None
+        };
+        if let Some(rule) = rule {
             violations.push(Violation::Edge {
                 from: member.name.clone(),
                 via: Vec::new(),
                 to: dependency.name.clone(),
-                rule: Rule::LayerOutsideList,
+                rule,
             });
         }
     }
     violations
+}
+
+/// Every workspace member inherits the workspace lints, which forbid
+/// `unsafe` (`AGENTS.md`). A crate with its own `[lints]` table, even an
+/// empty one, would drop that.
+///
+/// # Errors
+///
+/// Returns an error if a manifest cannot be read.
+fn lint_violations(workspace: &Workspace) -> Result<Vec<Violation>, Error> {
+    let mut violations = Vec::new();
+    for member in &workspace.members {
+        let manifest = member.dir.join("Cargo.toml");
+        let text = fs::read_to_string(&manifest)
+            .map_err(Error::path_io("read crate manifest", &manifest))?;
+        if !inherits_workspace_lints(&text) {
+            violations.push(Violation::NoWorkspaceLints {
+                name: member.name.clone(),
+                manifest: manifest
+                    .strip_prefix(&workspace.root)
+                    .unwrap_or(&manifest)
+                    .to_path_buf(),
+            });
+        }
+    }
+    Ok(violations)
+}
+
+/// Whether a manifest's `[lints]` table is exactly `workspace = true`, or
+/// it says `lints.workspace = true` or `lints = { workspace = true }` before
+/// its first table. Whitespace and comments are ignored; any other spelling
+/// is refused rather than guessed at.
+fn inherits_workspace_lints(manifest: &str) -> bool {
+    let mut table: Option<String> = None;
+    let mut inherits = false;
+    let mut other_lints = false;
+    for line in manifest.lines() {
+        let line: String = line
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .filter(|next| !next.is_whitespace())
+            .collect();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(header) = line.strip_prefix('[') {
+            let name = header.trim_start_matches('[').trim_end_matches(']');
+            if name.starts_with("lints.") {
+                other_lints = true;
+            }
+            table = Some(name.to_owned());
+            continue;
+        }
+        match table.as_deref() {
+            None if line == "lints.workspace=true" || line == "lints={workspace=true}" => {
+                inherits = true;
+            }
+            None if line.starts_with("lints") => other_lints = true,
+            Some("lints") if line == "workspace=true" => inherits = true,
+            Some("lints") => other_lints = true,
+            _ => {}
+        }
+    }
+    inherits && !other_lints
 }
 
 /// The packages reachable from the package `start`, in breadth-first
@@ -586,7 +726,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     if self_test {
         return self_test::run(&workspace.target_dir, output);
     }
-    let (violations, scanned) = check(&workspace)?;
+    let (violations, scanned) = check(&workspace, THIRD_PARTY)?;
     if !violations.is_empty() {
         return Err(Error::Rules {
             check: "check-deps",
@@ -613,9 +753,13 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
 ///
 /// # Errors
 ///
-/// Returns an error if a source file cannot be read.
-fn check(workspace: &Workspace) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
-    let mut violations = graph_violations(workspace);
+/// Returns an error if a manifest or a source file cannot be read.
+fn check(
+    workspace: &Workspace,
+    third_party: ThirdPartyLists,
+) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
+    let mut violations = graph_violations(workspace, third_party);
+    violations.extend(lint_violations(workspace)?);
     let (found, scanned) = pure_source::scan(workspace)?;
     violations.extend(found);
     Ok((violations, scanned))

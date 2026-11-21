@@ -22,6 +22,9 @@ struct FixtureCrate {
     place: Place,
     dependencies: Vec<Dependency>,
     manifest_tail: String,
+    /// The `[lints]` table of a workspace crate; by default it inherits the
+    /// workspace's.
+    lints: String,
     files: Vec<(String, String)>,
 }
 
@@ -55,6 +58,14 @@ pub(crate) struct Fixture {
 const WORKSPACE: &str = "workspace";
 const OUTSIDE: &str = "outside";
 const VENDOR: &str = "vendor";
+
+/// The workspace manifest: every crate under `crates/`, with the workspace
+/// lints the crates inherit.
+const WORKSPACE_MANIFEST: &str = "[workspace]\nresolver = \"3\"\nmembers = [\"crates/*\"]\n\n\
+                                  [workspace.lints.rust]\nunsafe_code = \"forbid\"\n";
+
+/// A workspace crate's `[lints]` table unless a case changes it.
+const INHERITED_LINTS: &str = "\n[lints]\nworkspace = true\n";
 
 impl Fixture {
     /// Adds a workspace crate under `crates/` with dependencies on the named
@@ -91,6 +102,7 @@ impl Fixture {
             place,
             dependencies: Vec::new(),
             manifest_tail: String::new(),
+            lints: INHERITED_LINTS.to_owned(),
             files: vec![("src/lib.rs".to_owned(), String::new())],
         });
         for dependency in dependencies {
@@ -116,6 +128,13 @@ impl Fixture {
     pub(crate) fn manifest_tail(&mut self, name: &str, text: &str) {
         if let Some(found) = self.find(name) {
             found.manifest_tail.push_str(text);
+        }
+    }
+
+    /// Replaces a workspace crate's `[lints]` table with `text`.
+    pub(crate) fn lints(&mut self, name: &str, text: &str) {
+        if let Some(found) = self.find(name) {
+            text.clone_into(&mut found.lints);
         }
     }
 
@@ -172,10 +191,7 @@ impl Fixture {
     /// Returns an error if a file cannot be written.
     pub(crate) fn write(&self, dir: &Path) -> Result<PathBuf, Error> {
         let manifest = dir.join(WORKSPACE).join("Cargo.toml");
-        write_file(
-            &manifest,
-            "[workspace]\nresolver = \"3\"\nmembers = [\"crates/*\"]\n",
-        )?;
+        write_file(&manifest, WORKSPACE_MANIFEST)?;
         for found in &self.crates {
             let crate_dir = dir.join(Self::dir_of(found));
             let version = if found.place == Place::ThirdParty {
@@ -193,6 +209,9 @@ impl Fixture {
                     Dependency::Line(line) => text.push_str(line),
                 }
                 text.push('\n');
+            }
+            if matches!(found.place, Place::Workspace(_)) {
+                text.push_str(&found.lints);
             }
             text.push_str(&found.manifest_tail);
             write_file(&crate_dir.join("Cargo.toml"), &text)?;

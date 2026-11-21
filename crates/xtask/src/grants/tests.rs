@@ -91,7 +91,7 @@ fn check_reports_names_outside_the_module_but_not_in_comments_or_strings() {
                     ),
                     (
                         "src/grants.rs",
-                        "pub struct Rights(u32);\npub fn evaluate() {}\n",
+                        "pub(crate) struct Rights(u32);\npub(crate) fn evaluate() {}\n",
                     ),
                     ("src/grants/tests.rs", "use super::{Rights, evaluate};\n"),
                     ("src/codec/fs.rs", "use crate::grants::Rights;\n"),
@@ -145,10 +145,13 @@ fn check_refuses_other_names_for_the_guarded_items_in_allowed_files() {
             &[
                 (
                     "src/grants.rs",
-                    "pub struct Rights(u32);\npub fn evaluate() {}\n\
+                    "pub(crate) struct Rights(u32);\npub(crate) fn evaluate() {}\n\
                      impl core::ops::Not for Rights {\n    type Output = Rights;\n    \
                      fn not(self) -> Rights { self }\n}\n\
-                     pub type Mask<T> = (Rights, T);\n",
+                     pub type Mask<T> = (Rights, T);\n\
+                     impl core::ops::Neg for Rights {\n    type Output = Self;\n    \
+                     fn neg(self) -> Self { self }\n}\n\
+                     pub fn f() -> impl Sized {\n    type Hidden = Rights;\n    0_u8\n}\n",
                 ),
                 (
                     "src/codec/fs.rs",
@@ -170,7 +173,48 @@ fn check_refuses_other_names_for_the_guarded_items_in_allowed_files() {
         [
             renamed("crates/ironafs-proto/src/codec/fs.rs", 1, "Rights"),
             renamed("crates/ironafs-proto/src/codec/fs.rs", 2, "Rights"),
+            renamed("crates/ironafs-proto/src/grants.rs", 4, "Rights"),
             renamed("crates/ironafs-proto/src/grants.rs", 7, "Rights"),
+            renamed("crates/ironafs-proto/src/grants.rs", 13, "Rights"),
+        ]
+    );
+    fs::remove_dir_all(&workspace.root).unwrap();
+}
+
+#[test]
+fn check_requires_the_guarded_definitions_to_stay_inside_their_crate() {
+    let workspace = workspace("grants-public", |root| {
+        vec![member(
+            root,
+            "ironafs-proto",
+            &[
+                (
+                    "src/grants.rs",
+                    "#[derive(Debug)]\npub struct Rights(u32);\n\
+                     pub(in crate::codec) const unsafe fn evaluate() {}\n",
+                ),
+                (
+                    "src/codec/fs.rs",
+                    "pub(super) struct Rights;\nstruct Rights;\n\
+                     macro_rules! d { ($v:vis) => { $v fn evaluate() {} }; }\n\
+                     pub extern \"C\" fn evaluate() {}\n\
+                     impl X { pub(crate) fn evaluate(&self) {} }\n",
+                ),
+            ],
+        )]
+    });
+
+    let public = |file: &str, line, name| Violation::Public {
+        file: PathBuf::from(file),
+        line,
+        name,
+    };
+    assert_eq!(
+        check(&workspace, &TEST).unwrap().0,
+        [
+            public("crates/ironafs-proto/src/codec/fs.rs", 3, "evaluate"),
+            public("crates/ironafs-proto/src/codec/fs.rs", 4, "evaluate"),
+            public("crates/ironafs-proto/src/grants.rs", 2, "Rights"),
         ]
     );
     fs::remove_dir_all(&workspace.root).unwrap();
@@ -195,7 +239,7 @@ fn check_requires_the_module_and_its_definitions_once_the_home_crate_exists() {
             "ironafs-proto",
             &[
                 ("src/lib.rs", ""),
-                ("src/grants.rs", "pub struct Rights(u32);\n"),
+                ("src/grants.rs", "pub(crate) struct Rights(u32);\n"),
             ],
         )]
     });
