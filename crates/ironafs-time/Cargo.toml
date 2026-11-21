@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# A pure crate with no dependencies at all (ADR 0004, C4, point 1): no
+# features, no build script.
+[package]
+name = "ironafs-time"
+description = "IronAFS's clock and randomness interfaces and its 64-bit time types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

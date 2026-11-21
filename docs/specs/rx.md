@@ -1983,14 +1983,14 @@ This specification's own choices:
   after IronAFS ended it (section 13, Q3);
 - the callback service's tests show the caps of 5.2 drop genuine breaks
   in normal operation;
-- X1 is revised (register row E3).
+- X1 is revised (register row E5).
 
 ## 12. Sources
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| X1 | SPECIFICATION | "Rx protocol specification draft", Nickolai Zeldovich, updated by Jeffrey Altman, 24 July 2026, register of editions row E3 ([README](README.md)), AFS Assigned Numbers Registry. Cited by heading: "Introduction", "Rx Connections", "Packet Types", "Call Layer" (with its parts "Round-trip time computation", "Packet retransmission", "Keepalive and Timeout" and "Flow Control"), "Jumbograms", "RPC Layer", "Packet Formats and Protocol Constants". Its section "Historical Implementation Notes" was not read and is not cited; it is excluded by name (README, "Sources and provenance", rule 12). The "Debugging" section's references to another implementation's files and structures, and the "References" entries that point at an implementation's source, are not used. A lead only (rule 14): every fact from it is UNVERIFIED. Also claim record rows `[DRV-084]`, `[DES-056]`, `[ADR-002]` and `[ADR-006]` ([claim record](../reviews/2026-11-20-adr-0004-claims.md)), re-read against this edition. | 3, 4, 5, 6, 10 |
-| X2 | SPECIFICATION | RFC 4291, "IP Version 6 Addressing Architecture", R. Hinden and S. Deering, February 2006, register of editions row E4 ([README](README.md)), <https://www.rfc-editor.org/rfc/rfc4291>: §2.5.5.2, "IPv4-Mapped IPv6 Address" | 5.4 |
+| X1 | SPECIFICATION | "Rx protocol specification draft", Nickolai Zeldovich, updated by Jeffrey Altman, 24 July 2026, register of editions row E5 ([README](README.md)), AFS Assigned Numbers Registry. Cited by heading: "Introduction", "Rx Connections", "Packet Types", "Call Layer" (with its parts "Round-trip time computation", "Packet retransmission", "Keepalive and Timeout" and "Flow Control"), "Jumbograms", "RPC Layer", "Packet Formats and Protocol Constants". Its section "Historical Implementation Notes" was not read and is not cited; it is excluded by name (README, "Sources and provenance", rule 12). The "Debugging" section's references to another implementation's files and structures, and the "References" entries that point at an implementation's source, are not used. A lead only (rule 14): every fact from it is UNVERIFIED. Also claim record rows `[DRV-084]`, `[DES-056]`, `[ADR-002]` and `[ADR-006]` ([claim record](../reviews/2026-11-20-adr-0004-claims.md)), re-read against this edition. | 3, 4, 5, 6, 10 |
+| X2 | SPECIFICATION | RFC 4291, "IP Version 6 Addressing Architecture", R. Hinden and S. Deering, February 2006, register of editions row E6 ([README](README.md)), <https://www.rfc-editor.org/rfc/rfc4291>: §2.5.5.2, "IPv4-Mapped IPv6 Address" | 5.4 |
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C3, C4, C5, C6, C19, C20, C24, C28, C30, C31, C32, C34, C37, C39, C46 ([part 1](../adr/0004-architecture-1-core.md)); O1, O12, O15, O23, O47 ([part 3](../adr/0004-architecture-3-operations.md)); N5, N6, N7, N31, N45 ([part 4](../adr/0004-architecture-4-negotiation.md)); A12, A14 | 1, 2, 5, 8, 9, 11 |
 | D2 | DECISION | [ADR 0006](../adr/0006-rx-unprotected-packets.md), accepted 2026-11-21: decisions 1 and 2, "Specification items for the Rx specification" and its tests 1 to 14 | 1, 3, 5.6, 5.9, 5.10, 8, 9, 10, 11 |
 | D3 | DECISION | [ADR 0001](../adr/0001-licence-and-dont-copy.md), "Don't copy" and "Test tools and test data" | 10, 12 |
@@ -2001,7 +2001,7 @@ This specification's own choices:
 No other implementation's source, test data or interface definitions
 were read for this specification, and none are cited. It describes Rx in
 IronAFS's own words and quotes no text of X1, which carries no licence
-notice (register row E3). The field names and values in 5.1 are
+notice (register row E5). The field names and values in 5.1 are
 functional facts. The test values of section 10 are IronAFS's own.
 
 ### 12.1 Observed behaviour

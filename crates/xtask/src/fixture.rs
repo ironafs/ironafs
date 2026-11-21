@@ -5,7 +5,6 @@
 //! target directory and removed afterwards.
 
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::Error;
@@ -321,7 +320,13 @@ impl Fixture {
     }
 }
 
-fn write_file(path: &Path, contents: &str) -> Result<(), Error> {
+/// Writes `contents` to `path`, creating its parent directories.
+///
+/// # Errors
+///
+/// Returns an error naming the path if a directory or the file cannot be
+/// written.
+pub(crate) fn write_file(path: &Path, contents: &str) -> Result<(), Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(Error::path_io("create fixture directory", parent))?;
     }
@@ -348,10 +353,5 @@ pub(crate) fn fresh_dir(target_dir: &Path, check: &str) -> Result<PathBuf, Error
 ///
 /// Returns an error if the directory exists and cannot be removed.
 pub(crate) fn remove_dir(dir: &Path) -> Result<(), Error> {
-    match fs::remove_dir_all(dir) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => {
-            Err(Error::path_io("remove fixture directory", dir)(error))
-        }
-        _ => Ok(()),
-    }
+    crate::files::remove_dir(dir, Error::path_io("remove fixture directory", dir))
 }
