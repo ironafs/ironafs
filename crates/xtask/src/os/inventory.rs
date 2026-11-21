@@ -667,6 +667,22 @@ fn row_problems(row: &Row) -> Vec<String> {
     found
 }
 
+/// A row whose block column says it adopts one descriptor ("one that
+/// adopts the descriptor", "one that adopts a received descriptor") holds
+/// exactly one adoption.
+fn adoption_problems(id: &str, blocks: &str, code: &Code) -> Option<String> {
+    if !blocks.contains("one that adopts") {
+        return None;
+    }
+    let held = code
+        .blocks
+        .iter()
+        .filter(|block| block.kind == BlockKind::Adopt)
+        .count();
+    (held != 1)
+        .then(|| format!("{id}: holds {held} adoptions; the ADR's row adopts one descriptor"))
+}
+
 /// How an implemented row's code departs from what the ADR's own row
 /// approves: every declared function and every block's callee is named in
 /// the row's foreign-item or block column; a block with no `#[link]` is
@@ -747,21 +763,7 @@ fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
             code.impls
         ));
     }
-    // A row whose block column says it adopts one descriptor ("one that
-    // adopts the descriptor", "one that adopts a received descriptor")
-    // holds exactly one adoption.
-    if blocks.contains("one that adopts") {
-        let held = code
-            .blocks
-            .iter()
-            .filter(|block| block.kind == BlockKind::Adopt)
-            .count();
-        if held != 1 {
-            found.push(format!(
-                "{id}: holds {held} adoptions; the ADR's row adopts one descriptor"
-            ));
-        }
-    }
+    found.extend(adoption_problems(id, blocks, code));
     let says_one = blocks == "one" || blocks.starts_with("one,") || blocks.starts_with("one (");
     if says_one && code.blocks.len() != 1 {
         found.push(format!(
