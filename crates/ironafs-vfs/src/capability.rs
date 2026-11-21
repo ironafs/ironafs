@@ -10,11 +10,15 @@
 //! one it is handed against its own table (binding, context, generation,
 //! liveness and nonce), so a capability minted for another binding, or
 //! made by a crate that built its own `Mint`, is refused at run time
-//! (C8, point 2). Which crates may name `Mint` is a rule of the
-//! composition, not of the type: see [`Mint`].
+//! (C8, point 2). Only the composition, the core and the test-only crates
+//! name `Mint`; `cargo xtask check-deps` refuses its name anywhere else.
+//!
+//! Each compile-fail example below differs from code that compiles only in
+//! the property it shows, and is checked to fail with its one named error.
 //!
 //! ```compile_fail,E0451
-//! // A layer cannot write a caller capability as a literal.
+//! // A layer cannot write a caller capability as a literal: every field
+//! // is given, with its own type, and each is private.
 //! use ironafs_vfs::{BindingId, CallerCap, ContextId, CredentialGeneration};
 //! let _ = CallerCap {
 //!     binding: BindingId(1),
@@ -31,17 +35,39 @@
 //! ```
 //!
 //! ```compile_fail,E0616
-//! // It cannot move a capability it holds to another binding.
+//! // It cannot move a capability it holds to another binding: the field
+//! // is private, though the binding can be read.
 //! fn rebind(cap: &mut ironafs_vfs::CallerCap) {
 //!     cap.binding = ironafs_vfs::BindingId(2);
 //! }
 //! ```
 //!
+//! ```
+//! // Reading the binding through its getter compiles.
+//! fn binding(cap: &ironafs_vfs::CallerCap) -> ironafs_vfs::BindingId {
+//!     cap.binding()
+//! }
+//! ```
+//!
 //! ```compile_fail,E0277
-//! // A handle capability has one holder: it cannot be copied, so the
-//! // binding operation that releases it can take it by value.
+//! // A handle capability does not implement `Clone`.
 //! fn keep(cap: &ironafs_vfs::HandleCap) -> ironafs_vfs::HandleCap {
-//!     ironafs_vfs::HandleCap::clone(cap)
+//!     <ironafs_vfs::HandleCap as Clone>::clone(cap)
+//! }
+//! ```
+//!
+//! ```
+//! // A caller capability does: the same call compiles.
+//! fn keep(cap: &ironafs_vfs::CallerCap) -> ironafs_vfs::CallerCap {
+//!     <ironafs_vfs::CallerCap as Clone>::clone(cap)
+//! }
+//! ```
+//!
+//! ```compile_fail,E0382
+//! // Nor is it `Copy`: a handle capability taken by value is moved, so
+//! // using it twice does not compile.
+//! fn twice(cap: ironafs_vfs::HandleCap) -> (ironafs_vfs::HandleCap, ironafs_vfs::HandleCap) {
+//!     (cap, cap)
 //! }
 //! ```
 //!
@@ -54,8 +80,13 @@
 //! ```
 //!
 //! ```compile_fail,E0277
-//! // There is no default capability to fall back on.
+//! // There is no default caller capability to fall back on.
 //! let _ = <ironafs_vfs::CallerCap as Default>::default();
+//! ```
+//!
+//! ```compile_fail,E0277
+//! // Nor a default handle capability.
+//! let _ = <ironafs_vfs::HandleCap as Default>::default();
 //! ```
 
 use core::fmt;
@@ -113,8 +144,10 @@ pub enum Attestation {
 /// gives it to the core. A crate that builds its own `Mint` can make values
 /// of the capability types, but the core refuses every capability it did
 /// not record itself, by its nonce, binding, context and generation (C8,
-/// point 2). That a layer crate never names `Mint` is not enforced by
-/// the type: no build check holds it yet, and review does.
+/// point 2). The type cannot keep other crates from naming `Mint`;
+/// `cargo xtask check-deps` does: only `ironafs-vfs`, the composition
+/// (`ironafsd`), the core (`ironafs-client`) and the test-only crates
+/// (`ironafs-sim`, `ironafs-test-support`) may name it.
 #[derive(Debug)]
 pub struct Mint(());
 
@@ -209,8 +242,14 @@ impl fmt::Debug for CallerCap {
 }
 
 /// The authority of one open handle (C13): what a handle operation carries
-/// (C7, point 3). It is not `Clone`, so the binding operation that
-/// releases it takes it by value and the layer holds no copy afterwards.
+/// (C7, point 3).
+///
+/// It is neither `Clone` nor `Copy`, so a binding operation that releases
+/// it can take it by value, and the value given up is gone from the
+/// layer. The type does not make it unique: whoever holds a [`Mint`] can
+/// build an equal value from the getters. That a layer never names `Mint`
+/// is held by `cargo xtask check-deps`, and that a released handle no
+/// longer acts is the core's run-time check of liveness (C13, point 2).
 pub struct HandleCap {
     binding: BindingId,
     handle: HandleId,
