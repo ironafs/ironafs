@@ -251,12 +251,15 @@ impl<R: Repo> Guard<'_, R> {
             }
             "push" => self.push(rest, scope, place),
             "pull" => {
-                self.fetch_refspecs(rest, "pull");
+                self.fetch_refspecs(rest, scope, place, "pull");
                 if !has(&["--ff-only"]) {
                     self.not_on_main(place, scope, "pull");
                 }
             }
-            "fetch" => self.fetch_refspecs(rest, "fetch"),
+            "fetch" => self.fetch_refspecs(rest, scope, place, "fetch"),
+            "remote" if rest.first().and_then(Word::literal) == Some("update") => {
+                self.configured_fetch(scope, place, "remote update");
+            }
             "config" if writes_config(rest) => scope.config_changed = true,
             "rebase" => self.rebase(rest, scope, place),
             "reset" => self.reset(rest, scope, place),
@@ -328,8 +331,16 @@ impl<R: Repo> Guard<'_, R> {
         scope.config_changed |= child.config_changed;
     }
 
-    /// `git pull` and `git fetch` refspecs: none may write `main`.
-    fn fetch_refspecs(&mut self, rest: &[Word], what: &str) {
+    /// `git pull` and `git fetch` refspecs: none may write `main`. The
+    /// configured ones are checked too: they apply without refspecs, and
+    /// update remote-tracking refs alongside the refspecs given.
+    fn fetch_refspecs(
+        &mut self,
+        rest: &[Word],
+        scope: &Scope,
+        place: &Result<Place, String>,
+        what: &str,
+    ) {
         let has = |flags: &[&str]| {
             rest.iter()
                 .any(|word| word.literal().is_some_and(|text| flags.contains(&text)))
@@ -340,29 +351,64 @@ impl<R: Repo> Guard<'_, R> {
             ));
             return;
         }
-        if has(&["--all", "--multiple"]) {
+        self.configured_fetch(scope, place, what);
+        let mut refspecs = Vec::new();
+        let mut index = 0;
+        while let Some(word) = rest.get(index) {
+            index += 1;
+            match word.literal() {
+                Some("--refmap") => {
+                    refspecs.push(rest.get(index));
+                    index += 1;
+                }
+                Some(text) if text.starts_with("--refmap=") => refspecs.push(Some(word)),
+                _ => (),
+            }
+        }
+        if !has(&["--all", "--multiple"]) {
+            let words = positionals(rest, FETCH_VALUES);
+            refspecs.extend(words.get(1..).unwrap_or(&[]).iter().map(|word| Some(*word)));
+        }
+        for refspec in refspecs {
+            match refspec.and_then(Word::literal) {
+                Some(text) => {
+                    let text = text.strip_prefix("--refmap=").unwrap_or(text);
+                    if let Some(fix) = fetch_writes_main(text) {
+                        self.block(format!("git {what}: {fix}"));
+                    }
+                }
+                None => self.block(format!(
+                    "write the git {what} refspec literally so the guard can check that it does not write main"
+                )),
+            }
+        }
+    }
+
+    /// The `remote.<name>.fetch` refspecs a fetch applies, of every remote.
+    fn configured_fetch(&mut self, scope: &Scope, place: &Result<Place, String>, what: &str) {
+        if scope.config_changed {
+            self.block(format!(
+                "git {what} may use a remote.<name>.fetch refspec written earlier in this command: run git config in a separate command first, so the guard can read it"
+            ));
             return;
         }
-        let words = positionals(rest, FETCH_VALUES);
-        for refspec in words.get(1..).unwrap_or(&[]) {
-            let Some(text) = refspec.literal() else {
-                self.block(format!(
-                    "write the git {what} refspec literally so the guard can check that it does not write main"
-                ));
-                continue;
-            };
-            let text = text.strip_prefix('+').unwrap_or(text);
-            if let Some((_, destination)) = text.split_once(':') {
-                if destination.contains('*') {
-                    self.block(format!(
-                        "git {what} with a pattern destination can write main: fetch into refs/remotes/ or name the branch"
-                    ));
-                } else if names_main(destination) {
-                    self.block(format!(
-                        "this git {what} writes main: fetch into refs/remotes/; main changes only through an approved squash merge (ADR 0002, ADR 0003)"
-                    ));
+        let configured = match place {
+            Ok(place) => self.repo.fetch_refspecs(place),
+            Err(error) => Err(error.clone()),
+        };
+        match configured {
+            Ok(refspecs) => {
+                for refspec in refspecs {
+                    if let Some(fix) = fetch_writes_main(&refspec) {
+                        self.block(format!(
+                            "git {what} uses the configured remote.<name>.fetch refspec {refspec}: {fix}"
+                        ));
+                    }
                 }
             }
+            Err(error) => self.block(format!(
+                "git {what}: could not read the configured remote.<name>.fetch refspecs ({error}); run git from the repository with literal paths"
+            )),
         }
     }
 
@@ -849,6 +895,24 @@ fn writes_config(rest: &[Word]) -> bool {
         return false;
     }
     words.len() != 1
+}
+
+/// Why a fetch refspec can write `main`, if it can. A destination under
+/// `refs/remotes/` or `refs/tags/` cannot; another pattern destination can.
+fn fetch_writes_main(refspec: &str) -> Option<&'static str> {
+    let refspec = refspec.strip_prefix('+').unwrap_or(refspec);
+    let (_, destination) = refspec.split_once(':')?;
+    if destination.starts_with("refs/remotes/") || destination.starts_with("refs/tags/") {
+        None
+    } else if destination.contains('*') {
+        Some("a pattern destination can write main: fetch into refs/remotes/ or name the branch")
+    } else if names_main(destination) {
+        Some(
+            "it writes main: fetch into refs/remotes/; main changes only through an approved squash merge (ADR 0002, ADR 0003)",
+        )
+    } else {
+        None
+    }
 }
 
 /// Whether a ref or refspec side names the branch `main`.

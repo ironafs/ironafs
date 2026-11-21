@@ -15,6 +15,7 @@ const DISCLOSED: &str = "Body.\n\nWritten by claude-code:claude-opus-5-5 for the
 
 struct Fake {
     push_target: Option<String>,
+    fetch_config: Vec<&'static str>,
     git_aliases: Vec<(&'static str, &'static str)>,
     gh_aliases: Vec<(&'static str, &'static str)>,
     files: Vec<(PathBuf, String)>,
@@ -24,6 +25,7 @@ impl Default for Fake {
     fn default() -> Self {
         Self {
             push_target: None,
+            fetch_config: vec!["+refs/heads/*:refs/remotes/origin/*"],
             git_aliases: Vec::new(),
             gh_aliases: Vec::new(),
             files: vec![
@@ -84,6 +86,14 @@ impl Repo for Fake {
 
     fn git_alias(&self, _place: &Place, name: &str) -> Result<Option<String>, String> {
         Ok(lookup(&self.git_aliases, name))
+    }
+
+    fn fetch_refspecs(&self, _place: &Place) -> Result<Vec<String>, String> {
+        Ok(self
+            .fetch_config
+            .iter()
+            .map(|refspec| (*refspec).to_owned())
+            .collect())
     }
 
     fn gh_alias(&self, name: &str) -> Result<Option<String>, String> {
@@ -276,6 +286,51 @@ fn guard_blocks_porcelain_that_moves_main() {
         "git fetch origin",
         "git fetch origin main",
         "git fetch origin main:refs/remotes/origin/main",
+    ] {
+        allowed(command);
+    }
+}
+
+#[test]
+fn guard_checks_the_configured_fetch_refspecs() {
+    let heads = Fake {
+        fetch_config: vec!["+refs/heads/*:refs/heads/*"],
+        ..Fake::default()
+    };
+    for command in [
+        "git fetch",
+        "git fetch origin",
+        "git fetch --all",
+        "git fetch --multiple origin upstream",
+        "git fetch origin feature",
+        "git pull --ff-only",
+        "git remote update",
+        "git remote update origin",
+    ] {
+        blocked_with(&heads, command, "remote.<name>.fetch");
+    }
+    let main = Fake {
+        fetch_config: vec!["refs/heads/main:refs/heads/main"],
+        ..Fake::default()
+    };
+    blocked_with(&main, "git fetch origin", "remote.<name>.fetch");
+    for command in [
+        "git fetch --refmap='+refs/heads/*:refs/heads/*' origin main",
+        "git fetch --refmap '+refs/heads/*:main' origin main",
+    ] {
+        blocked(command, "main");
+    }
+    blocked(
+        "git config remote.origin.fetch '+refs/heads/*:refs/heads/*' && git fetch origin",
+        "separate command",
+    );
+    for command in [
+        "git fetch origin",
+        "git fetch --all",
+        "git remote update",
+        "git remote -v",
+        "git fetch origin '+refs/heads/*:refs/remotes/origin/*'",
+        "git fetch origin 'refs/tags/*:refs/tags/*'",
     ] {
         allowed(command);
     }

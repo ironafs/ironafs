@@ -45,6 +45,8 @@ pub(super) trait Repo {
     /// The remote branch a bare `git push` of `branch` updates, if configured.
     fn push_target(&self, place: &Place, branch: &str) -> Result<Option<String>, String>;
     fn git_alias(&self, place: &Place, name: &str) -> Result<Option<String>, String>;
+    /// Every configured `remote.<name>.fetch` refspec, of every remote.
+    fn fetch_refspecs(&self, place: &Place) -> Result<Vec<String>, String>;
     fn gh_alias(&self, name: &str) -> Result<Option<String>, String>;
     fn read_file(&self, path: &Path) -> Result<String, String>;
 }
@@ -152,6 +154,15 @@ impl Repo for System {
 
     fn git_alias(&self, place: &Place, name: &str) -> Result<Option<String>, String> {
         Self::git_value(place, &["config", "--get", &format!("alias.{name}")])
+    }
+
+    fn fetch_refspecs(&self, place: &Place) -> Result<Vec<String>, String> {
+        let listing = Self::git_value(place, &["config", "--get-regexp", r"^remote\..*\.fetch$"])?;
+        Ok(listing
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.split_once(' ').map(|(_, refspec)| refspec.to_owned()))
+            .collect())
     }
 
     fn gh_alias(&self, name: &str) -> Result<Option<String>, String> {

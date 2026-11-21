@@ -35,6 +35,10 @@ impl Repo for Planted {
         Ok(None)
     }
 
+    fn fetch_refspecs(&self, _place: &Place) -> Result<Vec<String>, String> {
+        Ok(vec!["+refs/heads/*:refs/remotes/origin/*".to_owned()])
+    }
+
     fn gh_alias(&self, _name: &str) -> Result<Option<String>, String> {
         Ok(None)
     }
