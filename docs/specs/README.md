@@ -9,6 +9,7 @@ written from the specification, and tests check the code against it.
 
 | Spec | Kind | Class | Status | Implements |
 |---|---|---|---|---|
+| [The `Rpc` and `Disk` seams and the scheduling model](seams-and-scheduling.md) | behaviour | S | draft (2026-11-21) | ADR 0004, C3 points 1 and 3 to 6, C4 points 1, 4 and 7, C16 points 2 and 3, C27 point 2, C28 points 3, 4 and 6, C29 point 9, C39 points 3 and 4, C46 points 3 and 4, O45 point 5 |
 | [XDR profile](xdr.md) | protocol | S | draft (2026-11-20) | ADR 0004, C3 point 1, C4 points 1 and 4, C6 points 1, 2 and 4, N31 points 1 and 2, O47 points 2 to 4; constraint 4 |
 
 ## Frozen formats
