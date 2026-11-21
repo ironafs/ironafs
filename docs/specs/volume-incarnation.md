@@ -1221,8 +1221,11 @@ was found and is raised as section 13, Q3.
   interpretation of point 2's open list, recorded by amending C25
   (Working); treating the reset as authoritative for other contexts
   would change C24, points 3, 4 or 6, and so need a superseding ADR.
+  **Decided** (controller, 2026-11-21): C24 is kept as this version
+  reads it, and the amendment of C25, point 3's wording to match is
+  taken up in #53. The owner may override.
 
 ## 14. Review
 
-No review record yet. It will be
-`docs/reviews/2026-11-21-m2a-78-volume-incarnation.md`.
+The review record is
+[2026-11-21-m2a-78-incarnation](../reviews/2026-11-21-m2a-78-incarnation.md).
