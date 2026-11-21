@@ -45,8 +45,9 @@ pub struct Session {
     /// The request ids whose reply token is outstanding, at most
     /// [`MAX_PENDING`].
     pending: BTreeSet<u64>,
-    /// The id of the INIT whose reply token is outstanding, if any: one at
-    /// a time, so one INIT reply settles the protocol.
+    /// The id of the INIT whose reply token is outstanding, if any,
+    /// whether the INIT was decoded or refused: one at a time, so one INIT
+    /// reply settles the protocol.
     init: Option<u64>,
 }
 
@@ -149,12 +150,7 @@ impl Session {
         }
         let result = request::decode(bytes, self.phase, self.id);
         let issued = match &result {
-            Ok((header, request)) => {
-                if matches!(request, Request::Init { .. }) {
-                    self.init = Some(header.unique);
-                }
-                Some(header)
-            }
+            Ok((header, _)) => Some(header),
             Err(DecodeError::Request(error)) if error.errno().is_some() => Some(&error.header),
             Err(_) => None,
         };
@@ -162,6 +158,14 @@ impl Session {
             && takes_reply(header)
         {
             self.pending.insert(header.unique);
+            // Any INIT given a token before the protocol is settled, a
+            // refused one included, holds the guard until its reply is
+            // finished.
+            if self.phase == Phase::AwaitingInit
+                && Opcode::from_u32(header.opcode) == Some(Opcode::Init)
+            {
+                self.init = Some(header.unique);
+            }
         }
         result
     }

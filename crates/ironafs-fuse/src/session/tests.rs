@@ -275,3 +275,34 @@ fn a_wrong_session_finish_hands_the_reply_back() {
     assert_eq!(first.finish(refused.reply).unwrap().len(), 16);
     assert_eq!(first.pending(), 0);
 }
+
+#[test]
+fn a_malformed_init_owed_a_reply_holds_the_init_guard() {
+    let mut session = Session::new();
+    // A malformed INIT: refused, but owed its error reply.
+    let malformed = frame(26, 1, &[7, 0, 0, 0, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    let refusal = match session.decode(&malformed) {
+        Err(DecodeError::Request(error)) => {
+            assert_eq!(error.malformed, Malformed::InitBody);
+            error.into_reply().unwrap()
+        }
+        other => panic!("not refused: {other:?}"),
+    };
+    // While that reply is owed, a valid INIT is refused too.
+    let pending = match session.decode(&init(2, 40)) {
+        Err(DecodeError::Request(error)) => {
+            assert_eq!(error.malformed, Malformed::InitPending);
+            error.into_reply().unwrap()
+        }
+        other => panic!("second init not refused: {other:?}"),
+    };
+    session.finish(refusal).unwrap();
+    session.finish(pending).unwrap();
+    assert_eq!(session.minor(), None);
+    // With nothing owed, the kernel's next INIT negotiates.
+    let Ok((_, Request::Init { reply })) = session.decode(&init(3, 40)) else {
+        panic!("third init refused");
+    };
+    session.finish(reply.answer(&config()).0).unwrap();
+    assert_eq!(session.minor(), Some(40));
+}
