@@ -86,6 +86,14 @@ pub enum BulkFault {
     UnclassifiedAt(usize),
 }
 
+/// A volume taken from one fileserver, to be put on another.
+#[derive(Clone, Debug)]
+pub struct MovedVolume {
+    volume: VolumeId,
+    data: Volume,
+    files: Vec<(Fid, File)>,
+}
+
 #[derive(Clone, Debug)]
 struct Volume {
     name: Vec<u8>,
@@ -183,6 +191,46 @@ impl FileServer {
             .get_mut(&volume)
             .map(|known| known.state = state)
             .is_some()
+    }
+
+    /// Whether the server holds `volume` on line.
+    #[must_use]
+    pub fn holds(&self, volume: VolumeId) -> bool {
+        self.volume(volume).is_ok()
+    }
+
+    /// Takes `volume` and its files off this server, which from then on
+    /// answers "moved" for it; its promises end with it. `None` if the
+    /// server does not hold it on line.
+    pub fn export_volume(&mut self, volume: VolumeId) -> Option<MovedVolume> {
+        let known = self.volumes.get_mut(&volume)?;
+        if known.state != VolumeState::Online {
+            return None;
+        }
+        let data = known.clone();
+        known.state = VolumeState::Moved;
+        let fids: Vec<Fid> = self
+            .files
+            .keys()
+            .filter(|fid| fid.volume == volume)
+            .copied()
+            .collect();
+        let files = fids
+            .into_iter()
+            .filter_map(|fid| self.files.remove(&fid).map(|file| (fid, file)))
+            .collect();
+        self.promises.retain(|(fid, _)| fid.volume != volume);
+        Some(MovedVolume {
+            volume,
+            data,
+            files,
+        })
+    }
+
+    /// Puts a moved volume, with its files, on this server.
+    pub fn import_volume(&mut self, moved: MovedVolume) {
+        self.volumes.insert(moved.volume, moved.data);
+        self.files.extend(moved.files);
     }
 
     /// Makes the server answer `procedure` with the "unknown procedure"
