@@ -361,3 +361,14 @@ fn init_refusal_is_eproto() {
     assert!(matches!(answer, InitAnswer::Refused(_)));
     assert_eq!(reply.as_bytes(), head(16, -71, 7));
 }
+
+#[test]
+fn reply_debug_shows_no_bytes() {
+    let reply = ReplyTo::<shape::Readlink>::new(0, 7, 0)
+        .readlink(b"secret-target")
+        .unwrap();
+    let shown = format!("{reply:?}");
+    assert!(!shown.contains("115"), "{shown}"); // b's' as a decimal byte
+    assert!(!shown.contains("secret"), "{shown}");
+    assert!(shown.contains("len: 29"), "{shown}");
+}

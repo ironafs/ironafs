@@ -362,6 +362,10 @@ pub enum Malformed {
     DuplicateUnique,
     /// An opcode the negotiated minor does not define yet.
     AboveMinor,
+    /// An INIT while an earlier INIT is still owed its reply.
+    InitPending,
+    /// The session already holds its most pending requests.
+    Overloaded,
 }
 
 impl Malformed {
@@ -379,7 +383,9 @@ impl Malformed {
             | Self::NameUnterminated
             | Self::UnknownFlags
             | Self::ForgetCount
-            | Self::DuplicateUnique => Errno::EIO,
+            | Self::DuplicateUnique
+            | Self::InitPending
+            | Self::Overloaded => Errno::EIO,
             Self::AboveMinor => Errno::EOPNOTSUPP,
         }
     }
@@ -399,13 +405,23 @@ pub struct RequestError {
 }
 
 impl RequestError {
-    /// A refusal for a request whose id is still owed a reply: it gets no
-    /// token, since a reply under that id would answer the earlier request.
-    pub(crate) const fn duplicate(header: Header) -> Self {
+    /// A refusal that gets no reply token: a duplicate id, whose reply
+    /// would answer the earlier request, or a request past the session's
+    /// cap.
+    pub(crate) const fn unanswered(header: Header, malformed: Malformed) -> Self {
         Self {
             header,
-            malformed: Malformed::DuplicateUnique,
+            malformed,
             reply: None,
+        }
+    }
+
+    /// A refusal answered with an error, under a token of `session`.
+    pub(crate) const fn answered(header: Header, malformed: Malformed, session: u64) -> Self {
+        Self {
+            header,
+            malformed,
+            reply: Some(ReplyTo::new(session, header.unique, 0)),
         }
     }
 
@@ -835,6 +851,8 @@ impl core::fmt::Display for Malformed {
             Self::AboveMinor => {
                 formatter.write_str("an opcode the negotiated minor does not define")
             }
+            Self::InitPending => formatter.write_str("an init while an earlier init is unanswered"),
+            Self::Overloaded => formatter.write_str("too many requests are owed a reply"),
         }
     }
 }

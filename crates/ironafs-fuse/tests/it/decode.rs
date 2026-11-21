@@ -10,6 +10,24 @@ use ironafs_fuse::request::{DecodeError, Header, Request};
 use ironafs_fuse::session::Session;
 use ironafs_test_support::{Property, Source};
 
+/// Answers and finishes an INIT at 7.`minor`, through the public API.
+fn settle(session: &mut Session, minor: u32) {
+    let body = [7u32, minor, 4096, 0].map(u32::to_le_bytes).concat();
+    let init = [
+        &56u32.to_le_bytes()[..],
+        &26u32.to_le_bytes(),
+        &[0; 32],
+        &body,
+    ]
+    .concat();
+    let Ok((_, Request::Init { reply })) = session.decode(&init) else {
+        panic!("init refused");
+    };
+    let config = InitConfig::new(4096, 131_072, 12, 9, 1).unwrap();
+    session.finish(reply.answer(&config).0).unwrap();
+    assert_eq!(session.minor(), Some(minor));
+}
+
 #[test]
 fn decode_never_panics_on_any_bytes() {
     Property::new("decode returns on any bytes")
@@ -19,7 +37,7 @@ fn decode_never_panics_on_any_bytes() {
             |(bytes, negotiated)| {
                 let mut session = Session::new();
                 if *negotiated {
-                    let _ = session.decode(bytes);
+                    settle(&mut session, 40);
                 }
                 let _ = session.decode(bytes);
             },
@@ -84,19 +102,7 @@ fn decode_reports_framed_requests_faithfully() {
             let bytes = framed.bytes();
             let mut session = Session::new();
             if framed.minor >= 23 {
-                let body = [7u32, framed.minor, 4096, 0].map(u32::to_le_bytes).concat();
-                let init = [
-                    &56u32.to_le_bytes()[..],
-                    &26u32.to_le_bytes(),
-                    &[0; 32],
-                    &body,
-                ]
-                .concat();
-                let Ok((_, Request::Init { reply })) = session.decode(&init) else {
-                    panic!("init refused");
-                };
-                let config = InitConfig::new(4096, 131_072, 12, 9, 1).unwrap();
-                session.finish(reply.answer(&config).0).unwrap();
+                settle(&mut session, framed.minor);
             }
             match session.decode(&bytes) {
                 Ok((header, request)) => {

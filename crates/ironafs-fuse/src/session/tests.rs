@@ -103,7 +103,10 @@ fn finish_refuses_a_reply_of_another_session() {
     };
     assert!(second.decode(&getattr).is_ok());
     assert_eq!(
-        second.finish(reply.error(crate::Errno::EIO)).unwrap_err(),
+        second
+            .finish(reply.error(crate::Errno::EIO))
+            .unwrap_err()
+            .error,
         FinishError::OtherSession
     );
     assert_eq!(second.pending(), 1);
@@ -182,4 +185,93 @@ fn statx_needs_7_39() {
         session.decode(&statx),
         Ok((_, Request::Statx { .. }))
     ));
+}
+
+#[test]
+fn a_second_init_while_one_is_pending_is_refused() {
+    let mut session = Session::new();
+    let first = init(1, 40);
+    let second = init(2, 46);
+    let Ok((_, Request::Init { reply })) = session.decode(&first) else {
+        panic!("first init refused");
+    };
+    let refusal = match session.decode(&second) {
+        Err(DecodeError::Request(error)) => {
+            assert_eq!(error.malformed, Malformed::InitPending);
+            assert_eq!(error.errno(), Some(crate::Errno::EIO));
+            error.into_reply().unwrap()
+        }
+        other => panic!("second init not refused: {other:?}"),
+    };
+    // The refusal answers the second INIT and settles nothing.
+    session.finish(refusal).unwrap();
+    assert_eq!(session.minor(), None);
+    let (reply, _) = reply.answer(&config());
+    session.finish(reply).unwrap();
+    assert_eq!(session.minor(), Some(40));
+}
+
+#[test]
+fn a_new_init_may_follow_a_finished_major_only_reply() {
+    let mut session = Session::new();
+    let newer = frame(26, 1, &8u32.to_le_bytes());
+    let Ok((_, Request::Init { reply })) = session.decode(&newer) else {
+        panic!("refused");
+    };
+    session.finish(reply.answer(&config()).0).unwrap();
+    let Ok((_, Request::Init { reply })) = session.decode(&init(2, 46)) else {
+        panic!("the kernel's new init refused");
+    };
+    session.finish(reply.answer(&config()).0).unwrap();
+    assert_eq!(session.minor(), Some(46));
+}
+
+#[test]
+fn a_no_reply_request_with_a_pending_id_is_refused() {
+    let mut session = ready(40);
+    assert!(session.decode(&frame(3, 9, &[0; 16])).is_ok());
+    for (opcode, body) in [(2, 3u64.to_le_bytes()), (36, 5u64.to_le_bytes())] {
+        match session.decode(&frame(opcode, 9, &body)) {
+            Err(DecodeError::Request(error)) => {
+                assert_eq!(error.malformed, Malformed::DuplicateUnique, "{opcode}");
+                assert_eq!(error.into_reply(), None);
+            }
+            other => panic!("opcode {opcode} not refused: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn decode_refuses_past_the_pending_cap() {
+    let mut session = ready(40);
+    let cap = super::MAX_PENDING;
+    assert_eq!(cap, 4096);
+    for unique in 0..u64::try_from(cap).unwrap() {
+        assert!(session.decode(&frame(3, 1000 + unique, &[0; 16])).is_ok());
+    }
+    assert_eq!(session.pending(), cap);
+    match session.decode(&frame(3, 99, &[0; 16])) {
+        Err(DecodeError::Request(error)) => {
+            assert_eq!(error.malformed, Malformed::Overloaded);
+            assert_eq!(error.into_reply(), None);
+        }
+        other => panic!("not refused: {other:?}"),
+    }
+    assert_eq!(session.pending(), cap);
+    // A request that takes no reply still decodes.
+    assert!(session.decode(&frame(2, 99, &3u64.to_le_bytes())).is_ok());
+}
+
+#[test]
+fn a_wrong_session_finish_hands_the_reply_back() {
+    let mut first = ready(40);
+    let mut second = ready(40);
+    let getattr = frame(3, 9, &[0; 16]);
+    let Ok((_, Request::Getattr { reply, .. })) = first.decode(&getattr) else {
+        panic!("refused");
+    };
+    let refused = second.finish(reply.error(crate::Errno::EIO)).unwrap_err();
+    assert_eq!(refused.error, FinishError::OtherSession);
+    assert_eq!(first.finish(refused.reply).unwrap().len(), 16);
+    assert_eq!(first.pending(), 0);
 }

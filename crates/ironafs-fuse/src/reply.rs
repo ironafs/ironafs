@@ -280,13 +280,27 @@ impl core::error::Error for EncodeError {}
 /// One encoded reply. Its bytes reach the device only through
 /// [`Session::finish`](crate::session::Session::finish), which checks that
 /// the reply belongs to that session and to a request still owed one.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct Reply {
     session: u64,
     unique: u64,
     /// For a successful INIT reply, what it settled.
     negotiated: Option<Negotiated>,
     bytes: Vec<u8>,
+}
+
+/// Shows the reply's id and length, never its bytes: they reach the
+/// device only through [`Session::finish`](crate::session::Session::finish).
+impl fmt::Debug for Reply {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Reply")
+            .field("session", &self.session)
+            .field("unique", &self.unique)
+            .field("negotiated", &self.negotiated)
+            .field("len", &self.bytes.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Reply {
