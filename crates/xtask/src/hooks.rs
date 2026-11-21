@@ -6,9 +6,9 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{self, Command, Stdio};
+use std::process::{self, Stdio};
 
-use crate::Error;
+use crate::{Command, Error};
 
 #[cfg(test)]
 mod tests;

@@ -21,8 +21,8 @@ doc-valid-idents = ["IronAFS", "OpenAFS", "AuriStor", "FSKit", "macOS", ".."]
 # operating system through no method a method ban can see; use a BTreeMap,
 # or a hasher seeded through Rng under a named expect. A subprocess can read
 # the host's clock or randomness, so Command is banned; the one exemption
-# is xtask, repository automation that is never shipped, by a crate-level
-# expect.
+# is xtask, repository automation that is never shipped, by one item-level
+# expect on its own Command alias, so every other ban still applies there.
 #
 # Kept elsewhere: the core's waits with a timeout, sleeps and threads
 # (check-deps on ironafs-client), and everything the standard library

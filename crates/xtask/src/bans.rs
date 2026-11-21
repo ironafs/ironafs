@@ -23,12 +23,11 @@ use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::process::Command;
 
-use crate::Error;
 use crate::fixture::write_file;
 use crate::metadata;
 use crate::pure::{CLEARED_ENVIRONMENT, first_error};
+use crate::{Command, Error};
 
 #[cfg(test)]
 mod tests;
@@ -56,7 +55,8 @@ impl Lint {
 
 /// One ban and a planted line that must trip it. Each planted line defines
 /// one function, named for its form, and is written on its own line of the
-/// fixture.
+/// fixture. A planted line names the banned item only where the form it
+/// plants needs it, so the warning comes from that form.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Ban {
     pub(crate) lint: Lint,
@@ -107,6 +107,16 @@ pub(crate) const BANS: &[Ban] = &[
         lint: Lint::Type,
         path: "std::hash::RandomState",
         planted: "pub fn random_default() -> std::hash::RandomState { Default::default() }",
+    },
+    Ban {
+        lint: Lint::Type,
+        path: "std::hash::RandomState",
+        planted: "pub fn random_default_call() -> u64 { use std::hash::BuildHasher; std::hash::RandomState::default().hash_one(1_u8) }",
+    },
+    Ban {
+        lint: Lint::Type,
+        path: "std::collections::HashMap",
+        planted: "pub fn hash_map_new() -> bool { let mut map = std::collections::HashMap::new(); map.insert(1_u8, 2_u8); map.is_empty() }",
     },
     Ban {
         lint: Lint::Type,

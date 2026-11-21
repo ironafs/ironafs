@@ -4,9 +4,9 @@
 //! Runs local checks in order and reports missing optional tools.
 
 use std::io::{self, Write};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ExitStatus, Stdio};
 
-use crate::Error;
+use crate::{Command, Error};
 
 #[cfg(test)]
 mod tests;

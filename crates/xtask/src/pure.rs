@@ -33,12 +33,12 @@ use std::fs;
 use std::io::{self, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
-use crate::Error;
 use crate::deps::{self, Kind};
 use crate::metadata::{self, Member, Package, Workspace};
 use crate::rust_source::{self, Token, TokenKind, ident, punct};
+use crate::{Command, Error};
 
 #[cfg(test)]
 mod tests;

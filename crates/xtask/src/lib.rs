@@ -3,15 +3,6 @@
 
 //! The `cargo xtask` entry point and its diagnostic and exit-status handling.
 
-// Repository automation runs cargo, git, rustup and the checks' tools, and
-// is never shipped, so the subprocess ban of coding standards rule 7 does
-// not apply to it. The clock bans still do.
-#![expect(
-    clippy::disallowed_types,
-    reason = "rule 7: xtask is repository automation, never shipped; it runs cargo, git and \
-              other tools as subprocesses"
-)]
-
 mod args;
 mod bans;
 mod check;
@@ -30,6 +21,18 @@ use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+
+/// The subprocess builder for repository automation: xtask runs cargo,
+/// git, rustup and the checks' tools. Coding standards rule 7 bans
+/// `std::process::Command` everywhere, since a subprocess can read the
+/// host's clock or randomness; xtask is never shipped, so it is exempt by
+/// this one alias, and every other ban still applies to it.
+#[expect(
+    clippy::disallowed_types,
+    reason = "rule 7: xtask is repository automation, never shipped; it runs tools as \
+              subprocesses"
+)]
+pub(crate) type Command = std::process::Command;
 
 #[derive(Debug)]
 enum Error {
