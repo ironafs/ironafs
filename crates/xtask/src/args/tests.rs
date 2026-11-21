@@ -6,7 +6,9 @@
 use std::ffi::OsString;
 
 use super::{Task, TrailerMode, UsageError, parse};
-use crate::mutants::Shard;
+use std::path::PathBuf;
+
+use crate::mutants::{Mode, Shard};
 
 #[test]
 fn parse_rejects_unknown_command() {
@@ -166,19 +168,21 @@ fn parse_accepts_mutants_with_a_shard_or_the_self_test() {
     let parse_words = |words: &[&str]| parse(words.iter().map(OsString::from));
     assert_eq!(
         parse_words(&["mutants", "--self-test"]),
-        Ok(Task::Mutants {
-            self_test: true,
-            shard: None
-        })
+        Ok(Task::Mutants(Mode::SelfTest))
     );
     assert_eq!(
         parse_words(&["mutants", "--shard", "1/4"]),
-        Ok(Task::Mutants {
-            self_test: false,
-            shard: Some(Shard { index: 1, count: 4 })
-        })
+        Ok(Task::Mutants(Mode::Shard(Shard { index: 1, count: 4 })))
     );
     assert_eq!(parse_words(&["mutants"]), Err(UsageError::MissingShard));
+    assert_eq!(
+        parse_words(&["mutants", "--in-diff", "pr.diff"]),
+        Ok(Task::Mutants(Mode::Diff(PathBuf::from("pr.diff"))))
+    );
+    assert_eq!(
+        parse_words(&["mutants", "--in-diff"]),
+        Err(UsageError::MissingShard)
+    );
     assert_eq!(
         parse_words(&["mutants", "--shard", "4/4"]),
         Err(UsageError::UnexpectedArgument("4/4".into()))

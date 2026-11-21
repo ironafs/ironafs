@@ -4,17 +4,20 @@
 //! Tests for the run guard, the pinned version, the selection the list
 //! and the run share, and the source attribute check.
 
+use std::path::Path;
+
 use super::report::Shard;
 use super::{
-    SHARD_COUNT, job_violation, mutated_packages, run_arguments, selection_arguments,
-    shard_manifest_violations, skip_attribute_violations, tool_version_violation,
+    DIFF_JOB, NIGHTLY_JOB, SHARD_COUNT, diff_packages, diff_run_arguments, job_violation,
+    mutated_packages, run_arguments, selection_arguments, shard_manifest_violations,
+    skip_attribute_violations, tool_version_violation, whole_run_violation,
 };
 
 #[test]
 fn the_real_run_refuses_outside_the_mutation_job() {
-    assert_eq!(job_violation(Some("1")), None);
+    assert_eq!(job_violation(&NIGHTLY_JOB, Some("1")), None);
     for value in [None, Some(""), Some("0"), Some("true")] {
-        let found = job_violation(value).expect("refused");
+        let found = job_violation(&NIGHTLY_JOB, value).expect("refused");
         assert!(found.contains("IRONAFS_MUTANTS_JOB=1"), "{found}");
     }
 }
@@ -125,4 +128,55 @@ fn mutants_self_test_ends_every_case_as_planted() {
     let text = String::from_utf8(output).unwrap();
     assert!(text.contains("a run that selected no test is never caught: as planted"));
     assert!(text.contains("a skip attribute in source: as planted"));
+}
+
+#[test]
+fn a_whole_run_with_no_mutants_is_refused() {
+    let found = whole_run_violation("[]").expect("refused");
+    assert!(found.contains("no mutant"), "{found}");
+    assert!(whole_run_violation("{").is_some());
+    let one = crate::mutants::fixture::list(&["a"]);
+    assert_eq!(whole_run_violation(&one), None);
+}
+
+#[test]
+fn the_diff_run_refuses_outside_its_pull_request_job() {
+    assert_eq!(job_violation(&DIFF_JOB, Some("1")), None);
+    let found = job_violation(&DIFF_JOB, None).expect("refused");
+    assert!(found.contains("IRONAFS_MUTANTS_PR_JOB=1"), "{found}");
+    assert!(job_violation(&DIFF_JOB, Some("0")).is_some());
+    // Each job's variable opens only its own run.
+    assert_ne!(DIFF_JOB.variable, NIGHTLY_JOB.variable);
+}
+
+#[test]
+fn the_diff_run_mutates_only_pure_crates() {
+    let members = ["ironafs-client", "ironafs-time", "xtask", "ironafs-xdr"];
+    assert_eq!(
+        diff_packages(members.iter().copied()),
+        vec!["ironafs-time", "ironafs-xdr"]
+    );
+}
+
+#[test]
+fn the_diff_run_selects_by_the_diff_with_the_same_test_arguments() {
+    let packages = vec!["ironafs-time".to_owned()];
+    let run = diff_run_arguments(Path::new("pr.diff"), &packages, "out");
+    assert!(
+        run.windows(2).any(|pair| pair == ["--in-diff", "pr.diff"]),
+        "{run:?}"
+    );
+    assert!(!run.iter().any(|word| word == "--shard"));
+    for required in [
+        "--no-shuffle",
+        "--test-tool=nextest",
+        "--cargo-test-arg=--retries=0",
+        "--cargo-test-arg=--profile=mutants",
+        "--cargo-test-arg=--no-tests=fail",
+    ] {
+        assert!(
+            run.iter().any(|word| word == required),
+            "{required}: {run:?}"
+        );
+    }
 }

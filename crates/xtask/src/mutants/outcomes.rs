@@ -15,16 +15,14 @@
 use std::collections::BTreeMap;
 
 use crate::json::{self, Value};
+use crate::nextest;
 
 #[cfg(test)]
 mod tests;
 
-/// nextest's exit code when one or more tests failed (`nextest-metadata`,
-/// `NextestExitCode::TEST_RUN_FAILED`, at cargo-nextest 0.9.151).
-const TESTS_FAILED: i64 = 100;
-
-/// nextest's exit code when no test was selected.
-const NO_TESTS_RUN: i64 = 4;
+/// nextest's exit codes, as the tool records them (64-bit in its JSON).
+const TESTS_FAILED: i64 = nextest::TESTS_FAILED as i64;
+const NO_TESTS_RUN: i64 = nextest::NO_TESTS_RUN as i64;
 
 /// How one mutant ended.
 #[derive(Clone, Debug, PartialEq, Eq)]

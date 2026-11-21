@@ -54,7 +54,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     crate::freshness::run(true, output)?;
     // The real mutation run and the planted-defect probe run in the nightly
     // tier; their self-tests run everywhere.
-    crate::mutants::run(true, None, output)?;
+    crate::mutants::run(crate::mutants::Mode::SelfTest, output)?;
     crate::plant::run(true, output)?;
 
     check_reuse_result(

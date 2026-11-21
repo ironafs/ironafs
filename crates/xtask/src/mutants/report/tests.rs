@@ -3,14 +3,14 @@
 
 //! Tests for the shard report and the checks that fail it.
 
-use super::{Shard, report};
+use super::{Scope, Shard, diff_text, report};
 use crate::mutants::accepted::Accepted;
 use crate::mutants::fixture::{
     BASELINE_OK, FILE, TEST_ARGV, baseline_failed, list, mutant, outcomes, outcomes_of_version,
     phase,
 };
 
-const SHARD: Shard = Shard { index: 1, count: 4 };
+const SHARD: Scope = Scope::Shard(Shard { index: 1, count: 4 });
 
 fn caught(change: &str) -> String {
     mutant(
@@ -41,7 +41,9 @@ fn shard_reads_k_of_n() {
     for text in ["4/4", "1/0", "1", "a/4", "-1/4", "1/4/2", ""] {
         assert_eq!(Shard::parse(text), None, "{text}");
     }
-    assert_eq!(SHARD.to_string(), "1/4");
+    assert_eq!(Shard { index: 1, count: 4 }.to_string(), "1/4");
+    assert_eq!(SHARD.to_string(), "shard 1/4");
+    assert_eq!(Scope::Diff.to_string(), "the pull request's diff");
 }
 
 #[test]
@@ -178,4 +180,27 @@ fn survivors_never_fail_the_shard_while_report_only() {
     );
     assert!(found.violations.is_empty(), "{:?}", found.violations);
     assert!(found.text.contains("timed out, new"));
+}
+
+#[test]
+fn a_diff_with_no_mutants_says_so() {
+    let found = report(Scope::Diff, None, "[]", &[]);
+    assert_eq!(found.violations, [] as [std::string::String; 0]);
+    assert!(
+        found.text.contains("The diff touches no mutants."),
+        "{}",
+        found.text
+    );
+}
+
+#[test]
+fn the_diff_report_shows_untrusted_results_instead_of_failing() {
+    let found = report(Scope::Diff, None, &list(&["a"]), &[]);
+    assert_ne!(found.violations, [] as [std::string::String; 0]);
+    let text = diff_text(found);
+    assert!(text.contains("Report only"), "{text}");
+    assert!(text.contains("### Not trusted"), "{text}");
+    assert!(text.contains("no outcomes"), "{text}");
+    let clean = diff_text(report(Scope::Diff, None, "[]", &[]));
+    assert!(!clean.contains("Not trusted"), "{clean}");
 }

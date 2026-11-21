@@ -4,7 +4,7 @@
 //! `plant --self-test`: runs the probe on an in-memory tree with a
 //! scripted test runner and checks each way a probe can mislead (an anchor
 //! that does not match its count, a plant that changes nothing, a write
-//! that did not take, a red baseline, a test that did not run or did not
+//! that did not take or failed, a red baseline, a test that did not run or did not
 //! build, a restore that did not happen, a test that still passes) ends as
 //! "no result", "survived" or an error, never "caught", beside the clean
 //! case that must be caught.
@@ -42,6 +42,8 @@ enum Writes {
     All,
     None,
     First,
+    /// The plant's write fails with an error.
+    PlantFails,
 }
 
 struct Case {
@@ -130,6 +132,15 @@ fn cases() -> Vec<Case> {
             )
         },
         Case {
+            name: "a plant write that fails is an error, and the original is restored",
+            writes: Writes::PlantFails,
+            ..case(
+                "",
+                [TestOutcome::Passed, TestOutcome::Failed],
+                Expect::Error,
+            )
+        },
+        Case {
             name: "a restore that did not happen is an error",
             writes: Writes::First,
             ..case(
@@ -154,6 +165,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
             Writes::All => {}
             Writes::None => files.ignore_writes(),
             Writes::First => files.ignore_writes_after(1),
+            Writes::PlantFails => files.fail_write(1),
         }
         let mut runner = ScriptedRunner::new(&case.outcomes);
         let found = probe(
@@ -168,7 +180,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
                 | (Expect::NoResult, Ok(Verdict::NoResult(_)))
                 | (Expect::Error, Err(_))
         );
-        let restored = matches!(case.expect, Expect::Error) || files.text(FILE) == SOURCE;
+        let restored = matches!(case.writes, Writes::First) || files.text(FILE) == SOURCE;
         if !ok || !restored {
             return Err(Error::SelfTest {
                 check: CHECK,

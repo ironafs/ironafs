@@ -15,11 +15,11 @@ use super::accepted::parse_accepted;
 use super::fixture::{
     BASELINE_OK, TEST_ARGV, baseline_failed, list, mutant, outcomes, outcomes_of_version, phase,
 };
-use super::report::{Shard, report};
-use super::{CHECK, skip_attribute_violations};
+use super::report::{Scope, Shard, diff_text, report};
+use super::{CHECK, skip_attribute_violations, whole_run_violation};
 use crate::Error;
 
-const SHARD: Shard = Shard { index: 0, count: 4 };
+const SHARD: Scope = Scope::Shard(Shard { index: 0, count: 4 });
 
 enum Expect {
     /// No violation, and the report holds this text.
@@ -209,6 +209,42 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         });
     }
     names.push("an accepted mutant with no reason");
+
+    if whole_run_violation("[]").is_none() {
+        return Err(Error::SelfTest {
+            check: CHECK,
+            case: "exclusions that leave the whole run nothing to mutate",
+            found: Vec::new(),
+        });
+    }
+    names.push("exclusions that leave the whole run nothing to mutate");
+
+    let empty = report(Scope::Diff, None, "[]", &[]);
+    if !(empty.violations.is_empty() && empty.text.contains("The diff touches no mutants.")) {
+        return Err(Error::SelfTest {
+            check: CHECK,
+            case: "a diff with no mutants says so",
+            found: empty.violations,
+        });
+    }
+    names.push("a diff with no mutants says so");
+
+    let no_tests = list(&["a"]);
+    let untrusted = report(
+        Scope::Diff,
+        Some(&outcomes(&[BASELINE_OK, &tested("a", "{\"Failure\":4}")])),
+        &no_tests,
+        &[],
+    );
+    let shown = diff_text(untrusted);
+    if !(shown.contains("### Not trusted") && shown.contains("no test ran")) {
+        return Err(Error::SelfTest {
+            check: CHECK,
+            case: "a diff run's untrusted result is shown, not hidden",
+            found: vec![shown],
+        });
+    }
+    names.push("a diff run's untrusted result is shown, not hidden");
 
     let planted = "#[mutants::skip]\nfn f() {}\n";
     let found = skip_attribute_violations([("crates/a/src/lib.rs", planted)]);

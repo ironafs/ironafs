@@ -26,23 +26,17 @@ mod self_test;
 mod tests;
 
 use std::collections::BTreeSet;
-use std::fs::{self, File};
+use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::Stdio;
 
-use crate::metadata;
 use crate::{Command, Error};
+use crate::{metadata, nextest};
 
 const CHECK: &str = "plant";
 
 /// The record, relative to the workspace root.
 const RECORD: &str = "tests/planted-defects.txt";
-
-/// nextest's exit codes at cargo-nextest 0.9.151 (`nextest-metadata`).
-const NEXTEST_TESTS_FAILED: i32 = 100;
-const NEXTEST_NO_TESTS_RUN: i32 = 4;
-const NEXTEST_BUILD_FAILED: i32 = 101;
 
 /// One guard's planted defect.
 #[derive(Debug)]
@@ -244,19 +238,35 @@ pub(super) fn probe(
             "the plant did not change the file".to_owned(),
         ));
     }
-    files.write(&plant.file, &planted)?;
-    let applied = files.read(&plant.file).is_ok_and(|now| now == planted);
+    let plant_write = files.write(&plant.file, &planted);
+    let applied = plant_write.is_ok() && files.read(&plant.file).is_ok_and(|now| now == planted);
     let outcome = if applied {
         runner.run(&plant.package, &plant.test, &planted)
     } else {
         Ok(TestOutcome::Other(String::new()))
     };
-    files.write(&plant.file, &original)?;
-    if files.read(&plant.file).ok().as_deref() != Some(original.as_str()) {
+    // The original is written back whatever happened above, a failed
+    // plant write included: a partial write may have changed the file.
+    let restore_write = files.write(&plant.file, &original);
+    let restored = files.read(&plant.file).ok().as_deref() == Some(original.as_str());
+    if restore_write.is_err() || !restored {
+        let why = restore_write
+            .err()
+            .map_or_else(String::new, |error| format!(" ({error})"));
         return Err(Error::CouldNotRun {
             check: CHECK,
             reason: format!(
-                "the restore of {} could not be verified: check the file by hand",
+                "the restore of {} could not be verified{why}: the file may still hold \
+                 the plant; check it by hand",
+                plant.file
+            ),
+        });
+    }
+    if let Err(error) = plant_write {
+        return Err(Error::CouldNotRun {
+            check: CHECK,
+            reason: format!(
+                "the plant of {} could not be written ({error}); the original is restored",
                 plant.file
             ),
         });
@@ -369,20 +379,8 @@ struct Nextest {
 impl Runner for Nextest {
     fn run(&mut self, package: &str, test: &str, _file_now: &str) -> Result<TestOutcome, Error> {
         const NAME: &str = "cargo nextest run (planted defect)";
-        let log = File::options()
-            .create(true)
-            .append(true)
-            .open(&self.log)
-            .map_err(Error::path_io("open probe log", &self.log))?;
-        let log_err = log
-            .try_clone()
-            .map_err(Error::path_io("open probe log", &self.log))?;
-        let status = Command::new("cargo")
-            .current_dir(&self.root)
-            .stdin(Stdio::null())
-            .stdout(log)
-            .stderr(log_err)
-            .args([
+        let status = nextest::run_logged(
+            Command::new("cargo").current_dir(&self.root).args([
                 "nextest",
                 "run",
                 "--package",
@@ -394,15 +392,16 @@ impl Runner for Nextest {
                 "--no-tests",
                 "fail",
                 "-E",
-            ])
-            .arg(format!("test(={test})"))
-            .status()
-            .map_err(Error::io(NAME))?;
+                &format!("test(={test})"),
+            ]),
+            &self.log,
+            NAME,
+        )?;
         Ok(match status.code() {
             Some(0) => TestOutcome::Passed,
-            Some(NEXTEST_TESTS_FAILED) => TestOutcome::Failed,
-            Some(NEXTEST_NO_TESTS_RUN) => TestOutcome::NoTestRan,
-            Some(NEXTEST_BUILD_FAILED) => TestOutcome::DidNotBuild,
+            Some(nextest::TESTS_FAILED) => TestOutcome::Failed,
+            Some(nextest::NO_TESTS_RUN) => TestOutcome::NoTestRan,
+            Some(nextest::BUILD_FAILED) => TestOutcome::DidNotBuild,
             _ => TestOutcome::Other(status.to_string()),
         })
     }

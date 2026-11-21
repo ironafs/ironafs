@@ -7,7 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::mutants::Shard;
+use crate::mutants::{Mode, Shard};
 
 #[cfg(test)]
 mod tests;
@@ -15,31 +15,14 @@ mod tests;
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Task {
     Check,
-    CheckBans {
-        self_test: bool,
-    },
-    CheckDeps {
-        self_test: bool,
-    },
-    CheckGrants {
-        self_test: bool,
-    },
-    CheckPure {
-        self_test: bool,
-    },
-    Freshness {
-        self_test: bool,
-    },
-    Mutants {
-        self_test: bool,
-        shard: Option<Shard>,
-    },
-    Plant {
-        self_test: bool,
-    },
-    InstallHook {
-        force: bool,
-    },
+    CheckBans { self_test: bool },
+    CheckDeps { self_test: bool },
+    CheckGrants { self_test: bool },
+    CheckPure { self_test: bool },
+    Freshness { self_test: bool },
+    Mutants(Mode),
+    Plant { self_test: bool },
+    InstallHook { force: bool },
     UninstallHook,
     Trailers(TrailerMode),
 }
@@ -72,7 +55,7 @@ impl fmt::Display for UsageError {
             Self::MissingHookSubcommand => write!(formatter, "missing hooks subcommand"),
             Self::MissingTrailerMode => write!(formatter, "missing trailers mode"),
             Self::MissingCommitMessagePath => write!(formatter, "missing commit message file path"),
-            Self::MissingShard => write!(formatter, "missing --shard k/n"),
+            Self::MissingShard => write!(formatter, "missing --shard k/n or --in-diff <file>"),
             Self::UnknownCommand(command) => {
                 write!(formatter, "unknown command {}", command.display())
             }
@@ -88,7 +71,7 @@ impl fmt::Display for UsageError {
         }?;
         write!(
             formatter,
-            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | freshness [--self-test] | mutants --shard k/n | mutants --self-test | plant [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
+            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | freshness [--self-test] | mutants --shard k/n | mutants --in-diff <file> | mutants --self-test | plant [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
         )
     }
 }
@@ -141,20 +124,20 @@ fn parse_self_test(arguments: &mut impl Iterator<Item = OsString>) -> Result<boo
 
 fn parse_mutants(arguments: &mut impl Iterator<Item = OsString>) -> Result<Task, UsageError> {
     match arguments.next() {
-        Some(argument) if argument == OsStr::new("--self-test") => Ok(Task::Mutants {
-            self_test: true,
-            shard: None,
-        }),
+        Some(argument) if argument == OsStr::new("--self-test") => {
+            Ok(Task::Mutants(Mode::SelfTest))
+        }
+        Some(argument) if argument == OsStr::new("--in-diff") => {
+            let path = arguments.next().ok_or(UsageError::MissingShard)?;
+            Ok(Task::Mutants(Mode::Diff(path.into())))
+        }
         Some(argument) if argument == OsStr::new("--shard") => {
             let value = arguments.next().ok_or(UsageError::MissingShard)?;
             let shard = value
                 .to_str()
                 .and_then(Shard::parse)
                 .ok_or(UsageError::UnexpectedArgument(value))?;
-            Ok(Task::Mutants {
-                self_test: false,
-                shard: Some(shard),
-            })
+            Ok(Task::Mutants(Mode::Shard(shard)))
         }
         Some(argument) => Err(UsageError::UnexpectedArgument(argument)),
         None => Err(UsageError::MissingShard),

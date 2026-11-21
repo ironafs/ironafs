@@ -143,6 +143,65 @@ jobs:
         if: github.event_name == 'push'
         run: cargo --locked xtask trailers main
 
+  # Mutation testing over the pull request's diff (docs/specs/testing.md,
+  # 5.4, point 4; #73): advisory and report only. It is not a dependency of
+  # ci-ok, and its run step continues on error, so it can neither fail nor
+  # satisfy a pull request. cargo-mutants 27.1.0 is installed only here and
+  # in the nightly mutation jobs, from its checksummed x86_64 archive, and
+  # runs only behind `cargo xtask mutants --in-diff`, which refuses to start
+  # without IRONAFS_MUTANTS_PR_JOB=1. The report names only code; the
+  # tool's console output stays on the runner. No artefact, no cache.
+  mutants-diff:
+    name: mutants-diff
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Install cargo-nextest
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          archive=cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/$archive"
+          printf '%s  %s\n' 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4 "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: Install cargo-mutants
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          archive=cargo-mutants-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/$archive"
+          printf '%s  %s\n' dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-mutants "$cargo_bin/cargo-mutants"
+      # The checkout is the merge of the pull request into its base, so its
+      # first parent is the base and the diff is the pull request's change.
+      - name: Write the pull request's diff
+        run: git diff --no-ext-diff --no-color HEAD^1 HEAD > "$RUNNER_TEMP/pull-request.diff"
+      - name: Report mutation testing over the diff
+        continue-on-error: true
+        env:
+          IRONAFS_MUTANTS_PR_JOB: "1"
+        run: cargo --locked xtask mutants --in-diff "$RUNNER_TEMP/pull-request.diff" | tee -a "$GITHUB_STEP_SUMMARY"
+
   ci-ok:
     name: ci-ok
     needs: [lint, test, trailers]

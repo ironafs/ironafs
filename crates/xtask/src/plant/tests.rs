@@ -217,3 +217,29 @@ fn plant_self_test_ends_every_case_as_planted() {
     let text = String::from_utf8(output).unwrap();
     assert!(text.contains("a restore that did not happen is an error: as planted"));
 }
+
+#[test]
+fn probe_failed_plant_write_still_restores_the_original() {
+    let mut files = FakeFiles::with("crates/a/src/lib.rs", SOURCE);
+    files.fail_write(1);
+    let mut runner = ScriptedRunner::new(&[TestOutcome::Passed, TestOutcome::Failed]);
+    let found = probe(&good_plant(), &mut files, &mut runner);
+    let error = found.expect_err("a failed plant write is an error");
+    assert!(error.to_string().contains("plant"), "{error}");
+    assert_eq!(files.writes(), 2, "the restore was attempted");
+    assert_eq!(files.text("crates/a/src/lib.rs"), SOURCE);
+    assert_eq!(runner.calls(), 1, "no test ran on a failed plant");
+}
+
+#[test]
+fn probe_failed_restore_write_says_the_file_may_be_planted() {
+    let mut files = FakeFiles::with("crates/a/src/lib.rs", SOURCE);
+    files.fail_write(2);
+    let mut runner = ScriptedRunner::new(&[TestOutcome::Passed, TestOutcome::Failed]);
+    let error = probe(&good_plant(), &mut files, &mut runner).expect_err("restore failed");
+    let text = error.to_string();
+    assert!(
+        text.contains("restore") && text.contains("crates/a/src/lib.rs"),
+        "{text}"
+    );
+}

@@ -18,6 +18,8 @@ pub(super) struct FakeFiles {
     writes: usize,
     /// Writes after this many are ignored.
     honoured: Option<usize>,
+    /// The write (counted from 1) that fails with an error.
+    failing: Option<usize>,
 }
 
 impl FakeFiles {
@@ -28,6 +30,7 @@ impl FakeFiles {
             files,
             writes: 0,
             honoured: None,
+            failing: None,
         }
     }
 
@@ -39,6 +42,11 @@ impl FakeFiles {
     /// Honours the first `count` writes and ignores the rest.
     pub(super) fn ignore_writes_after(&mut self, count: usize) {
         self.honoured = Some(count);
+    }
+
+    /// Makes write number `number` (from 1) fail without effect.
+    pub(super) fn fail_write(&mut self, number: usize) {
+        self.failing = Some(number);
     }
 
     pub(super) fn text(&self, path: &str) -> &str {
@@ -61,6 +69,12 @@ impl Files for FakeFiles {
 
     fn write(&mut self, path: &str, text: &str) -> Result<(), Error> {
         self.writes += 1;
+        if self.failing == Some(self.writes) {
+            return Err(Error::Io {
+                operation: "write a planted file",
+                source: std::io::Error::other("planted write failure"),
+            });
+        }
         if self.honoured.is_none_or(|honoured| self.writes <= honoured) {
             self.files.insert(path.to_owned(), text.to_owned());
         }
