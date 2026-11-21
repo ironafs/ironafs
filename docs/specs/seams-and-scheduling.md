@@ -155,7 +155,10 @@ Coding standards, rule 7, its second sentence:
 > No direct `Instant::now`, `SystemTime::now` or random-number calls
 > outside an injected clock and random source.
 
-Also cited, without a quotation the page must keep word for word: C9,
+Also cited as context, not as invariants this page keeps, so with no
+quotation and no section 9 row (the specifications README asks a
+quotation, its citation rule 2, and a section and test, rule 4, only of
+an invariant the page keeps): C9,
 point 3; C26, points 2 and 4; C30, points 2 and 3; C31; C37, points 1
 and 3; O41, points 1, 3, 4 and 6; O45, points 2 and 3; O47, point 3;
 O48, point 1; O50, point 11, all Working; and ADR 0005, decision 2, the
@@ -442,15 +445,29 @@ encoding is the simulator's specification's.
    }
 
    /// A deadline on one monotonic clock, with that clock's doubt count
-   /// latched from the stamp it was built from. Built only from a `Stamp`.
-   pub enum Deadline {
-       Boot { at: BootDeadline, doubt: u64 },
-       Awake { at: AwakeDeadline, doubt: u64 },
-   }
+   /// latched when it was built. Its fields are private to `ironafs-time`,
+   /// so outside the crate it is built only by the two constructors below,
+   /// and never by a literal, a destructured copy or an edited count.
+   pub struct Deadline { /* private: which clock, the instant, the latch */ }
+   pub enum DeadlineError { Clock(ClockError), Overflow }
    impl Deadline {
-       /// `None` if the instant overflows (section 6).
-       pub fn boot_after(from: &Stamp, d: Duration) -> Option<Self>;
-       pub fn awake_after(from: &Stamp, d: Duration) -> Option<Self>;
+       /// Takes a fresh `clock.sample()` first: `Err(Clock)` while samples
+       /// fail, so no deadline is built until a valid sample returns.
+       /// The instant is `from`'s boot instant plus `d` (`Err(Overflow)`
+       /// if it overflows, section 6); the latched count is the lower of
+       /// `from`'s and the fresh sample's boot doubt count.
+       pub fn boot_after(clock: &dyn Clock, from: &Stamp, d: Duration)
+           -> Result<Self, DeadlineError>;
+       /// The same on the awake clock and its doubt count.
+       pub fn awake_after(clock: &dyn Clock, from: &Stamp, d: Duration)
+           -> Result<Self, DeadlineError>;
+       /// Read-only views, for `Clock::wait` implementations and the call
+       /// owner's arbitration.
+       /// `ClockKind::Boot` or `ClockKind::Awake`, never `Wall`.
+       pub fn clock(&self) -> ClockKind;
+       pub fn boot_at(&self) -> Option<BootDeadline>;
+       pub fn awake_at(&self) -> Option<AwakeDeadline>;
+       pub fn latched_doubt(&self) -> u64;
    }
 
    pub enum Waited { Cancelled, ClockFailed, DeadlinePassed, Signalled }
@@ -492,8 +509,10 @@ encoding is the simulator's specification's.
    - **a failed read** of any clock: both doubt counts move, and an
      episode is counted if none is open (an episode of failed reads lasts
      until a valid sample returns, so one event is logged for it, C37,
-     point 5); `sample` returns the error, so no `Stamp` and no
-     `Deadline` exist until a valid sample returns (C37, point 5);
+     point 5); `sample` returns the error, so no new `Stamp` exists, and
+     the `Deadline` constructors, which take a fresh sample themselves,
+     return `Err` and build nothing until a valid sample returns (C37,
+     point 5);
    - **a regression** of either monotonic clock against the last valid
      sample: the boot count moves, and one episode is counted. The awake
      count does not move: C37, point 4, expires boot-clock deadlines on a
@@ -510,8 +529,22 @@ encoding is the simulator's specification's.
      moves, since no deadline is on wall time, and wall time can only
      lower trust (C37, point 4).
 
+   **No new deadline while samples fail, by construction.** `Deadline`'s
+   fields are private and its only constructors take a fresh sample of
+   the clock they are given, so a deadline exists only if a sample
+   succeeded when it was built. The `from` stamp (a request's arrival,
+   C39, point 3) gives only the instant counted from; a stale or copied
+   stamp cannot lower the latch, because the latch is the lower of its
+   count and the fresh sample's, and counts only grow: a stamp from
+   before a failure gives a deadline already failed, and a stamp with a
+   higher count than the fresh one gains nothing. A forged `from`
+   instant only moves the deadline, which the caller chooses anyway
+   through `d`. A compile-fail doc-test in `ironafs-time` shows that a
+   literal, a destructuring and a field write of a `Deadline` do not
+   compile outside the crate [OWN].
+
    **Doubt is latched per deadline.** A `Deadline` records its clock's
-   count from the `Stamp` it was built from. Every later evaluation of it
+   count when it was built (above). Every later evaluation of it
    (a wait, the call owner's arbitration in 5.4, point 4, a completion
    claim in 5.7, point 4) finds it failed once that clock's count has
    moved, even if the sample taken now is good. So a failure that clears
@@ -774,7 +807,8 @@ encoding is the simulator's specification's.
      connection's fence (a `Cancel` per connection, shared by every
      submission on it), beside one shutdown fence for the run or the
      daemon. Setting the flag is the abandon; `close` fires the
-     connection's fence before it returns, and shutdown fires its fence
+     connection's fence inside a hold of the connection's send lock (the
+     next bullet but one) before it returns, and shutdown fires its fence
      before it posts anything. A message on the control lane (point 8)
      only wakes the owner sooner. The owner never depends on a message
      arriving to know that a call, or its connection, has ended.
@@ -788,9 +822,26 @@ encoding is the simulator's specification's.
      the state write and, at the queued-to-handed transition only, the
      transport hand-off of the first packet; never across a wait, a
      yield or I/O that can block.
+   - **One send lock per connection.** Each connection has a send lock,
+     a small mutex of `ironafs-sync` like the guard (not a core `Lock`).
+     Every datagram the `rx` loop hands to the transport for that
+     connection (a call's first packet, its later data packets,
+     retransmissions, acknowledgements, aborts) is handed by a
+     non-blocking send inside a hold of the connection's send lock, after
+     reading the connection's fence and the shutdown fence unfired in
+     the same hold; a datagram that finds a fence fired is dropped, never
+     sent. `close` takes the same lock, fires the fence inside that hold,
+     and releases it. The lock is held only for those reads, one clock
+     sample and one non-blocking send, never across a wait, a yield or
+     I/O that can block. The lock order is a call's guard, then its
+     connection's send lock; `close` takes only the send lock and the
+     caller's abandon only the guard, so neither can deadlock with the
+     owner [OWN].
    - **The hand-off is inside the guard.** The owner hands the prepared
      first packet to the transport with a non-blocking send inside the
-     same hold of the guard that made the arbitration, and the call
+     same hold of the guard that made the arbitration (the fences' part
+     of it read inside the nested hold of the send lock that makes the
+     send), and the call
      becomes handed only when that send returns accepted. If the send
      would block, or fails with an error that point 2 leaves queued, the
      call stays queued, nothing of it is on the transport, and the next
@@ -856,11 +907,20 @@ encoding is the simulator's specification's.
      call as the Rx specification says). Only if none holds is the packet
      handed or the reply recorded. A reply that arrives after the
      deadline, cancel, abandon or fence never wins, and a queued call is
-     never sent after any of them. In particular no packet of a call is
-     accepted by the transport after `close` of its connection has
-     returned, whatever order the owner takes its messages in, so the
-     connections a rising restriction closes send nothing more ("sends
-     queued on them are fenced", N7, point 2) [ADR 0004 N7.2: Firm].
+     never sent after any of them.
+   - **The close fence.** No datagram of a connection is accepted by
+     the transport after `close` of that connection has returned,
+     whatever order the owner takes its messages in. It holds because
+     the hold of the send lock in which `close` fires the fence and every
+     hold that hands a datagram for that connection exclude one another:
+     a hand-off hold that ended before `close`'s hold began was accepted
+     before `close` returned; a hand-off hold that begins after it reads
+     the fence fired and sends nothing. So the connections a rising
+     restriction closes send nothing more once `close` returns ("sends
+     queued on them are fenced", N7, point 2), and N7, point 5's
+     invariant holds for them [ADR 0004 N7.2, N7.5: Firm]. What the
+     operating system does with a datagram it accepted before is the
+     accepted-before-the-end case of the hand-off above.
    - **The caller's side.** The caller's wait ending (deadline passed,
      cancel fired, clock failed) decides nothing by itself. The caller
      sets the abandon flag inside the guard, posts the wake on the
@@ -878,10 +938,10 @@ encoding is the simulator's specification's.
      rule, cause `Closed`: a queued call `NotSent(Closed)`, which for a
      request not yet sent means it runs through the connection's choice
      again (N7, point 2), and a handed one `NoReply(Closed)`, which for a
-     mutation is the lost-reply rule. A send whose arbitration read the
-     fence unfired, in a hold that began before `close` fired it, is
-     ordered before the close: the call is handed, and is settled
-     `NoReply(Closed)`.
+     mutation is the lost-reply rule. A first packet accepted in a
+     hand-off hold that ended before `close`'s hold of the send lock
+     began is ordered before the close, and before `close` returns: the
+     call is handed, and is settled `NoReply(Closed)`.
    - `NotSent` is returned only from the queued state. Every other path
      that may follow a send is `NoReply`, a reply or an abort. A
      cancelled store is a lost reply (C28, point 4): its outcome is read
@@ -891,8 +951,11 @@ encoding is the simulator's specification's.
 
 5. **What a call may block on.** `call` and `accept` block only on their
    own `OneShot`, through `Clock::wait`. The hand-off to the `rx` loop is
-   a `Queue::push`, which never blocks. `open`, `close` and `respond`
-   never block. No `Rpc` method takes a core `Lock` (C30, point 2).
+   a `Queue::push`, which never blocks. `open` and `respond` never
+   block. `close` waits at most for one hold of its connection's send
+   lock already in progress (point 4: a fence read, one clock sample and
+   one non-blocking send), never for I/O that can block or for a wait.
+   No `Rpc` method takes a core `Lock` (C30, point 2).
 
 6. **Bulk data.** A call carries its whole request and reply in memory,
    within their caps. With 1 MiB chunks (C27, point 8, a proposal) this
@@ -1923,12 +1986,12 @@ listed with its crate.
 | C28, point 6; C29, point 9; N32, point 6 | 5.5, points 4, 6 and 7 | `ironafs-sim`: `disk::durable_replace_crash_at_every_cut`, `disk::one_ack_after_record_and_boundary`, `disk::restart_never_trusts_failed_sync`, `disk::marked_log_keeps_covered_suffix`, `disk::failed_sync_never_marks_covered`, `disk::no_ack_in_a_directory_not_made_this_incarnation`, `disk::root_parent_synced_at_construction` |
 | C32, points 1 and 4 | 5.4, point 1; 5.3, point 2 | `ironafs-sim`: `clock::keepalive_across_suspend_earns_no_trust`, `clock::keepalive_across_wall_jump_earns_no_trust`, `clock::trust_lapses_at_e_after_received` |
 | C32, point 5 | 5.3, point 2; 5.7, point 1; 5.8, point 2 | `ironafs-sim`: `clock::episode_marks_suspect_before_reply` (a suspend, a regression, a failed read and a wall jump) |
-| C37, points 4 and 5 | 5.3, points 1, 2 and 4; 5.6, point 5; 5.7, point 1 | `ironafs-sim`: `clock::failed_read_expires_every_deadline`, `clock::regression_expires_boot_deadlines_only`, `clock::latched_doubt_outlives_the_fault`, `clock::no_deadline_without_a_valid_sample`; the `Clock` conformance body |
+| C37, points 4 and 5 | 5.3, points 1, 2 and 4; 5.6, point 5; 5.7, point 1 | `ironafs-sim`: `clock::failed_read_expires_every_deadline`, `clock::regression_expires_boot_deadlines_only`, `clock::latched_doubt_outlives_the_fault`, `clock::no_deadline_without_a_valid_sample`; `ironafs-time`: `deadline::stale_stamp_cannot_lower_the_latch` and the compile-fail doc-test that a `Deadline` cannot be built, destructured or edited outside the crate; the `Clock` conformance body |
 | C39, point 3 | 5.3, points 3 and 5; 5.4, points 7 and 8 | `ironafs-sync`: `queue_refuses_over_cap`, `oneshot_cancel_wakes`; `ironafs-os`: `waker_raise_at_check_to_sleep_boundary`; `ironafs-client`: `rpc::admission_lanes`, `rpc::control_lane_never_full_at_shutdown`; `ironafs-sim`: `inbound_queue_full_drops` |
 | C39, point 4 | 5.3, point 6; 5.6, point 9 | `ironafs-sim`: `lock_held_at_yield_fails`, `contended_lock_fails` |
 | C46, point 3 | 5.4, point 2 | `ironafs-client`: `errors::abort_code_needs_rpc_and_server` |
 | C46, point 4 | 5.4, point 4; 5.5, point 1; 7, point 3 | `ironafs-client`: `rpc::verdict_wait_failure_is_no_reply`; the `Disk` conformance body's `part_inside_is_exact`, `part_past_end` and `whole_over_max` |
-| N7, point 2 | 5.4, point 4 | `ironafs-client`: `rpc::close_fences_queued_sends` (both orders of `close` and the owner's arbitration) |
+| N7, points 2 and 5 | 5.4, points 4 and 5 | `ironafs-client`: `rpc::close_fences_queued_sends` (both orders of `close` and the owner's arbitration; `close` against a hold of the send lock; no datagram of the connection after `close` returns) |
 | Coding standards rule 7 | 5.2, point 5; 5.6, point 9 | `xtask`: the disallowed-methods self-test; `ironafs-sim`: `planted_host_read_breaks_replay` |
 
 ## 10. Tests
@@ -2012,11 +2075,16 @@ Mutations listed with a case are each run and must be caught.
      owner processes either the submission or the close message, in both
      orders of the two messages: the call settles `NotSent(Closed)`, and
      the network model sees no packet of it, ever. Through the
-     production hook, `close` fired while the owner holds the guard
-     between its arbitration and the send: the call is handed and settles
-     `NoReply(Closed)`, and the transport's log shows acceptance before
-     the fence. Mutations: the fence set only by the control-lane
-     message; the fence left out of the arbitration;
+     production hook, `close` called while the owner holds the
+     connection's send lock between its fence read and the send: `close`
+     returns only after that hold ends, the call is handed and settles
+     `NoReply(Closed)`, and the transport's log shows the acceptance
+     before `close`'s return; a retransmission or acknowledgement of a
+     handed call due after `close` returns is dropped, and the transport's
+     log shows no datagram of the connection after the return.
+     Mutations: the fence set only by the control-lane message; the
+     fence left out of the arbitration; `close` firing the fence outside
+     the send lock; a later datagram sent without the fence read;
    - a send error of each kind: "would block" and a transient error leave
      the call queued, and it is sent at the next attempt or ends
      `NotSent(Deadline)`; an unreachable error settles
@@ -2243,7 +2311,11 @@ Mutations listed with a case are each run and must be caught.
    whose reply is delivered after it settles the call but does not raise
    trust. A scripted clock failure with tasks waiting on boot and on
    awake deadlines: every one is enabled at that decision and ends
-   `ClockFailed`, and no deadline is built until a valid sample returns.
+   `ClockFailed`, and no deadline is built until a valid sample returns
+   (each `Deadline` constructor returns `Err(Clock)` meanwhile, given a
+   stamp from before the failure too). A deadline built after the
+   failure clears from a stamp taken before it is already failed at its
+   first evaluation.
    A failure that clears before a second waiter's next sample: that
    waiter still ends `ClockFailed`, and the call owner treats the latched
    deadline as failed. A fault that clears before a parked waiter is
