@@ -39,6 +39,10 @@
 //! [`Flag`] is a watched flag a test sets by hand, for a cancel token or a
 //! signal that a wait never blocks on.
 //!
+//! [`ScriptedCore`] is a core behind the `ironafs-vfs` contract whose
+//! state a test scripts, so a layer is tested without the client chain
+//! (ADR 0004, C7).
+//!
 //! This crate is a dev-dependency only: no shipped crate depends on it.
 
 mod capture;
@@ -46,6 +50,7 @@ mod clock;
 mod flag;
 mod property;
 mod rng;
+mod scripted;
 mod shrink;
 mod source;
 mod splitmix64;
@@ -56,6 +61,7 @@ pub use clock::{SeededClock, TimeOverflow};
 pub use flag::Flag;
 pub use property::{Counterexample, Property, Verdict};
 pub use rng::SeededRng;
+pub use scripted::{Evidence, PurgeFailed, ScriptedCore};
 pub use source::Source;
 pub use splitmix64::SplitMix64;
 pub use sweep::{Exhaustive, FailedInput, SweepFailure};

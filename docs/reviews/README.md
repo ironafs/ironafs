@@ -41,6 +41,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-67-vfs-part1](2026-11-21-m2a-67-vfs-part1.md) | Issue #67, part 1: `ironafs-vfs`, the values that cross the contract, the Linux name codec, and the check that only the composition names the capability mint |
 | [2026-11-21-m2a-01-xdr-spec](2026-11-21-m2a-01-xdr-spec.md) | Issue #42: `docs/specs/`, its template and the XDR profile with caps |
 | [2026-11-21-m2a-71-seams](2026-11-21-m2a-71-seams.md) | Issue #71: the `Rpc` and `Disk` seams and the scheduling model |
+| [2026-11-21-m2a-98-scripted](2026-11-21-m2a-98-scripted.md) | Issue #98, part 1: the scripted core's capability table, invalidation stream and injected purge failure |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
