@@ -14,9 +14,9 @@
 //! [`Property::seed`], it is derived from the property's name, so every run
 //! of a test draws the same inputs. Tests stay deterministic and are never
 //! retried (rule 15); a search with other seeds is a deliberate run with
-//! the variable set.
+//! the variable set. An empty variable counts as unset.
 
-use std::env;
+use std::env::{self, VarError};
 use std::fmt;
 use std::panic::{self, AssertUnwindSafe};
 
@@ -63,8 +63,14 @@ impl Property {
     }
 
     /// Sets how many inputs are generated and tested.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `cases` is zero: a property that runs no case would pass
+    /// without testing anything (rule 15).
     #[must_use]
     pub fn cases(self, cases: u32) -> Self {
+        assert!(cases > 0, "a property needs at least one case");
         Self { cases, ..self }
     }
 
@@ -96,31 +102,107 @@ impl Property {
     /// written to standard error. While shrinking, a candidate on which
     /// `generate` panics is treated as passing.
     ///
+    /// Panics are caught on the calling thread only. A panic in a thread
+    /// that `test` spawns is printed as usual, and fails the case only if
+    /// `test` joins that thread and propagates the panic.
+    ///
     /// # Errors
     ///
     /// Returns the [`Counterexample`] if any case fails.
     ///
     /// # Panics
     ///
-    /// Panics if `IRONAFS_TEST_SEED` is set but is not a decimal or
-    /// `0x`-prefixed hexadecimal `u64`, or if `generate` panics.
-    #[expect(
-        clippy::panic,
-        reason = "rule 1 covers untrusted input; a malformed seed variable is a mistake in the test run"
-    )]
+    /// Panics if `IRONAFS_TEST_SEED` is set but is not valid Unicode or not
+    /// a decimal or `0x`-prefixed hexadecimal `u64`, or if `generate`
+    /// panics.
     pub fn run<T, V: Verdict>(
         &self,
         mut generate: impl FnMut(&mut Source) -> T,
         mut test: impl FnMut(&T) -> V,
     ) -> Result<(), Counterexample<T>> {
-        let from_env = env::var(SEED_VARIABLE).ok();
-        let seed = match resolve_seed(from_env.as_deref(), self.seed, &self.name) {
+        self.run_seeded(self.resolved_seed(), &mut generate, &mut test)
+    }
+
+    /// Runs the property and panics with the counterexample's report, which
+    /// names the seed, if any case fails.
+    ///
+    /// When the test failed by panicking, the minimal input is run once
+    /// more without silencing the panic, so that it prints as any other
+    /// panic does, with a backtrace when `RUST_BACKTRACE` asks for one.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a case fails, and as [`Property::run`] does.
+    pub fn check<T: fmt::Debug, V: Verdict>(
+        &self,
+        generate: impl FnMut(&mut Source) -> T,
+        test: impl FnMut(&T) -> V,
+    ) {
+        self.check_described(generate, test, |value| format!("{value:?}"));
+    }
+
+    /// Runs the property as [`Property::check`] does, describing the
+    /// minimal input in the report with `describe` instead of its `Debug`
+    /// text.
+    ///
+    /// ```
+    /// use ironafs_test_support::{Property, Source};
+    ///
+    /// Property::new("a byte string is as long as its length").check_described(
+    ///     |source| source.bytes(0..=64),
+    ///     |bytes| assert!(bytes.len() <= 64),
+    ///     |bytes| format!("{} bytes", bytes.len()),
+    /// );
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if a case fails, and as [`Property::run`] does.
+    #[expect(
+        clippy::panic,
+        reason = "a failed property must fail the calling test (rule 15)"
+    )]
+    pub fn check_described<T, V: Verdict>(
+        &self,
+        mut generate: impl FnMut(&mut Source) -> T,
+        mut test: impl FnMut(&T) -> V,
+        describe: impl FnOnce(&T) -> String,
+    ) {
+        let Err(counterexample) = self.run_seeded(self.resolved_seed(), &mut generate, &mut test)
+        else {
+            return;
+        };
+        if counterexample.location.is_some() {
+            self.rerun_loudly(&counterexample.choices, &mut generate, &mut test);
+        }
+        panic!("{}", counterexample.report(describe));
+    }
+
+    /// The run's seed: `IRONAFS_TEST_SEED`'s, else the one fixed in code,
+    /// else the one derived from the name.
+    #[expect(
+        clippy::panic,
+        reason = "rule 1 covers untrusted input; a malformed seed variable is a mistake in the test run"
+    )]
+    fn resolved_seed(&self) -> u64 {
+        let seed = seed_text(env::var(SEED_VARIABLE))
+            .and_then(|text| resolve_seed(text.as_deref(), self.seed, &self.name));
+        match seed {
             Ok(seed) => seed,
             Err(message) => panic!("{message}"),
-        };
+        }
+    }
+
+    /// Runs the property from `seed`, without reading the environment.
+    pub(crate) fn run_seeded<T, V: Verdict>(
+        &self,
+        seed: u64,
+        generate: &mut impl FnMut(&mut Source) -> T,
+        test: &mut impl FnMut(&T) -> V,
+    ) -> Result<(), Counterexample<T>> {
         let mut case_seeds = SplitMix64::new(seed);
         for case in 0..self.cases {
-            let mut source = Source::fresh(SplitMix64::new(case_seeds.next_u64()));
+            let mut source = Source::from_seed(case_seeds.next_u64());
             let value = match panic::catch_unwind(AssertUnwindSafe(|| generate(&mut source))) {
                 Ok(value) => value,
                 Err(payload) => {
@@ -133,28 +215,30 @@ impl Property {
                     panic::resume_unwind(payload);
                 }
             };
-            let Some(message) = test_failure(&mut test, &value) else {
+            let Some(failure) = test_failure(test, &value) else {
                 continue;
             };
             let shrunk = shrink(
                 source.into_record(),
-                (value, message),
+                (value, failure),
                 self.shrink_budget,
                 |choices| {
-                    let mut replay = Source::replay(choices.to_vec());
+                    let mut replay = Source::from_choices(choices.to_vec());
                     let value = catch_quietly(|| generate(&mut replay)).ok()?;
-                    let message = test_failure(&mut test, &value)?;
-                    Some((replay.into_record(), (value, message)))
+                    let failure = test_failure(test, &value)?;
+                    Some((replay.into_record(), (value, failure)))
                 },
             );
-            let (value, message) = shrunk.payload;
+            let (value, failure) = shrunk.payload;
             return Err(Counterexample {
                 name: self.name.clone(),
                 seed,
                 case,
                 cases: self.cases,
                 value,
-                message,
+                message: failure.message,
+                location: failure.location,
+                choices: shrunk.choices,
                 shrink_runs: shrunk.runs,
                 shrink_budget_exhausted: shrunk.budget_exhausted,
             });
@@ -162,23 +246,27 @@ impl Property {
         Ok(())
     }
 
-    /// Runs the property and panics with the counterexample's report, which
-    /// names the seed, if any case fails.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a case fails, and as [`Property::run`] does.
-    #[expect(
-        clippy::panic,
-        reason = "a failed property must fail the calling test (rule 15)"
-    )]
-    pub fn check<T: fmt::Debug, V: Verdict>(
+    /// Runs the test once more on the input `choices` give, with its panic
+    /// printed by the process's panic hook.
+    fn rerun_loudly<T, V: Verdict>(
         &self,
-        generate: impl FnMut(&mut Source) -> T,
-        test: impl FnMut(&T) -> V,
+        choices: &[u64],
+        generate: &mut impl FnMut(&mut Source) -> T,
+        test: &mut impl FnMut(&T) -> V,
     ) {
-        if let Err(counterexample) = self.run(generate, test) {
-            panic!("{counterexample}");
+        eprintln!(
+            "property `{}`: running the minimal input once more, with its panic shown",
+            self.name
+        );
+        let rerun = panic::catch_unwind(AssertUnwindSafe(|| {
+            let value = generate(&mut Source::from_choices(choices.to_vec()));
+            test(&value).failure()
+        }));
+        if matches!(rerun, Ok(None)) {
+            eprintln!(
+                "property `{}`: the minimal input passed when run again, so the test is not deterministic",
+                self.name
+            );
         }
     }
 }
@@ -196,17 +284,31 @@ impl Verdict for () {
     }
 }
 
-impl<E: fmt::Debug> Verdict for Result<(), E> {
+impl<E: fmt::Display> Verdict for Result<(), E> {
     fn failure(self) -> Option<String> {
-        self.err().map(|error| format!("{error:?}"))
+        self.err().map(|error| error.to_string())
     }
 }
 
+/// How a test failed on one input.
+struct Failure {
+    /// The panic message or the error's text.
+    message: String,
+    /// Where the panic was raised; `None` for an error.
+    location: Option<String>,
+}
+
 /// Runs `test` on `value` and returns its failure, if any.
-fn test_failure<T, V: Verdict>(test: &mut impl FnMut(&T) -> V, value: &T) -> Option<String> {
+fn test_failure<T, V: Verdict>(test: &mut impl FnMut(&T) -> V, value: &T) -> Option<Failure> {
     match catch_quietly(|| test(value)) {
-        Ok(verdict) => verdict.failure(),
-        Err(message) => Some(message),
+        Ok(verdict) => verdict.failure().map(|message| Failure {
+            message,
+            location: None,
+        }),
+        Err(panic) => Some(Failure {
+            message: panic.message,
+            location: panic.location,
+        }),
     }
 }
 
@@ -221,6 +323,8 @@ pub struct Counterexample<T> {
     cases: u32,
     value: T,
     message: String,
+    location: Option<String>,
+    choices: Vec<u64>,
     shrink_runs: u32,
     shrink_budget_exhausted: bool,
 }
@@ -245,10 +349,24 @@ impl<T> Counterexample<T> {
     }
 
     /// The test's failure on the shrunk input: its panic message, or its
-    /// error's `Debug` text.
+    /// error's `Display` text.
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Where the test panicked on the shrunk input, as `file:line:column`,
+    /// or `None` if it returned an error.
+    #[must_use]
+    pub fn location(&self) -> Option<&str> {
+        self.location.as_deref()
+    }
+
+    /// The shrunk input's choices. [`Source::from_choices`] replays them,
+    /// so a regression test can pin this input without the seed.
+    #[must_use]
+    pub fn choices(&self) -> &[u64] {
+        &self.choices
     }
 
     /// How many times the test was run while shrinking.
@@ -265,30 +383,43 @@ impl<T> Counterexample<T> {
     }
 }
 
-impl<T: fmt::Debug> fmt::Display for Counterexample<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
-            formatter,
-            "property `{}` failed on case {} of {} (seed {})",
+impl<T> Counterexample<T> {
+    /// The failure report, describing the shrunk input with `describe`.
+    #[must_use]
+    pub fn report(&self, describe: impl FnOnce(&T) -> String) -> String {
+        let location = self
+            .location
+            .as_ref()
+            .map_or_else(String::new, |location| format!("panicked at: {location}\n"));
+        let budget = if self.shrink_budget_exhausted {
+            "; the shrink budget ran out, so the input may not be minimal"
+        } else {
+            ""
+        };
+        format!(
+            "property `{}` failed on case {} of {} (seed {})\n\
+             minimal input: {}\n\
+             failure: {}\n\
+             {location}\
+             minimal choices: {:?}\n\
+             shrunk in {} runs{budget}\n\
+             replay with {SEED_VARIABLE}={}",
             self.name,
             u64::from(self.case) + 1,
             self.cases,
             SeedText(self.seed),
-        )?;
-        writeln!(formatter, "minimal input: {:?}", self.value)?;
-        writeln!(formatter, "failure: {}", self.message)?;
-        write!(formatter, "shrunk in {} runs", self.shrink_runs)?;
-        if self.shrink_budget_exhausted {
-            write!(
-                formatter,
-                "; the shrink budget ran out, so the input may not be minimal"
-            )?;
-        }
-        write!(
-            formatter,
-            "\nreplay with {SEED_VARIABLE}={}",
-            SeedText(self.seed)
+            describe(&self.value),
+            self.message,
+            self.choices,
+            self.shrink_runs,
+            SeedText(self.seed),
         )
+    }
+}
+
+impl<T: fmt::Debug> fmt::Display for Counterexample<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.report(|value| format!("{value:?}")))
     }
 }
 
@@ -326,9 +457,24 @@ fn seed_from_name(name: &str) -> u64 {
         })
 }
 
+/// Reads the seed variable: its text, `None` if it is unset, or an error
+/// if it is not valid Unicode.
+fn seed_text(variable: Result<String, VarError>) -> Result<Option<String>, String> {
+    match variable {
+        Ok(text) => Ok(Some(text)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(text)) => Err(format!(
+            "{SEED_VARIABLE} is not valid Unicode: \"{}\"",
+            text.display()
+        )),
+    }
+}
+
 /// Chooses the run's seed: the environment's, else the one fixed in code,
-/// else the one derived from the name.
+/// else the one derived from the name. Empty or blank environment text
+/// counts as unset.
 fn resolve_seed(from_env: Option<&str>, explicit: Option<u64>, name: &str) -> Result<u64, String> {
+    let from_env = from_env.filter(|text| !text.trim().is_empty());
     match (from_env, explicit) {
         (Some(text), _) => parse_seed(text).ok_or_else(|| {
             format!("{SEED_VARIABLE} is not a decimal or 0x-prefixed hexadecimal u64: {text:?}")

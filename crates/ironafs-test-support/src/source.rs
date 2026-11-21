@@ -50,23 +50,6 @@ pub struct Source {
 }
 
 impl Source {
-    pub(crate) fn fresh(generator: SplitMix64) -> Self {
-        Self {
-            origin: Origin::Fresh(generator),
-            record: Vec::new(),
-        }
-    }
-
-    pub(crate) fn replay(choices: Vec<u64>) -> Self {
-        Self {
-            origin: Origin::Replay {
-                choices,
-                position: 0,
-            },
-            record: Vec::new(),
-        }
-    }
-
     /// A source of fresh draws whose sequence is fixed by `seed`, for
     /// seeded inputs outside a [`Property`](crate::Property), such as a
     /// simulator's schedule.
@@ -81,14 +64,23 @@ impl Source {
     /// ```
     #[must_use]
     pub fn from_seed(seed: u64) -> Self {
-        Self::fresh(SplitMix64::new(seed))
+        Self {
+            origin: Origin::Fresh(SplitMix64::new(seed)),
+            record: Vec::new(),
+        }
     }
 
     /// A source that replays `choices`, such as a counterexample's minimal
     /// choices, and draws zero choices once they run out.
     #[must_use]
     pub fn from_choices(choices: Vec<u64>) -> Self {
-        Self::replay(choices)
+        Self {
+            origin: Origin::Replay {
+                choices,
+                position: 0,
+            },
+            record: Vec::new(),
+        }
     }
 
     /// The choices drawn so far, in order.

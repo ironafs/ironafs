@@ -3,7 +3,11 @@
 
 //! Planted failing properties: each shrinks to a known minimum, and every
 //! failure report carries the seed that replays it.
+//!
+//! Every assertion here holds whatever `IRONAFS_TEST_SEED` is set to; the
+//! assertions on a particular seed are unit tests, which bypass it.
 
+use std::cell::Cell;
 use std::panic::{self, AssertUnwindSafe};
 
 use ironafs_test_support::{Property, Source};
@@ -44,7 +48,7 @@ fn run_planted_element_shrinks_to_single_element() {
             )
             .unwrap_err();
         assert_eq!(*failure.value(), vec![100], "seed {seed}");
-        assert_eq!(failure.message(), "\"an element is 100 or more\"");
+        assert_eq!(failure.message(), "an element is 100 or more");
     }
 }
 
@@ -81,7 +85,7 @@ fn run_same_seed_gives_same_counterexample() {
             .unwrap_err()
     };
     let (first, second) = (run(), run());
-    assert_eq!(first.seed(), 0xfeed);
+    assert_eq!(first.seed(), second.seed());
     assert_eq!(
         (first.case(), first.value(), first.shrink_runs()),
         (second.case(), second.value(), second.shrink_runs())
@@ -103,26 +107,82 @@ fn run_stops_shrinking_at_budget() {
     assert!(failure.shrink_budget_exhausted());
 }
 
+/// The report `check` panicked with.
+fn check_report(check: impl FnOnce()) -> String {
+    let payload = panic::catch_unwind(AssertUnwindSafe(check)).unwrap_err();
+    payload.downcast_ref::<String>().unwrap().clone()
+}
+
 #[test]
 fn check_failure_message_carries_the_seed() {
-    let payload = panic::catch_unwind(|| {
+    let line = line!() + 4;
+    let report = check_report(|| {
         Property::new("check prints seed")
             .seed(0xabcd)
             .check(Source::u16, |value| assert!(*value < 10));
-    })
-    .unwrap_err();
-    let message = payload.downcast_ref::<String>().unwrap();
+    });
+    let lines: Vec<&str> = report.lines().collect();
+    let seed = lines[6]
+        .strip_prefix("replay with IRONAFS_TEST_SEED=0x")
+        .unwrap();
+    assert_eq!(seed.len(), 16, "{report}");
     assert!(
-        message.starts_with(
-            "property `check prints seed` failed on case 1 of 256 (seed 0x000000000000abcd)\n\
-             minimal input: 10\n"
-        ),
-        "{message}"
+        lines[0].starts_with("property `check prints seed` failed on case ")
+            && lines[0].ends_with(&format!(" of 256 (seed 0x{seed})")),
+        "{report}"
+    );
+    assert_eq!(
+        lines[1..3],
+        [
+            "minimal input: 10",
+            "failure: assertion failed: *value < 10"
+        ],
+        "{report}"
     );
     assert!(
-        message.ends_with("\nreplay with IRONAFS_TEST_SEED=0x000000000000abcd"),
-        "{message}"
+        lines[3].starts_with(&format!("panicked at: {}:{line}:", file!())),
+        "{report}"
     );
+    assert_eq!(lines[4], "minimal choices: [10]", "{report}");
+    assert!(lines[5].starts_with("shrunk in "), "{report}");
+}
+
+#[test]
+fn check_described_reports_the_description() {
+    let report = check_report(|| {
+        Property::new("check describes").check_described(
+            Source::u16,
+            |value| assert!(*value < 10),
+            |value| format!("{value} units"),
+        );
+    });
+    assert!(report.contains("\nminimal input: 10 units\n"), "{report}");
+}
+
+#[test]
+fn check_reruns_the_minimal_input_last() {
+    let last = Cell::new(None);
+    check_report(|| {
+        Property::new("check reruns").check(Source::u16, |value| {
+            last.set(Some(*value));
+            assert!(*value < 10);
+        });
+    });
+    assert_eq!(last.get(), Some(10));
+}
+
+#[test]
+fn run_choices_pin_a_regression() {
+    let failure = Property::new("pinned")
+        .run(
+            |source| (source.option_of(Source::u8), source.i64_in(-50..=50)),
+            |(byte, number)| assert!(byte.is_none() || *number > -3),
+        )
+        .unwrap_err();
+    assert_eq!(*failure.value(), (Some(0), -3));
+    let mut pinned = Source::from_choices(failure.choices().to_vec());
+    let replayed = (pinned.option_of(Source::u8), pinned.i64_in(-50..=50));
+    assert_eq!(replayed, *failure.value());
 }
 
 #[test]

@@ -27,6 +27,8 @@ const SMALL_VALUES: u64 = 4;
 pub(crate) struct Shrunk<P> {
     /// What the run on the simplest failing choices found returned.
     pub(crate) payload: P,
+    /// The simplest failing choices, without trailing zeros.
+    pub(crate) choices: Vec<u64>,
     /// How many times the property was run while shrinking.
     pub(crate) runs: u32,
     /// Whether shrinking stopped because the budget ran out.
@@ -64,6 +66,7 @@ pub(crate) fn shrink<P>(
     }
     Shrunk {
         payload: shrinker.payload,
+        choices: shrinker.best,
         runs: shrinker.runs,
         budget_exhausted: shrinker.budget_exhausted,
     }
@@ -140,12 +143,18 @@ impl<P, F: FnMut(&[u64]) -> Option<(Vec<u64>, P)>> Shrinker<P, F> {
         }
     }
 
-    /// Lowers each choice to the smallest value that still fails.
+    /// Lowers each choice toward the smallest value that still fails,
+    /// then among the values of the same parity: signed draws alternate
+    /// signs (0, -1, 1, -2, …), so a failure that needs one sign fails only
+    /// on every other choice.
     fn minimise_each(&mut self) {
         let mut index = 0;
         while index < self.best.len() && !self.budget_exhausted {
             let current = self.best.get(index).copied().unwrap_or(0);
             self.minimise_at(&[index], current);
+            let current = self.best.get(index).copied().unwrap_or(0);
+            let parity = current % 2;
+            self.bisect(&[index], 0, current / 2, |step| parity + 2 * step);
             index += 1;
         }
     }
@@ -190,16 +199,27 @@ impl<P, F: FnMut(&[u64]) -> Option<(Vec<u64>, P)>> Shrinker<P, F> {
                 return;
             }
         }
-        // Every probe at or above `high` has failed; every probe below
-        // `low` has passed.
-        let mut low = small;
-        let mut high = current;
+        self.bisect(positions, small, current, |probe| probe);
+    }
+
+    /// Binary-searches the steps from `low` to `high` for a threshold,
+    /// writing `value(step)` at every one of `positions`; `value(high)` is
+    /// the value they hold now.
+    fn bisect(
+        &mut self,
+        positions: &[usize],
+        mut low: u64,
+        mut high: u64,
+        value: impl Fn(u64) -> u64,
+    ) {
+        // Every step at or above `high` has failed; every step below `low`
+        // has passed.
         while low < high && !self.budget_exhausted {
-            let probe = low + (high - low) / 2;
-            if self.try_at(positions, probe) {
-                high = probe;
+            let step = low + (high - low) / 2;
+            if self.try_at(positions, value(step)) {
+                high = step;
             } else {
-                low = probe + 1;
+                low = step + 1;
             }
         }
     }

@@ -13,7 +13,7 @@ fn replay_oracle<T>(
     mut failing: impl FnMut(&T) -> bool,
 ) -> impl FnMut(&[u64]) -> Option<(Vec<u64>, T)> {
     move |choices| {
-        let mut source = Source::replay(choices.to_vec());
+        let mut source = Source::from_choices(choices.to_vec());
         let value = generate(&mut source);
         failing(&value).then(|| (source.into_record(), value))
     }
@@ -28,7 +28,7 @@ fn shrink_first_failure<T>(
 ) -> Shrunk<T> {
     let mut generator = SplitMix64::new(seed);
     for _ in 0..10_000 {
-        let mut source = Source::fresh(SplitMix64::new(generator.next_u64()));
+        let mut source = Source::from_seed(generator.next_u64());
         let value = generate(&mut source);
         if failing(&value) {
             let oracle = replay_oracle(&mut generate, &mut failing);
@@ -97,6 +97,23 @@ fn shrink_integer_finds_small_value_below_threshold() {
         *value == 2 || *value >= 1000
     });
     assert_eq!(shrunk.payload, 2);
+}
+
+#[test]
+fn shrink_signed_integer_keeps_its_sign() {
+    // Zigzag order interleaves signs, so "at most -3" fails on every other
+    // choice from 5 up, which binary search over all choices misses.
+    for seed in 0..16 {
+        let shrunk = shrink_first_failure(seed, 10_000, Source::i64, |value| *value <= -3);
+        assert_eq!(shrunk.payload, -3, "seed {seed}");
+        let shrunk = shrink_first_failure(
+            seed,
+            10_000,
+            |source| source.i64_in(-1000..=1000),
+            |value| *value >= 3,
+        );
+        assert_eq!(shrunk.payload, 3, "seed {seed}");
+    }
 }
 
 #[test]

@@ -22,10 +22,10 @@ fn draw_mixture(source: &mut Source) -> (u64, bool, u8, i64, Vec<u8>, Vec<u16>) 
 #[test]
 fn replay_of_record_reproduces_values() {
     for seed in 0..32 {
-        let mut fresh = Source::fresh(SplitMix64::new(seed));
+        let mut fresh = Source::from_seed(seed);
         let original = draw_mixture(&mut fresh);
         let record = fresh.into_record();
-        let mut replay = Source::replay(record.clone());
+        let mut replay = Source::from_choices(record.clone());
         assert_eq!(draw_mixture(&mut replay), original, "seed {seed}");
         assert_eq!(replay.into_record(), record, "seed {seed}");
     }
@@ -33,7 +33,7 @@ fn replay_of_record_reproduces_values() {
 
 #[test]
 fn replay_past_end_draws_zero_choices() {
-    let mut source = Source::replay(vec![3]);
+    let mut source = Source::from_choices(vec![3]);
     assert_eq!(source.u64_in(0..=9), 3);
     assert_eq!(source.u64_in(5..=9), 5);
     assert!(!source.bool());
@@ -44,7 +44,7 @@ fn replay_past_end_draws_zero_choices() {
 
 #[test]
 fn replay_reduces_out_of_range_choice_into_range() {
-    let mut source = Source::replay(vec![25, 7]);
+    let mut source = Source::from_choices(vec![25, 7]);
     assert_eq!(source.u64_in(100..=109), 105);
     assert_eq!(source.u8(), 7);
     assert_eq!(source.into_record(), vec![5, 7]);
@@ -52,7 +52,7 @@ fn replay_reduces_out_of_range_choice_into_range() {
 
 #[test]
 fn fresh_draws_stay_in_their_ranges() {
-    let mut source = Source::fresh(SplitMix64::new(7));
+    let mut source = Source::from_seed(7);
     for _ in 0..1000 {
         let value = source.u64_in(3..=5);
         assert!((3..=5).contains(&value), "{value}");
@@ -65,7 +65,7 @@ fn fresh_draws_stay_in_their_ranges() {
 
 #[test]
 fn fresh_draws_cover_a_small_range() {
-    let mut source = Source::fresh(SplitMix64::new(11));
+    let mut source = Source::from_seed(11);
     let mut seen = [false; 4];
     for _ in 0..200 {
         seen[usize::try_from(source.u64_in(0..=3)).unwrap()] = true;
@@ -76,7 +76,7 @@ fn fresh_draws_cover_a_small_range() {
 #[test]
 fn fresh_draw_is_scaled_generator_output_or_boundary() {
     let mut generator = SplitMix64::new(5);
-    let mut source = Source::fresh(generator.clone());
+    let mut source = Source::from_seed(5);
     for _ in 0..1000 {
         let output = generator.next_u64();
         let value = source.u64();
@@ -89,7 +89,7 @@ fn fresh_draw_is_scaled_generator_output_or_boundary() {
 
 #[test]
 fn fresh_draws_hit_boundaries() {
-    let mut source = Source::fresh(SplitMix64::new(13));
+    let mut source = Source::from_seed(13);
     let values: Vec<u64> = (0..2000).map(|_| source.u64()).collect();
     for boundary in [0, 1, u64::MAX - 1, u64::MAX] {
         assert!(values.contains(&boundary), "{boundary:#x}");
@@ -106,7 +106,7 @@ fn fresh_draws_hit_boundaries() {
 
 #[test]
 fn fresh_draws_are_mostly_not_boundaries() {
-    let mut source = Source::fresh(SplitMix64::new(17));
+    let mut source = Source::from_seed(17);
     let boundaries = (0..1600)
         .map(|_| source.u64())
         .filter(|value| [0, 1, u64::MAX - 1, u64::MAX].contains(value))
@@ -118,7 +118,7 @@ fn fresh_draws_are_mostly_not_boundaries() {
 #[test]
 fn from_seed_draws_as_a_fresh_source() {
     let mut seeded = Source::from_seed(3);
-    let mut fresh = Source::fresh(SplitMix64::new(3));
+    let mut fresh = Source::from_seed(3);
     assert_eq!(draw_mixture(&mut seeded), draw_mixture(&mut fresh));
     assert_eq!(seeded.choices(), fresh.into_record().as_slice());
 }
@@ -132,7 +132,7 @@ fn from_choices_replays_and_records() {
 
 #[test]
 fn signed_draws_shrink_toward_zero() {
-    let mut source = Source::replay(vec![0, 1, 2, 3, 4]);
+    let mut source = Source::from_choices(vec![0, 1, 2, 3, 4]);
     assert_eq!(
         [source.i64(), source.i64(), source.i64(), source.i64()],
         [0, -1, 1, -2]
@@ -142,23 +142,23 @@ fn signed_draws_shrink_toward_zero() {
 
 #[test]
 fn i64_in_shrinks_toward_zero_inside_range() {
-    let mut source = Source::replay((0..=7).collect());
+    let mut source = Source::from_choices((0..=7).collect());
     let values: Vec<i64> = (0..=7).map(|_| source.i64_in(-2..=5)).collect();
     assert_eq!(values, [0, -1, 1, -2, 2, 3, 4, 5]);
-    let mut source = Source::replay((0..=6).collect());
+    let mut source = Source::from_choices((0..=6).collect());
     let values: Vec<i64> = (0..=6).map(|_| source.i64_in(-5..=1)).collect();
     assert_eq!(values, [0, -1, 1, -2, -3, -4, -5]);
 }
 
 #[test]
 fn i64_in_shrinks_toward_end_nearer_zero() {
-    let mut source = Source::replay(vec![2, 2]);
+    let mut source = Source::from_choices(vec![2, 2]);
     assert_eq!((source.i64_in(3..=9), source.i64_in(-9..=-3)), (5, -5));
 }
 
 #[test]
 fn i64_in_full_range_reaches_the_extremes() {
-    let mut source = Source::replay(vec![u64::MAX, u64::MAX - 1]);
+    let mut source = Source::from_choices(vec![u64::MAX, u64::MAX - 1]);
     assert_eq!(
         (
             source.i64_in(i64::MIN..=i64::MAX),
@@ -170,7 +170,7 @@ fn i64_in_full_range_reaches_the_extremes() {
 
 #[test]
 fn option_of_shrinks_toward_none() {
-    let mut source = Source::replay(vec![0, 1, 7]);
+    let mut source = Source::from_choices(vec![0, 1, 7]);
     assert_eq!(
         (source.option_of(Source::u8), source.option_of(Source::u8)),
         (None, Some(7))
@@ -179,7 +179,7 @@ fn option_of_shrinks_toward_none() {
 
 #[test]
 fn weighted_replays_index_choice() {
-    let mut source = Source::replay(vec![2, 0, 4]);
+    let mut source = Source::from_choices(vec![2, 0, 4]);
     let weights = [5, 1, 1];
     assert_eq!(
         [
@@ -193,7 +193,7 @@ fn weighted_replays_index_choice() {
 
 #[test]
 fn weighted_fresh_follows_weights() {
-    let mut source = Source::fresh(SplitMix64::new(19));
+    let mut source = Source::from_seed(19);
     let mut counts = [0_u32; 3];
     for _ in 0..1000 {
         counts[source.weighted(&[1, 8, 1])] += 1;
@@ -205,7 +205,7 @@ fn weighted_fresh_follows_weights() {
 
 #[test]
 fn signed_draws_reach_the_extremes() {
-    let mut source = Source::replay(vec![u64::MAX, u64::MAX - 1, u64::from(u32::MAX)]);
+    let mut source = Source::from_choices(vec![u64::MAX, u64::MAX - 1, u64::from(u32::MAX)]);
     assert_eq!(source.i64(), i64::MIN);
     assert_eq!(source.i64(), i64::MAX);
     assert_eq!(source.i32(), i32::MIN);
@@ -213,7 +213,7 @@ fn signed_draws_reach_the_extremes() {
 
 #[test]
 fn vec_of_draws_continuation_before_each_element_past_minimum() {
-    let mut source = Source::replay(vec![9, 8, 1, 7, 1, 6, 0, 5]);
+    let mut source = Source::from_choices(vec![9, 8, 1, 7, 1, 6, 0, 5]);
     assert_eq!(
         (source.vec_of(2..=5, Source::u8), source.u8()),
         (vec![9, 8, 7, 6], 5)
@@ -222,7 +222,7 @@ fn vec_of_draws_continuation_before_each_element_past_minimum() {
 
 #[test]
 fn vec_of_reads_and_ignores_continuation_at_maximum() {
-    let mut source = Source::replay(vec![1, 5, 1, 6, 1, 3]);
+    let mut source = Source::from_choices(vec![1, 5, 1, 6, 1, 3]);
     assert_eq!(
         (source.vec_of(0..=2, Source::u8), source.u8()),
         (vec![5, 6], 3)
@@ -233,7 +233,7 @@ fn vec_of_reads_and_ignores_continuation_at_maximum() {
 fn fresh_vec_lengths_cover_their_range() {
     let mut seen = [false; 4];
     for seed in 0..200 {
-        let mut source = Source::fresh(SplitMix64::new(seed));
+        let mut source = Source::from_seed(seed);
         seen[source.vec_of(0..=3, Source::u8).len()] = true;
     }
     assert_eq!(seen, [true; 4]);
@@ -242,7 +242,7 @@ fn fresh_vec_lengths_cover_their_range() {
 #[test]
 fn pick_selects_by_choice() {
     let items = ["a", "b", "c"];
-    let mut source = Source::replay(vec![2, 0, 4]);
+    let mut source = Source::from_choices(vec![2, 0, 4]);
     assert_eq!(
         [
             *source.pick(&items),
@@ -256,7 +256,7 @@ fn pick_selects_by_choice() {
 #[test]
 fn u64_in_empty_range_panics_with_message() {
     let (start, end) = (5, 4);
-    let result = panic::catch_unwind(|| Source::replay(Vec::new()).u64_in(start..=end));
+    let result = panic::catch_unwind(|| Source::from_choices(Vec::new()).u64_in(start..=end));
     let payload = result.unwrap_err();
     assert_eq!(
         payload.downcast_ref::<&str>(),
@@ -266,7 +266,7 @@ fn u64_in_empty_range_panics_with_message() {
 
 #[test]
 fn pick_from_empty_slice_panics_with_message() {
-    let result = panic::catch_unwind(|| *Source::replay(Vec::new()).pick::<u8>(&[]));
+    let result = panic::catch_unwind(|| *Source::from_choices(Vec::new()).pick::<u8>(&[]));
     let payload = result.unwrap_err();
     assert_eq!(
         payload.downcast_ref::<&str>(),
@@ -277,7 +277,7 @@ fn pick_from_empty_slice_panics_with_message() {
 #[test]
 fn i64_in_empty_range_panics_with_message() {
     let (start, end) = (5, 4);
-    let result = panic::catch_unwind(|| Source::replay(Vec::new()).i64_in(start..=end));
+    let result = panic::catch_unwind(|| Source::from_choices(Vec::new()).i64_in(start..=end));
     let payload = result.unwrap_err();
     assert_eq!(
         payload.downcast_ref::<&str>(),
@@ -288,7 +288,7 @@ fn i64_in_empty_range_panics_with_message() {
 #[test]
 fn weighted_rejects_empty_and_zero_weights() {
     for weights in [&[][..], &[1, 0][..]] {
-        let result = panic::catch_unwind(|| Source::replay(Vec::new()).weighted(weights));
+        let result = panic::catch_unwind(|| Source::from_choices(Vec::new()).weighted(weights));
         let payload = result.unwrap_err();
         assert_eq!(
             payload.downcast_ref::<&str>(),
@@ -301,7 +301,8 @@ fn weighted_rejects_empty_and_zero_weights() {
 #[test]
 fn vec_of_empty_length_range_panics_with_message() {
     let (start, end) = (5, 4);
-    let result = panic::catch_unwind(|| Source::replay(Vec::new()).vec_of(start..=end, Source::u8));
+    let result =
+        panic::catch_unwind(|| Source::from_choices(Vec::new()).vec_of(start..=end, Source::u8));
     let payload = result.unwrap_err();
     assert_eq!(
         payload.downcast_ref::<&str>(),
