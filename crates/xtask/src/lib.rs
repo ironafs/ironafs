@@ -9,6 +9,7 @@ mod check;
 mod deps;
 mod fixture;
 mod grants;
+mod guard;
 mod hooks;
 mod json;
 mod metadata;
