@@ -28,8 +28,12 @@ Class P.
 
 The rounds were a refute-first fact check:
 
-- every quote, number, date and evidence label was checked against its
-  cited source, with live web search;
+- the reviewer checked every quote, number, date and evidence label
+  against its cited source, with live web search, where the page
+  loaded. Apple's canonical pages rate-limited it, so for those it read
+  Apple's indexed copies, and the exact wording of one quote from Apple
+  Platform Security stayed unconfirmed by the reviewer (see "Left as
+  stated");
 - every repository line the text cites was checked;
 - each finding was confirmed at its source by the author before it was
   fixed.

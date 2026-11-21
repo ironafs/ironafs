@@ -6,9 +6,10 @@
 **How this note was made.**
 
 - Evidence labelled as in the [research index](README.md).
-  - Sections 1 to 3 are about operating systems and published studies,
-    not about IronAFS, which has no working client yet. The last part of
-    section 3 states IronAFS's planned settings from ADR 0004.
+  - Most of the note is about operating systems and published studies,
+    not about IronAFS, which has no working client yet. Where it states
+    IronAFS's own rules or planned settings (the end of sections 2 and
+    3), it cites ADR 0004.
   - A vendor's own page, documentation or repository is INSPECTED for
     what the vendor says about its own product. A figure the vendor
     states without a published method is marked "vendor's figure".
