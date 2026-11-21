@@ -202,18 +202,28 @@ that does not apply stays, with one line saying why.
    larger file is seen and refused (config-syntax.md, 5.2), puts F's files
    in their order, and hands over one source per file
    ([config-syntax.md](config-syntax.md), §2) `[OWN]`.
-3. **Trust, the same test for F and P.** Each source carries a trust the
-   caller decides from the file it actually read: `trusted` when that file
-   (opened without following a final symbolic link, and checked on the
-   open descriptor), and every directory on its path, is owned by uid 0
-   and writable by no other user or group; `untrusted` otherwise `[OWN]`,
-   from issue #93 ("set only by a root-owned file or by policy") and the
-   DNS client specification (#60), 5.6.4, point 6, which states the same
-   ownership test. O17, point 4, guarantees only a "root-owned policy
-   directory", which is not enough: a file in it that another user can
-   write would let a local edit pose as policy, which O17's "Why" names as
-   the reason the directory is separate. So a P source is tested exactly as
-   an F source.
+3. **Trust: one walk, the same for F and P.** The caller opens every
+   source by walking its path from `/` by descriptor, one component at a
+   time: each directory with `openat` and `O_NOFOLLOW | O_DIRECTORY`
+   relative to the previous descriptor, the file itself with `openat` and
+   `O_NOFOLLOW`, then reads the bytes from that same descriptor. On each
+   opened descriptor, `/` included, it checks the owner and mode. The
+   source is `trusted` only when every component is owned by uid 0 and
+   writable by no other user or group; a symbolic link anywhere on the
+   path (including one that makes an `openat` fail with `ELOOP` or
+   `ENOTDIR`), a component with another owner, or a component writable by
+   group or others makes it `untrusted` `[OWN]`, from issue #93 ("set only
+   by a root-owned file or by policy") and the DNS client specification
+   (#60), 5.6.4, point 6, which states the same ownership test. The
+   directory listing that finds the drop-ins and policy files is read from
+   the walked directory's own descriptor. Because every check is on the
+   descriptor the bytes come from, no component can be swapped between
+   the check and the read. O17, point 4, guarantees only a "root-owned
+   policy directory"; a file in it that another user can write would let
+   a local edit pose as policy, which O19's "Why" names as the reason the
+   directory is separate ("A separate policy directory on Linux keeps a
+   local edit from posing as policy"). So a P source takes exactly the
+   walk an F source takes.
 4. **An untrusted source is never used** (decided, Q2):
    - an untrusted F source refuses the whole local configuration (a local
      refusal, section 7), so every value in the F layer comes from a
@@ -232,13 +242,37 @@ that does not apply stays, with one line saying why.
    O17, point 1).
 6. **Defaults never widen.** A missing or empty source contributes
    nothing, and an untrusted one is refused (point 4), never replaced by
-   defaults. The defaults of the discovery keys are the narrowest C33
-   allows: no flat-list confirmation, no explicit servers, scope `host`;
-   discovery itself is on by default because C33, point 1, makes DNS the
-   normal path after configuration, and DNS then goes only where 5.6.3 of
-   the DNS client specification lets it `[ADR 0004 C33.1, C33.4, C33.5:
-   Working]`. A refused local configuration at start does not fall back
-   to defaults (Q11).
+   defaults. The defaults of the flat-list confirmation, the explicit
+   servers and the scope are the narrowest values those keys have: no
+   confirmation, no servers, scope `host` `[OWN]`. Discovery is on by
+   default `[OWN]`: C33, point 1, puts DNS after configuration in the
+   lookup order and point 8 lets an administrator turn it off; DNS then
+   goes only where 5.6.3 of the DNS client specification lets it. A
+   refused local configuration at start does not fall back to defaults
+   (Q11).
+7. **Every source state has one result** `[OWN]`. "Absent" means the
+   walk ends in `ENOENT` at the file (or, for the drop-in or policy
+   directory, at the directory): there is no such source. "Unreadable"
+   means any other failure to walk, list, open or read that is not an
+   untrust condition of point 3 (for example `EACCES` or `EIO`).
+   "Malformed" means the syntax or the schema refuses the bytes.
+
+   | Layer | Absent | Unreadable | Untrusted | Malformed | Valid |
+   |---|---|---|---|---|---|
+   | F (`ironafs.toml`, the drop-in directory, each drop-in) | contributes nothing | local refusal | local refusal | local refusal | used |
+   | P (the policy directory, each policy file) | the whole policy is absent: unmanaged if `managed_before` is false, unreadable if it is true (O19, point 5) | the policy is unreadable | the policy is incompatible | the policy is incompatible (Q12) | used, if every policy file is valid |
+
+   A local refusal keeps the last good local configuration, or stops the
+   start if there is none (section 7). An unreadable policy uses the last
+   good policy (degraded) or, with none, fails (O19, points 4 and 9).
+   **`managed_before`** is an explicit input to part (c): a durable flag
+   in the state directory, set when a policy is first applied as valid and
+   cleared only by the `mode = "unmanaged"` directive or the audited
+   `afs config unmanage` command (O19, point 5). It is separate from
+   whether a last good copy exists: a lost or corrupt last good copy with
+   the flag set is "unreadable with no last good policy", which fails.
+   Only the loss of the whole state directory loses the flag, and then the
+   host starts unmanaged (O19, point 10). Its storage is part (f)'s.
 
 ### 5.2 Keys
 
@@ -285,11 +319,15 @@ a cell name (5.3.1).
 | `cells.<cell>.dns_interface` | interface name | 1 to 15 bytes of `a` to `z`, `A` to `Z`, `0` to `9`, `.`, `_`, `-` (Q6) | none | F, P | reload | as above |
 | `cells.<cell>.min_class`, `min_level`, `legacy_fileservers`, `anonymous`, `learned`, `rxgk` | security key | reserved (5.4, point 5) | none | F, P | reload | N3 (names); N8, point 2; issue #93 (`min_class`); Q9 (the rest) |
 
-1. **A cell is configured** (C12, point 1) by an explicit `[cells."<cell>"]`
-   header or by a known key under it, in a trusted source (5.1, point 4)
-   `[OWN]`. A table created only implicitly by an unknown subtree (for
-   example `[cells."x".foo]` in P, which 5.4, point 2, ignores) configures
-   nothing.
+1. **A configured cell** is one whose `cells."<cell>"` table has an
+   explicit header or holds a known key, in a trusted source (5.1, point
+   4) `[OWN]`. This one definition is used everywhere: for the cells the
+   dynamic root lists (C12, point 1), for the cell-name check and the
+   two-spellings check (5.5), and for the cells `policy.required` counts
+   (5.8, point 2). A `cells.<x>` table created only implicitly by an
+   unknown subtree (`[cells."x".foo]` in P, which 5.4, point 2, ignores) is
+   not a configured cell: its segment is not checked, it is not counted,
+   and it creates nothing; the subtree is reported as one unknown path.
 2. **Servers.** `cells.<cell>.servers` holds the cell's database servers.
    A non-empty list is used, and DNS is not asked for that cell
    `[ADR 0004 C33.1: Working]` ("Configuration always wins"). An empty or
@@ -303,6 +341,10 @@ a cell name (5.3.1).
    cell's protocol identifier, which moves its configuration generation
    (N27, point 6); this page reports the change, and the generation record
    (M2a-58, planned) acts on it.
+4. **No key in `cells` comes from the network.** Discovery and the
+   classic files add servers for a cell; they never set a key of this
+   table `[ADR 0004 N27.5: Firm]` for the protocol identifier, `[OWN]`
+   for the rest.
 5. **Discovery for a cell** happens only when both `discovery.enabled`
    and `cells.<cell>.discovery` are effectively true `[ADR 0004 C33.8:
    Working]` (off "globally and per cell": either switch turns it off)
@@ -315,11 +357,12 @@ a cell name (5.3.1).
    another key of the group is not used (it is shown as overridden, 5.6,
    point 2). Otherwise a policy that sets `dns_scope = "servers"` could be
    completed by a local file's server list or interface, which would let a
-   lower layer decide where a policy-scoped cell's queries go.
-4. **No key in `cells` comes from the network.** Discovery and the
-   classic files add servers for a cell; they never set a key of this
-   table `[ADR 0004 N27.5: Firm]` for the protocol identifier, `[OWN]`
-   for the rest.
+   lower layer decide where a policy-scoped cell's queries go. A member the
+   winning layer leaves unset takes its default, never a lower layer's
+   value, so scope `servers` without servers or an interface sends
+   nothing. How a scoped cell relates to `discovery.servers`, the flat-list
+   confirmation and the host's resolver is the DNS client specification's
+   (#60, 5.6.3, point 2: a scoped cell uses none of them).
 
 #### 5.2.3 Network
 
@@ -337,6 +380,9 @@ a cell name (5.3.1).
    (O18, point 5) until a restart applies the pending value. A pending
    value set by policy is locked like any other: no layer can change it,
    and no reload can drop it short of the policy changing `[OWN]`.
+   **Until a restart, the active value serves:** the daemon keeps its
+   sockets and the traffic on them as they are, and the pending value
+   changes nothing until the restart applies it `[OWN]`.
 3. The daemon's own duties under C34, point 2, as amended, are not this
    page's: refusing to start in dual mode when either family's socket
    cannot be created or bound, and showing single-family operation in
@@ -399,11 +445,20 @@ and machine-wide here, and so is the `fips` key (O31, point 4).
 | `security.min_class`, `min_level`, `legacy_fileservers`, `anonymous`, `learned`, `rxgk` | security key | reserved (5.4, point 5) | none | F, P | reload | N3 ("Per cell, with machine-wide defaults"; the names); Q9 |
 | `security.fips` | security key | reserved (5.4, point 5) | none | F, P | reload | N8, point 1; O31, point 4; Q9 |
 
-1. A machine-wide value applies to every cell that has no value of its
-   own for the same key; a cell's own value wins `[ADR 0004 N3: Firm]`
-   ("Per cell, with machine-wide defaults"). `security.fips` applies to
-   every cell `[OWN]`.
-2. M2b-17 (planned) gives these keys their values on this same
+1. **Which value covers a cell,** highest first: a per-cell value set by
+   policy, a machine-wide value set by policy, a per-cell value from F, a
+   machine-wide value from F, the default `[OWN]`. So a floor set by
+   policy, machine-wide or per cell, is never lowered by a local value
+   (O17, point 2: "A value set by policy locks its key"; N3, point 1:
+   "OS policy can lock these keys like any other"); a local per-cell value
+   it displaces is shown as overridden (5.6, point 2). Within one layer a
+   cell's own value wins over the machine-wide one (N3: "Per cell, with
+   machine-wide defaults"). `security.fips` covers every cell `[OWN]`.
+2. **A cell refusal is a rule over cell names, not a list** `[OWN]`: a
+   machine-wide value that refuses covers every cell, configured or not,
+   so a cell from the classic files or from discovery is refused by it
+   too (5.8, point 4).
+3. M2b-17 (planned) gives these keys their values on this same
    mechanism; nothing here decides their meaning.
 
 #### 5.2.8 The policy envelope
@@ -511,8 +566,7 @@ it refuses. A value of another syntax type is a type error (section 7).
    is not refused for it, and its cells do not fall back to the last good
    configuration, because falling back would ignore the value N8, point
    2, says is "never ignored" (decided, Q3). A cell is refused when the
-   effective value of a security key for it (5.6, with 5.2.7, point 1) is
-   unknown; a value that a higher layer overrides is not effective
+   effective value of a security key for it (5.2.7, point 1) is unknown; a value that a higher layer overrides is not effective
    (O17, point 2). A value of the wrong syntax type (an integer for
    `min_class`) is a type error, not an unknown value: it refuses the file
    in F and makes the policy incompatible in P (decided, Q8).
@@ -520,7 +574,8 @@ it refuses. A value of another syntax type is a type error (section 7).
    and machine-wide, and `security.fips` are reserved: every string value
    is unknown, so each refuses the cells it applies to (issue #93 for
    `min_class`; decided, Q9, for the rest).
-6. **Known key, wrong layer.** An envelope key in F is unknown (5.2.8).
+6. **Known key, wrong layer.** In F the `policy` table itself, and every
+   envelope key, is unknown (5.2.8).
 
 ### 5.5 Validating one source
 
@@ -547,9 +602,12 @@ it refuses. A value of another syntax type is a type error (section 7).
    parser does (config-syntax.md, 7, point 2) `[OWN]`. Unknown values of
    security keys (5.4, point 4) do not stop it; each is collected as a
    cell refusal. **Cell refusals survive a local refusal:** after the first
-   refusal, the rest of every F source that parsed is still scanned for
-   security keys, and each unknown value found is carried in the
-   `LocalRefusal` `[OWN]`. Part (e), keeping the last good local
+   refusal, the rest of every trusted F source that parsed is still
+   scanned for security keys, and the cells each unknown value covers are
+   carried in the `LocalRefusal` as refusal rules (5.2.7, point 2): a
+   per-cell value refuses its cell, a machine-wide value every cell, in
+   both cases unless a policy value covers that cell for that key (5.2.7,
+   point 1) `[OWN]`. Untrusted sources are never scanned (5.1, point 4). Part (e), keeping the last good local
    configuration, still refuses those cells (5.8, point 5), so a refused
    file cannot keep a cell serving under a floor its new value raised.
    A source that does not parse yields no cell refusals; the whole
@@ -659,7 +717,10 @@ These are names and shapes only. What each part decides is its own.
    `ClassicContribution` (cells with their servers, and a home cell), each
    cell name built by the one constructor. The resolution order of 5.6,
    point 7, consumes it; it never enters `merge`.
-4. **Merging:** `merge(LocalLayer, PolicyInput) -> Effective`, where
+4. **Merging:** `merge(LocalLayer, PolicyInput, Running) -> Effective`,
+   where `Running` holds the active values of the restart keys and their
+   origins (from the running daemon, or empty at start, when the pending
+   value becomes active), and
    `PolicyInput` is `Unmanaged` or `Policy(PolicyLayer)`: the valid
    policy, or in the degraded state the last good one part (f) loaded.
    Part (c)'s other states (incompatible, or unreadable with no last good
@@ -667,12 +728,18 @@ These are names and shapes only. What each part decides is its own.
    fences grants (O19, points 3 and 9) whatever F holds. `Effective`
    carries per-key origins, the locked-and-overridden keys, the active
    and pending values of restart keys (5.2.3, point 2), and the refused
-   cells with their reasons, which every consumer checks before any
+   cells as a predicate `is_refused(cell) -> Option<reason>` over any cell
+   name (5.2.7, point 2), which every consumer checks before any
    network I/O for a cell (N27, point 2's rule, applied to every refusal)
    `[OWN]`.
 5. **Reload** (part (e)): part (e) compares the running `Effective` with a
    new validation's result, and returns the typed decision the daemon
-   applies (issue #93, "Reload"). This page gives it the refusal kinds of
+   applies (issue #93, "Reload"). The local and policy outcomes are taken
+   separately `[OWN]`: a new valid policy with a refused local
+   configuration is merged with the last good `LocalLayer` (plus the
+   refusal's cell rules); a valid local configuration with a policy that
+   gives no `PolicyInput` fences service whatever F holds. Neither outcome
+   keeps the other layer's previous value. This page gives it the refusal kinds of
    section 7 and, per key, whether a change applies on reload or needs a
    restart (5.2's "Applies" column).
 6. **The last good policy** (part (f)): part (f) stores and loads a
@@ -701,8 +768,9 @@ These are names and shapes only. What each part decides is its own.
    reload (the event's catalogue entry: the events specification). A path
    is rendered segment by segment: a segment that is a bare key as is, any
    other quoted as a basic string, so a dot inside a cell name stays
-   visible as part of its segment; the syntax admits no control character
-   in a segment (config-syntax.md, 5.1, points 3 and 9).
+   visible as part of its segment; every octet outside printable ASCII
+   (0x20 to 0x7E) is written as `\xHH`, so no format or bidirectional
+   character reaches a terminal or log `[OWN]`.
 4. **Cell refusals** name the cell, the key and the source of the value,
    never the value when it comes from policy `[OWN]`.
 
@@ -783,7 +851,11 @@ in `crates/ironafs-config/tests/it/`.
    green.
 4. **Layers:** the same key in two F sources refused, naming both; a P
    value locks the key; untrusted F and P sources refused (one case per
-   part of the test); an envelope key in F refused as unknown; a policy
+   part of the test, and a symbolic link as the file and as a directory
+   on the path); each cell of 5.1, point 7's table, for F and for P, with
+   `managed_before` true and false; a policy machine-wide floor with a
+   local per-cell value for the same key: the policy's value covers the
+   cell; an envelope key in F refused as unknown; a policy
    `dns_scope` with a local `dns_servers` uses neither local value (the
    scope group); `discovery.enabled = false` in one layer with a cell's
    `discovery = true` in another sends nothing for that cell.
@@ -826,14 +898,14 @@ in `crates/ironafs-config/tests/it/`.
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| ADR | DECISION | ADR 0004, C12, C27, C33, C34, L34, N3, N8, N27, O17, O18, O19, O31, and O50, points 1 and 3 (M2a has the configuration parser and, as #53 amends it, Linux policy; the floor keys' values are M2b's) | throughout |
+| ADR | DECISION | ADR 0004, C12, C27, C33, C34, L34, N3, N8, N27, O17, O18, O19, O31, and O50, points 1 and 3 (on `main`: M2a has the configuration parser, M2b the floor keys; Linux policy in M2a only as #53 amends O50, not on `main`) | throughout |
 | AMD | DECISION | Issue #53, point 4 (C34, point 2; owner's decision, 2026-11-20), not on `main` at this draft | 5.2.3 |
 | DEC-1 | DECISION | Issue #93, its owner's decisions of 2026-11-20 and its outcome | 1, 5.2, 5.4 |
 | SYN | SPECIFICATION | [config-syntax.md](config-syntax.md) (draft, 2026-11-21) | throughout |
 | DNS | SPECIFICATION | The DNS client specification, issue #60 (draft), 5.2, 5.6.3 and 5.6.4 | 5.2.2, 5.2.4 |
 | NS | SPECIFICATION | The namespace specification, issue #80 (draft), 5.2 and 5.6.5 | 5.2.1, 5.2.6 |
 | S1 | SPECIFICATION | RFC 4291, "IP Version 6 Addressing Architecture", section 2.2 (to be registered) | 5.3.3 |
-| CTL | DECISION | The controller's rulings of 2026-11-21 on Q1 to Q12, after this page's first review round (a second model family concurred on each) | 13 |
+| CTL | DECISION | The controller's rulings of 2026-11-21 on Q1 to Q12 | 13 |
 | OWN | OWN | This page's own choices, each with its reason where it is made | throughout |
 
 ### 12.1 Observed behaviour
@@ -842,10 +914,8 @@ None.
 
 ## 13. Decisions taken, and what stays open
 
-Q1 to Q12 were open in the first draft. Each is now decided by the
-controller on this page's recommendation, which a non-author model family
-concurred with in the first review round (CTL). Each stays a Working
-choice of this page.
+Q1 to Q12 are decided by the controller (CTL). Each stays a Working choice
+of this page.
 
 - **Q1. Table and key names:** the tables `cells`, `network`,
   `discovery`, `cache`, `namespace`, `security` and `policy`, and the key
@@ -877,10 +947,8 @@ choice of this page.
   closed.
 - **Q7. The version format:** `MAJOR.MINOR.PATCH` only, and a build that
   is not a release meets no minimum (5.3.6). Reason: ordering
-  pre-releases invites a policy that admits an untested build. The first
-  draft cited O33 as confirming the release format; O33 is the upgrade
-  and rollback procedure and says nothing of it, so that citation is
-  withdrawn.
+  pre-releases invites a policy that admits an untested build. No ADR
+  fixes the release version's form.
 - **Q8. A wrong type for a security key:** a type error (5.4, point 4).
   Reason: O19, point 7, separates schema validation from point 6's value
   failure.
