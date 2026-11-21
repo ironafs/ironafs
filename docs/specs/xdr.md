@@ -1342,14 +1342,16 @@ over the test types above.
   A last fixture tests the return boundary only: a handwritten
   secret-bearing decoder that starts a separate plain decode of its own
   bytes, which section 5.2, point 9.2 rules out for a compliant
-  decoder. It declares r = q = 0 although on other inputs the separate
-  decode could reserve. The tested input gives the separate decode the
-  first 10 of its 12 bytes, so it fails with `Truncated` at the array's
-  entry check, before any reservation. The test checks only that the
-  positioned error the decoder passes on is returned without its
-  position, through both entry points, and not the budget, the trace
-  or the decoder's handling of that error before it returns it
-  (section 7, point 2).
+  decoder. It declares the r and q of the plain type whose decode it
+  starts, since that decode reserves what the plain type's decode
+  does, and a compile-time assertion checks that, like that plain
+  type, it is not proven (5.2, point 9.3). The tested input gives the
+  separate decode the first 10 of its 12 bytes, so it fails with
+  `Truncated` at the array's entry check, before any reservation. The
+  test checks only that the positioned error the decoder passes on is
+  returned without its position, through both entry points, and not
+  the budget, the trace or the decoder's handling of that error before
+  it returns it (section 7, point 2).
 - **`decode_fits_small_stack`** decodes the largest valid inputs of
   `deep` (192 bytes), `wide` (its TRUE arm, 244 bytes) and every other
   test type, each within its message cap, on a thread started with a
