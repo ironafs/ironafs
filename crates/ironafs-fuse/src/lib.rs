@@ -8,4 +8,7 @@
 pub mod errno;
 mod wire;
 
+pub mod opcode;
+
 pub use errno::Errno;
+pub use opcode::Opcode;
