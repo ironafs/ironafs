@@ -21,13 +21,14 @@
 #    runner. Record: services up, volumes with RO replicas on both
 #    fileservers, both fileservers answering from another container and from
 #    the host's network namespace, and no AFS kernel module on the host.
-#    In the modes in SEED_MODES: the packages' documentation on afsd.fuse,
-#    a 20 s foreground run of each afsd.fuse variant with its output and
-#    exit status, a server-side view and an anonymous probe of the new
-#    volume's ACL, then four seeding routes (afsio with a ticket; afsio
-#    under bos setauth off; afsd.fuse with a ticket and fs setacl; afsd.fuse
-#    under bos setauth off), each with a release and anonymous reads from
-#    containers holding no keytab, ticket or token.
+#    In the modes in SEED_MODES: the packages' documentation on afsd.fuse
+#    and its cache, a 20 s foreground run of each afsd.fuse variant (cache
+#    home and options) with its output and exit status, a server-side view,
+#    one afsio diagnostic call (afsio is unusable in this build), then two
+#    seeding routes through afsd.fuse (with a ticket; under bos setauth
+#    off), each with fs setacl where fs reaches afsd.fuse and a release, and
+#    anonymous reads from a fresh afsd.fuse holding no keytab, ticket or
+#    token.
 # 5. Print a summary table (stdout and the job summary). Exit 0 only if the
 #    brief's pass rule holds on this runner.
 
@@ -38,11 +39,15 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/env.sh"
 
 runner_label=${RUNNER_LABEL:-local}
-# Round 3: mode a only (round 2's mode c control passed on all four runners).
+# Rounds 3 and 4: mode a only (round 2's mode c control passed on all four
+# runners).
 read -r -a spike_modes <<<"${SPIKE_MODES:-a}"
 read -r -a seed_modes <<<"${SEED_MODES:-a}"
-FUSE_FLAGS=(--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined)
-FUSE_VARIANT="fg" # replaced by the first variant the fuse-diag step finds serving
+# The tmpfs is afsd.fuse's cache home (round 3: the cache it sized was far
+# below cacheinfo's; incell.sh's CACHE_TMPFS).
+FUSE_FLAGS=(--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined
+  --tmpfs "/var/cache/openafs:rw,size=512m,mode=0700")
+FUSE_VARIANT="tmpfs" # replaced by the first variant the fuse-diag step finds serving
 run_id="$(date -u +%Y%m%d%H%M%S)-$$"
 prefix="spike47-$run_id"
 work=$(mktemp -d)
@@ -225,7 +230,8 @@ fuse_container() {
 }
 
 # fuse_diag <mode>: run every afsd.fuse variant for 20 s in a container of
-# its own and keep the first that serves /afs as FUSE_VARIANT.
+# its own and keep the first that stays alive and serves /afs as
+# FUSE_VARIANT.
 fuse_diag() {
   local mode=$1 logf chosen
   if ! try "$mode: fuse-diag container" start_container "$mode" fuse-diag "$IP_FUSE_DIAG" "${flags[@]}" "${FUSE_FLAGS[@]}" ||
@@ -270,43 +276,35 @@ release_after() { # <mode> <route>
   result "$1" "$2" release "vos release root.cell" ex "$1" db release
 }
 
+# fs_then_acl <mode> <route> <role>: fs setacl only where fs reaches
+# afsd.fuse; otherwise record why not.
+fs_then_acl() {
+  local mode=$1 route=$2 role=$3
+  if result "$mode" "$route" fs "fs reaches afsd.fuse (fs wscell)" ex "$mode" "$role" fs-reach; then
+    result "$mode" "$route" acl "fs setacl system:anyuser rl" ex "$mode" "$role" fuse-setacl
+  else
+    rec "$mode" "$route:acl" "n/a (fs cannot reach afsd.fuse)"
+  fi
+}
+
 seed_routes() {
-  local mode=$1 ip state
+  local mode=$1 ip state route anon_fuse=0 off=1 probe_log probe
   rec "$mode" seeding ran
   rec "$mode" fuse_flags "${FUSE_FLAGS[*]}"
 
-  # Server side, before any seeding: the volume, and what anonymous may do
-  # in a new volume's root (an anonymous lookup of a missing name).
+  # Server side, before any seeding.
   show "$mode: server view of root.cell" ex "$mode" db server-view
-  local probe_log probe
-  show "$mode: anonymous probe of root.cell (missing name)" ex "$mode" client anon-probe
-  probe_log="$work/logs/$(tr -c 'A-Za-z0-9_.-' '_' <<<"$mode: anonymous probe of root.cell (missing name)").log"
+  # The one afsio call kept (round 3: it segfaults in Heimdal's libkrb5 on
+  # every call, so its write routes are dropped).
+  show "$mode: afsio diagnostic (anonymous read of a missing name)" ex "$mode" client anon-probe
+  probe_log="$work/logs/$(tr -c 'A-Za-z0-9_.-' '_' <<<"$mode: afsio diagnostic (anonymous read of a missing name)").log"
   probe=$(sed -n 's/^probe: //p' "$probe_log" | tail -n 1)
   rec "$mode" anon_probe "${probe:-no result}"
 
   fuse_diag "$mode"
 
-  # Route (i): afsio with a ticket and a token, in a container of its own.
-  try "$mode: start seeder" start_container "$mode" seeder "$IP_SEEDER" "${flags[@]}" &&
-    try "$mode: seeder config" ex "$mode" seeder client-setup &&
-    show "$mode: admin keytab to the seeder" send_admin_keytab "$mode" seeder
-  show "$mode: afsio help and manual" ex "$mode" seeder afsio-help
-  if result "$mode" afsio krb kinit ex "$mode" seeder kinit-admin; then
-    result "$mode" afsio token aklog ex "$mode" seeder aklog-token
-    if result "$mode" afsio write "afsio write" ex "$mode" seeder afsio-write afsio auth; then
-      release_after "$mode" afsio
-    else
-      rec "$mode" afsio:release -
-    fi
-  else
-    rec "$mode" afsio:token -
-    rec "$mode" afsio:write -
-    rec "$mode" afsio:release -
-  fi
-  rec "$mode" afsio:acl "n/a (afsio sets no ACL)"
-  rec "$mode" afsio:mount "n/a"
-
-  # Route (ii): afsd.fuse with a ticket and a token; write and set the ACL.
+  # Route fuse-token: afsd.fuse with a ticket and (if aklog reaches it) a
+  # token; write, and set the ACL if fs reaches afsd.fuse.
   if fuse_container "$mode" fuse "$IP_FUSE"; then
     rec "$mode" fuse-token:mount pass
     show "$mode: admin keytab to the fuse container" send_admin_keytab "$mode" fuse
@@ -317,18 +315,22 @@ seed_routes() {
       rec "$mode" fuse-token:token -
     fi
     result "$mode" fuse-token write "write through the mount" ex "$mode" fuse fuse-write fuse-token
-    result "$mode" fuse-token acl "fs setacl system:anyuser rl" ex "$mode" fuse fuse-setacl
-    release_after "$mode" fuse-token
+    fs_then_acl "$mode" fuse-token fuse
+    if [[ $(get "$mode" fuse-token:write) == pass ]]; then
+      release_after "$mode" fuse-token
+    else
+      rec "$mode" fuse-token:release -
+    fi
   else
     rec "$mode" fuse-token:mount fail
-    for state in krb token write acl release; do rec "$mode" "fuse-token:$state" -; done
+    for state in krb token fs write acl release; do rec "$mode" "fuse-token:$state" -; done
   fi
   docker rm -f "$prefix-$mode-fuse" >/dev/null 2>&1
 
-  # Route (iii): NoAuth on both fileservers (bos setauth, -localauth), an
-  # unauthenticated afsd.fuse writes and sets the ACL, then NoAuth off.
+  # Route noauth-fuse: NoAuth on both fileservers (bos setauth off,
+  # -localauth); an unauthenticated afsd.fuse writes through /afs/.<cell>/
+  # and sets the ACL if fs reaches it; vos release; NoAuth off again.
   rec "$mode" noauth-fuse:krb "- (none held)"
-  local off=1
   for ip in "$IP_FS1" "$IP_FS2"; do
     show "$mode: noauth-fuse: setauth $ip off" ex "$mode" db setauth "$ip" off || off=0
   done
@@ -341,29 +343,22 @@ seed_routes() {
   else
     rec "$mode" noauth-fuse:token "fail (bos setauth off)"
   fi
-
-  # Route (iv): afsio with no credentials at all, from the client container
-  # (which never held a keytab), while NoAuth is on.
-  rec "$mode" noauth-afsio:mount "n/a"
-  rec "$mode" noauth-afsio:krb "- (none held)"
-  rec "$mode" noauth-afsio:token "n/a (bos setauth off)"
-  rec "$mode" noauth-afsio:acl "n/a (afsio sets no ACL)"
-  if ((off)); then
-    result "$mode" noauth-afsio write "afsio write, no credentials" ex "$mode" client afsio-write noauth-afsio anon
-  else
-    rec "$mode" noauth-afsio:write -
-  fi
   if ((off)) && fuse_container "$mode" fuse-noauth "$IP_FUSE_NOAUTH"; then
     rec "$mode" noauth-fuse:mount pass
     show "$mode: noauth-fuse: probe the mount" ex "$mode" fuse-noauth fuse-probe
     result "$mode" noauth-fuse write "write through the mount" ex "$mode" fuse-noauth fuse-write noauth-fuse
-    result "$mode" noauth-fuse acl "fs setacl system:anyuser rl" ex "$mode" fuse-noauth fuse-setacl
+    fs_then_acl "$mode" noauth-fuse fuse-noauth
   else
     rec "$mode" noauth-fuse:mount "$( ((off)) && echo fail || echo -)"
-    rec "$mode" noauth-fuse:write -
-    rec "$mode" noauth-fuse:acl -
+    for state in fs write acl; do rec "$mode" "noauth-fuse:$state" -; done
   fi
   docker rm -f "$prefix-$mode-fuse-noauth" >/dev/null 2>&1
+  # The release runs while NoAuth is still on (the route's order).
+  if [[ $(get "$mode" noauth-fuse:write) == pass ]]; then
+    release_after "$mode" noauth-fuse
+  else
+    rec "$mode" noauth-fuse:release -
+  fi
   # Authorization back on everywhere before any anonymous read; if any
   # fileserver still holds NoAuth, the anonymous reads below prove nothing.
   NOAUTH_LEFT=0
@@ -378,35 +373,21 @@ seed_routes() {
     fi
   done
   rec "$mode" noauth_cleared "$( ((NOAUTH_LEFT)) && echo FAIL || echo pass)"
-  if [[ $(get "$mode" noauth-fuse:write) == pass || $(get "$mode" noauth-fuse:acl) == pass ||
-    $(get "$mode" noauth-afsio:write) == pass ]]; then
-    release_after "$mode" noauth-fuse
-    rec "$mode" noauth-afsio:release "$(get "$mode" noauth-fuse:release)"
-  else
-    rec "$mode" noauth-fuse:release -
-    rec "$mode" noauth-afsio:release -
-  fi
 
-  # Anonymous reads: the client container (never held a keytab) through
-  # afsio, and a fresh afsd.fuse container started after every release.
-  local route anon_fuse=0
+  # Anonymous reads from a fresh afsd.fuse started after every release, in
+  # a container that never held a keytab, a ticket or a token. Tried even
+  # where fs could not set the ACL: then the read shows whether a new
+  # volume's default ACL lets system:anyuser read.
   if ((NOAUTH_LEFT)); then
-    for route in "${SEED_ROUTES[@]}"; do
-      rec "$mode" "$route:anon_afsio" "void (NoAuth left on)"
-      rec "$mode" "$route:anon_fuse" "void (NoAuth left on)"
-    done
+    for route in "${SEED_ROUTES[@]}"; do rec "$mode" "$route:anon_fuse" "void (NoAuth left on)"; done
     return
   fi
   fuse_container "$mode" fuse-anon "$IP_FUSE_ANON" && anon_fuse=1
-  ((anon_fuse)) && show "$mode: anonymous probe of the mount" ex "$mode" fuse-anon fuse-probe
+  ((anon_fuse)) && show "$mode: anonymous probe of the mount (lists, default ACL)" ex "$mode" fuse-anon fuse-probe
   for route in "${SEED_ROUTES[@]}"; do
     if [[ $(get "$mode" "$route:write") != pass ]]; then
-      rec "$mode" "$route:anon_afsio" -
       rec "$mode" "$route:anon_fuse" -
-      continue
-    fi
-    result "$mode" "$route" anon_afsio "anonymous afsio read" ex "$mode" client afsio-read-anon "$route"
-    if ((anon_fuse)); then
+    elif ((anon_fuse)); then
       result "$mode" "$route" anon_fuse "anonymous fuse read" ex "$mode" fuse-anon fuse-read-anon "$route"
     else
       rec "$mode" "$route:anon_fuse" "fail (no mount)"
@@ -489,7 +470,7 @@ run_mode() {
     rec "$mode" answer_host -
   fi
 
-  # Seeding (round 2): only in SEED_MODES, and only once volumes pass.
+  # Seeding: only in SEED_MODES, and only once volumes pass.
   if [[ " ${seed_modes[*]} " == *" $mode "* ]]; then
     if [[ $(get "$mode" volumes) == pass ]]; then
       seed_routes "$mode"
@@ -534,7 +515,7 @@ done
 # --- 5. Summary ------------------------------------------------------------
 
 columns=(flags services volumes answer_container answer_host seeding no_afs_module ready_secs total_secs)
-route_fields=(mount krb token write acl release anon_afsio anon_fuse)
+route_fields=(mount krb token fs write acl release anon_fuse)
 summary="$work/summary.md"
 {
   printf '### Cell spike (#47): %s\n\n' "$runner_label"
@@ -558,8 +539,8 @@ summary="$work/summary.md"
     [[ $(get "$m" seeding) == ran ]] || continue
     printf '\n#### Seeding routes, mode %s (fuse containers: %s; NoAuth cleared before the reads: %s)\n\n' \
       "$m" "$(get "$m" fuse_flags)" "$(get "$m" noauth_cleared)"
-    printf -- '- afsd.fuse variant serving /afs (20 s foreground runs): %s\n' "$(get "$m" fuse_variant)"
-    printf -- '- anonymous afsio read of a missing name in root.cell, before seeding: %s\n\n' "$(get "$m" anon_probe)"
+    printf -- '- afsd.fuse variant alive and serving /afs (20 s foreground runs): %s\n' "$(get "$m" fuse_variant)"
+    printf -- '- the one afsio call (anonymous read of a missing name, before seeding): %s\n\n' "$(get "$m" anon_probe)"
     printf '| route |'
     printf ' %s |' "${route_fields[@]}"
     printf '\n|---|'
@@ -571,7 +552,7 @@ summary="$work/summary.md"
       printf '\n'
     done
   done
-  printf '\nThe anonymous reads depend on the ACL that a fuse route set (afsio sets none), or on the ACL a new volume gets.\n'
+  printf '\nfs: fs wscell reaches afsd.fuse. Where acl is n/a, the anonymous read depends on the ACL a new volume gets.\n'
 } >"$summary"
 
 verdict=fail least=""
@@ -580,7 +561,7 @@ for m in "${modes_run[@]}"; do
   if [[ -z $least ]] && step4_passes "$m"; then least=$m; fi
   for r in "${SEED_ROUTES[@]}"; do
     if [[ $(get "$m" "$r:write") == pass && $(get "$m" "$r:release") == pass ]] &&
-      [[ $(get "$m" "$r:anon_afsio") == pass || $(get "$m" "$r:anon_fuse") == pass ]]; then
+      [[ $(get "$m" "$r:anon_fuse") == pass ]]; then
       seed_ok=1
     fi
   done

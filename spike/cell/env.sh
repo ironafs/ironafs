@@ -16,7 +16,6 @@ IP_FS1=172.30.47.21
 IP_FS2=172.30.47.22
 IP_CLIENT=172.30.47.30
 IP_FUSE=172.30.47.31
-IP_SEEDER=172.30.47.32
 IP_FUSE_NOAUTH=172.30.47.33
 IP_FUSE_ANON=172.30.47.34
 IP_FUSE_DIAG=172.30.47.35
@@ -68,4 +67,4 @@ arm64 krb5-kdc 43329914d5743bb4a9ebb7e427a05e813c4515a59d18feaa7299e14aa10f2b2c
 # The synthetic file the seeding routes write and the anonymous reads check.
 # Each route writes its own file in root.cell's root directory.
 SEED_TEXT='ironafs test cell'
-SEED_ROUTES=(afsio noauth-afsio fuse-token noauth-fuse)
+SEED_ROUTES=(fuse-token noauth-fuse)

@@ -379,20 +379,21 @@ cmd_rxdebug() { # <ip>
   rxdebug "$1" 7000 -version | grep 'AFS version'
 }
 
-# --- Seeding (rounds 2 and 3) -----------------------------------------------
+# --- Seeding (rounds 2 to 4) -----------------------------------------------
 #
-# Four routes, each writing its own file in root.cell's root directory:
-#   afsio         kinit with the admin keytab, aklog, afsio write -realm;
-#   noauth-afsio  (round 3) afsio write with no credentials while NoAuth is
-#                 on (the fileservers then treat every caller as an
-#                 administrator);
+# Two routes, each writing its own file in root.cell's root directory, both
+# through afsd.fuse (round 3: afsio dies with SIGSEGV in Heimdal's
+# libkrb5.so.26 on every call, with or without credentials, so its write
+# routes are dropped and one diagnostic call is kept):
 #   fuse-token    afsd.fuse mount, kinit, aklog, write through the mount,
-#                 fs setacl system:anyuser rl;
+#                 fs setacl system:anyuser rl if fs reaches afsd.fuse;
 #   noauth-fuse   bos setauth off on both fileservers (-localauth, from the
-#                 db container), an unauthenticated afsd.fuse writes and
-#                 sets the ACL, bos setauth on again.
-# run.sh releases root.cell after each route, then reads every file from
-# containers that hold no keytab, no ticket and no token.
+#                 db container), an unauthenticated afsd.fuse writes through
+#                 /afs/.<cell>/ and sets the ACL if fs reaches it, vos
+#                 release, bos setauth on again, NoAuth checked gone.
+# Then a fresh afsd.fuse in a container that holds no keytab, no ticket and
+# no token reads every file that was written. Where fs could not set the
+# ACL, the read shows whether a new volume's default ACL lets anonymous read.
 
 seed_file() { printf '/afs/%s/hello-%s.txt' "$1" "$2"; } # <cell or .cell> <route>
 
@@ -427,52 +428,6 @@ cmd_aklog_token() {
   ((rc == 0)) && grep -q "afs@$CELL" <<<"$out"
 }
 
-cmd_afsio_help() {
-  local page
-  afsio help 2>&1 | head -n 40
-  afsio write -help 2>&1 | head -n 20
-  afsio read -help 2>&1 | head -n 20
-  # The packaged manual page, as text (package documentation).
-  page=$(find_page 'afsio.1*')
-  if [[ -n $page ]]; then
-    say "--- ${page#"$DOCS"} (roff stripped) ---"
-    man_text "$page" | head -n 120
-  else
-    say "no afsio manual page in the packages"
-  fi
-}
-
-# afsio-write <route> <auth|anon>. auth: with the Kerberos ticket from
-# kinit-admin (-realm). anon: no credentials at all, for the NoAuth window,
-# where the fileservers treat every caller as an administrator. Round 2:
-# afsio write with -realm died with SIGSEGV on all four runners, so each
-# attempt prints its exit status (and signal) and tries -clear as well. The
-# dotted (read-write) path first, then the plain one; read back what landed.
-cmd_afsio_write() {
-  local route=$1 how=${2:-auth} path back rc extra out
-  local -a auth=()
-  if [[ $how == auth ]]; then
-    auth=(-realm "$REALM")
-  else
-    assert_no_credentials
-  fi
-  for path in "$(seed_file ".$CELL" "$route")" "$(seed_file "$CELL" "$route")"; do
-    for extra in "" -clear; do
-      out=$(printf '%s\n' "$SEED_TEXT" |
-        timeout 120 afsio write -file "$path" -cell "$CELL" "${auth[@]}" ${extra:+"$extra"} -verbose 2>&1)
-      rc=$?
-      printf '%s\n' "$out" | tail -n 8
-      say "afsio write ${extra:-(default)} ($how) to $path: exit $rc$( ((rc > 128)) && echo " (signal $((rc - 128)))")"
-      ((rc == 0)) || continue
-      back=$(timeout 60 afsio read -file "$path" -cell "$CELL" "${auth[@]}" ${extra:+"$extra"}) || return 1
-      [[ $back == "$SEED_TEXT" ]] || die "afsio read-back differs"
-      say "afsio: wrote $path and read it back"
-      return 0
-    done
-  done
-  return 1
-}
-
 # No keytab, no ticket cache, no token in this container.
 assert_no_credentials() {
   kdestroy -A >/dev/null 2>&1
@@ -482,44 +437,70 @@ assert_no_credentials() {
   say "no keytab, no ticket cache"
 }
 
-# Anonymous read through afsio of one route's file, from the plain (RO) path.
-cmd_afsio_read_anon() {
-  local route=$1 back
-  assert_no_credentials
-  back=$(timeout 60 afsio read -file "$(seed_file "$CELL" "$route")" -cell "$CELL") || return 1
-  [[ $back == "$SEED_TEXT" ]] || die "anonymous afsio read returned other bytes"
-  say "anonymous afsio read of $route: ${#back} bytes, as written"
-}
+# afsd.fuse, a user-space cache manager over /dev/fuse.
+#
+# Round 3: every variant exited at once with "afsd: ASSERT: cacheFiles 1000
+# diskblocks -26": the cache it sized was far below the 50000 blocks in
+# cacheinfo. Round 4 gives the cache a filesystem of known size and names
+# the cache explicitly. The afsd manual page's cacheinfo format is one line,
+# <mount dir>:<cache dir>:<cache size in 1 KiB blocks>. Two cache homes:
+#   CACHE_TMPFS  a tmpfs that run.sh mounts on the fuse containers (512 MiB);
+#   CACHE_LAYER  a directory on the container's writable layer.
+CACHE_TMPFS=/var/cache/openafs
+CACHE_LAYER=/var/lib/openafs-cache
+CACHE_BLOCKS=50000
 
-# Route (ii) and (iii): afsd.fuse, a user-space cache manager over /dev/fuse.
 cmd_fuse_prepare() {
   cmd_client_setup
   write_krb5_conf
-  mkdir -p /afs /var/cache/openafs
-  printf '/afs:/var/cache/openafs:50000\n' >/etc/openafs/cacheinfo
+  mkdir -p /afs "$CACHE_TMPFS" "$CACHE_LAYER"
+  fuse_variant_args tmpfs
+  fuse_cache_prepare
   command -v afsd.fuse || die "afsd.fuse is not installed"
 }
 
-# Round 2: the mount appeared, then every access gave "Transport endpoint is
-# not connected", with an empty log. The round-2 form let FUSE fork into the
-# background, which drops stdout and stderr, so the reason was lost. Round 3
-# runs it in the foreground (FUSE's -f and -d; afsd's -verbose), keeps its
-# output and exit status, and varies one thing at a time. afsd's -debug
-# trace is not used: its detail could carry internal names into the log,
-# which is later read by a model (ADR 0001).
-fuse_variant_args() { # <variant>: sets FUSE_ARGS
+# fuse_variant_args <variant>: sets FUSE_ARGS and CACHE_DIR. The tmpfs cache
+# with cacheinfo alone comes first; the others vary one thing (explicit
+# sizes, the writable layer, fewer cache files, a memory cache, FUSE's
+# background and single-threaded forms). afsd's -debug trace is not used:
+# its detail could carry internal names into the log, which is later read by
+# a model (ADR 0001).
+fuse_variant_args() {
+  CACHE_DIR=$CACHE_TMPFS
+  local -a base=(-dynroot -fakestat)
   case $1 in
-    bg) FUSE_ARGS=(-dynroot -fakestat /afs) ;;                 # round 2's form
-    fg) FUSE_ARGS=(-dynroot -fakestat -f /afs) ;;              # foreground
-    fg-debug) FUSE_ARGS=(-dynroot -fakestat -d /afs) ;;        # FUSE debug (implies -f)
-    fg-verbose) FUSE_ARGS=(-dynroot -fakestat -verbose -f /afs) ;;
-    fg-nosettime) FUSE_ARGS=(-dynroot -fakestat -nosettime -f /afs) ;;
-    fg-bare) FUSE_ARGS=(-f /afs) ;;                            # no afsd options
-    fg-single) FUSE_ARGS=(-dynroot -fakestat -f -s /afs) ;;    # FUSE single-threaded
+    tmpfs) FUSE_ARGS=("${base[@]}" -f /afs) ;;
+    tmpfs-explicit)
+      FUSE_ARGS=("${base[@]}" -cachedir "$CACHE_TMPFS" -blocks "$CACHE_BLOCKS" -files 2000 -f /afs) ;;
+    tmpfs-verbose) FUSE_ARGS=("${base[@]}" -verbose -f /afs) ;;
+    layer) CACHE_DIR=$CACHE_LAYER; FUSE_ARGS=("${base[@]}" -f /afs) ;;
+    layer-explicit)
+      CACHE_DIR=$CACHE_LAYER
+      FUSE_ARGS=("${base[@]}" -cachedir "$CACHE_LAYER" -blocks "$CACHE_BLOCKS" -files 2000 -f /afs) ;;
+    few-files) FUSE_ARGS=("${base[@]}" -blocks "$CACHE_BLOCKS" -files 500 -f /afs) ;;
+    memcache) FUSE_ARGS=("${base[@]}" -memcache -blocks 20000 -f /afs) ;;
+    bg) FUSE_ARGS=("${base[@]}" /afs) ;;
+    single) FUSE_ARGS=("${base[@]}" -f -s /afs) ;;
     *) return 1 ;;
   esac
 }
-FUSE_VARIANTS=(bg fg fg-debug fg-verbose fg-nosettime fg-bare fg-single)
+FUSE_VARIANTS=(tmpfs tmpfs-explicit tmpfs-verbose layer layer-explicit few-files memcache bg single)
+
+# An empty cache directory and a cacheinfo naming it, before each start.
+fuse_cache_prepare() {
+  mkdir -p "$CACHE_DIR"
+  chmod 0700 "$CACHE_DIR"
+  find "$CACHE_DIR" -mindepth 1 -delete 2>/dev/null
+  printf '/afs:%s:%s\n' "$CACHE_DIR" "$CACHE_BLOCKS" >/etc/openafs/cacheinfo
+}
+
+# The cache homes as the kernel sees them (type, size, free space).
+cache_fs_view() {
+  local d
+  for d in "$CACHE_TMPFS" "$CACHE_LAYER"; do
+    say "cache home $d: $(stat -f -c 'type %T, block %S, blocks %b, free %f' "$d" 2>&1); $(df -k "$d" 2>&1 | awk 'NR == 2 { print $2 " KiB, " $4 " KiB free" }')"
+  done
+}
 
 # No procps in the image (round 2's pgrep check always said NOT running).
 afsd_pids() {
@@ -553,8 +534,9 @@ fuse_log_tail() {
 # output and the exit status go to the log.
 cmd_fuse_run() {
   local rc
-  fuse_variant_args "${1:-fg}" || die "unknown variant ${1:-}"
-  say "afsd.fuse ${FUSE_ARGS[*]}" >/var/log/afsd.fuse.log
+  fuse_variant_args "${1:-tmpfs}" || die "unknown variant ${1:-}"
+  fuse_cache_prepare
+  say "afsd.fuse ${FUSE_ARGS[*]} (cacheinfo: $(cat /etc/openafs/cacheinfo))" >/var/log/afsd.fuse.log
   afsd.fuse "${FUSE_ARGS[@]}" >>/var/log/afsd.fuse.log 2>&1
   rc=$?
   say "afsd.fuse exit status $rc$( ((rc > 128)) && echo " (signal $((rc - 128)))")" >>/var/log/afsd.fuse.log
@@ -571,22 +553,24 @@ cmd_fuse_wait() {
   return 1
 }
 
-# fuse-diag: each variant for up to 20 s in this container; probe at 6 s;
-# print its output (head and tail), its exit status and whether it served.
-# The first variant that serves is printed as "fuse-variant-ok: <name>".
+# fuse-diag: each variant for up to 20 s in this container; probe at 6 s and
+# at 15 s; print its output (head and tail), its exit status and whether it
+# served. Exit 124 means it was still running at 20 s. The first variant
+# that served at both probes is printed as "fuse-variant-ok: <name>".
 cmd_fuse_diag() {
-  local v pid rc alive mounted served lsout chosen="" log=/tmp/fuse-diag.log
+  local v pid rc alive mounted served served_late lsout chosen="" log=/tmp/fuse-diag.log
   say "fuse.conf: $(grep -v '^#' /etc/fuse.conf 2>/dev/null | grep -v '^$' | tr '\n' ' ' || echo absent)"
   say "fusermount: $(command -v fusermount3 fusermount | tr '\n' ' ')"
   say "/dev/fuse: $(ls -l /dev/fuse 2>&1)"
   say "/proc/fs/openafs: $([[ -e /proc/fs/openafs ]] && echo present || echo absent)"
-  say "uid: $(id -u); cacheinfo: $(cat /etc/openafs/cacheinfo)"
-  say "--- afsd.fuse -help (5 s) ---"
-  timeout 5 afsd.fuse -help 2>&1 | head -n 60
+  say "uid: $(id -u); /etc/openafs: $(find /etc/openafs -maxdepth 1 -type f -printf '%f ' 2>&1); /usr/vice/etc: $(find /usr/vice/etc -maxdepth 1 -printf '%f ' 2>&1)"
+  cache_fs_view
+  say "tmpfs mount: $(grep " $CACHE_TMPFS " /proc/mounts || echo 'none (not mounted)')"
   fuse_unmount
   for v in "${FUSE_VARIANTS[@]}"; do
     fuse_variant_args "$v"
-    say "=== variant $v: afsd.fuse ${FUSE_ARGS[*]}"
+    fuse_cache_prepare
+    say "=== variant $v: afsd.fuse ${FUSE_ARGS[*]}; cacheinfo $(cat /etc/openafs/cacheinfo)"
     : >"$log"
     timeout 20 afsd.fuse "${FUSE_ARGS[@]}" >"$log" 2>&1 &
     pid=$!
@@ -601,6 +585,10 @@ cmd_fuse_diag() {
       say "fs wscell: $(timeout 10 fs wscell 2>&1 | tr '\n' ' ')"
       say "fs listacl /afs/.$CELL: $(timeout 10 fs listacl -path "/afs/.$CELL" 2>&1 | tr '\n' ' ')"
     fi
+    sleep 4
+    served_late=no
+    afsd_alive && timeout 5 stat /afs >/dev/null 2>&1 && served_late=yes
+    say "at 15 s: alive and answering stat: $served_late; cache files: $(find "$CACHE_DIR" -type f 2>/dev/null | wc -l), $(du -sk "$CACHE_DIR" 2>/dev/null | cut -f1) KiB"
     wait "$pid"
     rc=$?
     say "exit status $rc$( ((rc == 124)) && echo ' (still running at 20 s, stopped by timeout)')$( ((rc > 128)) && echo " (signal $((rc - 128)))")"
@@ -612,7 +600,7 @@ cmd_fuse_diag() {
     else
       cat "$log"
     fi
-    if [[ -z $chosen && $served == yes ]]; then chosen=$v; fi
+    if [[ -z $chosen && $served == yes && $served_late == yes ]]; then chosen=$v; fi
     fuse_unmount
   done
   if [[ -n $chosen ]]; then
@@ -635,6 +623,16 @@ cmd_fuse_probe() {
   say "fs examine: $(timeout 10 fs examine -path "/afs/.$CELL" 2>&1 | tr '\n' ' ')"
   ((rc)) && fuse_log_tail
   return "$rc"
+}
+
+# fs-reach: does fs reach afsd.fuse (its pioctl path)? fs wscell must name
+# the synthetic cell.
+cmd_fs_reach() {
+  local out rc
+  out=$(timeout 15 fs wscell 2>&1)
+  rc=$?
+  say "fs wscell: exit $rc: $out"
+  ((rc == 0)) && grep -q "$CELL" <<<"$out"
 }
 
 # Write one route's file through the mount (RW path) and read it back.
@@ -674,12 +672,15 @@ cmd_docs() {
   dpkg -L openafs-fuse 2>/dev/null | grep -v '/$' | head -n 40
   say "--- extracted docs: names matching afsd, fuse, vos_create, fs_setacl, README ---"
   find "$DOCS" -type f | grep -Ei 'afsd|fuse|vos_create|fs_setacl|fs_listacl|README|NEWS' | sed "s|^$DOCS||" | head -n 40
-  for pat in 'afsd.fuse*' 'afsd.8*'; do
+  # afsd.fuse's page is the afsd page (round 3 printed it twice).
+  for pat in 'afsd.8*' 'cacheinfo.5*'; do
     page=$(find_page "$pat")
     [[ -n $page ]] || { say "no page $pat"; continue; }
     say "--- ${page#"$DOCS"}: synopsis and the options this spike uses ---"
-    man_text "$page" | sed -n '1,25p'
-    man_text "$page" | grep -n -A4 -E '^-(dynroot|fakestat|nosettime|settime|verbose|debug|mountdir|cachedir|blocks|files|stat|daemons|nomount)\b' | head -n 90
+    man_text "$page" | sed -n '/^NAME$/,/^OPTIONS$/p' | head -n 30
+    man_text "$page" | grep -n -A4 -E '^-(memcache|verbose|mountdir|cachedir|blocks|files|confdir|stat|dcache|chunksize)\b' | head -n 80
+    say "--- the cache size and cacheinfo, as the page describes them ---"
+    man_text "$page" | grep -n -i -B1 -A4 -E 'cacheinfo|cache size|percent|partition|disk cache' | head -n 80
     man_text "$page" | grep -n -i -B1 -A3 -E 'fuse|user.?space|without a kernel|pioctl' | head -n 40
   done
   for f in $(find "$DOCS" -type f -path '*doc/openafs-*' | grep -Ei 'README|NEWS|changelog\.Debian' | head -n 8); do
@@ -704,19 +705,19 @@ cmd_server_view() {
   timeout 60 vos listvol "$IP_FS1" a -localauth 2>&1 | head -n 12
 }
 
-# anon-probe: an anonymous afsio read of a file that does not exist, in
-# root.cell's root, before any seeding. Its error tells whether anonymous
-# may look up names there (the ACL a new volume gets). Always exits 0; the
-# last line is "probe: exit N".
+# anon-probe: the one afsio call left (round 3: it dies with SIGSEGV in
+# Heimdal's libkrb5.so.26 on every call). An anonymous read of a missing
+# name in root.cell's root, before any seeding, with the Kerberos library it
+# links. Always exits 0; the last line is "probe: exit N".
 cmd_anon_probe() {
   local rc out
   assert_no_credentials
+  say "afsio links: $(ldd "$(command -v afsio)" 2>&1 | grep -Ei 'krb5|gssapi|heimdal' | awk '{ print $1 " -> " $3 }' | tr '\n' ' ')"
   out=$(timeout 60 afsio read -file "/afs/$CELL/no-such-file" -cell "$CELL" -verbose 2>&1)
   rc=$?
   printf '%s\n' "$out" | head -n 15
   say "probe: exit $rc$( ((rc > 128)) && echo " (signal $((rc - 128)))")"
 }
-
 
 # setauth <ip> on|off (db container, -localauth).
 cmd_setauth() {
@@ -758,9 +759,6 @@ case $sub in
   cat-admin-keytab) cmd_cat_admin_keytab ;;
   kinit-admin) cmd_kinit_admin ;;
   aklog-token) cmd_aklog_token ;;
-  afsio-help) cmd_afsio_help ;;
-  afsio-write) cmd_afsio_write "$@" ;;
-  afsio-read-anon) cmd_afsio_read_anon "$@" ;;
   fuse-prepare) cmd_fuse_prepare ;;
   fuse-run) cmd_fuse_run "$@" ;;
   fuse-diag) cmd_fuse_diag ;;
@@ -768,6 +766,7 @@ case $sub in
   server-view) cmd_server_view ;;
   anon-probe) cmd_anon_probe ;;
   fuse-wait) cmd_fuse_wait ;;
+  fs-reach) cmd_fs_reach ;;
   fuse-probe) cmd_fuse_probe ;;
   fuse-write) cmd_fuse_write "$@" ;;
   fuse-setacl) cmd_fuse_setacl ;;
