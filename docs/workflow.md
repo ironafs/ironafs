@@ -273,7 +273,11 @@ authoritative.
 
 ## 3. How a change runs
 
-1. **Class it** (§1) and name what it touches.
+1. **Class it** (§1) and name what it touches. Text is classed by what it
+   governs, not by its form: a copy edit is class E, while text that sets a
+   contract, a design, or what review or merge require keeps its class's
+   gates. Code, wire and on-disk formats, and security keep §2's seats and
+   this section's closure rules in full.
 2. **Spec first** for P and above: the contract (P) or design (S, R) is
    written and reviewed by another family before code.
 3. **Brief the implementer** in four parts:
@@ -290,6 +294,26 @@ authoritative.
    A contradiction stops the task and is raised as a design issue, which
    leads to an amendment of a working decision or a superseding ADR
    ([docs/adr/README.md](adr/README.md)); it is never worked around.
+
+   **Issue briefs before they are marked ready** (§6): one non-author
+   family reviews the brief, and a second family does one focused pass on
+   the same revision. Each acceptance criterion names the evidence that
+   proves it, its prerequisites, and the issue that supplies each one. Fix
+   rounds re-check only the changed text and what depends on it. Step 7's
+   closure rules apply, and editorial minors are fixed and recorded. After
+   two fix rounds a brief is split, redesigned, or its blocker recorded and
+   the work kept gated; a convergence note does not extend it. The
+   controller counts review runs
+   per brief marked ready, and acceptance defects found at pickup or in
+   code review.
+
+   **Deferring a design point** is allowed only if the current work is
+   correct whichever way the point is decided: its acceptance criteria,
+   interfaces and safety invariants hold either way. The deferral is a
+   named issue, giving the decision needed and the evidence that settles
+   it, linked as a blocker on the first issue that depends on it. For
+   unmeasured operating-system behaviour, the measurement is the blocker.
+   A specification item (step 7) is such a deferral.
 4. **Author self-check**: the implementer runs the `rust-review` checklist,
    including the function inventory on its own diff. It reports any deliberate
    departure from its neighbours, with the reason.
