@@ -621,6 +621,18 @@ fn parse_refuses_table_defined_twice() {
 }
 
 #[test]
+fn parse_redefinition_names_header_that_created_an_implicit_table() {
+    assert_eq!(
+        refused_str("[a.b]\n[a]\n[a]"),
+        (SyntaxErrorKind::Redefined { first: at(1, 1) }, 3, 1)
+    );
+    assert_eq!(
+        refused_str("[x.a.b]\n[x.a]\n[x]\na = 1"),
+        (SyntaxErrorKind::Redefined { first: at(1, 1) }, 4, 1)
+    );
+}
+
+#[test]
 fn parse_accepts_super_table_after_sub_table() {
     let document = accepted("[a.b]\nx = 1\n[a]\ny = 2\n");
     let tables: Vec<Vec<String>> = document

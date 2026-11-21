@@ -200,7 +200,10 @@ that it refuses today, never by changing the meaning of an accepted file
    defined in that table, as a value or as a table, is refused
    (redefined) `[S1 "Keys", "Table": CONFIRMED]`. A header whose path
    passes through a key that holds a value is refused (not a table).
-4. A redefinition error names the position of the first definition.
+4. A redefinition error names the position of the first definition. A
+   table's first definition is the header that created it, its own or a
+   deeper one's (section 4, "Definition"), even when a later header makes
+   it explicit.
 5. **The result** is the document: the explicit tables in the order of
    their headers, each with its path and its header's position; and the
    key/value pairs in file order, each with its table's path, its key,

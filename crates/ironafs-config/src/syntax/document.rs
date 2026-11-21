@@ -35,9 +35,11 @@ enum Child {
 #[derive(Debug)]
 struct Node {
     children: BTreeMap<String, Child>,
-    /// Where its header is, once a header defines it.
-    header: Option<Position>,
+    /// Whether a header of its own has defined it.
+    explicit: bool,
     /// Where the header that created it is: its own, or a deeper one's.
+    /// This is its first definition (`docs/specs/config-syntax.md`, section
+    /// 5.4, point 4), whether or not a header later makes it explicit.
     created: Position,
 }
 
@@ -45,14 +47,15 @@ impl Node {
     fn new(created: Position) -> Self {
         Self {
             children: BTreeMap::new(),
-            header: None,
+            explicit: false,
             created,
         }
     }
 
-    /// Where the table was defined, for a later redefinition's error.
+    /// Where the table was first defined, for a later redefinition's
+    /// error.
     fn first(&self) -> Position {
-        self.header.unwrap_or(self.created)
+        self.created
     }
 }
 
@@ -124,13 +127,15 @@ impl Builder {
         // `current` always indexes `nodes`: it is the root or a table this
         // builder created.
         if let Some(node) = self.nodes.get_mut(current) {
-            if let Some(first) = node.header {
+            if node.explicit {
                 return Err(SyntaxError::at(
                     header,
-                    SyntaxErrorKind::Redefined { first },
+                    SyntaxErrorKind::Redefined {
+                        first: node.first(),
+                    },
                 ));
             }
-            node.header = Some(header);
+            node.explicit = true;
         }
         let path = self
             .document
