@@ -4,8 +4,14 @@
 //! A token reader for Rust source, enough to find the paths a file names.
 //!
 //! Comments, string and character literals are dropped, so text inside them
-//! never counts as a use. Everything else becomes identifiers, path
-//! separators and single punctuation characters.
+//! never counts as a use. Everything else becomes identifiers, lifetimes,
+//! path separators and single punctuation characters.
+//!
+//! The reader follows the lexical rules of the 2024 edition, which
+//! `check-deps` requires of every crate. Where it could part from the
+//! compiler about where a literal starts or ends, it refuses the source
+//! instead: a literal directly followed by an identifier character (a
+//! suffix), and a shebang line, which the compiler skips unread.
 
 use std::fmt;
 use std::fs;
@@ -22,6 +28,9 @@ pub(crate) enum TokenKind {
     /// An identifier, keyword or number. A raw identifier loses its `r#`:
     /// `r#std` names the same crate as `std`.
     Ident(String),
+    /// A lifetime or a loop label, its name included: the name is never
+    /// read as an identifier, so it cannot start a literal of its own.
+    Lifetime,
     /// `::`
     PathSep,
     Punct(char),
@@ -106,7 +115,8 @@ pub(crate) fn read(file: &Path) -> Result<Result<Vec<Token>, String>, Error> {
 ///
 /// # Errors
 ///
-/// Returns the line of an unterminated comment or literal.
+/// Returns the line of an unterminated comment or literal, a literal with
+/// a suffix, or a shebang line.
 pub(crate) fn tokens(source: &str) -> Result<Vec<Token>, LexError> {
     let mut lexer = Lexer {
         chars: source.chars().collect(),
@@ -114,8 +124,20 @@ pub(crate) fn tokens(source: &str) -> Result<Vec<Token>, LexError> {
         line: 1,
         tokens: Vec::new(),
     };
+    // The compiler drops a byte order mark at the start of a file.
+    if lexer.at(0) == Some('\u{feff}') {
+        lexer.position = 1;
+    }
+    lexer.shebang()?;
     lexer.run()?;
     Ok(lexer.tokens)
+}
+
+/// Whether `next` could be part of an identifier: `_`, an ASCII letter or
+/// digit, or any character outside ASCII but whitespace. Wider than the
+/// compiler's rule, so the reader fails closed.
+fn identifier_like(next: char) -> bool {
+    next == '_' || next.is_ascii_alphanumeric() || (!next.is_ascii() && !next.is_whitespace())
 }
 
 struct Lexer {
@@ -147,6 +169,43 @@ impl Lexer {
         });
     }
 
+    /// Refuses a shebang line: `#!` at the start of the file not followed,
+    /// after whitespace, by `[`. The compiler skips such a line unread, so
+    /// a quote in it would start a literal here and not there. An inner
+    /// attribute with a comment before its `[` is refused too.
+    fn shebang(&self) -> Result<(), LexError> {
+        if self.at(0) != Some('#') || self.at(1) != Some('!') {
+            return Ok(());
+        }
+        let mut offset = 2;
+        while self.at(offset).is_some_and(char::is_whitespace) {
+            offset += 1;
+        }
+        if self.at(offset) == Some('[') {
+            Ok(())
+        } else {
+            Err(LexError {
+                line: self.line,
+                reason: "a shebang line, which the compiler skips unread",
+            })
+        }
+    }
+
+    /// Refuses an identifier character directly after a literal that has
+    /// just closed. The compiler reads it as the literal's suffix; this
+    /// reader could read it as the prefix of another literal.
+    fn literal_end(&self, line: usize) -> Result<(), LexError> {
+        if self.at(0).is_some_and(identifier_like) {
+            Err(LexError {
+                line,
+                reason: "a literal followed by an identifier character, which the compiler reads \
+                         as a suffix",
+            })
+        } else {
+            Ok(())
+        }
+    }
+
     fn run(&mut self) -> Result<(), LexError> {
         while let Some(next) = self.at(0) {
             let line = self.line;
@@ -160,6 +219,7 @@ impl Lexer {
                 '"' => {
                     self.advance();
                     self.quoted('"', "unterminated string", line)?;
+                    self.literal_end(line)?;
                 }
                 '\'' => self.quote_or_lifetime(line)?,
                 ':' if self.at(1) == Some(':') => {
@@ -207,7 +267,8 @@ impl Lexer {
         }
     }
 
-    /// Skips the rest of a literal whose opening quote is consumed.
+    /// Skips the rest of a literal whose opening quote is consumed. The
+    /// caller checks what follows it.
     fn quoted(&mut self, quote: char, reason: &'static str, line: usize) -> Result<(), LexError> {
         loop {
             match self.advance() {
@@ -224,11 +285,22 @@ impl Lexer {
     fn quote_or_lifetime(&mut self, line: usize) -> Result<(), LexError> {
         if self.at(1) == Some('\\') || self.at(2) == Some('\'') {
             self.advance();
-            self.quoted('\'', "unterminated character literal", line)
+            self.quoted('\'', "unterminated character literal", line)?;
+            self.literal_end(line)
         } else {
-            // A lifetime or a loop label: the name follows as an identifier.
+            // A lifetime or a loop label, raw (`'r#name`) or not. Its name
+            // is part of the token, so `'r"` is never a raw string.
             self.advance();
-            self.push(TokenKind::Punct('\''), line);
+            if self.at(0) == Some('r')
+                && self.at(1) == Some('#')
+                && self.at(2).is_some_and(identifier_like)
+            {
+                self.position += 2;
+            }
+            while self.at(0).is_some_and(identifier_like) {
+                self.position += 1;
+            }
+            self.push(TokenKind::Lifetime, line);
             Ok(())
         }
     }
@@ -249,7 +321,8 @@ impl Lexer {
             .collect();
         match (word.as_str(), self.at(0), self.at(1)) {
             ("r" | "br" | "cr", Some('"' | '#'), _) if self.raw_string_follows() => {
-                self.raw_string(line)
+                self.raw_string(line)?;
+                self.literal_end(line)
             }
             ("r", Some('#'), Some(next)) if next == '_' || next.is_alphanumeric() => {
                 self.position += 1;
@@ -275,11 +348,13 @@ impl Lexer {
             }
             ("b" | "c", Some('"'), _) => {
                 self.advance();
-                self.quoted('"', "unterminated string", line)
+                self.quoted('"', "unterminated string", line)?;
+                self.literal_end(line)
             }
             ("b", Some('\''), _) => {
                 self.advance();
-                self.quoted('\'', "unterminated character literal", line)
+                self.quoted('\'', "unterminated character literal", line)?;
+                self.literal_end(line)
             }
             _ => {
                 self.push(TokenKind::Ident(word), line);

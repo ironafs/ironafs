@@ -138,6 +138,10 @@ fn is_extern_in(violation: &Violation, file: &str, line: usize) -> bool {
 /// brings the standard library back under a cfg no build sets.
 const HIDDEN_STD: &str = "#[cfg(panic = \"abort\")]\nextern crate std as hidden;\n";
 
+fn is_unreadable(violation: &Violation) -> bool {
+    matches!(violation, Violation::Unreadable { file, .. } if file == Path::new(TOP_LIB))
+}
+
 fn is_not_no_std(violation: &Violation) -> bool {
     matches!(violation, Violation::NotNoStd(file) if file == Path::new(TOP_LIB))
 }
@@ -375,6 +379,44 @@ const CASES: &[Case] = &[
             |found| is_source(found, 3, "include"),
             |found| is_extern_in(found, "crates/ironafs-xdr/ext.rs", 2),
         ],
+    },
+    Case {
+        name: "include! hidden behind a string with a suffix",
+        plant: |fixture| {
+            plant_head(
+                fixture,
+                "#![no_std]\n\
+                 macro_rules! drop_all { ($($t:tt)*) => {}; }\n\
+                 drop_all!(\"\"r\"\\\" \");\n\
+                 include!(\"../ext.rs\"); // \"",
+            );
+            fixture.file(TOP, "ext.rs", Some(HIDDEN_STD));
+        },
+        expect: &[is_unreadable, is_not_no_std, |found| {
+            is_extern_in(found, "crates/ironafs-xdr/ext.rs", 2)
+        }],
+    },
+    Case {
+        name: "include! after a lifetime spelled like a raw string's prefix",
+        plant: |fixture| {
+            plant_head(
+                fixture,
+                "#![no_std]\n\
+                 macro_rules! drop_all { ($($t:tt)*) => {}; }\n\
+                 drop_all!('r\"\\\" \");\n\
+                 include!(\"../ext.rs\"); // \"",
+            );
+            fixture.file(TOP, "ext.rs", Some(HIDDEN_STD));
+        },
+        expect: &[
+            |found| is_source(found, 4, "include!"),
+            |found| is_extern_in(found, "crates/ironafs-xdr/ext.rs", 2),
+        ],
+    },
+    Case {
+        name: "a shebang line the compiler skips unread",
+        plant: |fixture| plant_head(fixture, "#!/usr/bin/env x \"\n#![no_std] // \""),
+        expect: &[is_unreadable, is_not_no_std],
     },
     Case {
         name: "the standard library through a module path whose brackets are a macro fragment",

@@ -176,6 +176,10 @@ fn is_planted(violation: &Violation, name: &str) -> bool {
     is_source(violation, PLANTED, name)
 }
 
+fn is_planted_unreadable(violation: &Violation) -> bool {
+    matches!(violation, Violation::Unreadable { file, .. } if file == Path::new(PLANTED))
+}
+
 fn is_third_party(violation: &Violation, from: &str, to: &str) -> bool {
     matches!(violation, Violation::ThirdParty { from: found_from, to: found_to }
         if found_from == from && found_to == to)
@@ -884,6 +888,35 @@ const CASES: &[Case] = &[
             plant_source(fixture, "include!(\"../../ironafs-net/src/lib.rs\");\n");
         },
         expect: &[|found| is_planted(found, "include!")],
+    },
+    Case {
+        name: "include! hidden behind a string with a suffix",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "macro_rules! drop_all { ($($t:tt)*) => {}; }\n\
+                 drop_all!(\"\"r\"\\\" \");\n\
+                 include!(\"../../ironafs-net/src/lib.rs\"); // \"\n",
+            );
+        },
+        expect: &[is_planted_unreadable],
+    },
+    Case {
+        name: "include! after a lifetime spelled like a raw string's prefix",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "macro_rules! drop_all { ($($t:tt)*) => {}; }\n\
+                 drop_all!('r\"\\\" \");\n\
+                 include!(\"../../ironafs-net/src/lib.rs\"); // \"\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "include!")],
+    },
+    Case {
+        name: "a shebang line the compiler skips unread",
+        plant: |fixture| plant_source(fixture, "#!/usr/bin/env x \"\nfn f() {} // \"\n"),
+        expect: &[is_planted_unreadable],
     },
     Case {
         name: "a pure crate with an empty lints table",

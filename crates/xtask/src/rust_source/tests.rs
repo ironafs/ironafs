@@ -24,7 +24,7 @@ fn paths(source: &str) -> Vec<(String, usize)> {
 }
 
 #[test]
-fn tokens_skip_comments_strings_and_character_literals() {
+fn tokens_skip_comments_literals_and_lifetime_names() {
     let source = r##"
         // std::net in a line comment
         /* std::fs /* nested std::thread */ still comment */
@@ -46,8 +46,7 @@ fn tokens_skip_comments_strings_and_character_literals() {
         idents(source),
         [
             "let", "a", "let", "b", "let", "c", "let", "d", "let", "e", "let", "f", "let", "g",
-            "let", "h", "let", "i", "fn", "life", "a", "x", "a", "str", "static", "str", "x",
-            "let", "type", "1",
+            "let", "h", "let", "i", "fn", "life", "x", "str", "str", "x", "let", "type", "1",
         ]
     );
 }
@@ -195,5 +194,135 @@ fn std_paths_end_on_malformed_use_trees() {
             ("std::net".into(), 1),
             ("std::thread".into(), 2),
         ]
+    );
+}
+
+#[test]
+fn tokens_refuse_an_identifier_character_directly_after_a_literal() {
+    for source in [
+        "\"\"r\"\\\" \"",
+        "b\"x\"s",
+        "br\"x\"_s",
+        "r#\"x\"#y",
+        "c\"x\"z",
+        "cr\"x\"z",
+        "'a'b",
+        "b'a'b",
+        "'\\''s",
+        "\"x\"\u{e9}",
+    ] {
+        assert_eq!(
+            tokens(source),
+            Err(LexError {
+                line: 1,
+                reason: "a literal followed by an identifier character, which the compiler reads \
+                         as a suffix"
+            }),
+            "source {source:?}"
+        );
+    }
+}
+
+#[test]
+fn tokens_accept_a_literal_followed_by_punctuation_or_space() {
+    for source in [
+        "f(\"x\", 'a')",
+        "\"x\".len()",
+        "r\"x\"#",
+        "b'a'..b'z'",
+        "[\"x\"]",
+    ] {
+        assert!(tokens(source).is_ok(), "source {source:?}");
+    }
+}
+
+#[test]
+fn tokens_read_a_lifetime_with_its_name_so_no_name_can_start_a_literal() {
+    let lexed = tokens("drop_all!('r\"\\\" \");\ninclude!(\"x\"); // \"").unwrap();
+    let kinds: Vec<TokenKind> = lexed.into_iter().map(|token| token.kind).collect();
+
+    assert_eq!(
+        kinds,
+        [
+            TokenKind::Ident("drop_all".into()),
+            TokenKind::Punct('!'),
+            TokenKind::Punct('('),
+            TokenKind::Lifetime,
+            TokenKind::Punct(')'),
+            TokenKind::Punct(';'),
+            TokenKind::Ident("include".into()),
+            TokenKind::Punct('!'),
+            TokenKind::Punct('('),
+            TokenKind::Punct(')'),
+            TokenKind::Punct(';'),
+        ]
+    );
+}
+
+#[test]
+fn tokens_read_raw_and_non_ascii_lifetime_names_whole() {
+    let kinds = |source: &str| -> Vec<TokenKind> {
+        tokens(source)
+            .unwrap()
+            .into_iter()
+            .map(|token| token.kind)
+            .collect()
+    };
+
+    assert_eq!(kinds("'r#b \"x\""), [TokenKind::Lifetime]);
+    assert_eq!(kinds("'a\u{b7}r\"\\\" \""), [TokenKind::Lifetime]);
+    assert_eq!(
+        kinds("'outer: loop {}"),
+        [
+            TokenKind::Lifetime,
+            TokenKind::Punct(':'),
+            TokenKind::Ident("loop".into()),
+            TokenKind::Punct('{'),
+            TokenKind::Punct('}'),
+        ]
+    );
+}
+
+#[test]
+fn tokens_refuse_a_shebang_line() {
+    for source in [
+        "#!/usr/bin/env run\nfn main() {}",
+        "#! \"\nfn main() {}",
+        "\u{feff}#!/bin/x \"\n",
+        "#!/*c*/[no_std]",
+    ] {
+        assert_eq!(
+            tokens(source),
+            Err(LexError {
+                line: 1,
+                reason: "a shebang line, which the compiler skips unread"
+            }),
+            "source {source:?}"
+        );
+    }
+}
+
+#[test]
+fn tokens_read_an_inner_attribute_at_the_start_and_a_leading_byte_order_mark() {
+    for source in [
+        "#![no_std]",
+        "#!  [no_std]",
+        "\u{feff}#![no_std]",
+        "\u{feff}fn f() {}",
+    ] {
+        let lexed = tokens(source).unwrap();
+        assert!(
+            lexed
+                .iter()
+                .all(|token| token.kind != TokenKind::Punct('\u{feff}')),
+            "source {source:?}"
+        );
+    }
+    assert_eq!(
+        tokens("#![no_std]")
+            .unwrap()
+            .first()
+            .map(|token| &token.kind),
+        Some(&TokenKind::Punct('#'))
     );
 }
