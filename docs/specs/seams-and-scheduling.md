@@ -58,6 +58,12 @@ ADR 0004, C16 (**Firm**), points 2 and 3, the parts this page carries:
 > context, generation, grant and node state in the same step that writes
 > it to the kernel or to the SMB connection.
 
+ADR 0004, C24 (**Firm**), point 1, its first sentence:
+
+> 1. **Authoritative evidence** is an observation protected by a key no
+>    local user can determine, bound to the file or volume and to the event
+>    it establishes.
+
 ADR 0004, C27 (**Working**), point 2, its last two sentences:
 
 > A clean chunk is written to a temporary name and renamed, with a header
@@ -83,6 +89,36 @@ ADR 0004, C29 (**Working**), point 9:
 > 9. A record is made durable by writing the file, syncing it, and syncing
 >    its directory. Removal is the reverse.
 
+ADR 0004, C32 (**Working**), point 1, its second sentence; point 4, its
+last sentence; point 5, its last two sentences:
+
+> It is earned only by a reply from that server to the
+> client's own keepalive call (point 4), received on the client's
+> callback socket (C30), no older than **E**, and since the last network
+> change or resume.
+
+> Trust lapses when no reply has arrived within
+> E.
+
+> Each serve compares the clocks of C37, and a
+> jump marks every callback suspect before the answer is given.
+
+ADR 0004, C37 (**Working**), point 4, its last three sentences, and point
+5, its last sentence:
+
+> A detected suspend, a regression of a monotonic clock, or a
+> jump of wall time past the threshold marks callbacks suspect (C32).
+> Wall time can only lower trust. A regression of a monotonic clock, or
+> a failed sample, also treats every boot-clock deadline (callbacks,
+> tokens, location lifetimes, locks) as possibly expired: a lock counts
+> as lost until it is established again with the server, and a token is
+> checked again before its next use.
+
+> If a later read fails,
+> outstanding deadlines expire, callbacks become suspect, one event is
+> logged per episode, and no new deadline is set until a valid sample
+> returns.
+
 ADR 0004, C39 (**Working**), points 3 and 4:
 
 > 3. Workers wait on one-shot reply slots with a deadline counted from
@@ -97,6 +133,18 @@ ADR 0004, C46 (**Working**), points 3 and 4:
 > 4. **A failure never looks like success:** never an empty or short
 >    listing, zero bytes or a made-up attribute.
 
+ADR 0004, N7 (**Firm**), point 2, its third sentence:
+
+> When an applicable restriction rises (a pin, a floor, a policy),
+> connections below it are closed, and sends queued on them are fenced: a
+> request not yet sent runs through this function again; a mutation
+> already sent follows the lost-reply rule (C28).
+
+ADR 0004, N32 (**Firm**), point 6, its first sentence:
+
+> 6. The journal's specification fixes an independently verifiable commit
+>    boundary, made durable after each record (C29, point 9).
+
 ADR 0004, O45 (**Working**), point 5:
 
 > 5. The rule the simulator imposes on the code: threads live only in thin
@@ -108,10 +156,11 @@ Coding standards, rule 7, its second sentence:
 > outside an injected clock and random source.
 
 Also cited, without a quotation the page must keep word for word: C9,
-point 3; C24, point 1 (**Firm**); C26, points 2 and 4; C30, points 2
-and 3; C31; C32, points 1, 4 and 5; C37, points 1 and 3 to 5; N32, point
-6 (**Firm**); O41, points 1, 3, 4 and 6; O45, points 2 and 3; O50, point
-11. All are Working unless marked.
+point 3; C26, points 2 and 4; C30, points 2 and 3; C31; C37, points 1
+and 3; O41, points 1, 3, 4 and 6; O45, points 2 and 3; O47, point 3;
+O48, point 1; O50, point 11, all Working; and ADR 0005, decision 2, the
+closed list of `ironafs-os` sites (**Firm** that it is closed, Working
+in each row).
 
 **This page's reading of C3, C4 and O45.** The owner decided the
 scheduling model (issue #71): one standard-library thread per task with a
@@ -147,8 +196,10 @@ if it is broken.
    obligations each seam's conformance tests carry.
 2. **Not covered, and where it is covered:**
    - the `Clock` and `Rng` reads and the time types: `ironafs-time`'s
-     documentation (issue #58). This page adds one operation to `Clock`
-     (5.3);
+     documentation (issue #58). This page adds two operations to `Clock`,
+     `sample` and `wait`, with the types they use, and moves the episode
+     and the doubt it records from the code that holds the clock into the
+     `Clock` implementation (5.3);
    - the simulator's world, its fault list, its invariants, its streams
      and its scenarios: the simulator's specification (planned) and its
      implementation (issue #79). This page fixes only the scheduling
@@ -174,7 +225,9 @@ if it is broken.
 
 1. **Four seams, no fifth.** `Clock` and `Rng` are in `ironafs-time`,
    `Rpc` in `ironafs-rx`, `Disk` in `ironafs-cache`. Each is a trait with
-   no logic; the types it names are values.
+   no logic; the types it names are values, or the `Watch` trait of
+   `ironafs-time`. A seam in a pure crate never names a concrete waiting
+   primitive, so no pure crate depends on `ironafs-sync`.
 2. **One blocking primitive.** Every blocking point of the core is
    `Clock::wait` on a watched flag with a deadline and a cancel token, an
    `Rpc` call or a `Disk` call. The waiting primitives (cancel tokens,
@@ -262,14 +315,29 @@ encoding is the simulator's specification's.
 
    | Item | Crate | Why |
    |---|---|---|
-   | `Clock` (with `wait`), `Rng`, instants, deadlines, `Deadline`, `Waited`, `Stamp`, the `Watch` and `Waker` traits | `ironafs-time` | C4, points 1 and 7. Traits and values only, so the crate stays pure, `no_std` and free of dependencies [ADR 0004 C4.1: Working] |
-   | `Rpc`, `RpcError`, `Reply`, `ReplyEvidence`, `Incoming`, `Response`, `Peer`, `ServiceId`, `ConnId` | `ironafs-rx` | its vocabulary is peers, services, connections, security objects and bytes, so "`ironafs-rx` knows nothing of AFS" holds [ADR 0004 C4.4: Working] |
-   | `Disk`, `DiskError`, `StorePath`, `StoreDir`, `StoreName`, `ReadRange`, `Durability`, `Space`, `Plan` | `ironafs-cache` | the state directory's owner (C4, point 7), beside the plans that use it [ADR 0004 C4.7: Working] |
+   | `Clock` (with `sample` and `wait`), `Rng`, instants, deadlines, `Deadline`, `Waited`, `Stamp`, `Doubt`, the `Watch` and `Waker` traits, `WatchRef`, `Registration`, `WatchFull` | `ironafs-time` | C4, points 1 and 7. Traits and values only, so the crate stays pure, `no_std` and free of dependencies [ADR 0004 C4.1: Working] |
+   | `Rpc`, `RpcError`, `Reply`, `ReplyEvidence`, `Incoming`, `Response`, `Peer`, `ServiceId`, `ConnId`, `AddrFamily`, `EndpointGeneration`, `SecurityObject` | `ironafs-rx` | its vocabulary is peers, services, connections, security objects and bytes, so "`ironafs-rx` knows nothing of AFS" holds [ADR 0004 C4.4: Working] |
+   | `Disk`, `DiskError`, `DiskOp`, `EntryKind`, `StorePath`, `StoreDir`, `StoreName`, `ReadRange`, `Durability`, `Space`, `Plan` | `ironafs-cache` | the state directory's owner (C4, point 7), beside the plans that use it [ADR 0004 C4.7: Working] |
 
    A trait in a pure crate is a definition, not a call: `Clock` already
    sits in `ironafs-time` the same way. C46, point 3's classification of
    abort codes is AFS logic and stays in `ironafs-client`. `ironafs-rx`'s
    public items name no type of `ironafs-proto` [OWN: keeps C4, point 4].
+   Byte counts in the seams are plain `u64` (section 6), so no seam names
+   a counting type from another crate.
+
+   **Pure crates name no waiting primitive.** A pure crate is `no_std`,
+   and its dependencies are pure crates only; `xtask`'s dependency check
+   allows `ironafs-rx` only `ironafs-xdr`, `ironafs-time` and
+   `ironafs-crypto` [ADR 0004 C4.1: Working; the owner's `no_std`
+   decision, which `xtask`'s pure-crate check enforces]. So `Rpc` takes
+   its cancel token as a `WatchRef`, a shared handle on `ironafs-time`'s
+   `Watch` trait, exactly as `Clock::wait` takes a `&dyn Watch`; the
+   concrete `Cancel` stays in `ironafs-sync` and hands out that handle
+   (5.3, point 5) [OWN: the smallest change that keeps the trait in its
+   pure crate; a non-pure home for `Rpc` would need a further C4
+   amendment and would put the trait outside the crate whose types it
+   names, and a concrete `Cancel` needs a mutex, which `core` lacks].
 
 2. **Placement of the waiting primitives.** `Signal`, `Cancel`,
    `OneShot`, `Queue` and `Lock` are concrete types with a mutex inside,
@@ -278,9 +346,11 @@ encoding is the simulator's specification's.
    and no `unsafe`, used by `ironafs-client`, `ironafs-net` and
    `ironafs-sim` [OWN: the driver `ironafs-net` needs `Queue` for its
    ingress and must not depend on the core above it; the simulator must
-   not pull the whole client for a mutex]. Its one standard-library mutex
-   per primitive is the allow-listed exception of point 5. C4 has no row
-   for it; section 13, Q2, names the amendment.
+   not pull the whole client for a mutex]. It depends on `ironafs-time`
+   (each primitive is a `Watch`, and waits through `Clock::wait`), and no
+   pure crate depends on it. Its one standard-library mutex per primitive
+   is the allow-listed exception of point 5. C4 has no row for it;
+   section 13, Q2, names the amendment.
 
 3. **Implementations.**
 
@@ -292,21 +362,25 @@ encoding is the simulator's specification's.
    | `Disk` | `ironafs-disk` (point 4) | `ironafs-sim`'s simulated disk |
 
    The seeded `Clock` and `Rng` in `ironafs-test-support` serve unit
-   tests. The seeded clock's `wait` advances the deadline's own clock by
-   the time remaining, with checked arithmetic, then evaluates 5.3, point
-   4, once more, the deadline's latched doubt included; an overflow
-   returns `ClockFailed`, never `DeadlinePassed` by default.
+   tests. The seeded clock's `sample` keeps the doubt counts and episodes
+   of 5.3, point 2, from its scripted reads. Its `wait` advances the
+   deadline's own clock by the time remaining, with checked arithmetic,
+   then evaluates 5.3, point 4, once more, the deadline's latched doubt
+   included; an overflow returns `ClockFailed`, never `DeadlinePassed`.
 
 4. **Real RPC** is performed by `ironafs-net`: the UDP sockets and the
    `rx` thread (C4, point 3; C30, points 1 and 2). **Real file I/O** is
    performed by a new thin driver crate, **`ironafs-disk`**, over
    `std::fs`, calling `ironafs-os` only for what the standard library
    cannot do safely: a stronger flush where O41, point 4, qualifies one,
-   free space, and the root-relative, no-follow lookups of 5.5, point 2
-   [OWN: a separate crate keeps the safe file logic out of the `unsafe`
-   crate's audit, and gives the production driver and the simulated disk
-   one shared conformance body (5.9)]. C4, point 3, has no row for it;
-   section 13, Q2, names the amendment.
+   free space, the root-relative, no-follow lookups of 5.5, point 2, and
+   the sync of the root's parent at construction (5.5, point 6) [OWN: a
+   separate crate keeps the safe file logic out of the `unsafe` crate's
+   audit, and gives the production driver and the simulated disk one
+   shared conformance body (5.9)]. C4, point 3, has no row for it;
+   section 13, Q2, names the amendment. ADR 0005's closed list names the
+   free-space query on Linux only, and none of the other calls; section
+   13, Q17, names that amendment.
 
 5. **Confinement.** The core may use from the standard library only what
    cannot block, cannot observe the host and cannot carry hidden order.
@@ -319,6 +393,9 @@ encoding is the simulator's specification's.
      decisions and plans, and reach the disk only through a `Plan` that
      operation code runs through `Disk`. This is checked at the call
      sites, separately from the pure-crate build;
+   - no pure crate depends on `ironafs-sync`, `ironafs-net`,
+     `ironafs-disk` or `ironafs-sim` (the dependency check's pure-crate
+     rule, which already refuses any dependency outside the pure set);
    - the core names none of: `std::fs`; `std::net`; `std::io`'s standard
      streams; `std::thread` (all of it: `spawn`, `Builder`, `scope`,
      `sleep`, `park`, `yield_now`, `current`, `available_parallelism`);
@@ -348,19 +425,55 @@ encoding is the simulator's specification's.
 
 ### 5.3 Waiting: the one blocking primitive
 
-1. **`Clock` gains one operation** beside its three reads:
+1. **`Clock` gains two operations** beside its three reads, and the types
+   they use:
 
    ```rust
-   /// In `ironafs-time`.
-   pub enum Deadline { Boot(BootDeadline), Awake(AwakeDeadline) }
+   /// In `ironafs-time`, which is `no_std` with `alloc`.
+   /// The doubt counts of point 2, one per monotonic clock.
+   pub struct Doubt { pub boot: u64, pub awake: u64 }
+
+   /// One sample as C37, point 4, takes it (an awake read and a wall read
+   /// bracketed by two boot reads, all succeeding), with the doubt counts and
+   /// the episode count after this sample's own checks (point 2).
+   pub struct Stamp {
+       pub boot: BootInstant, pub awake: AwakeInstant, pub wall: WallTime,
+       pub doubt: Doubt, pub episodes: u64,
+   }
+
+   /// A deadline on one monotonic clock, with that clock's doubt count
+   /// latched from the stamp it was built from. Built only from a `Stamp`.
+   pub enum Deadline {
+       Boot { at: BootDeadline, doubt: u64 },
+       Awake { at: AwakeDeadline, doubt: u64 },
+   }
+   impl Deadline {
+       /// `None` if the instant overflows (section 6).
+       pub fn boot_after(from: &Stamp, d: Duration) -> Option<Self>;
+       pub fn awake_after(from: &Stamp, d: Duration) -> Option<Self>;
+   }
+
    pub enum Waited { Cancelled, ClockFailed, DeadlinePassed, Signalled }
+
+   /// A flag with a bounded list of registered wakers (point 3).
+   pub trait Watch: Send + Sync {
+       fn is_set(&self) -> bool;
+       /// Refused, never a panic, when the list is full.
+       fn register(&self, waker: Arc<dyn Waker>) -> Result<Registration, WatchFull>;
+       fn deregister(&self, registration: Registration);
+   }
+   pub trait Waker: Send + Sync { fn wake(&self); }
+   /// A shared handle on a watch, for a token that outlives one borrow.
+   pub type WatchRef = Arc<dyn Watch>;
 
    pub trait Clock: Send + Sync {
        fn boot(&self) -> Result<BootInstant, ClockError>;
        fn awake(&self) -> Result<AwakeInstant, ClockError>;
        fn wall(&self) -> Result<WallTime, ClockError>;
+       /// Takes one sample and applies point 2's checks.
+       fn sample(&self) -> Result<Stamp, ClockError>;
        /// Waits by the protocol of point 3; the outcome by point 4.
-       fn wait(&self, signal: &dyn Watch, deadline: Deadline, cancel: &dyn Watch) -> Waited;
+       fn wait(&self, signal: &dyn Watch, deadline: &Deadline, cancel: &dyn Watch) -> Waited;
    }
    ```
 
@@ -369,19 +482,45 @@ encoding is the simulator's specification's.
    both virtual time and the wake-up to keep the baton exact [OWN, a
    reading of C3, point 3]. No deadline counts on wall time (C37, point
    1). There is no wait without a deadline: a loop with nothing due waits
-   to a horizon and loops.
+   to a horizon and loops. A `Registration` is a number the watch assigns
+   from its own counter, so deregistration depends on no address.
 
-2. **Doubt is latched per deadline.** A failed read of either monotonic
-   clock, or a detected regression, expires every outstanding deadline
-   (C37, points 4 and 5). The `Clock` keeps a doubt count per clock,
-   moved by every failed sample and every detected regression. A
-   `Deadline` records the count when it is built. Every later evaluation
-   of it (a wait, the call owner's arbitration in 5.4, point 4, a
-   completion claim in 5.7, point 4) finds it failed once the count has
-   moved for its clock, even if the sample taken now is good. So a
-   failure that clears before another waiter samples still expires every
-   deadline outstanding when it happened [ADR 0004 C37.5: Working]. While
-   samples fail, no new `Deadline` is built (C37, point 5).
+2. **The `Clock` keeps the episodes and the doubt.** The `Clock`
+   implementation remembers its last valid sample and keeps two doubt
+   counts, one per monotonic clock, and an episode count. `sample` and
+   every read move them as follows [ADR 0004 C37.4, C37.5: Working]:
+   - **a failed read** of any clock: both doubt counts move, and an
+     episode is counted if none is open (an episode of failed reads lasts
+     until a valid sample returns, so one event is logged for it, C37,
+     point 5); `sample` returns the error, so no `Stamp` and no
+     `Deadline` exist until a valid sample returns (C37, point 5);
+   - **a regression** of either monotonic clock against the last valid
+     sample: the boot count moves, and one episode is counted. The awake
+     count does not move: C37, point 4, expires boot-clock deadlines on a
+     regression, and an awake-clock deadline that a regression pushes
+     later costs time, never safety, since awake deadlines time
+     retransmission and round trips [OWN];
+   - **a detected suspend** (the boot clock grew more than the awake clock
+     by over the threshold, after sampling skew): one episode; no count
+     moves, since boot deadlines expire across the suspend by the boot
+     clock itself (5.6, point 7);
+   - **a jump of wall time** past the same threshold (between two valid
+     samples, wall time moved by more or less than the boot clock did, by
+     over the threshold after sampling skew): one episode; no count
+     moves, since no deadline is on wall time, and wall time can only
+     lower trust (C37, point 4).
+
+   **Doubt is latched per deadline.** A `Deadline` records its clock's
+   count from the `Stamp` it was built from. Every later evaluation of it
+   (a wait, the call owner's arbitration in 5.4, point 4, a completion
+   claim in 5.7, point 4) finds it failed once that clock's count has
+   moved, even if the sample taken now is good. So a failure that clears
+   before another waiter samples still expires every deadline outstanding
+   when it happened, and a regression still expires every boot deadline
+   [ADR 0004 C37.5: Working]. **Episodes reach the core** through the
+   episode count of each `Stamp`: a serve that finds it moved since the
+   last serve marks callbacks suspect before the answer (C32, point 5),
+   and callback trust compares it (5.4, point 1).
 
 3. **The wait protocol.** A `Watch` holds a flag and a bounded list of
    registered `Waker`s under its own internal mutex. The `Clock`
@@ -417,10 +556,11 @@ encoding is the simulator's specification's.
      happens only in another task's step or a world event, never between
      a task's evaluation and its yield, which form one step; the task
      record plays the latch.
-   - A registration list that is full is a defect: under the simulator a
-     failure of the run (5.6, point 9); in production the wait falls
-     back to polling at the slice and an event is logged. Its bound is
-     one entry per waiting task.
+   - A registration list that is full is a defect. `register` refuses it.
+     Under the simulator the simulated `Clock::wait` that is refused
+     reports it to the scheduler, which fails the run (5.6, point 9); in
+     production the wait falls back to polling at the slice and an event
+     is logged. Its bound is one entry per waiting task.
 
    [OWN: the protocol closes the lost-wake gap that a flag and a
    condition variable leave between the check and the sleep.]
@@ -438,10 +578,13 @@ encoding is the simulator's specification's.
 
 5. **The primitives,** in `ironafs-sync`, flags and bounded storage over
    `Clock::wait`, the same code in production and under the simulator:
+   Each primitive implements `ironafs-time`'s `Watch`.
    - `Signal`: a raisable watch.
    - `Cancel`: cloneable; `fire` is idempotent and wakes every wait
-     registered with it.
-   - `OneShot<T>`: one `put`, one `take(clock, deadline, cancel)`. A
+     registered with it. `watch()` returns a `WatchRef` on the same
+     token, which is what a seam in a pure crate takes (5.2, point 1).
+   - `OneShot<T>`: one `put`, one `take(clock, deadline, cancel)`, with
+     `cancel` a `&dyn Watch`. A
      second `put` is refused, never a panic. `put` raises the slot's
      signal.
    - `Queue<T>`: bounded in bytes (C39, point 3). `push` never blocks: a
@@ -469,25 +612,22 @@ encoding is the simulator's specification's.
        fn open(&self, peer: Peer, service: ServiceId,
                security: Box<dyn SecurityObject>) -> Result<ConnId, RpcError>;
        /// One client call: the encoded request out; reply bytes and evidence back.
-       fn call(&self, conn: ConnId, request: &[u8], reply_cap: ByteCount,
-               deadline: Deadline, cancel: &Cancel) -> Result<Reply, RpcError>;
-       /// Settles every call of the connection by point 4, with cause `Closed`.
+       fn call(&self, conn: ConnId, request: &[u8], reply_cap: u64,
+               deadline: Deadline, cancel: &WatchRef) -> Result<Reply, RpcError>;
+       /// Fences the connection before it returns, then settles every call
+       /// of it by point 4, with cause `Closed`.
        fn close(&self, conn: ConnId);
        /// Server side, for the callback service (C31).
        fn accept(&self, service: ServiceId, deadline: Deadline,
-                 cancel: &Cancel) -> Result<Incoming, RpcError>;
+                 cancel: &WatchRef) -> Result<Incoming, RpcError>;
        fn respond(&self, call: Incoming, reply: Response<'_>) -> Result<(), RpcError>;
    }
-
-   /// In `ironafs-time`: one sample as C37, point 4, takes it (an awake
-   /// read bracketed by two boot reads), with the doubt count at that
-   /// sample (5.3, point 2).
-   pub struct Stamp { pub boot: BootInstant, pub awake: AwakeInstant, pub doubt: DoubtCount }
 
    pub struct Reply {
        pub bytes: Vec<u8>,
        /// When the request was first handed to the transport (C26, point 2),
-       /// sampled inside the hand-off (point 4). `None` if the sample failed:
+       /// a `Clock::sample` taken inside the hand-off (point 4). `None` if the
+       /// sample failed:
        /// no lifetime is counted from it (C37, point 5).
        pub first_sent: Option<Stamp>,
        pub via: ReplyEvidence,
@@ -500,8 +640,9 @@ encoding is the simulator's specification's.
        pub epoch: u32,
        pub conn_id: u32,
        pub call_number: u32,
-       /// Sampled by the loop when it read the datagram that completed the
-       /// reply, before feeding it to the endpoint. `None` if the sample failed.
+       /// A `Clock::sample` the loop took when it read the datagram that
+       /// completed the reply, before feeding it to the endpoint. `None` if
+       /// the sample failed.
        pub received: Option<Stamp>,
    }
    ```
@@ -509,6 +650,12 @@ encoding is the simulator's specification's.
    - `request` is the call as `ironafs-proto` encodes it, opcode
      included. `ironafs-client` maps each connection key (C30, point 3)
      to a `ConnId`.
+   - `cancel` is a `WatchRef` (5.3, point 1), not `ironafs-sync`'s
+     `Cancel`, so the trait stays in the pure, `no_std` `ironafs-rx`
+     (5.2, point 1). The caller passes its `Cancel`'s `watch()`. The
+     implementation clones the handle into the submission, so the call
+     owner reads the caller's token itself, inside the decision guard
+     (point 4), and never through a message.
    - `SecurityObject` is the security-class interface of `ironafs-rx`. It
      is a pure state machine (C3, point 1): any credential work that
      needs I/O is done before `open`, by the driver that obtains the
@@ -520,15 +667,18 @@ encoding is the simulator's specification's.
      trust rule needs. A keepalive's reply earns trust only through it,
      and only if: both stamps exist; the boot clock grew no more than the
      awake clock between them, beyond C37, point 4's threshold (no
-     suspend between send and receipt); the send follows the last
-     detected resume, clock doubt and network change; and the receipt is
-     within E of the send. A reply sent before a suspend and read from the
-     socket buffer after it never counts: the suspend lies between its
-     stamps. Trust is aged from `received`, not from when it is granted:
-     at the grant, and at every use after it, a fresh sample must show no
-     more than E since `received` and the doubt count unchanged since
-     `received`'s; otherwise trust is not granted, or has lapsed
-     [ADR 0004 C32.1, C32.4: Working; OWN for the stamps].
+     suspend between send and receipt); the two stamps carry the same
+     episode count (no detected suspend, regression, failed read or wall
+     jump between them, 5.3, point 2); the send follows the last network
+     change; and the receipt is within E of the send. A reply sent before
+     a suspend and read from the socket buffer after it never counts: the
+     suspend lies between its stamps. Trust is aged from `received`, not
+     from when it is granted: at the grant, and at every use after it, a
+     fresh sample must show no more than E on the boot clock since
+     `received`, and the same episode count as `received`; otherwise
+     trust is not granted, or has lapsed. So any episode, a wall jump
+     included, ends trust at the next use
+     [ADR 0004 C32.1, C32.4, C37.4: Working; OWN for the stamps].
 
 2. **Errors.** The seam does not know whether an opcode changes state. It
    reports only what the call owner knows about transmission:
@@ -561,15 +711,29 @@ encoding is the simulator's specification's.
      failed its check) is `NoReply(Security)`.
    - A reply over `reply_cap` (coding standards rule 3) is
      `NoReply(ReplyTooLarge)`: the peer ran the call.
+   - `NotSent(Unreachable)` settles a queued call when the transport
+     refuses its first packet with an error that a retry to the same
+     destination cannot clear (no route, the address family unavailable,
+     the socket closed). Which send errors are of that kind is the
+     `ironafs-net` design's list, and the model network scripts both
+     kinds. "Would block" and every other send error leave the call
+     queued (point 4); the owner tries again when the socket can take it
+     or at the endpoint's next timer, whichever is first, never in a
+     loop with no wait, so a call that can never be sent ends at its
+     deadline as `NotSent(Deadline)`.
    - There is no retryable "busy" result. A local refusal is
      `NotSent(Admission)` (point 8). A peer's Rx BUSY is not evidence
      that the call was rejected; how an unprotected BUSY may act is the
      Rx specification's and ADR 0006's, and the call then ends by the
      rules of point 4.
    - `ironafs-client` maps these per RPC to the contract's errors (C46,
-     point 1): for a fetch, `NoReply` is "timed out" or "unreachable";
-     for a store it is C28, point 4's lost reply, never success and never
-     resent.
+     point 1): for a fetch, `NoReply` is "timed out" or "unreachable",
+     except `NoReply(ReplyTooLarge)`, which is never retried as either: the
+     peer answered, and a retry meets the same cap. It fails the request
+     at once with its own event, and the server is not marked
+     unreachable; which contract error it becomes is the contract
+     specification's (issue #67). For a store, any `NoReply` is C28, point
+     4's lost reply, never success and never resent.
    - **An abort ends the call, not the question.** `ironafs-client`
      classifies the code by the RPC and the server (C46, point 3). For a
      procedure that changes state, an abort is a lost reply (C28, point
@@ -605,11 +769,15 @@ encoding is the simulator's specification's.
    | settled | the owner records an outcome and puts it in the call's slot | final; a later event changes nothing |
 
    - **The submission carries its own ends.** It holds the call's
-     deadline, the caller's cancel token and an abandon flag (a `Cancel`
-     the caller and the owner share). Setting the flag is the abandon; a
-     message on the control lane (point 8) only wakes the owner sooner.
-     The owner never depends on a message arriving to know that a call
-     has ended.
+     deadline, the caller's cancel token (the `WatchRef` of point 1), an
+     abandon flag (a `Cancel` the caller and the owner share) and its
+     connection's fence (a `Cancel` per connection, shared by every
+     submission on it), beside one shutdown fence for the run or the
+     daemon. Setting the flag is the abandon; `close` fires the
+     connection's fence before it returns, and shutdown fires its fence
+     before it posts anything. A message on the control lane (point 8)
+     only wakes the owner sooner. The owner never depends on a message
+     arriving to know that a call, or its connection, has ended.
    - **One decision guard per call.** Each call has a decision guard: a
      small mutex of `ironafs-sync` (not a core `Lock`, so C30, point 2,
      holds) over the call's state and its abandon flag. The owner makes
@@ -624,14 +792,16 @@ encoding is the simulator's specification's.
      first packet to the transport with a non-blocking send inside the
      same hold of the guard that made the arbitration, and the call
      becomes handed only when that send returns accepted. If the send
-     would block, or fails, the call stays queued, nothing of it is on the
-     transport, and the next attempt arbitrates again from the start. So
-     no send happens after a deadline, cancel or abandon that was ordered
-     before it. Once accepted, the operating system may put the packet on
-     the wire later: that is the send accepted before the end, never a
-     new send. An abandon ordered after it finds the call handed, and the
-     caller gets `NoReply`: for a store, C28, point 4's lost reply,
-     never a deferred store sent on its own (C28, point 3).
+     would block, or fails with an error that point 2 leaves queued, the
+     call stays queued, nothing of it is on the transport, and the next
+     attempt arbitrates again from the start; an error that point 2 calls
+     unreachable settles it `NotSent(Unreachable)` in the same hold. So
+     no send happens after a deadline, cancel, abandon or fence that was
+     ordered before it. Once accepted, the operating system may put the
+     packet on the wire later: that is the send accepted before the end,
+     never a new send. An abandon ordered after it finds the call handed,
+     and the caller gets `NoReply`: for a store, C28, point 4's lost
+     reply, never a deferred store sent on its own (C28, point 3).
    - **Acceptance is bracketed against the deadline.** A non-blocking
      send's contract is only that it does not wait, and the owner's
      thread can be preempted between its clock sample and the send for
@@ -676,7 +846,8 @@ encoding is the simulator's specification's.
    - **Arbitration, in the owner's own transitions.** Inside the guard,
      immediately before the queued-to-handed transition and immediately
      before recording a reply or an abort, the owner evaluates, in this
-     order: abandon flag set; cancel fired; the deadline's clock
+     order: abandon flag set; the connection's fence or the shutdown
+     fence fired (cause `Closed`); cancel fired; the deadline's clock
      unreadable or its doubt latched (5.3, point 2); the deadline passed
      (before the queued-to-handed transition: the deadline within the
      hand-off margin). The first that holds settles the call: from queued
@@ -684,8 +855,12 @@ encoding is the simulator's specification's.
      cause (the reply or abort is dropped, and the endpoint abandons the
      call as the Rx specification says). Only if none holds is the packet
      handed or the reply recorded. A reply that arrives after the
-     deadline, cancel or abandon never wins, and a queued call is never
-     sent after any of them.
+     deadline, cancel, abandon or fence never wins, and a queued call is
+     never sent after any of them. In particular no packet of a call is
+     accepted by the transport after `close` of its connection has
+     returned, whatever order the owner takes its messages in, so the
+     connections a rising restriction closes send nothing more ("sends
+     queued on them are fenced", N7, point 2) [ADR 0004 N7.2: Firm].
    - **The caller's side.** The caller's wait ending (deadline passed,
      cancel fired, clock failed) decides nothing by itself. The caller
      sets the abandon flag inside the guard, posts the wake on the
@@ -700,7 +875,13 @@ encoding is the simulator's specification's.
      when it runs again, sends nothing for it if it is queued, and lets no
      later reply or abort win if it is handed.
    - `close` and shutdown settle each call of the connection by the same
-     rule, cause `Closed`.
+     rule, cause `Closed`: a queued call `NotSent(Closed)`, which for a
+     request not yet sent means it runs through the connection's choice
+     again (N7, point 2), and a handed one `NoReply(Closed)`, which for a
+     mutation is the lost-reply rule. A send whose arbitration read the
+     fence unfired, in a hold that began before `close` fired it, is
+     ordered before the close: the call is handed, and is settled
+     `NoReply(Closed)`.
    - `NotSent` is returned only from the queued state. Every other path
      that may follow a send is `NoReply`, a reply or an abort. A
      cancelled store is a lost reply (C28, point 4): its outcome is read
@@ -736,6 +917,12 @@ encoding is the simulator's specification's.
      and to the sender it is network loss. The task feeds what it pops to
      the endpoint when next granted, and a slot it fills raises the
      waiting caller's signal.
+
+   Both loops run one call owner: the submission, the decision guard and
+   the arbitration of point 4 are one piece of code. `ironafs-net` and
+   `ironafs-sim` do not depend on each other, and `ironafs-net` does not
+   depend on `ironafs-client` (5.2, points 2 and 5), so that code lives in
+   a crate both may use; which one is section 13, Q2's.
 
    **Callback overload** (C31; C16, points 1 and 6). An incoming call for
    the callback service that the endpoint has received but cannot hand
@@ -799,8 +986,10 @@ encoding is the simulator's specification's.
 
    ```rust
    /// In `ironafs-cache`.
-   pub enum ReadRange { Whole { max: ByteCount }, Part { offset: u64, len: ByteCount } }
+   pub enum ReadRange { Whole { max: u64 }, Part { offset: u64, len: u64 } }
    pub enum Durability { Unsynced, Synced }
+   /// `Other` is a link or any entry that is neither a file nor a directory.
+   pub enum EntryKind { File, Dir, Other }
 
    pub trait Disk: Send + Sync {
        fn read(&self, path: &StorePath, range: ReadRange) -> Result<Vec<u8>, DiskError>;
@@ -813,16 +1002,22 @@ encoding is the simulator's specification's.
        /// Replaces `to` with `from`, both in `dir`. Durable only after `sync_dir(dir)`.
        fn rename(&self, dir: &StoreDir, from: &StoreName, to: &StoreName) -> Result<(), DiskError>;
        fn sync_dir(&self, dir: &StoreDir) -> Result<(), DiskError>;
-       /// Durable only after `sync_dir`.
+       /// Removes a file. Durable only after `sync_dir`.
        fn remove(&self, path: &StorePath) -> Result<(), DiskError>;
-       /// At most `max` names after `after`, in byte order.
+       /// Removes an empty directory. Durable only after its parent's `sync_dir`.
+       fn remove_dir(&self, dir: &StoreDir) -> Result<(), DiskError>;
+       /// At most `max` entries after `after`, in byte order of their names.
        fn list(&self, dir: &StoreDir, after: Option<&StoreName>, max: u32)
-           -> Result<Vec<StoreName>, DiskError>;
+           -> Result<Vec<(StoreName, EntryKind)>, DiskError>;
        fn space(&self) -> Result<Space, DiskError>;
    }
 
-   pub enum DiskError { NotFound, Exists, NoSpace, TooLarge, IsLink, Io { op: DiskOp } }
-   pub enum DiskOp { Read, Create, Write, Sync, CreateDir, Rename, SyncDir, Remove, List, Space }
+   pub enum DiskError {
+       NotFound, Exists, NoSpace, TooLarge, IsLink, IsDir, NotEmpty, Io { op: DiskOp },
+   }
+   pub enum DiskOp {
+       Read, Create, Write, Sync, CreateDir, Rename, SyncDir, Remove, RemoveDir, List, Space,
+   }
    ```
 
    - **`read`:** `Whole { max }` returns the whole file, or `TooLarge`
@@ -831,16 +1026,21 @@ encoding is the simulator's specification's.
      fewer than `len` only past the end, and none if `offset` is at or
      past it. The caller compares the length with what the content's own
      header states.
-   - **`list`** returns names in byte order. A caller that needs every
-     name pages with `after`, so a startup sweep always finishes,
-     whatever the directory's size.
+   - **`list`** returns names in byte order, each with its kind, read
+     without following a link. A caller that needs every name pages with
+     `after`, so a startup sweep always finishes, whatever the
+     directory's size. A sweep removes a `File` with `remove` and a `Dir`
+     with `remove_dir` after emptying it, and leaves an `Other` in place
+     with an event: it never follows or removes a link.
    - **Which errors each call returns:** `NotFound` from `read`,
-     `rename` (its source), `remove`, `list` and `sync_dir`; `Exists`
-     from `create` and `create_dir`; `NoSpace` from `create` and
-     `create_dir` only (a no-space condition in any other call is that
-     call's `Io`, with an uncertain effect, point 4); `TooLarge` from
-     `read`; `IsLink` from any call whose path meets a link (point 2);
-     `Io { op }` from the call named.
+     `rename` (its source), `remove`, `remove_dir`, `list` and
+     `sync_dir`; `Exists` from `create` and `create_dir`; `NoSpace` from
+     `create` and `create_dir` only (a no-space condition in any other
+     call is that call's `Io`, with an uncertain effect, point 4);
+     `TooLarge` from `read`; `IsLink` from any call whose path meets a
+     link (point 2); `IsDir` from `read`, `rename` and `remove` when a
+     named entry is a directory; `NotEmpty` from `remove_dir`; `Io { op }`
+     from the call named.
    - The shape holds whole buffers: `create` takes at most one chunk or
      one record image, under the caller's cap. Streaming is M3's
      (section 13, Q4).
@@ -857,7 +1057,9 @@ encoding is the simulator's specification's.
    `ironafs-os` [UNVERIFIED for Windows: which calls give the same
    guarantee; settled with that layer]. A rename's two names are in one
    directory, so no rename crosses directories [OWN: one directory's
-   sync then covers it].
+   sync then covers it]. That a rename onto an existing name replaces it
+   in one step on each platform's call is UNVERIFIED for Windows (section
+   13, Q16), and the conformance body checks it there.
 
 3. **Sync on the same handle.** There is no "sync this path" call.
    `create(.., Synced)` syncs on the handle that wrote. Each `StoreDir`
@@ -908,8 +1110,11 @@ encoding is the simulator's specification's.
      commit.
    - `NoSpace` on a clean chunk: the chunk is not cached (C27, point 3).
      On a durable record: the native no-space error (O41, point 6).
-   - `Io { op: Read }` or `NotFound` on a clean chunk is a miss (C27,
-     point 2).
+   - **Any `read` error on a clean chunk is a miss** (C27, point 2):
+     `NotFound`, `TooLarge`, `IsLink`, `IsDir` and `Io { op: Read }`
+     alike, as 5.8's `if let Ok` does. The read falls through to the
+     network, never fails on it. `IsLink` and `IsDir` also log an event,
+     since nothing the cache writes is a link or a directory there.
 
 5. **No deadline and no cancel.** `Disk` calls take neither: a local
    file call cannot be interrupted portably, and O41, point 1, requires
@@ -928,10 +1133,31 @@ encoding is the simulator's specification's.
      `sync_dir(dir)`. **Durable removal:** `remove`, then `sync_dir`;
    - **directories** a store uses are created by that store at startup:
      `create_dir`, then `sync_dir` of the parent, before any plan writes
-     in them. The state directory's parent is synced at every start,
-     whether or not this start created the directory, so a start that
-     created it and stopped before that sync leaves no later start
-     skipping it. A directory sync comes after the change it covers.
+     in them. A directory sync comes after the change it covers.
+   - **the root** is the state directory itself, which exists before the
+     daemon starts (O41, point 1). It is outside the trait: no
+     `StoreDir` names it or its parent. The driver's construction, in
+     `ironafs-disk` and in the simulated disk alike, takes the state
+     directory's lock, opens the root, and syncs the root's parent at
+     every start, whether or not this start found the root present; a
+     failure refuses the start. So a start that stopped before that sync
+     leaves no later start skipping it. The simulated disk starts each
+     run from a durable root [OWN: the root's own entry is the
+     installation's, and a refused start is the only safe answer to a
+     parent it cannot sync].
+   - **where a durable record may live.** A failed `sync_dir` after a
+     `create_dir` leaves the directory's creation marked (point 7): no
+     later successful sync, in this incarnation or the next, makes it
+     durable, and every change inside it needs it. A later incarnation
+     cannot tell such a directory from a durable one. So a durable record
+     is acknowledged only in the root, or in a directory whose
+     `create_dir` and parent `sync_dir` both succeeded in this
+     incarnation. Within an incarnation, a failed parent sync after a
+     `create_dir` takes that directory out of use for durable records:
+     the store draws a new name where its layout allows one (as point 9
+     does), or refuses durable writes for the incarnation with an event.
+     Which layout keeps this is section 13, Q18's [OWN: the fresh-commit
+     rule below, applied to a directory's own name].
 
    **Serialisation.** Running a plan does not serialise. Plans of one
    store run one at a time, under that store's one-writer rule; plans of
@@ -955,7 +1181,7 @@ encoding is the simulator's specification's.
    - **Each directory** has a durable namespace (name to identity) and
      an ordered log of the namespace changes made in it: create (a name
      bound to a new identity), `create_dir`, rename (one name to another,
-     replacing the target's binding) and remove.
+     replacing the target's binding), remove and `remove_dir`.
    - **Dependency.** A change in the log depends on every earlier change
      in the same log that touches one of its names or its identity: for
      example, `rename(dir, tmp, final)` depends on the `create(dir/tmp)`
@@ -994,7 +1220,7 @@ encoding is the simulator's specification's.
    | a file's unsynced bytes (`create(.., Unsynced)`, or `Synced` whose sync failed) | empty, a prefix, any subset of its sectors, or whole, under whatever name survives |
    | a create or `create_dir` no `sync_dir` of its directory covered | the name present or absent |
    | `rename(dir, a, b)` that `sync_dir(dir)` did not cover | applied (`b` names the file, `a` absent) or not (`a` and `b` as the kept earlier changes leave them); never both names. The file is under neither name only if its own create was not kept, so a first install may lose both the temporary name and the rename: nothing was acknowledged, because the acknowledgement follows the `sync_dir` (point 6) |
-   | `remove` that `sync_dir` did not cover | applied or not, subject to dependency |
+   | `remove` or `remove_dir` that `sync_dir` did not cover | applied or not, subject to dependency |
 
    **A daemon restart** resolves nothing. Every namespace change and
    every byte the old incarnation wrote stays exactly as volatile state
@@ -1083,8 +1309,10 @@ encoding is the simulator's specification's.
    means an older incarnation's directory has the name, and a new name is
    drawn, a bounded number of times; after that the clean cache stays off
    for the incarnation and an event is logged. An older directory is
-   never adopted. A paged sweep (point 1) removes older ones. Records
-   outside the clean tree (C27, point 7) are untouched. The exact layout
+   never adopted. A paged sweep (point 1) removes older ones: each one's
+   files with `remove`, then the emptied directory with `remove_dir`; no
+   sync is needed, since the clean tree is never durable. Records outside
+   the clean tree (C27, point 7) are untouched. The exact layout
    is the cache format specification's; this page requires only the
    exclusion.
 
@@ -1302,15 +1530,22 @@ encoding is the simulator's specification's.
      thread-locals and no mutable statics (5.2, point 5), so none
      survives.
    - A panic while unwinding aborts the process, as does a stack
-     overflow; point 10's supervisor reports either.
+     overflow [UNVERIFIED at the pinned toolchain: section 13, Q16];
+     point 10's supervisor reports either, so the design holds whichever
+     way they end.
    - The simulator's test binary is built with unwinding panics, and
-     `ironafs-sim` refuses to compile under `panic = "abort"`.
+     `ironafs-sim` refuses to compile under `panic = "abort"`, through a
+     compile error under `cfg(panic = "abort")` [UNVERIFIED at the pinned
+     toolchain: section 13, Q16].
    - The next incarnation starts when the last old task has ended.
 
 9. **Failures the scheduler reports.** Each fails the run, with the seed
    and the replay command:
    - **A lock held at a yield:** caught at the yield (point 4), naming
      the yield kind, the task and the lock's level.
+   - **A full waker list:** reported by the simulated `Clock::wait` when
+     a watch refuses its registration (5.3, point 3), naming the task,
+     the watch and the list's bound.
    - **A contended `Lock`,** reachable only if the check above is
      bypassed: the observer build fails at once, without blocking, naming
      both tasks and the level.
@@ -1428,15 +1663,17 @@ encoding is the simulator's specification's.
    most the smaller of the time left on the deadline's clock and one
    slice (an initial setting of one second, measured on resume and under
    idle load), then the wait evaluates again. The time left comes from
-   one sample taken as C37, point 4, takes it. A failed sample ends every
-   wait, on either clock, as `ClockFailed`; a regression ends every wait
-   on a boot deadline as `ClockFailed` (C37, points 4 and 5). Each waiting
-   thread samples at least once per slice, and each failure or regression
-   moves the doubt count every outstanding deadline latches (5.3, point
-   2), so every wait learns of the doubt within one slice. The `Clock`
-   implementation counts each episode (a detected suspend, a regression,
-   a failed sample) where the core reads it at its next serve, which marks
-   callbacks suspect before the answer (C32, point 5). The slice is a
+   one `Clock::sample`. A failed read ends every wait, on either clock,
+   as `ClockFailed`; a regression ends every wait on a boot deadline as
+   `ClockFailed`, and no wait on an awake deadline (5.3, point 2; C37,
+   points 4 and 5). Each waiting thread samples at least once per slice,
+   and each failure or regression moves the doubt counts that 5.3, point
+   2, names, which the outstanding deadlines latch, so every wait affected
+   learns of it within one slice. The `Clock` implementation counts each
+   episode (a detected suspend, a regression, a failed read, a wall jump)
+   in the episode count of every later `Stamp`, which the core reads at
+   its next serve and which marks callbacks suspect before the answer
+   (C32, point 5). The slice is a
    polling interval, not a guarantee: host scheduling can add to it, and
    whether a condition variable's timeout counts suspend is not relied on
    [UNVERIFIED per platform].
@@ -1512,7 +1749,7 @@ pub fn read_chunk<R: Rpc, D: Disk, C: Clock>(cx: &Core<R, D, C>, req: &ReadReque
     }
     let conn = cx.conns.for_key(&ticket.conn_key(), &cx.rpc)?;          // `open`: no wait
     let request = proto::fs::fetch_data::encode(&ticket.fetch_args())?;  // pure
-    let reply = cx.rpc.call(conn, &request, FETCH_REPLY_CAP, req.deadline, &req.cancel) // yield
+    let reply = cx.rpc.call(conn, &request, FETCH_REPLY_CAP, req.deadline, &req.cancel.watch()) // yield
         .map_err(|e| errors::for_fetch(e, ticket.server()))?;           // C46, point 3
     let data = proto::fs::fetch_data::decode(&reply.bytes)?;            // pure, fuzzed
     // Installed only if no break counter, and no overload, moved since the
@@ -1576,11 +1813,18 @@ pub fn serve_read<R: Rpc, D: Disk, C: Clock>(cx: &Core<R, D, C>, req: &ReadReque
 
 1. **One conformance body per seam trait.** `ironafs-test-support` holds
    one body for each of `Clock`, `Rng`, `Rpc` and `Disk`. Each body runs
-   against the fake (the seeded implementation), the simulator's
-   implementation and the production driver. A body that runs against
-   fewer than its three implementations, or passes with no case run,
-   fails [OWN: one body is what makes the simulator's answers the
-   production driver's answers].
+   against every implementation of its seam:
+   - `Clock` and `Rng`: the fake (the seeded implementation in
+     `ironafs-test-support`), the simulator's and the production one;
+   - `Rpc`: `RxRpc` over the simulated `rx` task and over the production
+     `rx` thread;
+   - `Disk`: the simulated disk and `ironafs-disk`. There is no separate
+     `Disk` or `Rpc` fake: a unit test that needs one uses the
+     simulator's, with its faults off.
+
+   A body that runs against fewer than the implementations listed for its
+   seam, or passes with no case run, fails [OWN: one body is what makes
+   the simulator's answers the production driver's answers].
 2. **Fault conformance.** For the seams that inject faults (`Disk`, and
    `Rpc` through the model network), the body also checks that each
    injected fault surfaces as the seam's ordinary error from 5.4, point
@@ -1600,7 +1844,8 @@ pub fn serve_read<R: Rpc, D: Disk, C: Clock>(cx: &Core<R, D, C>, req: &ReadReque
    point 1; for `Rpc`, the call lifecycle of 10.5, point 2, admission per
    lane, a reply over its cap, the wake bound of 5.4, point 9, and
    shutdown with the call table and every connection full; for `Clock`,
-   the wait protocol of 5.3, points 3 and 4, and the doubt latch; for
+   the wait protocol of 5.3, points 3 and 4, and the counts, episodes and
+   doubt latch of 5.3, point 2; for
    `Rng`, that a seeded source reproduces its sequence from its seed and
    that a failed source fails the operation that asked.
 
@@ -1617,8 +1862,8 @@ pub fn serve_read<R: Rpc, D: Disk, C: Clock>(cx: &Core<R, D, C>, req: &ReadReque
    returns `ClockFailed` (5.2, point 3).
 5. Grant and seen counts, ages and decision numbers are 64-bit; the step
    budget keeps them far below the limit.
-6. Doubt counts are 64-bit and only increase; an increment that would
-   overflow is a clock failure.
+6. Doubt counts and the episode count are 64-bit and only increase; an
+   increment that would overflow is a clock failure.
 
 ## 7. Errors and failure
 
@@ -1672,13 +1917,18 @@ listed with its crate.
 | C4, points 1, 4 and 7 | 5.2, points 1, 2 and 5 | `xtask`: `check-deps --self-test`, `check-pure --self-test`, `seams::pure_crate_calls_no_seam` (planted) |
 | C16, points 2 and 3 | 5.8, points 2 and 3 | `ironafs-client`: `read::break_before_submission_is_fenced` (both binding roles) |
 | C16, points 1 and 6; C31 | 5.4, point 7; 5.8, point 2 | `ironafs-client`: `rpc::callback_overload_recorded_before_drop`, `read::overload_fences_install`, `read::no_ticket_over_pending_overload`; `binding::overload_pushes_epoch_advance` |
-| C27, point 2 | 5.5, points 4 and 6 | `ironafs-client`: `read::bad_chunk_is_a_miss` (read errors on) |
+| C24, point 1 | 5.4, point 2 | `ironafs-client`: `errors::unprotected_matching_abort_is_ambiguous`, `errors::abort_before_rxgk_is_never_authoritative` |
+| C27, point 2 | 5.5, points 4 and 6 | `ironafs-client`: `read::bad_chunk_is_a_miss` (read errors on), `read::any_clean_read_error_is_a_miss` (each `DiskError` kind) |
 | C28, points 3 and 4 | 5.4, points 2 and 4 | `ironafs-client`: `rpc::lifecycle_*` (10.5, point 2), `rpc::send_decided_inside_guard`, `rpc::late_handoff_is_bracketed_and_never_succeeds`, `errors::state_changing_abort_is_ambiguous`, `errors::unprotected_matching_abort_is_ambiguous` |
-| C28, point 6; C29, point 9; N32, point 6 | 5.5, points 4, 6 and 7 | `ironafs-sim`: `disk::durable_replace_crash_at_every_cut`, `disk::one_ack_after_record_and_boundary`, `disk::restart_never_trusts_failed_sync`, `disk::marked_log_keeps_covered_suffix`, `disk::failed_sync_never_marks_covered` |
+| C28, point 6; C29, point 9; N32, point 6 | 5.5, points 4, 6 and 7 | `ironafs-sim`: `disk::durable_replace_crash_at_every_cut`, `disk::one_ack_after_record_and_boundary`, `disk::restart_never_trusts_failed_sync`, `disk::marked_log_keeps_covered_suffix`, `disk::failed_sync_never_marks_covered`, `disk::no_ack_in_a_directory_not_made_this_incarnation`, `disk::root_parent_synced_at_construction` |
+| C32, points 1 and 4 | 5.4, point 1; 5.3, point 2 | `ironafs-sim`: `clock::keepalive_across_suspend_earns_no_trust`, `clock::keepalive_across_wall_jump_earns_no_trust`, `clock::trust_lapses_at_e_after_received` |
+| C32, point 5 | 5.3, point 2; 5.7, point 1; 5.8, point 2 | `ironafs-sim`: `clock::episode_marks_suspect_before_reply` (a suspend, a regression, a failed read and a wall jump) |
+| C37, points 4 and 5 | 5.3, points 1, 2 and 4; 5.6, point 5; 5.7, point 1 | `ironafs-sim`: `clock::failed_read_expires_every_deadline`, `clock::regression_expires_boot_deadlines_only`, `clock::latched_doubt_outlives_the_fault`, `clock::no_deadline_without_a_valid_sample`; the `Clock` conformance body |
 | C39, point 3 | 5.3, points 3 and 5; 5.4, points 7 and 8 | `ironafs-sync`: `queue_refuses_over_cap`, `oneshot_cancel_wakes`; `ironafs-os`: `waker_raise_at_check_to_sleep_boundary`; `ironafs-client`: `rpc::admission_lanes`, `rpc::control_lane_never_full_at_shutdown`; `ironafs-sim`: `inbound_queue_full_drops` |
 | C39, point 4 | 5.3, point 6; 5.6, point 9 | `ironafs-sim`: `lock_held_at_yield_fails`, `contended_lock_fails` |
 | C46, point 3 | 5.4, point 2 | `ironafs-client`: `errors::abort_code_needs_rpc_and_server` |
-| C46, point 4 | 5.4, point 4; 5.5, point 1; 7, point 3 | `ironafs-client`: `rpc::verdict_wait_failure_is_no_reply`; the `Disk` conformance body's `part_past_end` and `whole_over_max` |
+| C46, point 4 | 5.4, point 4; 5.5, point 1; 7, point 3 | `ironafs-client`: `rpc::verdict_wait_failure_is_no_reply`; the `Disk` conformance body's `part_inside_is_exact`, `part_past_end` and `whole_over_max` |
+| N7, point 2 | 5.4, point 4 | `ironafs-client`: `rpc::close_fences_queued_sends` (both orders of `close` and the owner's arbitration) |
 | Coding standards rule 7 | 5.2, point 5; 5.6, point 9 | `xtask`: the disallowed-methods self-test; `ironafs-sim`: `planted_host_read_breaks_replay` |
 
 ## 10. Tests
@@ -1709,17 +1959,42 @@ decision), the child's exit status, and a complete parsed trace with its
 terminal event. A truncated trace never compares equal to anything.
 Mutations listed with a case are each run and must be caught.
 
-1. **`Disk` conformance,** on `ironafs-disk` and the simulated disk:
-   exclusive create; a replacing rename within a directory; removal;
-   `Part` past the end; `Whole` over `max`; `list` order and paging to the
-   end; `NoSpace` on a full small volume both at the open (the name is
-   then absent) and at a write (the name is present, empty or a prefix),
-   each followed by the caller's cleanup; an injected sync failure; a
-   symbolic link planted at each component of a path, refused at lookup
-   and at mutation. On `ironafs-os`'s waker, through a test hook: a raise
+1. **`Disk` conformance,** on `ironafs-disk` and the simulated disk,
+   each call's every error of 5.5, point 1, by its exact variant:
+   - `create` and `create_dir` exclusive, `Exists` on a second one;
+     `create_dir` then its parent's `sync_dir`;
+   - a replacing rename within a directory; `NotFound` for a missing
+     source; `IsDir` when a name is a directory;
+   - `remove` of a file; `IsDir` on a directory; `remove_dir` of an empty
+     directory, `NotEmpty` on one holding an entry;
+   - `NotFound` from `read`, `rename`, `remove`, `remove_dir`, `list` and
+     `sync_dir` on a missing name or directory;
+   - `read`: `part_inside_is_exact` (`Part { offset: 0, len: 4096 }` on an
+     8192-byte file returns exactly 4096 bytes, and a range ending exactly
+     at the end returns all of it); `part_past_end` (fewer bytes only past
+     the end, none at or past it); `whole_over_max` (`TooLarge` and no
+     bytes); an `offset + len` overflow is `TooLarge`;
+   - `list`: an empty directory gives no entries; byte order, paging to
+     the end, and each entry's kind (`File`, `Dir`, and `Other` for a
+     planted link, never followed);
+   - `space` returns a value on the store's own volume;
+   - the paged sweep of 5.5, point 9, over a tree with files, an emptied
+     directory and a planted link: every file, and every directory that
+     holds no link, removed; the link and its directory left in place,
+     with the event;
+   - `NoSpace` on a full small volume both at the open (the name is then
+     absent) and at a write (the name is present, empty or a prefix),
+     each followed by the caller's cleanup; an injected sync failure;
+   - a symbolic link planted at each component of a path, refused with
+     `IsLink` at lookup and at every mutation: `create`, `create_dir`,
+     `rename`, `remove`, `remove_dir`, `sync_dir` and `list`.
+
+   On `ironafs-os`'s waker, through a test hook: a raise
    injected just after the evaluation and before the block, and one just
    after the block starts, both ending `Signalled` well inside one slice;
-   a failed clock sample ends a wait on each clock as `ClockFailed`.
+   a failed clock sample ends a wait on each clock as `ClockFailed`; a
+   scripted regression ends a wait on a boot deadline as `ClockFailed`
+   and not one on an awake deadline.
 
 2. **Call lifecycle,** each case where two events meet run as a race
    scenario (5.6, point 6), over its seed range, with its witness per
@@ -1732,9 +2007,25 @@ Mutations listed with a case are each run and must be caught.
      abandon flag in adjacent steps, both orders: whichever comes first in
      decided order wins;
    - `close` and shutdown with calls queued and handed;
+   - **`close` against a hand-off** (`rpc::close_fences_queued_sends`):
+     a queued call, and `close` of its connection returning before the
+     owner processes either the submission or the close message, in both
+     orders of the two messages: the call settles `NotSent(Closed)`, and
+     the network model sees no packet of it, ever. Through the
+     production hook, `close` fired while the owner holds the guard
+     between its arbitration and the send: the call is handed and settles
+     `NoReply(Closed)`, and the transport's log shows acceptance before
+     the fence. Mutations: the fence set only by the control-lane
+     message; the fence left out of the arbitration;
+   - a send error of each kind: "would block" and a transient error leave
+     the call queued, and it is sent at the next attempt or ends
+     `NotSent(Deadline)`; an unreachable error settles
+     `NotSent(Unreachable)` at once; no attempt is made without a wait
+     between;
    - a clock failure during the wait, queued and handed;
    - a security failure before and after sending; a reply over its cap:
-     `NoReply(ReplyTooLarge)`;
+     `NoReply(ReplyTooLarge)`, and a fetch that meets it fails at once,
+     is not retried and does not mark its server unreachable;
    - the deadline passes, or the cancel fires, while the call is queued
      and before any abandon wake is processed: the owner settles
      `NotSent` at its next transition, and no packet of the call is ever
@@ -1828,11 +2119,21 @@ Mutations listed with a case are each run and must be caught.
      crash; a successful `sync_dir` that folds a covered change logged
      after an unresolved marked one; a failed `sync_dir` that marks
      covered changes;
-   - **handles, parent and lost sectors:** a start that finds the state
-     directory present still syncs its parent; torn outcomes read lost
-     sectors as zeros and as junk. Mutations: a `sync_dir` through a
-     handle opened afresh; a start that skips the parent's sync because
-     the directory exists.
+   - **handles, root and lost sectors:** a driver construction that finds
+     the state directory present still syncs its parent, and one whose
+     parent sync fails refuses the start; torn outcomes read lost sectors
+     as zeros and as junk. Mutations: a `sync_dir` through a handle opened
+     afresh; a construction that skips the parent's sync because the
+     directory exists;
+   - **a directory whose creation was not made durable**
+     (`disk::no_ack_in_a_directory_not_made_this_incarnation`): a
+     `create_dir` whose parent `sync_dir` fails; in the same incarnation,
+     no durable record is acknowledged in it, and the store uses a fresh
+     name or refuses durable writes; then a daemon restart, and the next
+     incarnation, finding the directory, acknowledges no durable record
+     in it; then a host crash at each cut, with the directory kept and
+     lost: no acknowledged record is lost. Mutation: a store that
+     acknowledges a record in a directory it found at start.
 
    The exclusion of clean chunks across a restart (5.5, point 9) is
    checked by its own case, with the mutation "reuse the older clean
@@ -1951,6 +2252,19 @@ Mutations listed with a case are each run and must be caught.
    A keepalive reply received within E of its send but processed more than
    E after its receipt: trust is not granted; trust granted from a fresh
    receipt lapses at E after `received`, not after the grant.
+   **Regression and wall jump.** A scripted regression of the awake
+   clock, and separately of the boot clock, with tasks waiting on boot
+   and on awake deadlines: every boot-deadline wait is enabled at that
+   decision and ends `ClockFailed`, every awake-deadline wait runs on to
+   its own outcome, one episode is counted, and the next serve marks
+   callbacks suspect before its answer. A wall-time jump past the
+   threshold, forward and back, with no other fault: one episode, no
+   wait ends, the next serve marks callbacks suspect, and a keepalive
+   whose send and receipt straddle the jump, or trust granted before it
+   and used after it, gives no trust. A wall-time change under the
+   threshold counts nothing. Mutations: a regression that moves no count;
+   a regression that also fails awake deadlines; a wall jump not counted
+   as an episode; trust compared on doubt counts only.
 
 9. **Callback overload.** A flood of callback calls from one known server
    and from unknown sources, past the accept queue's cap and the rate
@@ -1982,17 +2296,51 @@ From the working decisions this page rests on:
 - **C3:** "the M2a simulator cannot replay a failing schedule from its
   seed, or a measured workload needs more concurrent waits than a bounded
   pool of threads can hold."
-- **C4:** "a boundary below forces a dependency that point 4 forbids, or
-  the first implementation of a crate shows it has no content of its
-  own."
+- **C4:** "a boundary below forces a dependency that point 4 forbids, the
+  first implementation of a crate shows it has no content of its own, or
+  no log sink outside Linux still needs a site in `ironafs-os` (then the
+  safe log transport could live in a crate without `unsafe`)."
 - **C39:** "M2 load tests show the fixed set starves a class of work, or
   lock-order checks find an RPC wait under a lock that cannot be
   restructured."
 - **O45:** "the simulator cannot reproduce a failure seen against a real
   cell, or keeping its server models in step with observed behaviour
   costs more than the tests return."
-- C9, C26, C27, C29, C30, C31, C32, C37, C46 and O41: their triggers as
-  written in ADR 0004.
+- **C9:** "a layer's gate shows a commit point that the reasons below
+  cannot express, or that the deadline rule makes an application lose
+  data it was told was saved."
+- **C26:** "the specification gate of C25 shows a restore discriminator.
+  Then clean chunks persist under point 4."
+- **C27:** "M2a measurements show the filesystem-as-index layout or the
+  eviction policy misses its targets on a supported filesystem."
+- **C29:** "assumption A9 is settled the other way (AFS-3, or a later
+  profile (N1), offers a conditional store or an operation id), or M3 use
+  shows explicit recovery is needed often enough to burden users."
+- **C30:** "the M2 tests show a NAT or firewall that maps the callback
+  port differently from the calling port, or one `rx` thread limits
+  measured throughput."
+- **C31:** "a fileserver offers rxgk-protected callbacks to clients (then
+  a protected break is authoritative evidence under C24), or the test
+  cell shows a callback procedure this table lacks."
+- **C32:** "M2 measurements against the test cell and through NAT show
+  the intervals below serve stale data or cost too many revalidations."
+- **C37:** "the M2 sleep, hibernation, Modern Standby and VM-pause tests
+  show a clock below does not behave as its documentation says, or a
+  supported target lacks a valid pair."
+- **C46:** "a layer's error mapping cannot express a contract error
+  without losing what the user needs to act on it."
+- **O41:** "crash and power-loss tests fail on a file system the matrix
+  supports, or a platform's qualified flush sequence changes."
+- **O47:** "the fuzzing engine's platform limits change, or A12 is
+  settled differently when the first fuzz target lands."
+- **O48:** "the test cell cannot be run in containers on hosted runners,
+  or a case here cannot be automated on a supported OS."
+- **O50:** "a phase's gate fails, a specification route proves
+  unavailable, or an rxgk trigger in point 9 opens a scheduling review."
+- **ADR 0005, decision 2,** a row: "an operating system ships a safe
+  interface that removes it (C5's trigger), a supported release changes
+  the item's header or library (point 5.7), or the decision it serves is
+  revisited (C23, C27, C33, C34, C37, O8, C43, C45)."
 
 This page's own triggers:
 
@@ -2004,26 +2352,30 @@ This page's own triggers:
   outside 5.5, point 7's table;
 - a golden fixture over its size cap;
 - idle wake-ups from the one-second slice measured as material on a
-  laptop.
+  laptop;
+- a seam in a pure crate that needs more of a waiting primitive than the
+  `Watch` trait gives (5.2, point 1).
 
 ## 12. Sources
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| S1 | DECISION | ADR 0004 (accepted 2026-11-20), [part 1](../adr/0004-architecture-1-core.md): C3, C4, C9, C16, C24, C26 to C32, C37 to C39, C46 | all |
-| S2 | DECISION | ADR 0004, [part 3](../adr/0004-architecture-3-operations.md): O41, O45, O46, O47, O48, O50 | 5.5, 5.6, 8 |
-| S3 | DECISION | ADR 0004, [part 4](../adr/0004-architecture-4-negotiation.md): N32 | 5.5 |
-| S4 | DECISION | [Coding standards](../coding-standards.md), rules 3, 7, 18 and 21 | 5.2, 5.3, 5.6 |
+| S1 | DECISION | ADR 0004 (accepted 2026-11-20, with its amendments to 2026-11-21), [part 1](../adr/0004-architecture-1-core.md): C3, C4, C9, C16, C24, C26 to C32, C37 to C39, C46 | all |
+| S2 | DECISION | ADR 0004, [part 3](../adr/0004-architecture-3-operations.md): O41, O45, O47, O48, O50 | 1, 5.4, 5.5, 5.6, 8, 11 |
+| S3 | DECISION | ADR 0004, [part 4](../adr/0004-architecture-4-negotiation.md): N7, N32 | 1, 5.4, 5.5, 9 |
+| S4 | DECISION | [Coding standards](../coding-standards.md), rules 3, 7 and 18 | 1, 5.4, 5.6, 9, 13 |
 | S5 | DECISION | Issue #71: the scheduling model and the store path's late hand-off, decided by the owner; issue #79: the M2a disk faults, decided by the owner | 1, 5.4, 5.5, 5.6 |
-| S6 | OWN | The wait protocol and its latch; the doubt latch; the call owner, its decision guard and the clock bracket; the overload record's ordering; sync on the same handle; plans; the persistence model, its marks and the fresh commit; the hand-off protocol; fairness and mandatory deadline completions; the race witness; the supervisor and the watchdog; strict replay and golden traces | 5.3 to 5.9 |
+| S6 | OWN | The `Watch` handle a pure seam takes; the episode and doubt counts; the wait protocol and its latch; the doubt latch; the connection fence; the call owner, its decision guard and the clock bracket; the overload record's ordering; sync on the same handle; plans; the persistence model, its marks and the fresh commit; the hand-off protocol; fairness and mandatory deadline completions; the race witness; the supervisor and the watchdog; strict replay and golden traces | 5.3 to 5.9 |
+| S7 | DECISION | [ADR 0005](../adr/0005-ironafs-os.md) (accepted 2026-11-21), decision 2: the closed list of `ironafs-os` sites | 1, 5.2, 11, 13 |
 
 No outside document is cited for a fact this page relies on. Platform
 behaviour named here (per-handle writeback error reporting, directory
 syncs on macOS, the ext4 residual, condition-variable timeouts across a
-suspend, the Rust panic and unwinding rules) is labelled UNVERIFIED and is
-settled by O41, point 4's qualification and the conformance bodies, or by
-registering the edition that states it before code relies on it (section
-13, Q16). No other implementation's source is used.
+suspend, datagram acceptance and the clock, a replacing rename on
+Windows, the root-relative no-follow calls, the Rust panic and unwinding
+rules) is labelled UNVERIFIED and is settled by O41, point 4's
+qualification and the conformance bodies, or by registering the edition
+that states it before code relies on it (section 13, Q16). No other implementation's source is used.
 
 ### 12.1 Observed behaviour
 
@@ -2038,10 +2390,21 @@ real platforms.
   support that is neither pure nor a driver, with point 4 gaining "no
   shipped crate depends on `ironafs-sim` or `ironafs-test-support`" and
   "`ironafs-net`, `ironafs-disk` and `ironafs-sim` do not depend on one
-  another". C4 is Working, so this is an amendment by its own issue
-  ([ADR README](../adr/README.md), "Amending a working decision"), with
-  `xtask`'s crate table updated in the same change. Blocks: creating
-  either crate. It blocks nothing else on this page.
+  another". No pure crate depends on `ironafs-sync` (5.2, point 1), so
+  the pure set and `ironafs-rx`'s allowed dependencies are unchanged. The
+  same amendment names the crate that holds the call owner's code (5.4,
+  point 7). `ironafs-sync` cannot, since it would need `ironafs-rx`'s
+  types. The options are a small standard-library crate over
+  `ironafs-rx`, `ironafs-time` and `ironafs-sync` that `ironafs-net` and
+  `ironafs-sim` both use, or `ironafs-client`, with each loop driving it
+  through an interface its driver supplies, which must keep section 3,
+  point 2's one blocking primitive. Decision needed before the `rx` loop
+  is written. C4 is Working, so this is an amendment by its own
+  issue ([ADR README](../adr/README.md), "Amending a working decision"),
+  with `xtask`'s crate table updated in the same change, as issue #53
+  amends C4's other points. Tracked in issue #71 until that issue is
+  filed. Blocks: creating `ironafs-sync`, `ironafs-disk` and the `rx`
+  loop. It blocks nothing else on this page.
 - **Q3. The clock of a request's deadline.** C39, point 3, says "counted
   from arrival"; C37, point 1, gives the boot clock to server-granted
   deadlines and the awake clock to round-trip and retransmission timers,
@@ -2052,7 +2415,7 @@ real platforms.
   OS request completes within its deadline"), does not allow as written.
   Settled in the contract's specification (issue #67), with the Working
   amendments of C37, point 1, and O45, point 3, it then needs. Blocks:
-  the deadline check across a suspend.
+  the deadline check across a suspend. Tracked in issue #67.
 - **Q4. Streaming and the store path's deadlines.** Whole buffers in M2a,
   for `Rpc` and `Disk`. A store needs more than `call` gives: C9, point 3,
   lets the caller's commit deadline pass while the store continues, and
@@ -2061,18 +2424,19 @@ real platforms.
   call, with an explicit `abandon` and a stall limit renewed by
   acknowledged progress, under the call owner of 5.4, point 4; decided
   with the store path in M3. M2a makes no store call, so no M2a code
-  depends on it.
+  depends on it. Tracked in issue #71 until M3's store-path issue is
+  filed.
 - **Q7. Replay across targets.** Byte-identical replay is claimed per
   target triple. A nightly comparison across targets matches scenario,
   seed, features and profile, compares canonical events without the
   target's metadata, and files its first unexplained difference as a
-  defect; it does not gate pull requests.
+  defect; it does not gate pull requests. Tracked in issue #79.
 - **Q11. The spike.** Before operation code is written on the seams, the
   scheduler and strict replay run on a minimal scripted operation with a
   planted failing schedule, which must reproduce from its seed (10.5,
   point 5), under this page's issue; its code carries into the simulator.
   If it cannot, C3's trigger fires and C3 reopens before the rest is
-  written.
+  written. Tracked in issue #71.
 - **Q12. Coding standards rule 18** still describes async code, which C3
   forbids; ADR 0004's Consequences say it is reworded for threads,
   deadlines and cancel tokens. Proposed text, class S:
@@ -2085,7 +2449,9 @@ real platforms.
   crate's design. No core lock is held at a yield point of the seams
   specification. Network and IPC I/O has a timeout. Shutdown is a
   `Cancel` given to every loop, then a join, and core code never relies
-  on `Drop` for I/O."
+  on `Drop` for I/O." Blocks: nothing on this page; rule 18 is reworded
+  before the first core loop is written. Tracked in issue #71 until its
+  own class S issue is filed.
 - **Q14. Waking the production `rx` loop** (5.4, point 9). A loop over the
   standard library alone can own both sockets non-blocking and sample
   them on a bounded interval (C30, point 2); a readiness wait over the
@@ -2095,19 +2461,49 @@ real platforms.
   receive load. If the readiness wait wins, its design covers a wake send
   that fails, "would block" after a ready report, bounded draining so
   receive traffic cannot starve submissions, interrupted waits with the
-  deadline recomputed, and the Windows poll flags and errors.
+  deadline recomputed, and the Windows poll flags and errors. The same
+  design lists the send errors that settle `NotSent(Unreachable)` (5.4,
+  point 2). Blocks: the production `rx` loop. Tracked in issue #71 until
+  `ironafs-net`'s issue is filed.
 - **Q15. Golden trace fixtures.** Exact trace bytes per seed (5.6, point
   11), capped at 256 KiB per seed. If the first run shows a seed over the
   cap, that seed falls back to a 64-bit FNV-1a hash of the whole trace
   plus the exact bytes of its first and last events, which detects change
-  but is not exact, and the fallback is recorded.
+  but is not exact, and the fallback is recorded. Tracked in issue #79.
 - **Q16. Platform facts to register.** The UNVERIFIED platform facts of
   section 12 are read at source and registered ([README](README.md),
   "Register of editions") before the driver that relies on each is
   written: per-handle writeback error reporting on Linux, the directory
   sync on macOS, the ext4 residual, condition-variable timeouts across a
-  suspend, the root-relative no-follow calls on each platform, and the
-  Rust panic and unwinding rules at the pinned toolchain.
+  suspend, the root-relative no-follow calls on each platform, a
+  replacing rename on Windows, that no interface makes a datagram's
+  acceptance conditional on a clock (5.4, point 4), and the Rust panic
+  and unwinding rules at the pinned toolchain (a panic while unwinding
+  and a stack overflow abort; `cfg(panic = "abort")` is available to
+  refuse a build). Blocks: each driver that relies on one. Tracked in
+  issues #99 (the disk facts), #57 (the condition variable) and #79 (the
+  Rust rules and datagram acceptance).
+- **Q17. `ironafs-os` sites for `ironafs-disk`.** ADR 0005's closed list
+  has the free-space query on Linux only. `ironafs-disk` also needs, per
+  platform where the standard library has no safe route: the stronger
+  flush O41, point 4, qualifies (macOS), root-relative no-follow lookups
+  and mutations, the sync of a directory through a held handle where the
+  standard library cannot open one, and free space on macOS and
+  Windows. Each is a row added by ADR 0005's own amendment rule, with its
+  proof, before `ironafs-disk` calls it; which calls they are is
+  UNVERIFIED until Q16 registers them. Blocks: `ironafs-disk` (issue
+  #99). Tracked in issue #99.
+- **Q18. Where durable records live.** 5.5, point 6, acknowledges a
+  durable record only in the root or in a directory created, with its
+  parent synced, in this incarnation. The state directory's layout must
+  place each durable record so: the M2a records (the format marker, the
+  generation record, the host identity, the audit checkpoint and the last
+  good policy) in the root, and M3's journal in the root or in
+  per-incarnation directories into which each start's fresh commit
+  writes. Decision needed: the layout of each record family, by its
+  specification. Blocks: the first durable record's layout. Tracked in
+  issue #61 (the generation record) for M2a, and in issue #71 until the
+  journal's specification issue is filed.
 
 ## 14. Review
 
