@@ -395,15 +395,20 @@ the message, because every item is a whole number of units
       decoded value of T per byte of its encoding. Integers, enumerations,
       booleans, hypers, fixed-length opaque data held inline and void
       request nothing: r = 0. A variable-length opaque or string requests
-      at most its n data bytes: r = 1. A structure, a union or a
-      fixed-length array holds its components inline: r is the largest r
-      of its components or arms. A variable-length array of n elements
-      requests n element slots, each `size_of` the element's Rust type,
-      and n ≤ its encoded bytes ÷ `s_min`: r = ⌈slot size ÷ `s_min`⌉ +
-      r(element). A value held out of line (point 10) counts as a
-      one-element array of its type: r = ⌈slot size ÷ `s_min`⌉ + r(T),
-      where `s_min` ≥ 4, because a type of zero width is never held out
-      of line (point 10.2). A slot of a zero-sized Rust type is 0 bytes,
+      at most its n data bytes: r = 1. A structure or a union holds its
+      components inline: r is the largest r of its components or arms. A
+      variable-length array of n elements requests n element slots, each
+      `size_of` the element's Rust type, and n ≤ its encoded bytes ÷
+      `s_min`: r = ⌈slot size ÷ `s_min`⌉ + r(element). A fixed-length
+      array of n elements decodes them into n element slots reserved
+      through the ledger, then moves them, with no further request, into
+      the array, which is held inline; no element is made up to fill a
+      slot. Its n ≤ its encoded bytes ÷ `s_min` too, so its r is that of
+      a variable-length array of its element type: r = ⌈slot size ÷
+      `s_min`⌉ + r(element). A value held out of line (point 10) counts
+      as a one-element array of its type: r = ⌈slot size ÷ `s_min`⌉ +
+      r(T), where `s_min` ≥ 4, because a type of zero width is never held
+      out of line (point 10.2). A slot of a zero-sized Rust type is 0 bytes,
       so it adds nothing. The worst case for a message is
       r(message type) × the message cap, in checked 64-bit arithmetic
       (section 6, A8). Slot sizes depend on the target, so the generator
@@ -432,13 +437,17 @@ the message, because every item is a whole number of units
       checked arithmetic (section 6, A8): q = 0 for a type that reserves
       nothing; q = 1 for a variable-length opaque or string, one
       reservation for an item of at least one unit; the largest q of its
-      components or arms for a structure, a union or a fixed-length
-      array; max(1, q(element)) for a variable-length array, one
-      reservation for its buffer plus its elements' over at least one
-      unit of count word; and 1 + q(T) for a value of type T held out of
-      line, which reserves its own slot over at least one unit of T,
-      present in the input before the slot is reserved (point 10.2;
-      5.4, point 2). Nested out-of-line values therefore each count,
+      components or arms for a structure or a union; max(1, q(element))
+      for a variable-length array, one reservation for its buffer plus
+      its elements' over at least one unit of count word; 1 + q(element)
+      for a fixed-length array, one reservation for its slots, which no
+      count word backs, made over the n × `s_min` ≥ 4 bytes of its
+      elements, present in the input before the slots are reserved (5.4,
+      point 2), plus its elements' (an array of no elements reserves
+      nothing); and 1 + q(T) for a value of type T held out of line,
+      which reserves its own slot over at least one unit of T, present
+      in the input before the slot is reserved (point 10.2; 5.4, point
+      2). Nested out-of-line values therefore each count,
       though they rest on the same encoded bytes. One decode makes at
       most q(message type) × message cap ÷ 4 reservations, and the
       generator emits that count beside the heap bound. Every
@@ -511,8 +520,9 @@ not control").
    tightest limit, `CapExceeded`; otherwise, if it would pass the
    input's end, `Truncated`. Only then is its slot reserved through the
    ledger. So every reservation, accepted input or not, rests on input
-   bytes already present: a length or count word read, or the `s_min`
-   bytes of an out-of-line value `[OWN]`.
+   bytes already present: a length or count word read, the n × `s_min`
+   bytes of a fixed-length array's elements, or the `s_min` bytes of an
+   out-of-line value `[OWN]`.
 3. **Variable-length opaque data and strings,** in this order `[OWN]`:
    1. the length word is taken through the bounded cursor, as a
       fixed-size item (point 2): `CapExceeded` if its 4 bytes would pass
@@ -855,8 +865,9 @@ struct sealed {                                   /* secret-bearing */
 
 Each `label` in `pair` and `names` has the cap 8. Each test type decoded
 on its own, without a message row above, is a message with the cap 128
-and the memory budget 1024; the largest worst case among them is
-`names`, ⌈24 ÷ 4⌉ + 1 = 7 per byte on a 64-bit target, so 896.
+and the memory budget 1024; the largest worst case among them is that
+of `names` and `pair`, ⌈24 ÷ 4⌉ + 1 = 7 per byte on a 64-bit target,
+so 896.
 `tags` isolates its guards: its cap of 16 bytes is below the 3 × 12 =
 36 bytes its bound allows (5.2, point 4), and a count of 4 empty labels
 is above the bound while 4 × 4 = 16 bytes is within the cap, so only
