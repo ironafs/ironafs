@@ -4,7 +4,7 @@
 //! Site `linux-rtnetlink` (ADR 0005, row 23 and sheet 23): route-netlink
 //! sockets, which `std` cannot make. A notify socket joins the fixed
 //! group set (links, the addresses and routes of both families, the policy
-//! rules of both families); a request socket joins none. Either sends one
+//! rules of both families, nexthop objects); a request socket joins none. Either sends one
 //! request to the kernel and receives one datagram at a time into the
 //! caller's buffer.
 //!
@@ -33,8 +33,8 @@ use crate::route::{Received, RouteError, Rules, checked, receive_error, sent};
 use abi::{
     AF_NETLINK, ENOBUFS, MSG_TRUNC, NETLINK_ROUTE, NOTIFY_GROUPS, RTMGRP_IPV4_IFADDR,
     RTMGRP_IPV4_ROUTE, RTMGRP_IPV4_RULE, RTMGRP_IPV6_IFADDR, RTMGRP_IPV6_ROUTE, RTMGRP_LINK,
-    RTNLGRP_IPV6_RULE, SOCK_CLOEXEC, SOCK_RAW, SOCKADDR_NL_SIZE, iovec, msghdr, sa_family_t,
-    sockaddr, sockaddr_nl, socklen_t,
+    RTNLGRP_IPV6_RULE, RTNLGRP_NEXTHOP, SOCK_CLOEXEC, SOCK_RAW, SOCKADDR_NL_SIZE, iovec, msghdr,
+    sa_family_t, sockaddr, sockaddr_nl, socklen_t,
 };
 
 #[cfg(test)]
@@ -70,6 +70,7 @@ const _: () = assert!(
                 | RTMGRP_IPV6_IFADDR
                 | RTMGRP_IPV6_ROUTE
                 | (1 << (RTNLGRP_IPV6_RULE - 1))
+                | (1 << (RTNLGRP_NEXTHOP - 1))
 );
 
 /// The C facts the receive's checks compare with.
@@ -89,8 +90,8 @@ pub struct RouteSocket {
 
 impl RouteSocket {
     /// A socket subscribed to the notifications of links, of the addresses
-    /// and routes of both families, and of the policy rules of both
-    /// families.
+    /// and routes of both families, of the policy rules of both families,
+    /// and of nexthop objects.
     ///
     /// # Errors
     ///

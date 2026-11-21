@@ -10,7 +10,7 @@
 
 use super::abi::{
     RTMGRP_IPV4_IFADDR, RTMGRP_IPV4_ROUTE, RTMGRP_IPV4_RULE, RTMGRP_IPV6_IFADDR, RTMGRP_IPV6_ROUTE,
-    RTMGRP_LINK, RTNLGRP_IPV6_RULE,
+    RTMGRP_LINK, RTNLGRP_IPV6_RULE, RTNLGRP_NEXTHOP,
 };
 use super::{GROUPS, RouteSocket};
 
@@ -20,7 +20,7 @@ mod kernel;
 mod stand_in;
 
 #[test]
-fn the_groups_are_links_and_both_families_addresses_routes_and_rules() {
+fn the_groups_are_links_both_families_addresses_routes_and_rules_and_nexthops() {
     // One bit per group, group 1 the lowest (`netlink(7)`).
     assert_eq!(RTMGRP_LINK, 1 << (1 - 1));
     assert_eq!(RTMGRP_IPV4_IFADDR, 1 << (5 - 1));
@@ -34,8 +34,11 @@ fn the_groups_are_links_and_both_families_addresses_routes_and_rules() {
             | RTMGRP_IPV6_IFADDR
             | RTMGRP_IPV6_ROUTE
             | (1 << (RTNLGRP_IPV6_RULE - 1))
+            | (1 << (RTNLGRP_NEXTHOP - 1))
     );
-    assert_eq!(GROUPS.count_ones(), 7);
+    // The nexthop group is the last a 32-bit mask can carry.
+    assert_eq!(GROUPS & (1 << 31), 1 << 31);
+    assert_eq!(GROUPS.count_ones(), 8);
 }
 
 #[test]

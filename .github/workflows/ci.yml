@@ -332,7 +332,7 @@ jobs:
             --no-tests fail --locked --run-ignored only --test-threads 1 -E 'test(/^linux_rtnetlink::/)' \
             > netns.log 2>&1 || { cat netns.log; exit 1; }
           cat netns.log
-          grep -q ' 3 passed' netns.log
+          grep -q ' 4 passed' netns.log
 
   os-linux-glibc-2-28:
     name: os-linux (glibc 2.28, aarch64)

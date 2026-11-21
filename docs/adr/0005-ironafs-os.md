@@ -1053,8 +1053,8 @@ are in its sheet below the table, under the same number.
     floor); a descriptor on another filesystem measures that one.
 23. **`linux-rtnetlink`.**
     *Interface:* open a notify socket subscribed to a fixed group set
-    (links, the addresses and routes of both families, and the policy
-    rules of both families), or a request socket with no groups; send
+    (links, the addresses and routes of both families, the policy rules
+    of both families, and nexthop objects), or a request socket with no groups; send
     one request to the kernel; receive one datagram into a caller's
     buffer, returning its length, or a typed error that tells overflow
     (`ENOBUFS`), truncation and a sender other than the kernel apart.
@@ -1064,8 +1064,9 @@ are in its sheet below the table, under the same number.
     *Obligations:*
     - The `sockaddr_nl` values are zero-initialised wrapper-owned locals;
       the group set is a constant (the owner named its members, 2026-11-20; a review also named
-      the relevant nexthops, settled with the network-change monitor's
-      design before the row is final). The descriptor is adopted as an `OwnedFd` as in
+      the relevant nexthops, which the network-change monitor's design
+      settled: the nexthop group joins the set,
+      `docs/specs/network-generation.md`, 5.1, point 3). The descriptor is adopted as an `OwnedFd` as in
       sheet 21.
     - `sendto` always names the kernel (port id 0, no groups): that a
       plain write reaches the kernel is UNVERIFIED across the candidate

@@ -8,7 +8,8 @@
 //! socket joins its groups. In a network namespace of their own, with
 //! `CAP_NET_ADMIN` there (ignored tests, run so): an address, a route and
 //! a policy rule of each family, and a link change, each seen on the
-//! notify socket when added and when removed; an overflow provoked by a
+//! notify socket when added and when removed; a nexthop object, seen when
+//! added and when removed; an overflow provoked by a
 //! burst the socket does not read; and a datagram another netlink socket
 //! sends to the notify socket's group, refused as not the kernel's. The
 //! namespace tests share it, and one's burst or forged datagram reaches
@@ -37,6 +38,8 @@ const RTM_NEWROUTE: u16 = 24;
 const RTM_DELROUTE: u16 = 25;
 const RTM_NEWRULE: u16 = 32;
 const RTM_DELRULE: u16 = 33;
+const RTM_NEWNEXTHOP: u16 = 104;
+const RTM_DELNEXTHOP: u16 = 105;
 const NLM_F_REQUEST: u16 = 1;
 const NLM_F_DUMP: u16 = 0x300;
 
@@ -175,6 +178,17 @@ fn each_change_of_link_address_route_and_rule_is_seen_on_the_notify_socket() {
         ip(delete);
         wait_for(&socket, deleted);
     }
+}
+
+#[test]
+#[ignore = "needs CAP_NET_ADMIN in a network namespace of its own, and iproute2: run there, one test at a time"]
+fn a_nexthop_object_added_and_removed_is_seen_on_the_notify_socket() {
+    ip("link set lo up");
+    let socket = RouteSocket::notify().unwrap();
+    ip("nexthop add id 7 dev lo");
+    wait_for(&socket, RTM_NEWNEXTHOP);
+    ip("nexthop del id 7");
+    wait_for(&socket, RTM_DELNEXTHOP);
 }
 
 #[test]

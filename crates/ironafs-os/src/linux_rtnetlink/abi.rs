@@ -12,11 +12,13 @@
 //! structs and the constants are the same in both.
 //!
 //! The notify socket's groups are the owner's set (ADR 0005, sheet 23):
-//! links, the addresses and routes of both families, and the policy rules
-//! of both families. The kernel's header names six of them as `RTMGRP_*`
-//! masks; the IPv6 rules have only their group number,
-//! `RTNLGRP_IPV6_RULE`, whose mask bit is `1 << (number - 1)`
-//! (`netlink(7)`: `nl_groups` is a bit mask, one bit per group).
+//! links, the addresses and routes of both families, the policy rules of
+//! both families, and nexthop objects (docs/specs/network-generation.md,
+//! 5.1, point 3). The kernel's header names six of them as `RTMGRP_*`
+//! masks; the IPv6 rules and the nexthops have only their group numbers,
+//! `RTNLGRP_IPV6_RULE` and `RTNLGRP_NEXTHOP`, whose mask bit is
+//! `1 << (number - 1)` (`netlink(7)`: `nl_groups` is a bit mask, one bit
+//! per group; the nexthops' group, 32, is the last it can carry).
 
 use core::ffi::{c_char, c_int, c_ushort, c_void};
 
@@ -109,10 +111,14 @@ pub(super) const RTMGRP_IPV6_ROUTE: u32 = 1024;
 /// `RTNLGRP_IPV6_RULE`: the IPv6 policy rules' group number.
 pub(super) const RTNLGRP_IPV6_RULE: u32 = 19;
 
-/// The notify socket's group mask: the six `RTMGRP_*` masks and the IPv6
-/// rules' bit, `1 << (RTNLGRP_IPV6_RULE - 1)` (proved against that
-/// expression).
-pub(super) const NOTIFY_GROUPS: u32 = 263_633;
+/// `RTNLGRP_NEXTHOP`: the nexthop objects' group number (Linux 5.3 and
+/// later; a kernel without it ignores the bit).
+pub(super) const RTNLGRP_NEXTHOP: u32 = 32;
+
+/// The notify socket's group mask: the six `RTMGRP_*` masks, the IPv6
+/// rules' bit, `1 << (RTNLGRP_IPV6_RULE - 1)`, and the nexthops' bit,
+/// `1 << (RTNLGRP_NEXTHOP - 1)` (proved against that expression).
+pub(super) const NOTIFY_GROUPS: u32 = 2_147_747_281;
 
 /// `sizeof(struct sockaddr_nl)` (proved against that expression).
 pub(super) const SOCKADDR_NL_SIZE: socklen_t = 12;

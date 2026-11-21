@@ -936,7 +936,7 @@
           "linux/rtnetlink.h"
         ],
         "expressions": {
-          "NOTIFY_GROUPS": "RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV4_ROUTE | RTMGRP_IPV4_RULE | RTMGRP_IPV6_IFADDR | RTMGRP_IPV6_ROUTE | (1u << (RTNLGRP_IPV6_RULE - 1))",
+          "NOTIFY_GROUPS": "RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV4_ROUTE | RTMGRP_IPV4_RULE | RTMGRP_IPV6_IFADDR | RTMGRP_IPV6_ROUTE | (1u << (RTNLGRP_IPV6_RULE - 1)) | (1u << (RTNLGRP_NEXTHOP - 1))",
           "SOCKADDR_NL_SIZE": "sizeof(struct sockaddr_nl)"
         },
         "extern_blocks": [
@@ -1032,6 +1032,7 @@
             "RTMGRP_IPV6_IFADDR",
             "RTMGRP_IPV6_ROUTE",
             "RTNLGRP_IPV6_RULE",
+            "RTNLGRP_NEXTHOP",
             "NOTIFY_GROUPS",
             "SOCKADDR_NL_SIZE"
           ]
