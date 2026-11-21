@@ -342,6 +342,8 @@ fn fetch64_at_and_across_2_and_4_gib_and_a_server_that_refuses_it() {
                 FS1,
                 Procedure::FsFetchData {
                     fid: big(),
+                    // The last range a client may send on the 32-bit
+                    // call ends at 2^31 - 1 (vl-fs-read.md, 5.5, point 2).
                     offset: u32::try_from(GIB2 - 17).unwrap(),
                     length: 16,
                 },
