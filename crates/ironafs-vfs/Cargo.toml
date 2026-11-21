@@ -13,6 +13,9 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+ironafs-time.workspace = true
+
 [dev-dependencies]
 ironafs-test-support.workspace = true
 

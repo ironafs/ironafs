@@ -33,6 +33,7 @@ name = "ironafs-vfs"
 version = "0.0.0"
 dependencies = [
  "ironafs-test-support",
+ "ironafs-time",
 ]
 
 [[package]]
