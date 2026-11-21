@@ -151,7 +151,8 @@ Section 9 shows where each is kept and which test fails if it is broken.
    named constants and offsets, each UNVERIFIED, which the capture-backed
    revision confirms.
 3. The reader is written so that its safety does not depend on those
-   values being right. Every index read from the object is range-checked
+   values being right, as long as the relations among them that 5.2,
+   point 4 asserts at build time hold. Every index read from the object is range-checked
    before use; every chain walk is bounded and detects a record reached
    twice; every entry and its name stay inside one page and inside the
    object; no two entries share a record.
@@ -285,20 +286,52 @@ a cap that rests on an UNVERIFIED value is UNVERIFIED with it.
 | Cap | Bounds | Value from 5.1 | Checked |
 |---|---|---|---|
 | `dir.object_max` | the object's length | `dir.pages_max` × `dir.page_size` = 2,095,104 octets | before anything is read (5.4, point 1) |
-| `dir.records_max` | record indexes accepted, chain steps, entries | page count × `dir.records_per_page`, at most 65,472 | each index (5.4, point 6) |
+| `dir.records_max` | record indexes in any object, chain steps, entries | `dir.pages_max` × `dir.records_per_page` = 65,472 | by the records present, which never exceed it (6, point 3; 5.4, point 6) |
 | `dir.name_max` | octets scanned for a terminator | to the end of the entry's page (5.1, point 13) | each name (5.4, point 9) |
-| `dir.budget` | bytes the decoder asks the allocator for | `dir.object_max` + `dir.records_max` × the per-entry overhead of the decoded type | before each allocation (6, point 6) |
+| `dir.budget` | bytes the decoder requests for one decode: the result and its working state | what the largest valid object needs, from the reservations of point 3 | before each request (6, point 6) |
 
-1. No cap is read from the input. The page count is checked against the
-   caps, never used to raise one `[OWN]`: a hostile page count must not
-   size anything.
-2. Chain walks are bounded by `dir.records_max` steps in total across all
-   chains, since 5.4, point 7 refuses any record reached twice `[OWN]`.
+1. No cap is read from the input, and every cap is a constant. The
+   records present in an object are a bound computed from its length,
+   which point 2 of 5.4 has already checked against `dir.object_max`;
+   the page count is only compared with that length (5.4, point 3)
+   `[OWN]`: a hostile page count must not size anything.
+2. Chain walks are bounded by the records present, so by
+   `dir.records_max`, in steps in total across all chains, since 5.4,
+   point 7 refuses any record reached twice `[OWN]`.
 3. `dir.budget` is the decoder's ledger, in the manner of the XDR
-   profile's memory budget ([xdr.md](xdr.md), 5.2, point 9): every
-   allocation request is counted and checked before it is made, so a
-   hostile object cannot make the decoder ask for more `[OWN]`. Its exact
-   value is fixed with the decoded type, in the capture-backed revision.
+   profile's memory budget ([xdr.md](xdr.md), 5.2, point 9): every heap
+   request, for the result or for working state (the records reached,
+   the spans, the index of names seen), goes through one reservation
+   routine that counts requested bytes, cumulatively for the decode, and
+   checks the new total before the request is made; nothing is
+   subtracted when memory is freed `[OWN]`. So that the count never
+   meets growth, each buffer is reserved once, fallibly, for a bound
+   computed from the length before decoding starts: entries and the
+   working state for the records present, name octets for the length
+   itself. A request that would pass `dir.budget` is `BudgetExceeded`; a
+   reservation within it that the allocator refuses is
+   `AllocationFailed`. The value of `dir.budget` is a constant, fixed
+   with the decoded type in the capture-backed revision as what these
+   reservations need for an object of `dir.object_max` octets, so the
+   largest valid object decodes within it (10.1, G12).
+4. **The layout's constants hold together.** The reader's safety holds
+   whatever values 5.1 is confirmed to have only while these relations
+   hold among them, so each is a compile-time assertion beside the
+   constants, and a revision that breaks one does not build `[OWN]`:
+   - `dir.record_size`, `dir.records_per_page`, `dir.pages_max` and
+     `dir.buckets` are above zero;
+   - `dir.page_size` = `dir.records_per_page` × `dir.record_size`;
+   - the page header's fields (5.1, point 4) and an entry's fixed fields
+     (5.1, point 8) end within one record, and the name's offset in a
+     first record is below `dir.record_size`;
+   - page 0 keeps at least one slot for entries: 1 +
+     `dir.header_records` < `dir.records_per_page`;
+   - the bucket heads (5.1, point 6) end within the directory header, at
+     or before object offset (1 + `dir.header_records`) ×
+     `dir.record_size`;
+   - `dir.object_max` and `dir.budget` fit in `usize` on every target,
+     and `dir.records_max` is at most 65,536, since no record index the
+     object can hold is larger.
 
 ### 5.3 Versions
 
@@ -314,9 +347,14 @@ a cap that rests on an UNVERIFIED value is UNVERIFIED with it.
 
 ### 5.4 Decoding
 
-The input is the object's bytes and the directory's own identifier. The
-checks run in this order; the first that fails ends decoding with its
-error (section 7), and nothing decoded so far is returned `[OWN]`.
+The input is the object's bytes and the directory's own identifier.
+Points 1 to 5 apply to the object once. Points 6 to 13 then apply to one
+record index at a time, in the walk order of point 7: each index, and
+the entry it starts, passes every check in point order before the walk
+reads the next index. The first check that fails ends decoding with its
+error (section 7), and nothing decoded so far is returned `[OWN]`. The
+order is part of the contract: one object gives one error in every
+implementation, and no octet is read before the checks that guard it.
 
 1. **One whole object.** The caller passes the complete object of one
    data version. Assembling it, and proving every range came from the same
@@ -344,7 +382,7 @@ error (section 7), and nothing decoded so far is returned `[OWN]`.
 6. **Each record index** read from the object, as a bucket head or a
    `next`, is checked before use `[OWN]`:
    - 0 is the end of a chain, never a record;
-   - otherwise it is below page count × `dir.records_per_page`, or
+   - otherwise it is below the records present (6, point 3), or
      `IndexOutOfRange`;
    - its slot is not 0 (a page header), and in page 0 not within the
      directory header (slots 1 to `dir.header_records`), or
@@ -353,25 +391,34 @@ error (section 7), and nothing decoded so far is returned `[OWN]`.
    each chain through `next`. A record index reached a second time, on
    the same chain or another, is `RecordReused` `[OWN]`: it stops a
    cycle, and a chain that joins another, in at most `dir.records_max`
-   steps.
+   steps. Then, before any octet of its record is read, an index that
+   lies inside the span of an entry already decoded is `SpanOverlap`
+   (point 9). An entry's `next` is read with its fixed fields (point 8),
+   and the walk takes it, through point 6, only after the entry has
+   passed points 9 to 13.
 8. **Each entry's fixed fields** are read from its first record: `next`,
    the vnode and the uniquifier, at the offsets of 5.1, point 8, in the
    byte order of 5.1, point 11.
 9. **Each entry's name and span.** The name starts at offset 12 of the
-   first record. The decoder looks for a zero octet from there to the end
-   of the first record's page, and no further. None: `NameUnterminated`
-   `[OWN]`. The span is the first record through the record holding that
-   zero octet. Every record of the span must not belong to any other
-   entry's span, whichever entry was reached first: otherwise
-   `SpanOverlap` `[OWN]`. Because the search stops at the page's end, a
-   span never crosses a page or leaves the object.
+   first record. The decoder reads it one record at a time, from there to
+   the end of the first record's page and no further, and stops at the
+   first zero octet. Before it reads any octet of a continuation record,
+   that record must not lie inside the span of an entry already decoded:
+   otherwise `SpanOverlap` `[OWN]`. No zero octet before the page's end:
+   `NameUnterminated` `[OWN]`. The span is the first record through the
+   record holding that zero octet; the octets after it are never read
+   (point 5). With point 7's check of the first record, this keeps every
+   record in at most one span, whichever entry was reached first. Because
+   the search stops at the page's end, a span never crosses a page or
+   leaves the object.
 10. **Each name** `[OWN]`, from ADR 0004, L1, point 5, and L29, point 1:
     - empty (the zero octet is the first octet): `NameEmpty`;
     - contains `/` (0x2F): `NameHasSlash`, since no layer could present
       it as one path component;
-    - an embedded zero octet cannot occur, since the name ends at the
-      first; a name passed in for lookup that contains one is refused
-      before any search (5.6, point 3);
+    - an embedded zero octet cannot occur here, since the name ends at
+      the first; lookup applies the same rule to the name it is given and
+      refuses one that contains a zero octet with `NameHasZero` (5.6,
+      point 3);
     - the octets are kept exactly as they are: never normalised, case
       folded, trimmed or decoded as text.
 11. **The chain is the name's chain.** The bucket of each name, computed
@@ -425,12 +472,17 @@ whose output is checked by hand (10.1).
 2. **Enumeration order** is by the record index of each entry's first
    record, which is stable for a given object and needs no hash `[OWN]`.
    Cookies and snapshots are the cache's (section 2).
-3. **Lookup** takes a name as raw octets. An empty name, or one containing
-   a zero octet or `/`, is refused before any search, with the same
-   error as 5.4, point 10 would give, so the decoder and lookup apply one
-   rule `[OWN]`. Otherwise the result is the one entry whose name is
-   equal octet for octet, or none. `.` and `..` are looked up by the
-   namespace (#80), not here.
+3. **Lookup** takes a name as raw octets and checks it before any
+   search, by the rules of 5.4, point 10, in this order: an empty name
+   is `NameEmpty`, a name containing a zero octet is `NameHasZero`, and
+   a name containing `/` is `NameHasSlash`. So the decoder and lookup
+   apply one rule `[OWN]`. Otherwise the result is the one entry whose
+   name is equal octet for octet, or none. `.` and `..` are entries like
+   any other when the object holds them, so lookup finds them and point
+   1 holds for them too. What they resolve to is the namespace's (#80):
+   the decoder checks the target of `.` but not of `..` (5.4, point 13),
+   so the target lookup returns for `..` is not a verified parent
+   `[OWN]`.
 4. **Nothing partial survives an error.** A failed decode leaves no
    entries behind, and the object is not used for lookup or listing
    (section 7) `[OWN]`.
@@ -443,10 +495,16 @@ wraps, except the hash, whose wrapping is the defined behaviour `[OWN]`.
 1. **Record index to offset:** *r* × `dir.record_size`. *r* is at most
    65,535 (a 16-bit field), so the product is below 2²¹ and fits a 32-bit
    value; it is computed with checked multiplication in `usize`, after
-   *r* is checked against `dir.records_max` (5.4, point 6).
+   *r* is checked against the records present (5.4, point 6), so the
+   record ends within the length.
 2. **Page and slot:** *r* ÷ `dir.records_per_page` and *r* mod
    `dir.records_per_page`. The divisor is a non-zero constant.
-3. **Pages present:** the length ÷ `dir.page_size`, after 5.4, point 2.
+3. **Pages and records present:** the pages present are the length ÷
+   `dir.page_size`, after 5.4, point 2; the records present are the
+   pages present × `dir.records_per_page`, computed with checked
+   multiplication in `usize`. Both come from the length, never from the
+   page count, and the records present are at most `dir.records_max`
+   (5.2, point 1).
 4. **Name search end:** the end of the first record's page, (page + 1) ×
    `dir.page_size`, checked against the length. A span's last record is
    the offset of the zero octet ÷ `dir.record_size`.
@@ -458,19 +516,36 @@ wraps, except the hash, whose wrapping is the defined behaviour `[OWN]`.
 6. **The ledger:** each allocation request is added with checked addition
    and compared with `dir.budget` before the allocation (5.2, point 3).
    An overflow is `BudgetExceeded`.
+7. **Reads:** every read of a header field, a record or a name octet
+   takes a bounds-checked slice of the object (`get`, never indexing),
+   so a fault in any check above becomes an error, never a read past the
+   object (coding standards rules 1 to 3).
 
 ## 7. Errors and failure
 
 1. Every rejection is a value of one error type, `DirError`, with these
    kinds: `BadLength`, `LegacyFormat`, `PageCountMismatch`, `BadTag`,
    `IndexOutOfRange`, `IndexIntoHeader`, `RecordReused`,
-   `NameUnterminated`, `SpanOverlap`, `NameEmpty`, `NameHasSlash`,
-   `WrongBucket`, `DuplicateName`, `DotWrong`, `SelfEntry` and
-   `BudgetExceeded` `[OWN]`.
-2. An error carries the kind, and the page, record index or object
-   offset where the check failed. It never carries octets of a name, or
-   any other value read from the object `[OWN]`: names can be sensitive
-   (I1 §12 says as much), and errors reach logs and events.
+   `NameUnterminated`, `SpanOverlap`, `NameEmpty`, `NameHasZero`,
+   `NameHasSlash`, `WrongBucket`, `DuplicateName`, `DotWrong`,
+   `SelfEntry`, `BudgetExceeded` and `AllocationFailed` `[OWN]`.
+   `NameHasZero` comes from lookup only (5.6, point 3).
+2. An error carries the kind and the location where the check failed, as
+   the table below sets. A location is a position, never a value: a page
+   number, a record index that has passed 5.4, point 6, or the object
+   offset of a field. An error never carries octets of a name, an index
+   that failed 5.4, point 6, a vnode, a uniquifier, a page count or any
+   other value read from the object `[OWN]`: names can be sensitive (I1
+   §12 says as much), and errors reach logs and events.
+
+   | Kinds | Location |
+   |---|---|
+   | `BadLength`, `BudgetExceeded`, `AllocationFailed` | none |
+   | `LegacyFormat`, `PageCountMismatch` | page 0 |
+   | `BadTag` | the page whose tag is wrong |
+   | `IndexOutOfRange`, `IndexIntoHeader`, `RecordReused` | the object offset of the bucket head or `next` field that held the index |
+   | `NameUnterminated`, `SpanOverlap`, `NameEmpty`, `NameHasSlash`, `WrongBucket`, `DuplicateName`, `DotWrong`, `SelfEntry` | the record index of the first record of the entry being checked: for `SpanOverlap` and `DuplicateName`, the entry reached second |
+   | `NameEmpty`, `NameHasZero`, `NameHasSlash` from lookup | none: they describe the caller's name, not the object |
 3. No panic is reachable from any input (coding standards rules 1 to 3).
 4. A failed decode fails closed: the caller gets the error, and every
    lookup and listing that needed the object fails explicitly; none
@@ -491,8 +566,8 @@ own integrity rules allow (the cache's specifications).
 | An index past the object, into a header, or a page count larger than the object | Out-of-bounds read, a panic, a crash of the daemon | 5.4, points 2, 3 and 6 |
 | A cycle in a chain, or two chains joined | An endless walk, a hang | 5.4, point 7; 5.2, point 2 |
 | A name with no terminator, or one that runs past its page | A read past the page or the object | 5.4, point 9 |
-| Two entries sharing records | One name's octets read as another's fields | 5.4, point 9 |
-| A huge object or many entries | Memory exhaustion | 5.2; 5.4, point 2; 6, point 6 |
+| Two entries sharing records | One name's octets read as another's fields | 5.4, points 7 and 9 |
+| A huge object or many entries | Memory exhaustion | 5.2, points 1 and 3; 5.4, point 2; 6, point 6 |
 | A name with `/`, an empty name | A path that means something else to a layer or a tool | 5.4, point 10 |
 | A repeated name, a name on the wrong chain | A listing and a lookup that disagree; an ambiguous lookup that a destructive operation could hit | 5.4, points 11 and 12; 5.6, point 1 |
 | A `.` naming another directory, an entry naming the directory itself | A loop in the tree; a walk that never ends; `.` pointing a tool elsewhere | 5.4, point 13 |
@@ -510,7 +585,7 @@ refused.
 
 | Invariant | Kept by | Test that fails if it is broken |
 |---|---|---|
-| Constraint 4: no panics, checked arithmetic, byte limits | 5.2, 5.4, 6, 7 | the fuzz target (10.4); `decode_rejects_*` cases of 10.3 |
+| Constraint 4: no panics, checked arithmetic, byte limits | 5.2, 5.4, 6, 7; the compile-time assertions of 5.2, point 4 | the fuzz target (10.4); `decode_rejects_*` cases of 10.3 |
 | C4, point 1: `ironafs-proto` is pure, has no I/O and no `unsafe`, and is fuzzed | the decoder is a function of bytes and the own identifier (5.4) | the pure-crate check of `cargo xtask check` (#46); the fuzz target (10.4) |
 | C6, points 1 and 3: no code before this specification is reviewed | Status line; README "Status" | review: no decoder merges while the status is `draft` |
 | C6, point 4, and N31, points 1 to 3: nothing coded from an unconfirmed fact | 5.1, every point UNVERIFIED; section 13, Q1 | review of the capture-backed revision: each constant in 5.1 cites a fixture or an allowlisted passage before code uses it |
@@ -546,15 +621,19 @@ beside the vector. Names and identifiers are IronAFS's own.
 | G3 | As G2, plus `ab` (bucket 111) in slot 14 | two entries, `a` then `ab` | enumeration order by first record (5.6, point 2) |
 | G4 | Two entries in one bucket, linked by `next` | both, in first-record order | chain walking (5.4, point 7) |
 | G5 | One entry with a 40-octet name: first record plus continuation records to the terminator | the full name | spans and continuation records (5.4, point 9) |
-| G6 | Names with octets 0x01, 0x7F, 0xC3 0xA9, a trailing space and a trailing `.` | each name's octets unchanged | raw names (5.4, point 10) |
+| G6 | Names with octets 0x01 and 0x7F, the name 0x61 0xC3 0xA9 (`aé` in UTF-8; bucket 57 whether octets of 0x80 or more count as unsigned or signed), a name with a trailing space and one with a trailing `.` | each name's octets unchanged | raw names (5.4, point 10) |
 | G7 | Two pages, page count 2, an entry in page 1 slot 1 (record index 65) | the entry | record index across pages (5.1, point 3) |
 | G8 | The name `hello`, whose 32-bit value is 0xCFFB95C8 (at least 2³¹), in bucket 56 | the entry | the bucket rule's second branch |
 | G9 | A 2003-octet name from page 1 slot 1 to slot 63 | the name | the longest span (5.1, point 13) |
 | G10 | Non-zero page map, allocation bits, flags and reserved octets, and octets after a terminator | the same set as without them | 5.4, point 5: these fields are ignored |
-| G11 | `.` naming the own identifier, and `..` naming another directory | both entries | 5.4, point 13 |
+| G11 | `.` naming the own identifier, and `..` naming another directory | both entries; lookup of each finds it | 5.4, point 13; 5.6, point 3 |
+| G12 | `dir.pages_max` pages, every entry slot holding an entry of one record (64,437 entries) | the full set, with the ledger within `dir.budget` | 5.2, point 3: the largest valid object fits the budget |
 
-G2, G3, G8 and G11 rest on the bucket rule of 5.1, point 12 and change
-if section 13, Q5 corrects it.
+Every vector that holds an entry (G2 to G12) places it on its name's
+chain, so all of them rest on the bucket rule of 5.1, point 12 and change
+if section 13, Q5 corrects it; G2, G3 and G8 also state bucket values.
+G6's high-octet name is chosen so that its bucket is the same under both
+readings that Q5 leaves open, so G6 does not wait on that part of Q5.
 
 ### 10.2 Round-trip properties
 
@@ -576,7 +655,8 @@ project's own seeded generator.
 ### 10.3 Reject corpus
 
 In `crates/ironafs-proto/tests/it/directory/reject.rs`, each as
-`decode_rejects_<case>`, asserting the exact error kind and its location.
+`decode_rejects_<case>`, asserting the exact error kind and its location
+(section 7, point 2).
 
 | Id | Input | Error | Breaks |
 |---|---|---|---|
@@ -592,7 +672,7 @@ In `crates/ironafs-proto/tests/it/directory/reject.rs`, each as
 | R10 | two buckets whose chains reach the same record | `RecordReused` | 5.4, point 7 |
 | R11 | a chain of three that loops to its first | `RecordReused` | 5.4, point 7 |
 | R12 | a name with no zero octet before its page's end | `NameUnterminated` | 5.4, point 9 |
-| R13 | an entry whose first record lies inside another entry's span | `SpanOverlap` | 5.4, point 9 |
+| R13 | an entry whose first record lies inside another entry's span, once with that entry reached first and once with it reached second | `SpanOverlap` | 5.4, points 7 and 9 |
 | R14 | an entry whose span covers another entry's first record | `SpanOverlap` | 5.4, point 9 |
 | R15 | a first octet of zero | `NameEmpty` | 5.4, point 10 |
 | R16 | `a/b` | `NameHasSlash` | 5.4, point 10 |
@@ -604,7 +684,7 @@ In `crates/ironafs-proto/tests/it/directory/reject.rs`, each as
 | R22 | `sub` naming the own identifier; `..` naming the own identifier | `SelfEntry` | 5.4, point 13 |
 | R23 | one valid entry and one entry with `/`, on different chains | `NameHasSlash`, and no entries returned | 5.4, points 10 and 14; 5.6, point 4 |
 | R24 | a budget set below what a valid object needs | `BudgetExceeded` | 5.2, point 3; 6, point 6 |
-| R25 | lookup of an empty name, of `a\0b`, of `a/b` | the errors of 5.4, point 10 | 5.6, point 3 |
+| R25 | lookup of an empty name; of `a\0b`; of `a/b` | `NameEmpty`; `NameHasZero`; `NameHasSlash`; each with no location | 5.6, point 3; section 7, point 2 |
 
 R18 and R22's `..` case rest on open questions Q5 and Q6, and change if
 those close otherwise.
