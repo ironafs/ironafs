@@ -877,5 +877,4 @@ and the evidence label EXECUTED.
 
 ## 14. Review
 
-Not yet reviewed. The review record goes in `docs/reviews/` before this
-specification leaves draft.
+[Review record](../reviews/2026-11-21-m2a-07-wire-time.md).
