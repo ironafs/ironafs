@@ -451,17 +451,21 @@ encoding is the simulator's specification's.
    /// an edited count.
    pub struct Deadline { /* private: which clock, the instant, the latch */ }
    /// `Clock` is a failed sample, which the sampling function of point 2
-   /// reports; the constructors themselves return only `Overflow`.
-   pub enum DeadlineError { Clock(ClockError), Overflow }
+   /// reports; the constructors themselves return only `FromAfterNow`
+   /// and `Overflow`.
+   pub enum DeadlineError { Clock(ClockError), FromAfterNow, Overflow }
    impl Deadline {
        /// Pure: calls no seam. `now` is the sample the caller has just
-       /// taken (point 2 says who may call this, and how that is checked).
-       /// The instant is `from`'s boot instant plus `d` (`Err(Overflow)`
-       /// if it overflows, section 6); the latched count is the lower of
-       /// `from`'s and `now`'s boot doubt counts.
+       /// taken, and `from` the request's recorded arrival or a reply's
+       /// `first_sent` (point 2 says who may call this, and how that is
+       /// checked). `Err(FromAfterNow)` if `from` is newer than `now` on
+       /// the boot clock: a higher boot doubt count, or a later boot
+       /// instant. The instant is `from`'s boot instant plus `d`
+       /// (`Err(Overflow)` if it overflows, section 6); the latched count
+       /// is the lower of `from`'s and `now`'s boot doubt counts.
        pub fn boot_after(now: &Stamp, from: &Stamp, d: Duration)
            -> Result<Self, DeadlineError>;
-       /// The same on the awake clock and its doubt count.
+       /// The same on the awake clock, its instant and its doubt count.
        pub fn awake_after(now: &Stamp, from: &Stamp, d: Duration)
            -> Result<Self, DeadlineError>;
        /// Read-only views, for `Clock::wait` implementations and the call
@@ -535,37 +539,95 @@ encoding is the simulator's specification's.
    **No new deadline while samples fail.** `ironafs-time` is pure and
    calls no seam (5.2, point 5), so its constructors take the fresh
    sample as `now` rather than taking it themselves. C37, point 5's
-   rule rests on two things, and only these:
-   - **The caller's fresh sample (a call-site check).** Outside
-     `ironafs-time` and test code, the two constructors are named only
-     inside one **sampling function** per crate that builds deadlines
-     (in the core, `ironafs-client`'s `deadline_after`). It calls
-     `clock.sample()`, returns `Err(DeadlineError::Clock)` if the
-     sample fails, and passes the returned `Stamp` straight to the
-     constructor as `now`, in the same function and with no other
-     source for it. Both constructors are on the lint's disallowed-paths
-     list, which the sampling functions alone are allowed past, with a
-     planted self-test (a constructor called with a `now` kept from an
-     earlier sample, and one called outside a sampling function). So,
-     while samples fail, the code has no new `now` and builds no
-     deadline. This rests on the check, not on a type: any crate may
-     implement `Clock` (`ironafs-os`, `ironafs-sim`,
-     `ironafs-test-support`), so a "fresh stamp" type would need a
-     public constructor that any crate could call, and would add
-     nothing the check does not give.
-   - **The latch (by construction).** Even a deadline built from kept
-     stamps, if the check were bypassed, never serves as a good one
-     across a failure. The latch is the lower of `now`'s and `from`'s
-     counts, and a clock's counts only grow, so the latch is never above
-     the clock's count when the deadline was built. A failed read after
-     either stamp was taken has moved the count above the latch, so the
-     deadline is failed at its first evaluation (point 4), and while
-     samples still fail the evaluation finds the clock unreadable
-     anyway. A stale stamp cannot hide a failure; a stamp with a forged
-     higher count cannot raise the latch above the other stamp's count.
-     The `from` stamp (a request's arrival, C39, point 3) otherwise
-     gives only the instant counted from: a forged instant only moves
-     the deadline, which the caller chooses anyway through `d`.
+   rule, and C37, point 4's for a regression, rest on three things, and
+   only these:
+   - **The latch (by construction).** The latch is the lower of `now`'s
+     and `from`'s counts, and a clock's counts only grow, so the latch
+     is never above the clock's count when the deadline was built. A
+     failed read or a regression after either stamp was taken has moved
+     the count above the latch, so the deadline is failed at its first
+     evaluation (point 4), and while samples still fail the evaluation
+     finds the clock unreadable anyway. `from` gives two things: the
+     instant counted from (C39, point 3, "a deadline counted from
+     arrival"), and its count to the latch. The count is needed: after a
+     boot-clock regression of R between the arrival and `now`, `from`'s
+     instant is on the timeline before the regression, so a deadline
+     counted from it, read on the clock after it, would end up to R
+     later than `d` after the arrival; the regression has moved the
+     count past `from`'s, so the deadline is failed instead (C37, point
+     4, treats every boot-clock deadline as possibly expired on a
+     regression, and a callback lifetime counted from `first_sent` must
+     never lengthen, 5.4, point 4). A stale stamp therefore cannot hide
+     a failure or a regression.
+   - **The value check (pure, in the constructors).** A `from` newer
+     than `now` on the deadline's clock, by a higher doubt count or a
+     later instant, is refused with `Err(DeadlineError::FromAfterNow)`.
+     Without a regression, no true arrival or `first_sent` is newer than
+     a sample taken after it; across a regression a true one can be (its
+     instant is on the earlier timeline), and refusal is then the safe
+     outcome. Either way the sampling function's caller treats
+     `FromAfterNow` as `ClockFailed` and never retries with another
+     `from`. So a forged or fresh `from` with a higher count than `now`
+     cannot raise the latch, and a regression larger than the time since
+     the arrival cannot stretch the deadline either. What a value check
+     cannot see is a `from` whose count and instant are not newer than
+     `now` but which is not the true arrival (a sample taken after the
+     arrival and before `now`); the call-site check covers it.
+   - **The call-site check (`xtask`'s
+     `seams::deadline_built_from_a_fresh_sample`).** It parses the
+     source of every workspace crate except `ironafs-time` (the syntax
+     tree of each non-test module; `#[cfg(test)]` items and `tests/` are
+     left out), resolving `use` renames of the two constructor paths,
+     and fails unless all of these hold:
+     - **One named sampling function per crate.** `xtask` keeps a list
+       naming, by full path, at most one sampling function per crate (in
+       the core, `ironafs_client::time::deadline_after`). Every path
+       that resolves to `Deadline::boot_after` or
+       `Deadline::awake_after` is the callee of a direct call inside
+       that function's body. A path used as a value (a function pointer,
+       a closure that calls it and leaves the function, a method
+       reference passed on) fails.
+     - **`now` is that function's own fresh sample.** The body binds the
+       result of one `.sample()` call on its `Clock` parameter with
+       `let`, returns `Err(DeadlineError::Clock)` if it fails, and
+       passes that binding, never reassigned, as the constructor's
+       `now`, with no other expression flowing into it.
+     - **`from` is the recorded arrival or `first_sent`.** At every call
+       of a sampling function, the `from` argument is a field access
+       ending in `.arrival` on the request record (the arrival time C39,
+       point 2's ingress records) or the `first_sent` of a `Reply` (5.4,
+       point 1), unwrapped from its `Option`. Anything else (a fresh
+       `sample()`, a `Stamp` literal, a local built from either) fails.
+     - **The allowance sits on the sampling function only.** Both
+       constructors are also on the lint's disallowed-paths list, which
+       flags every use of the paths and knows nothing of the rule above;
+       it is a second net only. The check fails if an allowance for
+       either path sits anywhere but on the named function: on a second
+       function, a module, an `impl` or the crate.
+     - **Planted self-tests,** each of which must fail the check: a
+       `now` kept from an earlier sample; a constructor called outside
+       the sampling function; a second function in the same crate with
+       its own allowance; a module-level allowance; the constructor
+       carried out of the sampling function by a closure and by a
+       function pointer; a `from` that is a fresh sample; a `from` that
+       is a forged `Stamp` literal with a high count.
+     - **Limits, which review covers** (the `rust-review` consistency
+       pass): the check reads source as written and expands no macro, so
+       a macro invocation whose tokens name either constructor fails it
+       (a token scan), but a macro that assembles the path from
+       fragments is not seen; and it checks `from` by field name, not by
+       type flow, so it trusts that only the ingress writes a request's
+       `arrival`, once.
+
+   So, while samples fail, the code has no new `now` and builds no
+   deadline. This rests on the check, not on a type: any crate may
+   implement `Clock` (`ironafs-os`, `ironafs-sim`,
+   `ironafs-test-support`), so a "fresh stamp" or "arrival stamp" type
+   would need a public constructor that any crate could call, and would
+   add nothing the check does not give. Bypassing the check can at worst
+   build a deadline from a stale `now` or `from`, which the latch fails
+   at once, or from a forged one, which the value check refuses when it
+   is newer than `now`.
 
    A compile-fail doc-test in `ironafs-time` shows that a literal, a
    destructuring and a field write of a `Deadline` do not compile
@@ -2027,7 +2089,7 @@ listed with its crate.
 | C28, point 6; C29, point 9; N32, point 6 | 5.5, points 4, 6 and 7 | `ironafs-sim`: `disk::durable_replace_crash_at_every_cut`, `disk::one_ack_after_record_and_boundary`, `disk::restart_never_trusts_failed_sync`, `disk::marked_log_keeps_covered_suffix`, `disk::failed_sync_never_marks_covered`, `disk::no_ack_in_a_directory_not_made_this_incarnation`, `disk::root_parent_synced_at_construction` |
 | C32, points 1 and 4 | 5.4, point 1; 5.3, point 2 | `ironafs-sim`: `clock::keepalive_across_suspend_earns_no_trust`, `clock::keepalive_across_wall_jump_earns_no_trust`, `clock::trust_lapses_at_e_after_received` |
 | C32, point 5 | 5.3, point 2; 5.7, point 1; 5.8, point 2 | `ironafs-sim`: `clock::episode_marks_suspect_before_reply` (a suspend, a regression, a failed read and a wall jump) |
-| C37, points 4 and 5 | 5.3, points 1, 2 and 4; 5.6, point 5; 5.7, point 1 | `ironafs-sim`: `clock::failed_read_expires_every_deadline`, `clock::regression_expires_boot_deadlines_only`, `clock::latched_doubt_outlives_the_fault`, `clock::no_deadline_without_a_valid_sample`; `ironafs-time`: `deadline::stale_stamp_gives_an_already_failed_deadline`, `deadline::forged_higher_count_cannot_raise_the_latch` and the compile-fail doc-test that a `Deadline` cannot be built, destructured or edited outside the crate; `xtask`: `seams::deadline_built_from_a_fresh_sample` (planted: a kept `now`, a constructor outside a sampling function); the `Clock` conformance body |
+| C37, points 4 and 5 | 5.3, points 1, 2 and 4; 5.6, point 5; 5.7, point 1 | `ironafs-sim`: `clock::failed_read_expires_every_deadline`, `clock::regression_expires_boot_deadlines_only`, `clock::latched_doubt_outlives_the_fault`, `clock::no_deadline_without_a_valid_sample`; `ironafs-time`: `deadline::stale_stamp_gives_an_already_failed_deadline`, `deadline::regression_between_from_and_now_fails_the_deadline`, `deadline::from_after_now_is_refused` (a higher count; a later instant on the deadline's clock) and the compile-fail doc-test that a `Deadline` cannot be built, destructured or edited outside the crate; `xtask`: `seams::deadline_built_from_a_fresh_sample` (planted: a kept `now`; a constructor outside the sampling function; a second allowed function; a module-level allowance; the constructor carried out by a closure and by a function pointer; a fresh `from`; a forged high-count `from`); the `Clock` conformance body |
 | C39, point 3 | 5.3, points 3 and 5; 5.4, points 7 and 8 | `ironafs-sync`: `queue_refuses_over_cap`, `oneshot_cancel_wakes`; `ironafs-os`: `waker_raise_at_check_to_sleep_boundary`; `ironafs-client`: `rpc::admission_lanes`, `rpc::control_lane_never_full_at_shutdown`; `ironafs-sim`: `inbound_queue_full_drops` |
 | C39, point 4 | 5.3, point 6; 5.6, point 9 | `ironafs-sim`: `lock_held_at_yield_fails`, `contended_lock_fails` |
 | C46, point 3 | 5.4, point 2 | `ironafs-client`: `errors::abort_code_needs_rpc_and_server` |
@@ -2357,7 +2419,15 @@ Mutations listed with a case are each run and must be caught.
    `from` stamp from before the failure too). A deadline built after the
    failure clears, with a `from` stamp taken before it, is already failed
    at its first evaluation, and so is one built from a `now` and a `from`
-   both kept from before the failure.
+   both kept from before the failure. A boot-clock regression between a
+   request's arrival and its deadline's construction: the deadline is
+   failed at its first evaluation, or refused, never counted from the
+   arrival on the regressed clock (a regression larger than the time
+   since the arrival is refused with `FromAfterNow` and ends
+   `ClockFailed`). An
+   awake-clock regression larger than the time since the arrival: the
+   same refusal. A `from` newer than `now` (a fresh or forged stamp with
+   a higher count) is refused with `FromAfterNow`.
    A failure that clears before a second waiter's next sample: that
    waiter still ends `ClockFailed`, and the call owner treats the latched
    deadline as failed. A fault that clears before a parked waiter is
