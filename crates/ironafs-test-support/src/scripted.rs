@@ -6,16 +6,24 @@
 //! test-only command enters the shipped daemon.
 //!
 //! A test scripts the state (which attestation is which credential
-//! context, which handles are revoked, which generations are retired) and
-//! the layer under test talks to the core through the contract's own
-//! values. It holds the core's capability table: it mints every caller
-//! and handle capability through a [`Mint`](ironafs_vfs::Mint) and refuses
-//! any it did not record for the binding that presents it (C8, point 2).
+//! context, which handles are revoked, which generations are retired,
+//! which callback breaks arrive and which purges fail) and the layer under
+//! test talks to the core through the contract's own values:
+//!
+//! - the capability table: every caller and handle capability is minted
+//!   through a [`Mint`](ironafs_vfs::Mint), and any the core did not
+//!   record for the binding that presents it is refused (C8, point 2);
+//! - the invalidation stream of each binding, coalesced per node, with
+//!   its acknowledgements and overflow (C17);
+//! - weak and authoritative breaks (C24), and an injected purge failure,
+//!   which stales one node in every binding (C15, point 6).
 //!
 //! The contract's operations and its request and completion interfaces
 //! are not defined yet, so the core has no read, lookup or reply path:
 //! [`ScriptedCore::open_handle`] stands in for open until the contract
-//! has one.
+//! has one. The bytes it serves per context, the set-uid file and the
+//! device entry, and a reply whose state changes before submission wait
+//! on those interfaces.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,6 +75,9 @@ pub struct ScriptedCore {
     event_bound: usize,
     streams: BTreeMap<BindingId, Stream>,
     suspect: BTreeSet<NodeId>,
+    /// The nodes whose purge failed, with each binding whose purge of
+    /// them has not succeeded since.
+    stale: BTreeSet<(NodeId, BindingId)>,
 }
 
 impl ScriptedCore {
@@ -85,6 +96,7 @@ impl ScriptedCore {
             event_bound: bytes,
             streams: BTreeMap::new(),
             suspect: BTreeSet::new(),
+            stale: BTreeSet::new(),
         }
     }
 
@@ -97,10 +109,13 @@ impl ScriptedCore {
     }
 
     /// The binding dies: its caller capabilities and handles act no more
-    /// (C14, point 3).
+    /// (C14, point 3), its pending events are dropped, and a node stale
+    /// only from its failed purge is stale no more.
     pub fn detach(&mut self, binding: BindingId) {
         self.ledger.detach(binding);
         self.streams.remove(&binding);
+        // Its operating system's cache went with it.
+        self.stale.retain(|(_, failed)| *failed != binding);
     }
 
     /// Scripts the credential context the core gives a caller that the
@@ -160,6 +175,10 @@ impl ScriptedCore {
         caller: &CallerCap,
         node: NodeId,
     ) -> Result<HandleCap, VfsError> {
+        if self.node_stale(node) {
+            self.ledger.check_caller(binding, caller)?;
+            return Err(VfsError::Stale);
+        }
         self.ledger.open_handle(binding, caller, node)
     }
 
@@ -246,10 +265,15 @@ impl ScriptedCore {
     /// [`VfsError::OutOfRange`] if the revision was never issued to
     /// `binding`. Nothing is cleared on an error.
     pub fn ack(&mut self, binding: BindingId, ack: Ack) -> Result<(), VfsError> {
-        self.streams
+        let applied = self
+            .streams
             .get_mut(&binding)
             .ok_or(VfsError::Stale)?
-            .ack(ack)
+            .ack(ack)?;
+        if applied && let Ack::Node { node, .. } = ack {
+            self.stale.remove(&(node, binding));
+        }
+        Ok(())
     }
 
     /// Whether `binding` must gate replies on `node` (C16, point 5): the
@@ -260,5 +284,38 @@ impl ScriptedCore {
         self.streams
             .get(&binding)
             .is_some_and(|stream| stream.gated(node))
+    }
+
+    /// `binding` could not apply `node`'s purge (C15, point 6; C17,
+    /// point 5). The operating system may still serve the node's old
+    /// state, so the node answers [`VfsError::Stale`] in every binding:
+    /// every context's handles on it, on every binding, are revoked, and
+    /// new opens of it are refused until `binding` acknowledges a purge of
+    /// it. The purge is offered to `binding` again. Nothing else changes:
+    /// no other node, handle or pending event.
+    ///
+    /// # Errors
+    ///
+    /// [`VfsError::Stale`] if `binding` is not attached;
+    /// [`VfsError::NotFound`] if it does not hold `node`. Nothing changes
+    /// on an error.
+    pub fn purge_failed(&mut self, binding: BindingId, node: NodeId) -> Result<(), VfsError> {
+        let stream = self.streams.get_mut(&binding).ok_or(VfsError::Stale)?;
+        if !stream.holds(node) {
+            return Err(VfsError::NotFound);
+        }
+        stream.retry(node);
+        self.ledger.revoke_node(node);
+        self.stale.insert((node, binding));
+        Ok(())
+    }
+
+    /// Whether a failed purge left `node` stale (C15, point 6).
+    #[must_use]
+    pub fn node_stale(&self, node: NodeId) -> bool {
+        self.stale
+            .range((node, BindingId(0))..=(node, BindingId(u64::MAX)))
+            .next()
+            .is_some()
     }
 }

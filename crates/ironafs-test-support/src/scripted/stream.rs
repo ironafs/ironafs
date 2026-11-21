@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 
 use ironafs_vfs::{
-    Ack, Effects, Entries, Event, Invalidation, NodeId, Overflow, Revision, Scope, VfsError,
+    Ack, Effects, Entries, Event, Invalidation, NodeId, Overflow, Revision, Rights, Scope, VfsError,
 };
 
 #[cfg(test)]
@@ -24,6 +24,14 @@ mod tests;
 
 /// The bytes one slot counts toward the bound, besides its names' bytes.
 pub(super) const SLOT_BYTES: usize = 64;
+
+/// Every effect: what a purge offered again after a failure asks for.
+const EVERYTHING: Effects = Effects {
+    data: true,
+    attributes: true,
+    entries: Some(Entries::All),
+    rights: Some(Rights::All),
+};
 
 /// A node's pending effects in one binding.
 #[derive(Debug)]
@@ -134,13 +142,17 @@ impl Stream {
         }))
     }
 
-    pub(super) fn ack(&mut self, ack: Ack) -> Result<(), VfsError> {
+    /// Applies `ack`, and says whether it acknowledged a delivered purge
+    /// of a node.
+    pub(super) fn ack(&mut self, ack: Ack) -> Result<bool, VfsError> {
+        let mut applied = false;
         match ack {
             Ack::Node { node, revision } => {
                 self.issued(revision)?;
                 if let Some(slot) = self.slots.get_mut(&node)
                     && slot.delivered == Some(revision)
                 {
+                    applied = true;
                     if slot.revision == revision {
                         self.slots.remove(&node);
                     } else {
@@ -162,7 +174,18 @@ impl Stream {
                 }
             }
         }
-        Ok(())
+        Ok(applied)
+    }
+
+    /// The layer could not apply `node`'s purge: the purge is offered
+    /// again, widened to every effect, under a new revision. The failed
+    /// delivery is never acknowledged, so it clears nothing.
+    pub(super) fn retry(&mut self, node: NodeId) {
+        self.push(node, Scope::Object, &EVERYTHING);
+        if let Some(slot) = self.slots.get_mut(&node) {
+            slot.delivered = None;
+            slot.since_delivery = Effects::NONE;
+        }
     }
 
     pub(super) fn gated(&self, node: NodeId) -> bool {

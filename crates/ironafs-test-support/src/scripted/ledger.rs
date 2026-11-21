@@ -218,6 +218,15 @@ impl Ledger {
         }
     }
 
+    /// Revokes every handle on `node`, in every binding and context.
+    pub(super) fn revoke_node(&mut self, node: NodeId) {
+        for record in self.handles.values_mut() {
+            if record.node == node {
+                record.live = false;
+            }
+        }
+    }
+
     /// Ends the handle if `cap` is the one recorded for it on `binding`.
     /// Release never fails (C9, point 4), so a capability that is not is
     /// ignored and releases nothing.

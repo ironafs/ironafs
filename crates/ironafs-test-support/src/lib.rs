@@ -37,6 +37,10 @@
 //! that move only when the test moves them, and random bytes from a seed.
 //! Neither is ever a production source (coding standards rule 7).
 //!
+//! [`ScriptedCore`] is a core behind the `ironafs-vfs` contract whose
+//! state a test scripts, so a layer is tested without the client chain
+//! (ADR 0004, C7).
+//!
 //! This crate is a dev-dependency only: no shipped crate depends on it.
 
 mod capture;
@@ -53,7 +57,7 @@ pub mod wire;
 pub use clock::{SeededClock, TimeOverflow};
 pub use property::{Counterexample, Property, Verdict};
 pub use rng::SeededRng;
-pub use scripted::ScriptedCore;
+pub use scripted::{Evidence, ScriptedCore};
 pub use source::Source;
 pub use splitmix64::SplitMix64;
 pub use sweep::{Exhaustive, FailedInput, SweepFailure};
