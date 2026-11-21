@@ -403,7 +403,8 @@ hold everything.
   - Relationships (blocked by, parent and sub-issues) use GitHub's fields,
     not prose, and only when the two issues really concern the same thing.
 - **Picking a task.** Take the highest-priority issue that is **ready**:
-  open, triaged (it has its `class:*` label and no `needs-triage`), not
+  open, triaged (it has its `class:*` and `area:*` labels and no
+  `needs-triage`), not
   `owner-decision`, not `option` unless the owner asks, and with every
   issue blocking it closed.
   - Claim it with a comment before starting, naming the branch.
@@ -473,7 +474,8 @@ hold everything.
   placed in one of them by its issue.
 - **Labels.** Every issue has exactly one `type:*` label and, once
   triaged, at least one `area:*` label, normally one. Every PR and every
-  triaged task issue has exactly one `class:*` label. An issue has at most one priority label.
+  triaged task issue has exactly one `class:*` label, from triage on. An
+  issue has at most one priority label.
   `needs-triage` and a `class:*` label are never on the same issue.
   - **Class:** `class:E`, `class:I`, `class:P`, `class:S`, `class:R` (§1).
   - **Type:**
@@ -520,9 +522,9 @@ hold everything.
   (`.github/ISSUE_TEMPLATE/`). The chooser hides blank issues from public
   contributors; maintainers can still open one, and a task still follows the
   four-part brief. Security reports go to `SECURITY.md`, never to an issue.
-- **Triage:** the maintainer confirms each new issue's class, applies
-  exactly one `class:*` label and removes `needs-triage`, before anyone
-  plans from it.
+- **Triage:** the maintainer confirms each new issue's or PR's class,
+  applies exactly one `class:*` label and at least one `area:*` label, and
+  removes `needs-triage`, before anyone plans from it.
 - **Dependabot** opens update PRs weekly for Cargo and GitHub Actions. They
   are proposals: the maintainer classifies each one, checks it against the
   `add-dependency` checklist, and sponsors it with their sign-off and
