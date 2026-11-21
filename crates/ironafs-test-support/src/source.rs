@@ -67,6 +67,36 @@ impl Source {
         }
     }
 
+    /// A source of fresh draws whose sequence is fixed by `seed`, for
+    /// seeded inputs outside a [`Property`](crate::Property), such as a
+    /// simulator's schedule.
+    ///
+    /// ```
+    /// use ironafs_test_support::Source;
+    ///
+    /// let mut first = Source::from_seed(7);
+    /// let mut second = Source::from_seed(7);
+    /// assert_eq!(first.u64(), second.u64());
+    /// assert_eq!(first.choices(), second.choices());
+    /// ```
+    #[must_use]
+    pub fn from_seed(seed: u64) -> Self {
+        Self::fresh(SplitMix64::new(seed))
+    }
+
+    /// A source that replays `choices`, such as a counterexample's minimal
+    /// choices, and draws zero choices once they run out.
+    #[must_use]
+    pub fn from_choices(choices: Vec<u64>) -> Self {
+        Self::replay(choices)
+    }
+
+    /// The choices drawn so far, in order.
+    #[must_use]
+    pub fn choices(&self) -> &[u64] {
+        &self.record
+    }
+
     /// The choices drawn so far, in order.
     pub(crate) fn into_record(self) -> Vec<u64> {
         self.record
@@ -109,6 +139,42 @@ impl Source {
         let (start, end) = range.into_inner();
         assert!(start <= end, "u64_in needs a non-empty range");
         start + self.draw(end - start)
+    }
+
+    /// Draws an integer in `range`, shrinking toward zero by magnitude
+    /// (negative first at equal magnitude) when the range holds zero, and
+    /// toward the end nearer zero otherwise.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `range` is empty.
+    pub fn i64_in(&mut self, range: RangeInclusive<i64>) -> i64 {
+        let (start, end) = range.into_inner();
+        assert!(start <= end, "i64_in needs a non-empty range");
+        let (start, end) = (i128::from(start), i128::from(end));
+        let choice = i128::from(self.draw(u64::try_from(end - start).unwrap_or(u64::MAX)));
+        let value = if start >= 0 {
+            start + choice
+        } else if end <= 0 {
+            end - choice
+        } else {
+            // Zigzag (0, -1, 1, -2, 2, …) while both sides have values,
+            // then the rest of the longer side in order.
+            let pairs = (-start).min(end);
+            if choice <= 2 * pairs {
+                if choice % 2 == 1 {
+                    -(choice + 1) / 2
+                } else {
+                    choice / 2
+                }
+            } else if -start > end {
+                pairs - choice
+            } else {
+                choice - pairs
+            }
+        };
+        // The value lies in the range, so it fits in an i64.
+        i64::try_from(value).unwrap_or(0)
     }
 
     /// Draws a length or index in `range`, shrinking toward its start.
@@ -210,6 +276,44 @@ impl Source {
         values
     }
 
+    /// Draws `None` or `Some` value from `element`, shrinking toward
+    /// `None`.
+    pub fn option_of<T>(&mut self, element: impl FnOnce(&mut Self) -> T) -> Option<T> {
+        if self.bool() {
+            Some(element(self))
+        } else {
+            None
+        }
+    }
+
+    /// Draws an index into `weights`, each index as often as its weight in
+    /// a fresh run, shrinking toward the first index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `weights` is empty or any weight is zero.
+    pub fn weighted(&mut self, weights: &[u32]) -> usize {
+        assert!(
+            !weights.is_empty() && !weights.contains(&0),
+            "weighted needs at least one weight, and no zero weight"
+        );
+        let last = u64::try_from(weights.len() - 1).unwrap_or(u64::MAX);
+        let total: u64 = weights.iter().copied().map(u64::from).sum();
+        let choice = self.draw_with(last, |generator| {
+            let mut point = scale(generator.next_u64(), total - 1);
+            for (index, weight) in (0..).zip(weights) {
+                let weight = u64::from(*weight);
+                if point < weight {
+                    return index;
+                }
+                point -= weight;
+            }
+            last
+        });
+        // The choice is at most the last index, so it fits in a usize.
+        usize::try_from(choice).unwrap_or(0)
+    }
+
     /// Picks one of `items`, shrinking toward the first.
     ///
     /// To choose between generators, pick an index or an enum and match
@@ -232,9 +336,26 @@ impl Source {
     }
 }
 
-/// A fresh choice in `0..=max` from one generator output.
+/// One fresh draw in this many is a boundary value.
+const BOUNDARY_ODDS: u64 = 16;
+
+/// A fresh choice in `0..=max` from one generator output: usually uniform,
+/// but one time in [`BOUNDARY_ODDS`] one of the boundaries 0, 1, `max - 1`
+/// and `max`, where off-by-one and overflow bugs live. A choice of 0 or
+/// `max` is a range's start or end; for the signed draws, 1 is -1 and the
+/// top two choices are the extremes.
 fn fresh_choice(generator: &mut SplitMix64, max: u64) -> u64 {
-    scale(generator.next_u64(), max)
+    let output = generator.next_u64();
+    if !output.is_multiple_of(BOUNDARY_ODDS) {
+        return scale(output, max);
+    }
+    // The bits above the ones tested pick the boundary.
+    match (output >> 4) % 4 {
+        0 => 0,
+        1 => max.min(1),
+        2 => max.saturating_sub(1),
+        _ => max,
+    }
 }
 
 /// Scales a full-width `output` onto `0..=max` (the high half of the

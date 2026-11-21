@@ -74,11 +74,60 @@ fn fresh_draws_cover_a_small_range() {
 }
 
 #[test]
-fn full_range_draw_is_the_raw_generator_output() {
+fn fresh_draw_is_scaled_generator_output_or_boundary() {
     let mut generator = SplitMix64::new(5);
     let mut source = Source::fresh(generator.clone());
-    assert_eq!(source.u64(), generator.next_u64());
-    assert_eq!(source.u64_in(0..=u64::MAX), generator.next_u64());
+    for _ in 0..1000 {
+        let output = generator.next_u64();
+        let value = source.u64();
+        assert!(
+            value == output || [0, 1, u64::MAX - 1, u64::MAX].contains(&value),
+            "{value:#x} for output {output:#x}"
+        );
+    }
+}
+
+#[test]
+fn fresh_draws_hit_boundaries() {
+    let mut source = Source::fresh(SplitMix64::new(13));
+    let values: Vec<u64> = (0..2000).map(|_| source.u64()).collect();
+    for boundary in [0, 1, u64::MAX - 1, u64::MAX] {
+        assert!(values.contains(&boundary), "{boundary:#x}");
+    }
+    let ranged: Vec<u64> = (0..2000).map(|_| source.u64_in(10..=1_000_000)).collect();
+    for boundary in [10, 11, 999_999, 1_000_000] {
+        assert!(ranged.contains(&boundary), "{boundary}");
+    }
+    let signed: Vec<i64> = (0..2000).map(|_| source.i64()).collect();
+    for boundary in [0, -1, i64::MIN, i64::MAX] {
+        assert!(signed.contains(&boundary), "{boundary}");
+    }
+}
+
+#[test]
+fn fresh_draws_are_mostly_not_boundaries() {
+    let mut source = Source::fresh(SplitMix64::new(17));
+    let boundaries = (0..1600)
+        .map(|_| source.u64())
+        .filter(|value| [0, 1, u64::MAX - 1, u64::MAX].contains(value))
+        .count();
+    // One draw in 16 is a boundary: about 100 of 1600.
+    assert!((50..=150).contains(&boundaries), "{boundaries}");
+}
+
+#[test]
+fn from_seed_draws_as_a_fresh_source() {
+    let mut seeded = Source::from_seed(3);
+    let mut fresh = Source::fresh(SplitMix64::new(3));
+    assert_eq!(draw_mixture(&mut seeded), draw_mixture(&mut fresh));
+    assert_eq!(seeded.choices(), fresh.into_record().as_slice());
+}
+
+#[test]
+fn from_choices_replays_and_records() {
+    let mut source = Source::from_choices(vec![5, 1, 9]);
+    assert_eq!((source.u8(), source.option_of(Source::u8)), (5, Some(9)));
+    assert_eq!(source.choices(), [5, 1, 9]);
 }
 
 #[test]
@@ -89,6 +138,69 @@ fn signed_draws_shrink_toward_zero() {
         [0, -1, 1, -2]
     );
     assert_eq!(source.i32(), 2);
+}
+
+#[test]
+fn i64_in_shrinks_toward_zero_inside_range() {
+    let mut source = Source::replay((0..=7).collect());
+    let values: Vec<i64> = (0..=7).map(|_| source.i64_in(-2..=5)).collect();
+    assert_eq!(values, [0, -1, 1, -2, 2, 3, 4, 5]);
+    let mut source = Source::replay((0..=6).collect());
+    let values: Vec<i64> = (0..=6).map(|_| source.i64_in(-5..=1)).collect();
+    assert_eq!(values, [0, -1, 1, -2, -3, -4, -5]);
+}
+
+#[test]
+fn i64_in_shrinks_toward_end_nearer_zero() {
+    let mut source = Source::replay(vec![2, 2]);
+    assert_eq!((source.i64_in(3..=9), source.i64_in(-9..=-3)), (5, -5));
+}
+
+#[test]
+fn i64_in_full_range_reaches_the_extremes() {
+    let mut source = Source::replay(vec![u64::MAX, u64::MAX - 1]);
+    assert_eq!(
+        (
+            source.i64_in(i64::MIN..=i64::MAX),
+            source.i64_in(i64::MIN..=i64::MAX)
+        ),
+        (i64::MIN, i64::MAX)
+    );
+}
+
+#[test]
+fn option_of_shrinks_toward_none() {
+    let mut source = Source::replay(vec![0, 1, 7]);
+    assert_eq!(
+        (source.option_of(Source::u8), source.option_of(Source::u8)),
+        (None, Some(7))
+    );
+}
+
+#[test]
+fn weighted_replays_index_choice() {
+    let mut source = Source::replay(vec![2, 0, 4]);
+    let weights = [5, 1, 1];
+    assert_eq!(
+        [
+            source.weighted(&weights),
+            source.weighted(&weights),
+            source.weighted(&weights)
+        ],
+        [2, 0, 1]
+    );
+}
+
+#[test]
+fn weighted_fresh_follows_weights() {
+    let mut source = Source::fresh(SplitMix64::new(19));
+    let mut counts = [0_u32; 3];
+    for _ in 0..1000 {
+        counts[source.weighted(&[1, 8, 1])] += 1;
+    }
+    // Expected 100, 800, 100.
+    assert!((700..=900).contains(&counts[1]), "{counts:?}");
+    assert!(counts[0] > 50 && counts[2] > 50, "{counts:?}");
 }
 
 #[test]
@@ -159,5 +271,40 @@ fn pick_from_empty_slice_panics_with_message() {
     assert_eq!(
         payload.downcast_ref::<&str>(),
         Some(&"pick needs at least one item")
+    );
+}
+
+#[test]
+fn i64_in_empty_range_panics_with_message() {
+    let (start, end) = (5, 4);
+    let result = panic::catch_unwind(|| Source::replay(Vec::new()).i64_in(start..=end));
+    let payload = result.unwrap_err();
+    assert_eq!(
+        payload.downcast_ref::<&str>(),
+        Some(&"i64_in needs a non-empty range")
+    );
+}
+
+#[test]
+fn weighted_rejects_empty_and_zero_weights() {
+    for weights in [&[][..], &[1, 0][..]] {
+        let result = panic::catch_unwind(|| Source::replay(Vec::new()).weighted(weights));
+        let payload = result.unwrap_err();
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"weighted needs at least one weight, and no zero weight"),
+            "{weights:?}"
+        );
+    }
+}
+
+#[test]
+fn vec_of_empty_length_range_panics_with_message() {
+    let (start, end) = (5, 4);
+    let result = panic::catch_unwind(|| Source::replay(Vec::new()).vec_of(start..=end, Source::u8));
+    let payload = result.unwrap_err();
+    assert_eq!(
+        payload.downcast_ref::<&str>(),
+        Some(&"vec_of needs a non-empty length range")
     );
 }
