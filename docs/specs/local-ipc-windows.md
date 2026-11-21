@@ -470,6 +470,45 @@ None yet. To be recorded at the Windows gate (10.5).
   (`cancel_completion_time`). Blocks: stating a time bound for the
   residual of section 8. Part of the Windows gate (M5-28, planned).
 
+### 13.1 Blockers and open items from review
+
+The review ended without the second seat passing ([the review
+record](../reviews/2026-11-21-m2a-62-local-ipc.md)). The items below
+were still open at its last round. A **blocker** (B) is a major:
+implementation (issue #95) must not start on the sections it names until
+it is closed by a reviewed change to this specification. An **open
+item** (M) is a minor, recorded and not gating. This part has no blocker
+of its own. The Windows prefix rule's scope is part of B5 (local-ipc.md,
+13.1). Q4 above is an owner decision and gates the Windows parts on its
+own terms.
+
+- **M1. The `pipe_pool` fixture for listener replacement.** Parts:
+  local-ipc-windows.md, 10.5; local-ipc-resources.md, 5.2.1, rule 1.
+  Quoted as received:
+
+  > Defect: GPT 3 — PARTLY. The standing charge of P connect blocks
+  > removes request-budget competition for listener replacement. The new
+  > test starts with the global account at its budget and expects the
+  > listener to become an admitted connection. Admission itself requires
+  > a new global allowance.
+  >
+  > Consequence: Saturating the account before admission exercises
+  > refusal and rearming of the same handle, so it does not verify that
+  > an admitted connection gets a replacement.
+  >
+  > Fix asked: Leave exactly enough headroom for the first admission
+  > step to consume, then assert that the account is full at replacement
+  > and the armed count is restored without a new reservation.
+
+  Closes with: the fixture leaving exactly the headroom the first
+  admission step consumes, then asserting a full account at replacement
+  and the armed count restored with no new reservation.
+
 ## 14. Review
 
-Not yet reviewed. The record will be in `docs/reviews/`.
+Reviewed in five rounds on 2026-11-21 by two non-author families, and
+not converged: one seat passed and one did not. The rounds, every
+finding and the decision to stop are in [the review
+record](../reviews/2026-11-21-m2a-62-local-ipc.md). Open here: open item
+M1 (13.1), Q4 and Q5; B5 names this part's prefix rule. This
+specification stays `draft`.

@@ -911,6 +911,141 @@ None yet.
 None of its own. Those of the framework are in local-ipc.md, section
 13; its Q6 is the open part of ADR 0004, C16, point 6.
 
+### 13.1 Blockers and open items from review
+
+The review ended without the second seat passing ([the review
+record](../reviews/2026-11-21-m2a-62-local-ipc.md)). The items below
+were still open at its last round. A **blocker** (B) is a major:
+implementation (issue #95) must not start on the sections it names until
+it is closed by a reviewed change to this specification. An **open
+item** (M) is a minor, recorded and not gating. B2 and B5 are in
+local-ipc.md, 13.1; where they name a place in this part, that place is
+gated too.
+
+- **B1. The result slot when a claimed, outcome-unknown handler returns
+  after close, and when expiry and close coincide.** Parts:
+  local-ipc-resources.md, 5.6.4, rule 4; local-ipc.md, 5.6.3, rule 3.
+  Quoted as received:
+
+  > Defect: GPT 6 — PARTLY. Completed is absorbing. On a live
+  > connection, a result offered at or after the deadline on a claimed
+  > outcome-unknown row correctly yields outcome unknown regardless of
+  > timer delivery. Once the connection is Closing, the new blanket rule
+  > redirects that handler's result to the close row. That row leaves
+  > completion to the handler, whose result has just been redirected.
+  > The rule also gives no precedence when it observes both expiry and
+  > close.
+  >
+  > Consequence: A worker can return with its slot still Claimed.
+  > Implementations can also disagree on the selected terminal outcome
+  > when expiry and close coincide.
+  >
+  > Fix asked: Specify the terminal transition for a claimed
+  > outcome-unknown handler returning after close, with wire output
+  > suppressed. Define expiry and close precedence under the slot lock.
+  > Test both orderings with the timer held back, and make 5.6.3 refer
+  > to the transition table for the first-cause rule.
+
+  Closes with: a terminal transition for that case with wire output
+  suppressed, a stated precedence between expiry and close under the
+  slot's lock, 5.6.3, rule 3 referring to the table for the first-cause
+  rule, and tests of both orders with the timer held back.
+  Gated until then: 5.6.4, rule 4 and every handler's use of the commit
+  claim; 5.6.3, rule 3.
+
+- **B3. The client's reservation failures against its one failure
+  transition.** Parts: local-ipc-resources.md, 5.4, point 19;
+  local-ipc.md, 5.4, point 15. Quoted as received:
+
+  > Defect: GPT 12 — PARTLY. Retaining the decoded part and its backing
+  > bytes under the ledger charge removes fallible re-decoding during
+  > presentation. The added standalone reservation path conflicts with
+  > two general rules. A terminal reply reservation failure must discard
+  > the body and finish without CANCEL, but the general request-level
+  > failure transition includes failed staging reservations and always
+  > queues CANCEL. Point 15 calls an already-failed id the sole
+  > undecoded discard case, although point 19 also discards bodies on
+  > reservation and staging-limit failures.
+  >
+  > Consequence: Under staging pressure, clients can disagree on whether
+  > to drain a body, send a spurious CANCEL for a terminal reply, or
+  > fail the connection. The tests cover late frames and successful
+  > standalone reservations but leave these failure paths unresolved.
+  >
+  > Fix asked: State the reservation and staging-limit exceptions in
+  > point 15. Separate a local failure awaiting a terminal envelope from
+  > failure on that envelope itself. The latter releases staging and
+  > closes the id immediately. Test failed reservations for a terminal
+  > reply, a droppable event and a mandatory event.
+
+  Closes with: point 15 naming every case in which a body is discarded
+  undecoded, a failure on a terminal envelope itself kept apart from a
+  local failure that awaits one (the former releases staging and closes
+  the id at once, with no `CANCEL`), and tests of a failed reservation
+  for a terminal reply, a droppable event and a mandatory event.
+  Gated until then: 5.4, points 15, 19 and 20: the client's receive path
+  for replies, parts and events.
+
+- **B4. The mandatory append when a row is not enabled or its encode
+  fails, and what the close-race test asserts.** Parts:
+  local-ipc-resources.md, 5.2.1, rule 4 and 10.5; local-ipc.md, 5.5,
+  point 6. Quoted as received:
+
+  > Defect: C16.6 — PARTLY. M now includes one queue entry per pending
+  > event, prepays encoding, and stays separate from ordinary occupancy.
+  > The append contract still promises Appended whenever the connection
+  > is Open and the row is below its bound, including a secret-bearing
+  > mandatory row whose encoder is disabled by its gate. The close-race
+  > test also says an append is never reported as appended and unsent,
+  > although a write or closing deadline can cut off frames queued
+  > before close.
+  >
+  > Consequence: An append can satisfy the stated success conditions
+  > when it cannot produce a frame. A passing implementation of the
+  > close cutoff can fail the acceptance case solely because the
+  > transport stopped draining.
+  >
+  > Fix asked: Include row enablement in eligibility and define the
+  > result of an encode failure without publishing an entry or consuming
+  > its pending charge. Assert FIFO insertion and the close cutoff
+  > separately from delivery, with a draining writer for the delivery
+  > assertion.
+
+  Closes with: row enablement (5.5, point 6's gate) as part of
+  eligibility, a stated result for an encode failure that publishes no
+  entry and gives back its pending charge, and the test asserting
+  insertion order and the close cutoff apart from delivery. The adapter
+  endpoint's own rules stay with Q6 of local-ipc.md.
+  Gated until then: the mandatory-event rules of 5.2.1, rule 4, and so
+  any endpoint with a mandatory event row.
+
+- **M2. The headroom assertion of `caps_per_caller`.** Parts:
+  local-ipc-resources.md, 10.5. Quoted as received:
+
+  > Defect: GPT 5 — PARTLY. Parking pauses only the frame deadline,
+  > retains the time it had left, and leaves the write deadline in
+  > force. The revised headroom assertion measures the right account,
+  > but its lower bound subtracts only global-only charges. The fixture
+  > does not say that other callers' charged bytes are zero at the
+  > measurement.
+  >
+  > Consequence: The assertion can fail in the same fixture where a
+  > second caller is serving requests, even though the first caller
+  > obeys its half-budget cap.
+  >
+  > Fix asked: Measure headroom before any other caller has charges, or
+  > subtract those charges explicitly. Keep the second caller's ability
+  > to run as a separate assertion.
+
+  Closes with: the measurement taken before any other caller has
+  charges, or those charges subtracted, with the second caller's ability
+  to run asserted on its own.
+
 ## 14. Review
 
-Not yet reviewed. The record will be in `docs/reviews/`.
+Reviewed in five rounds on 2026-11-21 by two non-author families, and
+not converged: one seat passed and one did not. The rounds, every
+finding and the decision to stop are in [the review
+record](../reviews/2026-11-21-m2a-62-local-ipc.md). Open here: blockers
+B1, B3 and B4 and open item M2 (13.1); B2 and B5 also name places in
+this part. This specification stays `draft`.

@@ -1883,6 +1883,85 @@ of 10.5.
   fencing sentences are withdrawn; all of it is that specification's.
   Blocks: enabling the adapter endpoint.
 
+### 13.1 Blockers and open items from review
+
+The review ended without the second seat passing ([the review
+record](../reviews/2026-11-21-m2a-62-local-ipc.md)). The items below
+were still open at its last round. A **blocker** (B) is a major:
+implementation (issue #95) must not start on the sections it names until
+it is closed by a reviewed change to this specification. An **open
+item** (M) is a minor, recorded and not gating. B1, B3 and B4 are in
+local-ipc-resources.md, 13.1, and M1 in local-ipc-windows.md, 13.1;
+where they name a place in this part, that place is gated too.
+
+- **B2. The binding step when both deadlines have passed, and a binding
+  handler that must claim.** Parts: local-ipc.md, 5.4, point 6 and
+  5.6.2; local-ipc-resources.md, 5.6.4, rule 4. Quoted as received:
+
+  > Defect: GPT 9 — PARTLY. The ordered checks correctly handle an
+  > expired request with a live handshake and a Pending slot. The state
+  > table still says to answer DeadlineExceeded for a passed request
+  > deadline even when the handshake deadline has also passed and the
+  > ordered check suppresses the result. The opening step also requires
+  > Pending, while a binding handler that changes state must claim under
+  > the general mutation rule.
+  >
+  > Consequence: The prose and table give different wire outcomes when
+  > both deadlines have passed. A binding handler that follows the
+  > commit-claim rule can report success from Claimed, a state the
+  > opening step cannot accept and has no failure branch for.
+  >
+  > Fix asked: Have the table use the ordered opening step's exact reply
+  > behavior. Specify whether binding checks remain read-only until the
+  > serialized opening step or how a claimed binding is arbitrated.
+  > Cover both expired deadlines and the chosen binding commit path in
+  > acceptance cases.
+
+  Closes with: the state table giving exactly the opening step's reply
+  in every case, and a decision on whether binding checks stay read-only
+  until the opening step or how a Claimed binding slot is arbitrated,
+  with acceptance cases for both.
+  Gated until then: 5.4, point 6, the `AwaitBinding` rows of 5.6.2, and
+  so the adapter endpoint.
+
+- **B5. The secret gate in the ordered frame checks, and one predicate
+  for the Windows prefix rule.** Parts: local-ipc.md, 5.4, points 9 and
+  15 and 5.5, point 6; local-ipc-resources.md, 5.2.1, rule 1 and 5.4,
+  point 2. Quoted as received:
+
+  > Defect: Sheet 20 — PARTLY. The gate now prohibits daemon admission
+  > of secret-bearing input, and the caller-first rule scopes prefix
+  > capture to the control pipe and explicit adopters. The actual
+  > catalogue step omits the gate-off branch for notices, and the client
+  > envelope step checks whether the connection is checked without
+  > checking whether its gate is enabled. Resource admission includes
+  > adopters in its first step but omits them from the capture timing in
+  > its second, while capture scratch is still specified for Windows
+  > generally.
+  >
+  > Consequence: Following the ordered frame checks can reach a body
+  > read that the gate is meant to prevent. A Windows endpoint can also
+  > get capture accounting that disagrees with its transport selection.
+  >
+  > Fix asked: Put the gate predicates in the daemon catalogue and
+  > client envelope steps. Test gate-off receive on an otherwise checked
+  > connection, including PART. Use the same
+  > control-pipe-or-explicit-adopter predicate for all prefix admission,
+  > capture and accounting rules.
+
+  Closes with: the gate's predicate written into the daemon's catalogue
+  step (notices included) and the client's envelope step, a test of
+  gate-off receive on a checked connection, `PART` included, and the
+  same control-pipe-or-explicit-adopter predicate in every prefix
+  admission, capture and accounting rule.
+  Gated until then: every secret-bearing row on every endpoint, and the
+  capture scratch of 5.2.1, rule 1.
+
 ## 14. Review
 
-Not yet reviewed. The record will be in `docs/reviews/`.
+Reviewed in five rounds on 2026-11-21 by two non-author families, and
+not converged: one seat passed and one did not. The rounds, every
+finding and the decision to stop are in [the review
+record](../reviews/2026-11-21-m2a-62-local-ipc.md). Open here: blockers
+B2 and B5 (13.1), and Q6; B1 and B3 also name places in this part. This
+specification stays `draft`.
