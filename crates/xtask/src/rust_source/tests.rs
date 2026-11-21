@@ -303,6 +303,38 @@ fn tokens_refuse_a_shebang_line() {
 }
 
 #[test]
+fn tokens_refuse_a_frontmatter_fence() {
+    for (source, line) in [
+        ("---\nkey = \"\n---\nfn main() {}", 1),
+        ("---cargo\n---\n", 1),
+        ("\u{feff}---\n---\n", 1),
+        ("\n\n  \t---\n'\n---\n", 3),
+        ("\u{feff}\n-----\n-----\n", 2),
+    ] {
+        assert_eq!(
+            tokens(source),
+            Err(LexError {
+                line,
+                reason: "a frontmatter fence, whose content the compiler skips unread"
+            }),
+            "source {source:?}"
+        );
+    }
+}
+
+#[test]
+fn tokens_read_dashes_after_the_first_token() {
+    for source in ["fn f() -> i32 { --1 }\n---\n", "// c\n---\n", "--\n", "-\n"] {
+        assert!(
+            tokens(source).is_ok_and(|lexed| lexed
+                .iter()
+                .any(|token| token.kind == TokenKind::Punct('-'))),
+            "source {source:?}"
+        );
+    }
+}
+
+#[test]
 fn tokens_read_an_inner_attribute_at_the_start_and_a_leading_byte_order_mark() {
     for source in [
         "#![no_std]",

@@ -11,7 +11,8 @@
 //! `check-deps` requires of every crate. Where it could part from the
 //! compiler about where a literal starts or ends, it refuses the source
 //! instead: a literal directly followed by an identifier character (a
-//! suffix), and a shebang line, which the compiler skips unread.
+//! suffix), a shebang line, and a frontmatter fence (`---` as the first
+//! token), since the compiler skips both unread.
 
 use std::fmt;
 use std::fs;
@@ -116,7 +117,7 @@ pub(crate) fn read(file: &Path) -> Result<Result<Vec<Token>, String>, Error> {
 /// # Errors
 ///
 /// Returns the line of an unterminated comment or literal, a literal with
-/// a suffix, or a shebang line.
+/// a suffix, a shebang line, or a frontmatter fence.
 pub(crate) fn tokens(source: &str) -> Result<Vec<Token>, LexError> {
     let mut lexer = Lexer {
         chars: source.chars().collect(),
@@ -129,6 +130,7 @@ pub(crate) fn tokens(source: &str) -> Result<Vec<Token>, LexError> {
         lexer.position = 1;
     }
     lexer.shebang()?;
+    lexer.frontmatter()?;
     lexer.run()?;
     Ok(lexer.tokens)
 }
@@ -188,6 +190,29 @@ impl Lexer {
                 line: self.line,
                 reason: "a shebang line, which the compiler skips unread",
             })
+        }
+    }
+
+    /// Refuses a frontmatter fence: `---` as the first thing in the file
+    /// after whitespace. A compiler that reads frontmatter skips its
+    /// content unread, so a quote in it would start a literal here and not
+    /// there. No item starts with `-`, so nothing valid is refused.
+    fn frontmatter(&self) -> Result<(), LexError> {
+        let mut offset = 0;
+        let mut line = self.line;
+        while let Some(next) = self.at(offset).filter(|next| next.is_whitespace()) {
+            if next == '\n' {
+                line += 1;
+            }
+            offset += 1;
+        }
+        if (offset..offset + 3).all(|index| self.at(index) == Some('-')) {
+            Err(LexError {
+                line,
+                reason: "a frontmatter fence, whose content the compiler skips unread",
+            })
+        } else {
+            Ok(())
         }
     }
 

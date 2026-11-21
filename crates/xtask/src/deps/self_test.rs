@@ -951,6 +951,11 @@ const CASES: &[Case] = &[
         expect: &[is_planted_unreadable],
     },
     Case {
+        name: "a frontmatter fence whose content the compiler skips unread",
+        plant: |fixture| plant_source(fixture, "\n---\nx = \"\n---\nfn f() {} // \"\n"),
+        expect: &[is_planted_unreadable],
+    },
+    Case {
         name: "a file read at compile time by include_str!",
         plant: |fixture| {
             plant_source(
