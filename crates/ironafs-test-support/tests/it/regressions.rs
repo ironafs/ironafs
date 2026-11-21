@@ -7,6 +7,7 @@
 
 use ironafs_test_support::Property;
 
+use crate::exhaustive::{decoded_payload_matches_length, frame_with_length};
 use crate::property::{pair_within_ranges, ranged_pair};
 
 /// A shrunk sequence can hold a choice past a smaller draw's range; the
@@ -17,5 +18,16 @@ fn ranged_draws_stay_in_their_ranges_holds_on_pinned_input() {
         &[1000, 1000],
         ranged_pair,
         pair_within_ranges,
+    );
+}
+
+/// Pinned from an exhaustive sweep's report: an all-ones length field
+/// that wraps when the header's size is added must be refused.
+#[test]
+fn lengths_near_and_at_the_edges_holds_on_pinned_input() {
+    Property::new("lengths near and at the edges").regression(
+        &[6],
+        frame_with_length,
+        decoded_payload_matches_length,
     );
 }
