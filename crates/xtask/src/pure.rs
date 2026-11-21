@@ -33,12 +33,12 @@ use std::fs;
 use std::io::{self, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
-use crate::Error;
 use crate::deps::{self, Kind};
 use crate::metadata::{self, Member, Package, Workspace};
 use crate::rust_source::{self, Token, TokenKind, ident, punct};
+use crate::{Command, Error};
 
 #[cfg(test)]
 mod tests;
@@ -119,7 +119,7 @@ const SYSROOT_LIBRARIES: &[&str] = &[
 
 /// Environment variables that would change the compiler or its flags behind
 /// this check's back; each is removed from the build's environment.
-const CLEARED_ENVIRONMENT: &[&str] = &[
+pub(crate) const CLEARED_ENVIRONMENT: &[&str] = &[
     "RUSTFLAGS",
     "CARGO_BUILD_RUSTFLAGS",
     "RUSTC",
@@ -907,7 +907,7 @@ pub(crate) fn core_sysroot(toolchain: &Path, targets: &[String], dir: &Path) -> 
 }
 
 /// The first line of cargo's error output that says what failed.
-fn first_error(stderr: &[u8]) -> String {
+pub(crate) fn first_error(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
     let mut lines = text.lines().map(str::trim);
     let first = lines

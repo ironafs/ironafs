@@ -53,6 +53,10 @@ jobs:
           install -m 0755 "${archive%.tar.gz}/cargo-deny" "$cargo_bin/cargo-deny"
       - name: Check dependencies
         run: cargo deny --locked check
+      - name: Check the clock and randomness bans fire
+        run: cargo --locked xtask check-bans
+      - name: Prove a removed or misspelt ban is caught
+        run: cargo --locked xtask check-bans --self-test
       - name: Check the architecture's dependency rules
         run: cargo --locked xtask check-deps
       - name: Prove the dependency rules catch planted violations
