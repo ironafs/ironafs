@@ -350,3 +350,51 @@ fn only_the_network_address_forges_and_it_serves_nothing_else() {
     );
     assert_eq!(world.poll().pushes.len(), 1);
 }
+
+/// The bytes and the world paths share one serving policy: for every
+/// routing case where the world holds nothing, they give the same answer
+/// or the same drop.
+#[test]
+fn the_world_and_the_bytes_path_serve_alike() {
+    let mut cases: Vec<Vec<u8>> = vec![
+        Vec::new(),
+        vec![10, 0],
+        bytes_from(ME, FS1, status()),
+        bytes_from(ME, FS2, status()),
+        bytes_from(ME, ABSENT, status()),
+        bytes_from(ME, NETWORK, status()),
+        bytes_from(
+            ME,
+            FS1,
+            Procedure::SimForge {
+                from: FS1,
+                to: ME,
+                procedure: CbProc::Probe,
+            },
+        ),
+        encode_request(&request(VL, Service::Vl, lookup())),
+        encode_request(&request(FS1, Service::Vl, lookup())),
+        encode_request(&request(VL, Service::Fs, status())),
+    ];
+    for to in [FS1, FS2, VL, NETWORK, ABSENT] {
+        let mut junk = to.0.to_vec();
+        junk.extend_from_slice(b"junk");
+        cases.push(junk);
+    }
+    for down in [false, true] {
+        let mut bytes_cell = cell();
+        bytes_cell.set_down(FS1, down);
+        let shared = shared();
+        shared.lock().unwrap().set_down(FS1, down);
+        let mut world = CellWorld::new(&shared);
+        for (index, case) in cases.iter().enumerate() {
+            let via_bytes = bytes_cell.serve_bytes(case);
+            let via_world = match world.serve(u64::try_from(index).unwrap(), case) {
+                Served::Reply(bytes) => Some(bytes),
+                Served::Drop => None,
+                Served::Hold => panic!("case {index} held"),
+            };
+            assert_eq!(via_bytes, via_world, "case {index}, down {down}");
+        }
+    }
+}

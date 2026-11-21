@@ -185,14 +185,33 @@ impl Cell {
     /// Bytes that reach a server but are no request get the marshalling
     /// abort (5.9, row R5).
     pub fn serve_bytes(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
-        if !self.reaches(destination(bytes)?) {
-            return None;
+        match self.serve_envelope(bytes, None) {
+            Served::Reply(reply) => Some(reply),
+            Served::Drop | Served::Hold => None,
         }
-        let answer = match decode_request(bytes) {
-            Ok(request) => self.serve(&request)?,
-            Err(_) => Answer::Abort(MARSHALLING),
+    }
+
+    /// The cell's one serving policy for envelope bytes, shared by
+    /// [`Cell::serve_bytes`] and the world path: the destination first,
+    /// then the decode, then the route. With `call`, the bytes are a
+    /// task's call through the world, which a fileserver may hold (A14).
+    fn serve_envelope(&mut self, bytes: &[u8], call: Option<u64>) -> Served {
+        if !destination(bytes).is_some_and(|to| self.reaches(to)) {
+            return Served::Drop;
+        }
+        let Ok(request) = decode_request(bytes) else {
+            return Served::Reply(encode_answer(&Answer::Abort(MARSHALLING)));
         };
-        Some(encode_answer(&answer))
+        if let Some(call) = call
+            && request.service == Service::Fs
+            && let Some(server) = self.file_servers.get_mut(&request.to)
+        {
+            return server
+                .serve_call(call, request.client, request.context, &request.procedure)
+                .map_or(Served::Hold, |answer| Served::Reply(encode_answer(&answer)));
+        }
+        self.serve(&request)
+            .map_or(Served::Drop, |answer| Served::Reply(encode_answer(&answer)))
     }
 }
 
@@ -233,35 +252,7 @@ impl CellWorld {
 
 impl World for CellWorld {
     fn serve(&mut self, call: u64, bytes: &[u8]) -> Served {
-        let mut state = self.cell();
-        // As `Cell::serve_bytes`: bytes to a server that is not there are
-        // dropped unread.
-        if !destination(bytes).is_some_and(|to| state.reaches(to)) {
-            return Served::Drop;
-        }
-        let Ok(request) = decode_request(bytes) else {
-            return Served::Reply(encode_answer(&Answer::Abort(MARSHALLING)));
-        };
-        let to_file_server = request.service == Service::Fs && request.to != NETWORK;
-        if to_file_server {
-            return match state.file_servers.get_mut(&request.to) {
-                None => Served::Drop,
-                Some(server) => {
-                    match server.serve_call(
-                        call,
-                        request.client,
-                        request.context,
-                        &request.procedure,
-                    ) {
-                        None => Served::Hold,
-                        Some(answer) => Served::Reply(encode_answer(&answer)),
-                    }
-                }
-            };
-        }
-        state
-            .serve(&request)
-            .map_or(Served::Drop, |answer| Served::Reply(encode_answer(&answer)))
+        self.cell().serve_envelope(bytes, Some(call))
     }
 
     fn admit(&mut self, token: u64, attempt: u32) -> bool {
