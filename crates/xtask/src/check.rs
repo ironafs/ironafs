@@ -4,9 +4,9 @@
 //! Runs local checks in order and reports missing optional tools.
 
 use std::io::{self, Write};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ExitStatus, Stdio};
 
-use crate::Error;
+use crate::{Command, Error};
 
 #[cfg(test)]
 mod tests;
@@ -44,6 +44,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         "cargo test --doc --workspace",
     )?;
     for self_test in [false, true] {
+        crate::bans::run(self_test, output)?;
         crate::deps::run(self_test, output)?;
         crate::grants::run(self_test, output)?;
         crate::pure::run(self_test, output)?;

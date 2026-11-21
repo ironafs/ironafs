@@ -30,6 +30,14 @@ the evidence that refutes it.
 | [2026-11-20-readme-adr-0004](2026-11-20-readme-adr-0004.md) | The README follows ADR 0004: goals, sources for the Why section, planned platforms and order of work |
 | [2026-11-20-workflow-milestones](2026-11-20-workflow-milestones.md) | Milestones follow ADR 0004, O50 |
 | [2026-11-20-workflow-implementer](2026-11-20-workflow-implementer.md) | Issue #40: Claude implements from M2a; label rules and triage |
+| [2026-11-21-adr-0005-review](2026-11-21-adr-0005-review.md) | Issues #43 and #49: ADR 0005 (`ironafs-os`) and the ADR 0004 C5 amendment |
+| [2026-11-21-m2a-10-clock-seam](2026-11-21-m2a-10-clock-seam.md) | Issue #58: the clock and randomness seam, `ironafs-time`, and the bans that keep rule 7 |
+| [2026-11-21-m2a-11-test-support](2026-11-21-m2a-11-test-support.md) | Issue #44: `ironafs-test-support`, the seeded generator and shrinker |
+| [2026-11-21-m2a-13-check-deps](2026-11-21-m2a-13-check-deps.md) | Issue #46: the `xtask` dependency, pure-crate and grant checks |
+| [2026-11-21-m2-plus-plan](2026-11-21-m2-plus-plan.md) | Issue #41: the M2+ plan and wave one's issue texts |
+| [2026-11-21-m1-close-sweep](2026-11-21-m1-close-sweep.md) | The documentation sweep against ADR 0004 at M1's exit |
+| [2026-11-21-m2a-90-convergence](2026-11-21-m2a-90-convergence.md) | Issue #54: convergence rules for review rounds |
+| [2026-11-21-m2a-13-remainder](2026-11-21-m2a-13-remainder.md) | Issue #46: `check-pure`'s exact matrix of compiled crates, targets and profiles, and the crate root's form |
 | [2026-11-21-m2a-01-xdr-spec](2026-11-21-m2a-01-xdr-spec.md) | Issue #42: `docs/specs/`, its template and the XDR profile with caps |
 | [2026-11-21-m2a-63-testing](2026-11-21-m2a-63-testing.md) | Issue #63: the test strategy |
 
@@ -43,8 +51,16 @@ commit as the change ([ADR 0002](../adr/0002-ai-use-and-attribution.md)). Each
 record lists:
 
 - **every seat:** agent id, served model, effort and verdict;
-- **every finding:** what it was, and whether it was fixed, refuted (with the
-  evidence) or deferred (with where it is tracked).
+- **every finding:** what it was, its `origin:` (pre-existing, or
+  introduced by fix round N) and `kind:` (correctness, contract,
+  consistency between parts, missing mechanism, or other), and whether it
+  was fixed, refuted (with the evidence) or deferred (with where it is
+  tracked);
+- **every round:** each dispatch's quota headroom where the lane reports
+  it (no cost figures), and "uncalibrated on IronAFS" beside each verdict
+  from an uncalibrated pin ([workflow](../workflow.md) §2, "Model routing");
+- **from round 3 on:** the convergence note ([workflow](../workflow.md) §3,
+  step 7).
 
 Records are written from the lanes' output and redacted: no paths outside the
 repository, hostnames, cell names, keys or other projects. Raw transcripts are
