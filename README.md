@@ -31,11 +31,14 @@ to ship everywhere.
   Secure Boot blocks unsigned modules built outside the kernel tree. FUSE
   lets a file system run in user space instead. For per-user correctness,
   IronAFS starts with FUSE's entry and attribute caching off and uses
-  neither passthrough nor the writeback cache, so it expects
-  metadata-heavy work to be slower than it could be, until measured.
+  neither passthrough nor the writeback cache. The kernel then asks
+  IronAFS again for every lookup and attribute read, so IronAFS expects
+  metadata-heavy work to be slower than with those results cached in the
+  kernel, until measured.
 - **On Windows,** new kernel drivers must, with some exceptions, be signed
-  through Microsoft, and current releases are removing trust in older
-  cross-signed drivers. IronAFS plans a small SMB server of its own on the
+  through Microsoft. Windows 11 24H2 and later, and Windows Server 2025,
+  are removing default trust in older cross-signed drivers, apart from an
+  allow list. IronAFS plans a small SMB server of its own on the
   local machine instead, reached through Windows' own SMB client (see
   below).
 
@@ -115,11 +118,12 @@ L37 to L39):
   (x64), in a workgroup at first;
 - tier 2: Windows 11 Pro 26H2 (Arm64), in a workgroup at first; Windows 10
   Pro 22H2 (x86_64), in a workgroup, SMB only, with Extended Security
-  Updates, until 2027-10-12;
-- candidates: Ubuntu's generic kernels; RHEL 7.9, 8.10, 9 and 10; Debian 12
-  and 13; other Windows 11 versions and editions; static musl builds; and
-  FreeBSD. Each becomes a target only on the conditions L39 names, such as
-  a named test venue that qualifies it.
+  Updates and the current cumulative update, until 2027-10-12;
+- candidates: Ubuntu's generic kernels, until tested on a native kernel
+  (L37); and RHEL 7.9, 8.10, 9 and 10, Debian 12 and 13, Windows 11 Pro
+  25H2 and other Windows 11 editions, static musl builds, and FreeBSD
+  (L39). Each becomes a target only on the conditions its decision names,
+  such as a named test venue that qualifies it.
 
 **Order of work** ([part 3](docs/adr/0004-architecture-3-operations.md),
 O50). A plan, with no dates:
