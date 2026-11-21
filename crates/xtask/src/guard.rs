@@ -207,6 +207,9 @@ pub(super) fn evaluate(command: &str, cwd: &Path, repo: &impl Repo) -> Vec<Strin
     let mut scope = Scope {
         cwd: Some(cwd.to_path_buf()),
         branch_changed: false,
+        config_changed: false,
+        env: Vec::new(),
+        git_config: Vec::new(),
     };
     guard.script(command, &mut scope, 0);
     guard.fixes
@@ -224,6 +227,15 @@ struct Scope {
     cwd: Option<PathBuf>,
     /// Whether a `git checkout` or `git switch` ran earlier.
     branch_changed: bool,
+    /// Whether an earlier command wrote git configuration or a gh alias,
+    /// so an alias looked up now may not be the one that runs.
+    config_changed: bool,
+    /// `GIT_*` variables exported or assigned earlier; `None` for a value
+    /// that expands at run time.
+    env: Vec<(String, Option<String>)>,
+    /// `-c` options of the git that runs a shell alias, which the git
+    /// commands in that alias inherit.
+    git_config: Vec<String>,
 }
 
 /// What the text of a published message or a commit message came to.
@@ -269,8 +281,10 @@ impl<R: Repo> Guard<'_, R> {
                 Item::Enter => outer.push(scope.clone()),
                 Item::Leave => {
                     if let Some(saved) = outer.pop() {
-                        // A subshell's `cd` ends with it; a branch switch does not.
+                        // A subshell's `cd` and exports end with it; a branch
+                        // switch and written configuration do not.
                         scope.cwd = saved.cwd;
+                        scope.env = saved.env;
                     }
                 }
                 Item::Command(command) => {
@@ -285,10 +299,11 @@ impl<R: Repo> Guard<'_, R> {
         let mut child = scope.clone();
         self.script(script, &mut child, depth + 1);
         scope.branch_changed |= child.branch_changed;
+        scope.config_changed |= child.config_changed;
     }
 
     fn command(&mut self, words: &[Word], stdin: &Stdin, scope: &mut Scope, depth: usize) {
-        let mut env = Vec::new();
+        let mut env = scope.env.clone();
         self.assigned(words, stdin, scope, &mut env, depth);
     }
 
@@ -302,15 +317,23 @@ impl<R: Repo> Guard<'_, R> {
         depth: usize,
     ) {
         let mut rest = words;
+        let mut assigned = Vec::new();
         while let Some((first, tail)) = rest.split_first() {
             let Some((name, value)) = assignment(first) else {
                 break;
             };
             if name.starts_with("GIT_") {
-                env.push((name.to_owned(), value));
+                assigned.push((name.to_owned(), value));
             }
             rest = tail;
         }
+        if rest.is_empty() {
+            // A bare assignment sets a shell variable. The guard counts it as
+            // exported: an `export NAME` or `set -a` may follow.
+            scope.env.extend(assigned);
+            return;
+        }
+        env.extend(assigned);
         self.run(rest, stdin, scope, env, depth);
     }
 
@@ -350,13 +373,14 @@ impl<R: Repo> Guard<'_, R> {
             self.assigned(rest, stdin, &mut local, env, depth);
         } else if rest.first().and_then(assignment).is_some() {
             self.block(format!(
-                "write {name} without a NAME=value before its command: the guard reads only the command's own wrapper; set the variable with env, or before {name}"
+                "{name} NAME=value: the guard does not read assignments after a wrapper, so it cannot tell which command runs; set the variable with env, or before {name}"
             ));
             return;
         } else {
             self.run(rest, stdin, &mut local, env, depth);
         }
         scope.branch_changed |= local.branch_changed;
+        scope.config_changed |= local.config_changed;
     }
 
     fn run(
@@ -411,6 +435,24 @@ impl<R: Repo> Guard<'_, R> {
             }
             "env" => self.env(args, stdin, scope, env, depth),
             "sh" | "bash" | "zsh" | "dash" | "ksh" => self.shell(args, stdin, scope, depth),
+            "source" | "." => match self.script_file(args.first(), scope) {
+                Some(script) => self.script(&script, scope, depth + 1),
+                None => (),
+            },
+            "export" | "declare" | "typeset" | "local" | "readonly" => {
+                for word in args {
+                    if let Some((name, value)) = assignment(word)
+                        && name.starts_with("GIT_")
+                    {
+                        scope.env.push((name.to_owned(), value));
+                    }
+                }
+            }
+            "unset" => {
+                for name in args.iter().filter_map(Word::literal) {
+                    scope.env.retain(|(known, _)| known != name);
+                }
+            }
             "eval" => {
                 let text: Option<Vec<&str>> = args.iter().map(Word::literal).collect();
                 match text {
@@ -521,7 +563,9 @@ impl<R: Repo> Guard<'_, R> {
             return;
         }
         if !operands.is_empty() {
-            // Running a script file is outside what the guard reads.
+            if let Some(script) = self.script_file(operands.first(), scope) {
+                self.child_script(&script, scope, depth);
+            }
             return;
         }
         match self.stdin_text(stdin, scope) {
@@ -530,6 +574,31 @@ impl<R: Repo> Guard<'_, R> {
             Text::Unknown | Text::Unreadable(_) => self.block(
                 "the guard cannot read a script piped to a shell's standard input: run the commands directly",
             ),
+        }
+    }
+
+    /// The text of a script file a shell or `source` runs; blocks when the
+    /// guard cannot read it.
+    fn script_file(&mut self, operand: Option<&Word>, scope: &Scope) -> Option<String> {
+        let Some(operand) = operand else {
+            return None;
+        };
+        let Some(path) = operand.literal() else {
+            self.block("write the script file a shell runs literally so the guard can read it");
+            return None;
+        };
+        match self.read_relative(scope.cwd.as_deref(), path) {
+            Text::Known(script) => Some(script),
+            Text::Unreadable(fix) => {
+                self.block(fix);
+                None
+            }
+            Text::Absent | Text::Unknown => {
+                self.block(format!(
+                    "could not read {path}: the guard cannot tell which directory the shell is in; run the script with a literal path from the repository"
+                ));
+                None
+            }
         }
     }
 

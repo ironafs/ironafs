@@ -113,6 +113,18 @@ impl<R: Repo> Guard<'_, R> {
         let mut options = Vec::new();
         let mut known = true;
         let mut aliases = Vec::new();
+        // Options inherited from the git that runs a shell alias.
+        for pair in scope.git_config.chunks(2) {
+            if let [flag, value] = pair {
+                if let Some((name, expansion)) = value
+                    .strip_prefix("alias.")
+                    .and_then(|alias| alias.split_once('='))
+                {
+                    aliases.push((name.to_owned(), expansion.to_owned()));
+                }
+                options.extend([flag.clone(), value.clone()]);
+            }
+        }
         let mut index = 0;
         let subcommand = loop {
             let Some(word) = args.get(index) else {
@@ -188,6 +200,12 @@ impl<R: Repo> Guard<'_, R> {
                 .iter()
                 .find(|(alias, _)| alias == name)
                 .map(|(_, expansion)| Ok(Some(expansion.clone())));
+            if inline.is_none() && scope.config_changed {
+                self.block(format!(
+                    "git {name} may be an alias written earlier in this command: run git config in a separate command first, so the guard can read the alias"
+                ));
+                return;
+            }
             let found = match (inline, place) {
                 (Some(found), _) => found,
                 (None, Ok(place)) => self.repo.git_alias(place, name),
@@ -196,7 +214,7 @@ impl<R: Repo> Guard<'_, R> {
             match found {
                 Ok(Some(expansion)) => {
                     if let Some(script) = expansion.strip_prefix('!') {
-                        self.child_script(script, scope, depth);
+                        self.shell_alias(script, scope, place, depth);
                     } else if let Some(words) = self.alias_words(&expansion) {
                         let mut words = words.into_iter();
                         if let Some(Some(first)) = words.next().map(|word| word.literal().map(str::to_owned)) {
@@ -239,6 +257,7 @@ impl<R: Repo> Guard<'_, R> {
                 }
             }
             "fetch" => self.fetch_refspecs(rest, "fetch"),
+            "config" if writes_config(rest) => scope.config_changed = true,
             "rebase" => self.rebase(rest, scope, place),
             "reset" => self.reset(rest, scope, place),
             "update-ref" => self.update_ref(rest, scope, place),
@@ -254,6 +273,51 @@ impl<R: Repo> Guard<'_, R> {
             }
             _ => (),
         }
+    }
+
+    /// A `!` alias: git runs it with a shell in the repository it resolved,
+    /// with `GIT_DIR`, `GIT_WORK_TREE` and its `-c` options passed on.
+    fn shell_alias(
+        &mut self,
+        script: &str,
+        scope: &mut Scope,
+        place: &Result<Place, String>,
+        depth: usize,
+    ) {
+        let place = match place {
+            Ok(place) => place,
+            Err(error) => {
+                self.block(format!(
+                    "a git shell alias: {error}; run git from the repository with literal paths"
+                ));
+                return;
+            }
+        };
+        let mut child = scope.clone();
+        child.cwd = Some(place.dir.clone());
+        child.env = place
+            .env
+            .iter()
+            .map(|(name, value)| (name.clone(), Some(value.clone())))
+            .collect();
+        child.git_config = Vec::new();
+        let mut options = place.options.iter();
+        while let Some(option) = options.next() {
+            if option == "-c" {
+                if let Some(value) = options.next() {
+                    child.git_config.extend([option.clone(), value.clone()]);
+                }
+            } else if let Some(dir) = option.strip_prefix("--git-dir=") {
+                child.env.push(("GIT_DIR".to_owned(), Some(dir.to_owned())));
+            } else if let Some(tree) = option.strip_prefix("--work-tree=") {
+                child
+                    .env
+                    .push(("GIT_WORK_TREE".to_owned(), Some(tree.to_owned())));
+            }
+        }
+        self.script(script, &mut child, depth + 1);
+        scope.branch_changed |= child.branch_changed;
+        scope.config_changed |= child.config_changed;
     }
 
     /// `git pull` and `git fetch` refspecs: none may write `main`.
@@ -734,6 +798,46 @@ fn positionals<'w>(rest: &'w [Word], with_value: &[&str]) -> Vec<&'w Word> {
         }
     }
     found
+}
+
+/// Whether a `git config` command may write configuration: anything but a
+/// lookup or a listing.
+fn writes_config(rest: &[Word]) -> bool {
+    let reads = rest.iter().filter_map(Word::literal).any(|text| {
+        matches!(
+            text,
+            "--get"
+                | "--get-all"
+                | "--get-regexp"
+                | "--get-urlmatch"
+                | "--get-color"
+                | "--get-colorbool"
+                | "-l"
+                | "--list"
+        )
+    });
+    let words = positionals(rest, &["--file", "-f", "--blob", "--type", "--default"]);
+    let first = words.first().and_then(|word| word.literal());
+    let writes = rest.iter().filter_map(Word::literal).any(|text| {
+        matches!(
+            text,
+            "--add"
+                | "--unset"
+                | "--unset-all"
+                | "--replace-all"
+                | "--rename-section"
+                | "--remove-section"
+                | "-e"
+                | "--edit"
+        )
+    });
+    if writes {
+        return true;
+    }
+    if reads || matches!(first, Some("get" | "list")) {
+        return false;
+    }
+    words.len() != 1
 }
 
 /// Whether a ref or refspec side names the branch `main`.

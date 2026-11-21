@@ -207,11 +207,19 @@ impl<R: Repo> Guard<'_, R> {
             "issue" | "pr" => self.issue_or_pr(command, rest, stdin, scope),
             "release" => self.release(rest, stdin, scope),
             "api" => self.api(rest),
+            "alias" => {
+                if !matches!(rest.first().and_then(Word::literal), Some("list" | "ls")) {
+                    scope.config_changed = true;
+                }
+            }
             "--version" | "--help" | "-h" => (),
             _ if command.starts_with('-') => self.block(format!(
                 "gh option {command} before the command: put options after the gh command (gh issue create -R o/r), so the guard can read which command runs"
             )),
             _ if COMMANDS.contains(&command) => (),
+            _ if scope.config_changed => self.block(format!(
+                "gh {command} may be an alias set earlier in this command: run gh alias set in a separate command first, so the guard can read the alias"
+            )),
             _ => match self.repo.gh_alias(command) {
                 Ok(Some(expansion)) => {
                     if let Some(script) = expansion.strip_prefix('!') {

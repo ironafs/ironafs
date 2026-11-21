@@ -40,6 +40,14 @@ impl Default for Fake {
                     PathBuf::from(FEATURE).join("plain.md"),
                     "Body.\n".to_owned(),
                 ),
+                (
+                    PathBuf::from(FEATURE).join("push.sh"),
+                    "#!/bin/sh\ngit push origin main\n".to_owned(),
+                ),
+                (
+                    PathBuf::from(FEATURE).join("build.sh"),
+                    "cargo build\n".to_owned(),
+                ),
             ],
         }
     }
@@ -145,7 +153,7 @@ fn guard_allows_reading_and_harmless_commands() {
         "git merge-base main HEAD",
         "git switch main",
         "git pull --ff-only",
-        "bash scripts/run.sh",
+        "bash build.sh",
         "command -v git",
     ] {
         allowed(command);
@@ -439,6 +447,80 @@ fn guard_expands_git_aliases() {
     allowed_with(&repo, "git ci -m 'fix it' -m 'Assisted-by: none'");
     blocked_with(&repo, "git pm", TO_MAIN);
     blocked("git -c alias.p=push p origin main", TO_MAIN);
+}
+
+#[test]
+fn guard_runs_shell_aliases_where_git_runs_them() {
+    let repo = Fake {
+        git_aliases: vec![("cm", "!git commit -m 'x' -m 'Assisted-by: none'")],
+        ..Fake::default()
+    };
+    blocked_with(&repo, "git -C /repo/main cm", ON_MAIN);
+    blocked_with(&repo, "git --git-dir=/repo/main/.git cm", ON_MAIN);
+    blocked_with(&repo, "GIT_DIR=/repo/main/.git git cm", ON_MAIN);
+    allowed_with(&repo, "git cm");
+    blocked(
+        "git -c alias.p=push -c 'alias.q=!git p origin main' q",
+        TO_MAIN,
+    );
+}
+
+#[test]
+fn guard_blocks_an_alias_defined_earlier_in_the_same_command() {
+    for command in [
+        "git config alias.pm '!git push origin main' && git pm",
+        "git config --global alias.pm push; git pm origin main",
+        "git config set alias.pm push; git pm origin main",
+        "(git config alias.pm push); git pm origin main",
+        "gh alias set pm 'pr merge 5' && gh pm",
+        "gh alias import aliases.yml; gh pm",
+    ] {
+        blocked(command, "separate command");
+    }
+    allowed("git config --get alias.pm && git pm origin feature");
+    allowed("git config user.name; git status");
+    allowed("gh alias list && gh copilot explain x");
+}
+
+#[test]
+fn guard_reads_a_script_a_shell_runs() {
+    for command in [
+        "bash push.sh",
+        "sh -x push.sh",
+        "bash -o pipefail push.sh",
+        "source push.sh",
+        ". ./push.sh",
+    ] {
+        blocked(command, TO_MAIN);
+    }
+    blocked("bash missing.sh", "could not read");
+    blocked("source missing.sh", "could not read");
+    blocked("bash \"$SCRIPT\"", "literally");
+    blocked("cd $HOME && bash build.sh", "could not read");
+    allowed("bash build.sh");
+    allowed(". build.sh");
+}
+
+#[test]
+fn guard_honours_exported_git_variables() {
+    for command in [
+        format!("export GIT_DIR=/repo/main/.git; {COMMIT_OK}"),
+        format!("declare -x GIT_DIR=/repo/main/.git && {COMMIT_OK}"),
+        format!("typeset -x GIT_DIR=/repo/main/.git; {COMMIT_OK}"),
+        format!("GIT_DIR=/repo/main/.git; export GIT_DIR; {COMMIT_OK}"),
+        format!("export FOO=1 GIT_DIR=/repo/main/.git; {COMMIT_OK}"),
+    ] {
+        blocked(&command, ON_MAIN);
+    }
+    blocked(
+        &format!("export GIT_DIR=$X; {COMMIT_OK}"),
+        "which repository",
+    );
+    allowed(&format!("(export GIT_DIR=/repo/main/.git); {COMMIT_OK}"));
+    allowed(&format!(
+        "export GIT_DIR=/repo/main/.git; unset GIT_DIR; {COMMIT_OK}"
+    ));
+    allowed(&format!("export PATH=/usr/bin; {COMMIT_OK}"));
 }
 
 #[test]
