@@ -896,6 +896,20 @@ fn parse_definitions_cap_counts_tables() {
 }
 
 #[test]
+fn parse_definitions_cap_refuses_table_over_it() {
+    let mut text = String::new();
+    for index in 0..(MAX_DEFINITIONS - 1) {
+        writeln!(text, "k{index} = 1").unwrap();
+    }
+    // One definition left: `[a]` fits, `[b.c]` needs two.
+    accepted(&format!("{text}[a]\n"));
+    assert_eq!(
+        refused_str(&format!("{text}[b.c]\n")),
+        (SyntaxErrorKind::TooManyDefinitions, MAX_DEFINITIONS, 4)
+    );
+}
+
+#[test]
 fn error_message_names_position_and_hint() {
     let error = parse(b"a = 1.5").unwrap_err();
     assert_eq!(
