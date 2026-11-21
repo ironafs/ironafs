@@ -473,3 +473,16 @@ fn read_and_build_violations_say_what_failed() {
          error: e"
     );
 }
+
+#[test]
+fn build_overrides_refuses_a_build_script_message_it_cannot_parse() {
+    let messages = "{\"reason\":\"build-script-executed\",\"env\":[[\"CLIPPY_ARGS\"\n";
+    assert!(
+        matches!(
+            build_overrides(messages).as_slice(),
+            [Violation::Unbuilt(_)]
+        ),
+        "{:?}",
+        build_overrides(messages)
+    );
+}

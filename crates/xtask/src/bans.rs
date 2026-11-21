@@ -355,7 +355,19 @@ fn clippy_reads(name: &str) -> bool {
 /// are read from what the build scripts reported.
 pub(crate) fn build_overrides(messages: &str) -> Vec<Violation> {
     let mut found = Vec::new();
-    for message in messages.lines().filter_map(|line| json::parse(line).ok()) {
+    for line in messages.lines() {
+        let Ok(message) = json::parse(line) else {
+            // Read closed: a build script's report that does not parse is
+            // refused, not skipped.
+            if line.contains("build-script-executed") {
+                found.push(Violation::Unbuilt(
+                    "cargo reported a build script's output in a message check-bans cannot \
+                     parse"
+                        .to_owned(),
+                ));
+            }
+            continue;
+        };
         if message.get("reason").and_then(json::Value::as_str) != Some("build-script-executed") {
             continue;
         }
