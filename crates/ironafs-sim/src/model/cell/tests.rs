@@ -128,7 +128,7 @@ fn a_moved_volume_is_served_by_its_new_server_and_refused_as_moved_by_the_old() 
 }
 
 #[test]
-fn envelope_bytes_are_answered_or_dropped_and_garbage_is_a_marshalling_abort() {
+fn envelope_bytes_are_answered_or_dropped() {
     let mut cell = cell();
     let bytes = encode_request(&request(FS1, Service::Fs, status()));
     let answer = cell.serve_bytes(&bytes).map(|reply| decode_answer(&reply));
@@ -138,8 +138,28 @@ fn envelope_bytes_are_answered_or_dropped_and_garbage_is_a_marshalling_abort() {
     ));
     cell.set_down(FS1, true);
     assert_eq!(cell.serve_bytes(&bytes), None);
+}
+
+#[test]
+fn malformed_bytes_get_a_marshalling_abort_only_from_a_server_that_is_up() {
+    let mut cell = cell();
+    // An address prefix, then bytes that are no request.
+    let garbage = |to: Addr| [&to.0[..], &[0xee, 0xee]].concat();
     assert_eq!(
-        cell.serve_bytes(&[1, 2]).map(|reply| decode_answer(&reply)),
+        cell.serve_bytes(&garbage(FS1))
+            .map(|reply| decode_answer(&reply)),
         Some(Ok(Answer::Abort(MARSHALLING)))
     );
+    assert_eq!(
+        cell.serve_bytes(&garbage(VL))
+            .map(|reply| decode_answer(&reply)),
+        Some(Ok(Answer::Abort(MARSHALLING)))
+    );
+    // Bytes to a down server, or to an address no server holds, never
+    // reach a server: dropped, whatever they contain.
+    cell.set_down(FS1, true);
+    assert_eq!(cell.serve_bytes(&garbage(FS1)), None);
+    assert_eq!(cell.serve_bytes(&garbage(Addr([10, 9, 9, 9]))), None);
+    // Too short to name any server: dropped.
+    assert_eq!(cell.serve_bytes(&[1, 2]), None);
 }

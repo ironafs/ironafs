@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::codes::MARSHALLING;
-use super::envelope::{decode_request, encode_answer};
+use super::envelope::{decode_request, destination, encode_answer};
 use super::fs::FileServer;
 use super::types::{Addr, Answer, Request, Service, Site, SiteServer, VolumeId};
 use super::vl::VlDb;
@@ -104,6 +104,12 @@ impl Cell {
         true
     }
 
+    /// Whether a server is up at `addr`.
+    fn reaches(&self, addr: Addr) -> bool {
+        !self.down.contains(&addr)
+            && (self.vl_servers.contains(&addr) || self.file_servers.contains_key(&addr))
+    }
+
     /// The answer to `request`, or `None` if it is dropped.
     pub fn serve(&mut self, request: &Request) -> Option<Answer> {
         if self.down.contains(&request.to) {
@@ -122,9 +128,14 @@ impl Cell {
     }
 
     /// The answer to a request's envelope bytes, or `None` if it is
-    /// dropped. Bytes that are no request get the marshalling abort
-    /// (5.9, row R5).
+    /// dropped. The destination is read first: bytes too short to name
+    /// one, or to a server that is down or absent, are dropped unread.
+    /// Bytes that reach a server but are no request get the marshalling
+    /// abort (5.9, row R5).
     pub fn serve_bytes(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        if !self.reaches(destination(bytes)?) {
+            return None;
+        }
         let answer = match decode_request(bytes) {
             Ok(request) => self.serve(&request)?,
             Err(_) => Answer::Abort(MARSHALLING),

@@ -103,6 +103,14 @@ pub fn encode_request(request: &Request) -> Vec<u8> {
     out.0
 }
 
+/// The server a request's bytes are addressed to: their first four
+/// bytes, which every request starts with, read before anything else so
+/// that bytes to a server that is not there are dropped unread.
+#[must_use]
+pub fn destination(bytes: &[u8]) -> Option<Addr> {
+    Reader(bytes).addr().ok()
+}
+
 /// The request `bytes` encode.
 ///
 /// # Errors
