@@ -871,7 +871,11 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    fields that would hold the rest do not exist in it. Every reporting
    boundary, `Display`, `Debug`, a log line, a counter label, a reply
    over local IPC or a test's failure message, then sees only what the
-   error holds, and no caller needs a redaction rule of its own. The
+   error holds, and no caller needs a redaction rule of its own. An
+   error a secret-bearing message's decoder passes on from a decode of
+   its own was built under that decode's secrecy; the entry points
+   remove its position too, so every error they return from a
+   secret-bearing message is without one. The
    encoder's errors carry no value from its input either: a length it
    refuses is named by its field, never printed.
 3. **No panic is reachable** from any input (coding standards rule 1). The
@@ -896,7 +900,7 @@ integrity, anyone on the network path (ADR 0004, A13). They can try:
 | Exhausting the stack with deep nesting, a long array or a large inline value | no optional data and no recursive types (5.1, points 3 and 4) `[X1 §8: CONFIRMED]`; array elements decoded by a loop (5.1, point 4); limits on inline size and nesting depth, large values held out of line, and `decode_fits_small_stack` (5.2, point 10) |
 | Crashing the daemon | no panics, checked arithmetic (section 6; 7, point 3); the fuzz target (10.4) |
 | Two encodings of one value, used to slip a change past a check or a cache key | strict padding, booleans and enumerations (5.4, points 8 and 9); integrity over the bytes received (5.4, point 12); round-trip property P2 |
-| Leaking a secret through an error, a log or a stray copy | no value read from the input in errors, and no offset or length in errors from a secret-bearing message, removed where the error is made (7, point 2); in a secret-bearing message no input byte copied into the decoded value, whatever field misframing puts it in, and no value, length or count of any field of a secret-bearing message shown by `Debug` or `Display`; a secret-bearing message encoded only into the caller's buffer, whose allocation the encoder never grows, moves or frees, even when a value's encoding unwinds, so the caller's wipe reaches every copy; and secrecy carried by one flag per type, which the encoder and the decoder both read, so a type that can hold a secret does not build into a buffer the encoder returns, and a type is decoded only under its own caps, budget and secrecy (5.1, point 8, with its stated limits; 5.5, points 3 and 6) |
+| Leaking a secret through an error, a log or a stray copy | no value read from the input in errors, and no offset or length in errors from a secret-bearing message, removed where the error is made, and again at the entry points (7, point 2); in a secret-bearing message no input byte copied into the decoded value, whatever field misframing puts it in, and no value, length or count of any field of a secret-bearing message shown by `Debug` or `Display`; a secret-bearing message encoded only into the caller's buffer, whose allocation the encoder never grows, moves or frees, even when a value's encoding unwinds, so the caller's wipe reaches every copy; and secrecy carried by one flag per type, which the encoder and the decoder both read, so a type that can hold a secret does not build into a buffer the encoder returns, and a type is decoded only under its own caps, budget and secrecy (5.1, point 8, with its stated limits; 5.5, points 3 and 6) |
 | Slipping an invalid discriminant past a default arm | the discriminant is validated as its own type before dispatch (5.4, point 7) |
 | A name with NUL or `/` reaching the operating system | out of this codec's scope by design (5.1, point 6); the consumer checks it `[X1 §8: CONFIRMED]` |
 | An integer used as a size without a check | integers are not converted here (5.1, point 7); the consumer applies rule 2 |
@@ -1153,7 +1157,10 @@ over the test types above.
   bytes. The secrecy is the type's: the same bytes and decoder under a
   plain and a secret-bearing type give errors of the same kind, and
   the secret-bearing type's `Truncated`, `MessageTooLarge` and
-  `TrailingBytes` carry no offset or length, through both entry points.
+  `TrailingBytes` carry no offset or length, through both entry points,
+  and an error that a secret-bearing type's decoder passes on from a
+  decode of its own, which carries a position, is returned without it,
+  through both entry points.
 - **`decode_fits_small_stack`** decodes the largest valid inputs of
   `deep` (192 bytes), `wide` (its TRUE arm, 244 bytes) and every other
   test type, each within its message cap, on a thread started with a
