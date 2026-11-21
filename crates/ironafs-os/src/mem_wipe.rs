@@ -23,6 +23,8 @@
 //! (the unit tests). The release-assembly check of sheet 24, which shows
 //! the stores survive the shipping profile on each target, is not written
 //! yet: until it has run on a target, the site does not ship there.
+//! TODO(#57): the release-assembly check, with its live and dead buffers
+//! and the failing plain-write control.
 //!
 //! Callers outside this crate reach it only by injection: the pure crates
 //! that hold secrets cannot depend on this crate, so each takes a

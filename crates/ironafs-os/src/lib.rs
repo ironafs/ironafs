@@ -23,7 +23,17 @@
 //! declarations are written and proved for those targets alone. The guard
 //! below names every property that tells them apart from the compiler's
 //! other targets, and `cargo xtask check-os` evaluates it against every
-//! target the pinned compiler knows: it must accept exactly those seven.
+//! target the pinned compiler knows: it must accept those seven and no
+//! other target whose cfg set differs from theirs.
+//!
+//! **Limit.** A few of the compiler's targets have exactly the cfg set of
+//! an allowlisted one (the `oe` vendor variants, `arm64e`, and the
+//! sanitizer variants of `x86_64` glibc); no `cfg` can tell them apart, and
+//! the crate has no build script to read the target's name (ADR 0005,
+//! point 1.4). This guard therefore does not refuse them. `check-os` names
+//! them, and fails if the repository's build matrix (`rust-toolchain.toml`
+//! and the CI workflows) names any of them, so nothing IronAFS builds or
+//! ships targets them.
 
 #[cfg(not(all(
     target_pointer_width = "64",
