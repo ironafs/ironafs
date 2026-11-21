@@ -136,8 +136,11 @@ fn the_replacement_for_a_refused_event_names_it() {
     );
 }
 
+/// The output buffer's capacity equals its length. That the size is
+/// measured before the buffer is made is the structure of `fit` (spec
+/// 5.10, point 1); this test checks only its visible result.
 #[test]
-fn the_output_is_allocated_once_at_its_exact_size() {
+fn the_output_buffer_is_exactly_its_length() {
     let event = volume_offline(Some(&[b'\n'; SERVER_TEXT_MAX]));
     for bytes in [
         journald_encoder(Policy::Routine)

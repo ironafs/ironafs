@@ -164,7 +164,19 @@ pub(crate) fn parse_syslog(text: &str) -> Result<(Vec<String>, Pairs), String> {
             let mut chars = quoted.char_indices();
             let end = loop {
                 match chars.next() {
-                    Some((_, '\\')) => value.push(chars.next().ok_or("a trailing backslash")?.1),
+                    Some((_, '\\')) => match chars.next().ok_or("a trailing backslash")?.1 {
+                        escaped @ ('"' | '\\') => value.push(escaped),
+                        'x' => {
+                            let mut hex = String::new();
+                            for _ in 0..2 {
+                                hex.push(chars.next().ok_or("a short hex escape")?.1);
+                            }
+                            let byte =
+                                u8::from_str_radix(&hex, 16).map_err(|_| "a bad hex escape")?;
+                            value.push(char::from(byte));
+                        }
+                        other => return Err(format!("an unknown escape \\{other}")),
+                    },
                     Some((index, '"')) => break index + 1,
                     Some((_, other)) => value.push(other),
                     None => return Err("an unclosed quote".into()),

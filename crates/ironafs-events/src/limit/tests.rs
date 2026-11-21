@@ -75,10 +75,12 @@ fn suppressed_events_are_counted() {
 }
 
 #[test]
-fn an_instant_that_overflows_is_suppressed_and_counted() {
-    let mut limiter = limiter(1, 2);
+fn an_arrival_sum_that_overflows_is_suppressed_and_counted() {
+    // Burst 1 makes the tolerance 0, so `now + tau` fits and the overflow
+    // is in the next arrival time, `max(tat, now) + T`.
+    let mut limiter = limiter(1, 1);
     let def = &catalogue::SERVER_UNREACHABLE;
-    assert_eq!(limiter.admit(def, u64::MAX), Admission::Suppressed);
+    assert_eq!(limiter.admit(def, u64::MAX - 10), Admission::Suppressed);
     assert_eq!(limiter.suppressed(Subsystem::Server), 1);
 }
 

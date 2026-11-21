@@ -46,7 +46,11 @@ fn every_refusal_is_counted() {
         |source: &mut Source| {
             let config = (source.u64_in(1..=20), source.u64_in(1..=20));
             let steps = source.vec_of(0..=200, |source| {
-                (source.usize_in(0..=3), source.u64_in(0..=300_000_000))
+                (
+                    source.usize_in(0..=3),
+                    source.bool(),
+                    source.u64_in(0..=300_000_000),
+                )
             });
             (config, steps)
         },
@@ -59,8 +63,14 @@ fn every_refusal_is_counted() {
             let mut limiter = RateLimiter::new(config);
             let mut now = 0_u64;
             let mut refused = [0_u64; Subsystem::COUNT];
-            for (which, advance) in steps {
-                now += advance;
+            // Time mostly moves forward, and sometimes back: a refusal is
+            // counted whatever the instant.
+            for (which, back, step) in steps {
+                now = if *back {
+                    now.saturating_sub(*step)
+                } else {
+                    now + step
+                };
                 let def = DEFINITIONS[*which];
                 if limiter.admit(def, now) == Admission::Suppressed {
                     assert_ne!(

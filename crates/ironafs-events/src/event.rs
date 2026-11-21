@@ -246,8 +246,8 @@ impl EventBuilder {
     ///
     /// # Errors
     ///
-    /// [`EventError::UnknownField`], [`EventError::KindMismatch`] or
-    /// [`EventError::DuplicateField`].
+    /// [`EventError::UnknownField`], [`EventError::KindMismatch`],
+    /// [`EventError::ValueNotAllowed`] or [`EventError::DuplicateField`].
     pub fn with(mut self, name: &str, value: impl FieldSource) -> Result<Self, EventError> {
         let def = self.event.def;
         let (spec, slot) = def
