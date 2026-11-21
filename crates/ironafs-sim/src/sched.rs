@@ -121,6 +121,8 @@ pub struct SchedPlants {
     /// Seed every stream with this value instead of the run's seed, which
     /// the header still prints: a change to a printed field alone.
     pub fixed_seed: Option<u64>,
+    /// Refuse every thread spawn, as a host that cannot spawn one would.
+    pub fail_spawn: bool,
 }
 
 /// A run's parameters.
@@ -573,14 +575,24 @@ impl Run {
         };
         let shared = Arc::clone(&self.shared);
         let condvar = Arc::clone(&slot.condvar);
-        let spawned = thread::Builder::new()
-            .stack_size(self.config.stack_size)
-            .spawn(move || task::main(shared, id, condvar, body));
+        let spawned = if self.config.plants.fail_spawn {
+            Err(())
+        } else {
+            thread::Builder::new()
+                .stack_size(self.config.stack_size)
+                .spawn(move || task::main(shared, id, condvar, body))
+                .map_err(drop)
+        };
         if let Ok(handle) = spawned {
             slot.thread = Some(handle);
         } else {
             slot.run = RunState::Ended;
             state.fail(Failure::Host("thread-spawn"));
+            // A task first granted before its spawn holds the baton: no
+            // thread will hand it back, so hand it back here.
+            if state.holder == Some(id) {
+                state.holder = None;
+            }
         }
     }
 

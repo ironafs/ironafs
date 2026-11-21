@@ -362,3 +362,47 @@ fn an_operation_outside_the_alphabet_is_a_misuse() {
     assert_eq!(outcome.failure, Some(Failure::Misuse("op-word")));
     assert!(!outcome.trace.contains("No such file"));
 }
+
+#[test]
+fn a_failed_spawn_at_the_first_grant_is_a_host_failure_not_a_lost_baton() {
+    let mut config = Config::new("spawn", 1);
+    config.watchdog = Duration::from_secs(2);
+    config.plants.grant_before_spawn = true;
+    config.plants.fail_spawn = true;
+    let outcome = run_with(&config, three_by_three);
+    assert_eq!(outcome.failure, Some(Failure::Host("thread-spawn")));
+    assert_eq!(
+        terminal(&outcome.trace),
+        Some("end failed host:thread-spawn")
+    );
+}
+
+/// The planted hidden block of the specification's 10.5, point 7: a real
+/// sleep in a task, past a short watchdog. A named departure from coding
+/// standards rule 15's "no real time or sleeps": it is the only way to
+/// show the watchdog fires, and it lives in test code alone.
+#[test]
+fn a_real_sleep_past_the_watchdog_is_an_unconfirmed_lost_baton() {
+    let mut config = Config::new("sleep", 1);
+    config.watchdog = Duration::from_millis(50);
+    let outcome = run_with(&config, |setup| {
+        setup.task("sleeper", |cx: &TaskCx| {
+            cx.op("before", "sleep", None);
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        setup.task("other", |cx: &TaskCx| cx.op("other", "work", None));
+    });
+    assert_eq!(
+        outcome.failure,
+        Some(Failure::LostBaton {
+            task: TaskId(0),
+            decision: decisions(&outcome.trace)
+                .iter()
+                .find(|decision| decision.chosen() == Some(Entry::Task(TaskId(0))))
+                .unwrap()
+                .number,
+        })
+    );
+    assert_eq!(terminal(&outcome.trace), Some("end failed lost-baton:t0"));
+    assert!(!outcome.trace.contains(" t0 end returned"));
+}

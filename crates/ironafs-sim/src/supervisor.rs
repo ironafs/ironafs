@@ -120,8 +120,13 @@ pub fn run(
     });
     // The outer limit: a real-time wait, a named departure (see above).
     let over = finished.recv_timeout(limit).is_err();
-    if over {
-        child.kill()?;
+    // A child that exits between the timeout and the kill makes the kill
+    // fail; it is still over the limit, and its status is read below.
+    if over
+        && let Err(error) = child.kill()
+        && child.try_wait()?.is_none()
+    {
+        return Err(error);
     }
     let status = child.wait()?;
     let _ = reader.join();
