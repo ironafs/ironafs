@@ -19,7 +19,7 @@ use alloc::collections::BTreeMap;
 use crate::Reader;
 use crate::consumer::{Cause, Consumers, Loss};
 use crate::generation::{Publisher, Stopped};
-use crate::netlink::{AddressKey, Dump, Event, dump_request, event, messages};
+use crate::netlink::{AddressKey, Dump, Event, LinkState, dump_request, event, messages};
 
 #[cfg(test)]
 mod tests;
@@ -98,9 +98,6 @@ impl<K: Ord, V: PartialEq> Table<K, V> {
     }
 }
 
-/// A link's usability: its masked flags and operational state.
-type LinkState = (u32, Option<u8>);
-
 /// An address's usability: its flags and scope.
 type AddressState = (u32, u8);
 
@@ -126,6 +123,9 @@ pub struct Monitor {
     failures: u32,
     /// Whether a snapshot has completed: until then nothing is published.
     started: bool,
+    /// Whether the driver's notify socket was made after the last loss on
+    /// it (or at the start).
+    subscribed: bool,
     stopped: bool,
 }
 
@@ -136,7 +136,8 @@ impl Monitor {
     /// must have subscribed its notify socket before it sends the first
     /// request.
     pub fn new(make: impl FnOnce(&Reader) -> Consumers) -> (Self, Reader) {
-        let (publisher, reader) = Publisher::new(make);
+        let (mut publisher, reader) = Publisher::new(make);
+        publisher.withhold();
         let mut monitor = Self {
             publisher,
             links: Table::new(LINKS_MAX),
@@ -145,10 +146,37 @@ impl Monitor {
             sequence: 0,
             failures: 0,
             started: false,
+            subscribed: false,
             stopped: false,
         };
         monitor.begin_snapshot();
         (monitor, reader)
+    }
+
+    /// The driver's notify socket has joined its groups, fresh: every
+    /// notification from now on reaches it, so a snapshot may start. Until
+    /// this is called after [`Monitor::new`] or after a loss on the notify
+    /// socket, [`Monitor::request`] asks for nothing.
+    pub fn subscribed(&mut self) {
+        self.subscribed = true;
+    }
+
+    /// Whether the driver must make its notify socket again and call
+    /// [`Monitor::subscribed`]: at the start, and after a loss on that
+    /// socket, whose queue may hold records older than the loss.
+    #[must_use]
+    pub fn needs_subscription(&self) -> bool {
+        !self.subscribed && !self.stopped
+    }
+
+    /// Stops the source without calling any hook: for a driver unwinding
+    /// from a hook's panic, where calling the hooks again could panic
+    /// twice. The generation becomes unavailable, and every later call
+    /// fails.
+    pub fn halt(&mut self) {
+        self.stopped = true;
+        self.snapshot = None;
+        self.publisher.halt();
     }
 
     /// The dump to send next, if a snapshot is in progress. The same
@@ -156,6 +184,9 @@ impl Monitor {
     /// abandoned.
     #[must_use]
     pub fn request(&self) -> Option<Request> {
+        if !self.subscribed {
+            return None;
+        }
         self.snapshot.as_ref().map(|snapshot| snapshot.request)
     }
 
@@ -172,7 +203,7 @@ impl Monitor {
             };
             let changed = match found {
                 Event::Route | Event::Rule | Event::Nexthop => true,
-                Event::Link(link) => self.links.put(link.index, (link.usability, link.operstate)),
+                Event::Link(link) => self.links.put(link.index, link.state),
                 Event::LinkGone(index) => {
                     self.links.entries.remove(&index);
                     if let Ok(index) = u32::try_from(index) {
@@ -206,6 +237,15 @@ impl Monitor {
     /// [`Stopped`] once the source has stopped.
     pub fn reply(&mut self, datagram: &[u8]) -> Result<(), Stopped> {
         self.live()?;
+        // The whole datagram is checked before any of it is applied, so a
+        // `NLMSG_DONE` never completes a snapshot ahead of bad bytes, and
+        // an overrun of any sequence fails the dump.
+        for message in messages(datagram) {
+            match message.and_then(|message| event(&message)) {
+                Ok(Event::Overrun) | Err(_) => return self.dump_failed(Loss::Malformed),
+                Ok(_) => {}
+            }
+        }
         for message in messages(datagram) {
             let Some(snapshot) = self.snapshot.as_mut() else {
                 return Ok(());
@@ -222,9 +262,7 @@ impl Monitor {
             match event(&message) {
                 Err(_) => return self.dump_failed(Loss::Malformed),
                 Ok(Event::Link(link)) => {
-                    snapshot
-                        .links
-                        .put(link.index, (link.usability, link.operstate));
+                    snapshot.links.put(link.index, link.state);
                 }
                 Ok(Event::Address(address)) => {
                     snapshot
@@ -249,17 +287,17 @@ impl Monitor {
     }
 
     /// Something on the notify socket, or outside both sockets (a
-    /// resume), may have hidden a change: moves the generation at once
-    /// and starts a fresh snapshot, abandoning one in progress.
+    /// resume), may have hidden a change: the generation becomes
+    /// unavailable, every consumer is told of the move at once, and a
+    /// fresh snapshot starts, abandoning one in progress; its completion
+    /// publishes again. After any loss but a resume, the driver makes its
+    /// notify socket again first ([`Monitor::needs_subscription`]).
     ///
     /// # Errors
     ///
     /// [`Stopped`] once the source has stopped.
     pub fn lost(&mut self, loss: Loss) -> Result<(), Stopped> {
-        self.live()?;
-        self.advance(Cause::Lost(loss))?;
-        self.begin_snapshot();
-        Ok(())
+        self.recover(loss, loss != Loss::Resumed)
     }
 
     /// The snapshot in progress failed (a send or receive failure on the
@@ -277,7 +315,23 @@ impl Monitor {
             self.stop();
             return Err(Stopped);
         }
-        self.lost(loss)
+        self.recover(loss, false)
+    }
+
+    /// Withholds the generation, tells every consumer of the loss, and
+    /// starts a fresh snapshot; with `resubscribe`, only once the driver
+    /// has made its notify socket again.
+    fn recover(&mut self, loss: Loss, resubscribe: bool) -> Result<(), Stopped> {
+        self.live()?;
+        if self.started {
+            self.publisher.withhold();
+        }
+        self.advance(Cause::Lost(loss))?;
+        if resubscribe {
+            self.subscribed = false;
+        }
+        self.begin_snapshot();
+        Ok(())
     }
 
     /// Fails once the source has stopped.
@@ -318,7 +372,11 @@ impl Monitor {
         }
         self.failures = 0;
         self.started = true;
-        self.advance(Cause::Snapshot)
+        if self.publisher.release(Cause::Snapshot).is_err() {
+            self.stop();
+            return Err(Stopped);
+        }
+        Ok(())
     }
 
     fn next_sequence(&mut self) -> u32 {

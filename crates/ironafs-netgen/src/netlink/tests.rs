@@ -7,7 +7,9 @@
 
 use alloc::vec::Vec;
 
-use super::{Address, AddressKey, Dump, Event, Link, Malformed, dump_request, event, messages};
+use super::{
+    Address, AddressKey, Dump, Event, Link, LinkState, Malformed, dump_request, event, messages,
+};
 use crate::netlink::build::{self, AF_INET, AF_INET6};
 
 /// Every event of a datagram, or the first error.
@@ -37,9 +39,9 @@ const NEW_ADDRESS_V4: [u8; 40] = [
     8, 0, 2, 0, 192, 0, 2, 1, // IFA_LOCAL
 ];
 
-/// `RTM_NEWLINK`, 40 bytes: link 3, flags `UP`, `RUNNING`, `LOWER_UP` plus
-/// BROADCAST, `IFLA_OPERSTATE` 6 (up) padded to 8, and an unknown
-/// attribute 3 (the name) skipped by length.
+/// `RTM_NEWLINK`, 48 bytes: link 3, flags `UP`, `RUNNING`, `LOWER_UP` plus
+/// BROADCAST, `IFLA_OPERSTATE` 6 (up) padded to 8, and `IFLA_IFNAME`
+/// "eth".
 #[cfg(target_endian = "little")]
 const NEW_LINK: [u8; 48] = [
     48, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // header
@@ -87,8 +89,13 @@ fn golden_link_keeps_only_its_usability_and_skips_unknown_attributes() {
         events(&NEW_LINK),
         Ok(alloc::vec![Event::Link(Link {
             index: 3,
-            usability: 0x0001_0041,
-            operstate: Some(6),
+            state: LinkState {
+                usability: 0x0001_0041,
+                operstate: Some(6),
+                group: None,
+                master: None,
+                name: *b"eth\0\0\0\0\0\0\0\0\0\0\0\0\0",
+            },
         })])
     );
 }
@@ -308,23 +315,35 @@ fn next(state: &mut u64) -> u64 {
 
 #[test]
 fn every_truncation_and_changed_byte_decodes_or_is_refused_without_panic() {
+    let parts = [
+        build::link(16, 3, 0x41, |body| {
+            build::attribute(body, 16, &[6]);
+            build::attribute(body, 3, b"eth0\0");
+        }),
+        build::address(20, AF_INET6, 3, 64, 0, |body| {
+            build::attribute(body, 1, &[0x20; 16]);
+            build::attribute(body, 6, &[0; 16]);
+            build::attribute(body, 8, &[0; 4]);
+        }),
+        build::message(24, 0, 0, &[0; 28]),
+        build::message(3, 2, 0, &[0; 4]),
+    ];
     let mut whole = Vec::new();
-    whole.extend(build::link(16, 3, 0x41, |body| {
-        build::attribute(body, 16, &[6]);
-        build::attribute(body, 3, b"eth0\0");
-    }));
-    whole.extend(build::address(20, AF_INET6, 3, 64, 0, |body| {
-        build::attribute(body, 1, &[0x20; 16]);
-        build::attribute(body, 6, &[0; 16]);
-        build::attribute(body, 8, &[0; 4]);
-    }));
-    whole.extend(build::message(24, 0, 0, &[0; 28]));
-    whole.extend(build::message(3, 2, 0, &[0; 4]));
-    let count = events(&whole).unwrap().len();
-    assert_eq!(count, 4);
-    // Every prefix: whole messages only, or refused.
+    // Where each whole message ends; every part is already a multiple of 4.
+    let mut ends = alloc::vec![0];
+    for part in &parts {
+        whole.extend(part);
+        ends.push(whole.len());
+    }
+    assert_eq!(events(&whole).unwrap().len(), 4);
+    // Every prefix: accepted exactly when it ends at a message's end, with
+    // that many messages; refused otherwise.
     for end in 0..=whole.len() {
-        let _ = events(whole.get(..end).unwrap());
+        let result = events(whole.get(..end).unwrap());
+        match ends.iter().position(|&at| at == end) {
+            Some(count) => assert_eq!(result.map(|found| found.len()), Ok(count), "{end}"),
+            None => assert!(result.is_err(), "a prefix of {end} bytes was accepted"),
+        }
     }
     let seed = 0x6e65_7467_656e_0001_u64;
     let mut state = seed;
@@ -335,7 +354,34 @@ fn every_truncation_and_changed_byte_decodes_or_is_refused_without_panic() {
             changed[at] = u8::try_from(next(&mut state) & 0xff).unwrap();
         }
         let cut = usize::try_from(next(&mut state) % (changed.len() as u64 + 1)).unwrap();
-        // A panic here fails the test with the round, from this seed.
-        let _ = (round, seed, events(&changed[..cut]));
+        // A panic fails the test; an accepted input holds no more messages
+        // than its headers can fill.
+        if let Ok(found) = events(&changed[..cut]) {
+            assert!(found.len() <= cut / 16, "round {round}, seed {seed:#x}");
+        }
+    }
+}
+
+#[test]
+fn a_link_s_group_master_and_name_are_read_and_their_sizes_checked() {
+    let datagram = build::link(16, 3, 0, |body| {
+        build::attribute(body, 27, &7_u32.to_ne_bytes());
+        build::attribute(body, 10, &2_u32.to_ne_bytes());
+        build::attribute(body, 3, b"vpn0\0");
+    });
+    let found = events(&datagram).unwrap();
+    let [Event::Link(link)] = found.as_slice() else {
+        panic!("{found:?}");
+    };
+    assert_eq!(link.state.group, Some(7));
+    assert_eq!(link.state.master, Some(2));
+    assert_eq!(link.state.name[..5], *b"vpn0\0");
+    for (kind, value) in [
+        (27, &[0_u8; 2][..]),
+        (10, &[0; 8][..]),
+        (3, &[b'x'; 17][..]),
+    ] {
+        let datagram = build::link(16, 3, 0, |body| build::attribute(body, kind, value));
+        assert_eq!(events(&datagram), Err(Malformed::BadValue), "{kind}");
     }
 }

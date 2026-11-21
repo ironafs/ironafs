@@ -78,6 +78,9 @@ pub(crate) struct Publisher {
     /// The last generation published, 0 before the first.
     value: u64,
     consumers: Consumers,
+    /// While set, moves are told but not published: the source is
+    /// recovering and nothing is readable.
+    withheld: bool,
     stopped: bool,
 }
 
@@ -94,6 +97,7 @@ impl Publisher {
             cell,
             value: 0,
             consumers,
+            withheld: false,
             stopped: false,
         };
         (publisher, reader)
@@ -120,8 +124,35 @@ impl Publisher {
         let generation = NetworkGeneration(next);
         self.consumers.tell(Move::To(generation, cause));
         self.value = next;
-        self.cell.store(next, Ordering::Release);
+        if !self.withheld {
+            self.cell.store(next, Ordering::Release);
+        }
         Ok(generation)
+    }
+
+    /// Makes reads fail from now until [`Publisher::release`]: moves are
+    /// still told to every consumer, but not published.
+    pub(crate) fn withhold(&mut self) {
+        self.withheld = true;
+        self.cell.store(UNAVAILABLE, Ordering::Release);
+    }
+
+    /// Ends [`Publisher::withhold`] with a move, which is published.
+    ///
+    /// # Errors
+    ///
+    /// As [`Publisher::advance`].
+    pub(crate) fn release(&mut self, cause: Cause) -> Result<NetworkGeneration, Stopped> {
+        self.withheld = false;
+        self.advance(cause)
+    }
+
+    /// Stops the source without telling any consumer: for a thread
+    /// unwinding from a hook, where calling the hooks again could panic
+    /// twice. Reads fail from now on.
+    pub(crate) fn halt(&mut self) {
+        self.stopped = true;
+        self.cell.store(UNAVAILABLE, Ordering::Release);
     }
 
     /// Stops the source: every consumer is told once, and reads fail from

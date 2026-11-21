@@ -106,3 +106,34 @@ fn unavailable_says_so_in_lowercase() {
         "the network generation is unavailable"
     );
 }
+
+#[test]
+fn a_withheld_publisher_tells_every_move_but_publishes_none_until_released() {
+    let (consumers, seen) = probes();
+    let (mut publisher, reader) = Publisher::new(consumers);
+    publisher.advance(Cause::Snapshot).unwrap();
+    publisher.withhold();
+    assert_eq!(reader.current(), Err(Unavailable));
+    publisher.advance(Cause::Lost(Loss::Overflow)).unwrap();
+    publisher.advance(Cause::Changed).unwrap();
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(publisher.release(Cause::Snapshot), Ok(NetworkGeneration(4)));
+    assert_eq!(reader.current(), Ok(NetworkGeneration(4)));
+    for each in &seen {
+        assert_eq!((each.moves(), each.late()), (4, 0));
+    }
+}
+
+#[test]
+fn halt_makes_reads_fail_and_tells_no_consumer() {
+    let (consumers, seen) = probes();
+    let (mut publisher, reader) = Publisher::new(consumers);
+    publisher.advance(Cause::Snapshot).unwrap();
+    publisher.halt();
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(publisher.advance(Cause::Changed), Err(Stopped));
+    drop(publisher);
+    for each in &seen {
+        assert_eq!((each.moves(), each.stops()), (1, 0));
+    }
+}

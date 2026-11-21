@@ -70,10 +70,25 @@ fn answer_snapshot(monitor: &mut Monitor) {
     assert_eq!(monitor.request(), None);
 }
 
+/// A monitor whose driver has subscribed, and its reader.
+fn fresh(make: impl FnOnce(&Reader) -> crate::Consumers) -> (Monitor, Reader) {
+    let (mut monitor, reader) = Monitor::new(make);
+    monitor.subscribed();
+    (monitor, reader)
+}
+
+/// Makes the notify socket again where a loss asked for it.
+fn resubscribe(monitor: &mut Monitor) {
+    if monitor.needs_subscription() {
+        assert_eq!(monitor.request(), None);
+        monitor.subscribed();
+    }
+}
+
 /// A monitor with its first snapshot done, its reader and its probes.
 fn started() -> (Monitor, Reader, [Arc<Seen>; 7]) {
     let (make, seen) = probes();
-    let (mut monitor, reader) = Monitor::new(make);
+    let (mut monitor, reader) = fresh(make);
     answer_snapshot(&mut monitor);
     (monitor, reader, seen)
 }
@@ -119,7 +134,12 @@ fn every_hook_follows_every_move(
 #[test]
 fn a_new_monitor_asks_for_links_first_and_publishes_nothing() {
     let (make, _) = probes();
-    let (monitor, reader) = Monitor::new(make);
+    let (mut monitor, reader) = Monitor::new(make);
+    // Nothing is asked for until the driver has subscribed.
+    assert_eq!(monitor.request(), None);
+    assert!(monitor.needs_subscription());
+    monitor.subscribed();
+    assert!(!monitor.needs_subscription());
     assert!(matches!(
         monitor.request(),
         Some(Request {
@@ -142,7 +162,7 @@ fn the_first_snapshot_publishes_generation_one_to_every_consumer() {
 #[test]
 fn a_request_s_bytes_are_its_dump_with_its_sequence() {
     let (make, _) = probes();
-    let (monitor, _reader) = Monitor::new(make);
+    let (monitor, _reader) = fresh(make);
     let request = monitor.request().unwrap();
     assert_eq!(
         request.bytes(),
@@ -274,12 +294,19 @@ fn control_and_unknown_messages_on_the_notify_socket_move_nothing() {
 fn loss_invalidates_then_resnapshots(loss: Loss, cause: impl FnOnce(&mut Monitor)) {
     let (mut monitor, reader, seen) = started();
     cause(&mut monitor);
-    assert_eq!(current(&reader), 2);
+    // Invalidated at once, and nothing readable until a verified snapshot.
+    assert_eq!(reader.current(), Err(Unavailable));
     for each in &seen {
+        assert_eq!(each.moves(), 2);
         assert_eq!(each.losses(), 1);
         assert_eq!(each.last_loss(), loss_code(loss));
         assert_eq!(each.late(), 0);
     }
+    // A loss on the notify socket makes the driver subscribe again before
+    // the snapshot, so no queued record from before the loss is applied
+    // to the fresh tables.
+    assert_eq!(monitor.needs_subscription(), loss != Loss::Resumed);
+    resubscribe(&mut monitor);
     assert!(matches!(
         monitor.request(),
         Some(Request {
@@ -333,20 +360,21 @@ fn an_overrun_message_is_a_loss() {
 
 #[test]
 fn messages_after_a_malformed_one_are_not_applied() {
-    let (mut monitor, reader, _) = started();
+    let (mut monitor, reader, seen) = started();
     let mut datagram = build::message(24, 0, 0, &[0; 12]);
     datagram.extend(build::pad(build::message(16, 0, 0, &[0; 3])));
     datagram.extend(build::message(24, 0, 0, &[0; 12]));
     monitor.notification(&datagram).unwrap();
     // The first route moved it, the bad link is a loss; the last route is
     // not read.
-    assert_eq!(current(&reader), 3);
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(seen[0].moves(), 3);
 }
 
 #[test]
 fn a_dump_reply_with_another_sequence_is_ignored() {
     let (make, _) = probes();
-    let (mut monitor, reader) = Monitor::new(make);
+    let (mut monitor, reader) = fresh(make);
     let links = monitor.request().unwrap();
     let stale = links.sequence.wrapping_sub(1);
     let mut datagram = up_link(stale, 9);
@@ -360,9 +388,11 @@ fn a_dump_reply_with_another_sequence_is_ignored() {
 fn an_interrupted_dump_is_a_loss_and_starts_again() {
     let (mut monitor, reader, seen) = started();
     monitor.lost(Loss::Overflow).unwrap();
+    resubscribe(&mut monitor);
     let links = monitor.request().unwrap();
     monitor.reply(&done(links.sequence, INTERRUPTED)).unwrap();
-    assert_eq!(current(&reader), 3);
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(seen[0].moves(), 3);
     assert_eq!(seen[0].last_loss(), loss_code(Loss::Interrupted));
     let again = monitor.request().unwrap();
     assert_eq!(again.dump, Dump::Links);
@@ -373,6 +403,7 @@ fn an_interrupted_dump_is_a_loss_and_starts_again() {
 fn a_dump_answered_with_an_error_is_refused_and_starts_again() {
     let (mut monitor, reader, seen) = started();
     monitor.lost(Loss::Overflow).unwrap();
+    resubscribe(&mut monitor);
     let links = monitor.request().unwrap();
     monitor
         .reply(&build::message(
@@ -382,7 +413,8 @@ fn a_dump_answered_with_an_error_is_refused_and_starts_again() {
             &(-16_i32).to_ne_bytes(),
         ))
         .unwrap();
-    assert_eq!(current(&reader), 3);
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(seen[0].moves(), 3);
     assert_eq!(seen[0].last_loss(), loss_code(Loss::Refused));
 }
 
@@ -390,6 +422,7 @@ fn a_dump_answered_with_an_error_is_refused_and_starts_again() {
 fn a_malformed_or_truncated_dump_starts_again() {
     let (mut monitor, reader, seen) = started();
     monitor.lost(Loss::Overflow).unwrap();
+    resubscribe(&mut monitor);
     let links = monitor.request().unwrap();
     monitor
         .reply(&build::message(16, 0, links.sequence, &[0; 3]))
@@ -397,13 +430,14 @@ fn a_malformed_or_truncated_dump_starts_again() {
     assert_eq!(seen[0].last_loss(), loss_code(Loss::Malformed));
     monitor.dump_failed(Loss::Truncated).unwrap();
     assert_eq!(seen[0].last_loss(), loss_code(Loss::Truncated));
-    assert_eq!(current(&reader), 4);
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(seen[0].moves(), 4);
 }
 
 #[test]
 fn eight_failed_snapshots_in_a_row_stop_the_source() {
     let (make, seen) = probes();
-    let (mut monitor, reader) = Monitor::new(make);
+    let (mut monitor, reader) = fresh(make);
     for _ in 1..SNAPSHOT_ATTEMPTS {
         monitor.dump_failed(Loss::Failed).unwrap();
     }
@@ -419,7 +453,7 @@ fn eight_failed_snapshots_in_a_row_stop_the_source() {
 #[test]
 fn a_completed_snapshot_resets_the_count_of_failures() {
     let (make, _) = probes();
-    let (mut monitor, reader) = Monitor::new(make);
+    let (mut monitor, reader) = fresh(make);
     for _ in 1..SNAPSHOT_ATTEMPTS {
         monitor.dump_failed(Loss::Failed).unwrap();
     }
@@ -427,17 +461,20 @@ fn a_completed_snapshot_resets_the_count_of_failures() {
     for _ in 1..SNAPSHOT_ATTEMPTS {
         monitor.dump_failed(Loss::Failed).unwrap();
     }
+    // Not stopped: the eighth snapshot is still asked for, and completes.
+    answer_snapshot(&mut monitor);
     assert!(reader.current().is_ok());
 }
 
 #[test]
 fn changes_before_the_first_snapshot_publish_nothing_until_it_completes() {
     let (make, seen) = probes();
-    let (mut monitor, reader) = Monitor::new(make);
+    let (mut monitor, reader) = fresh(make);
     monitor
         .notification(&build::message(24, 0, 0, &[0; 12]))
         .unwrap();
     monitor.lost(Loss::Overflow).unwrap();
+    resubscribe(&mut monitor);
     assert_eq!(reader.current(), Err(Unavailable));
     answer_snapshot(&mut monitor);
     assert_eq!(current(&reader), 1);
@@ -457,12 +494,15 @@ fn completion_moves_even_when_the_tables_are_unchanged() {
 
 #[test]
 fn notifications_during_a_snapshot_still_move_the_generation() {
-    let (mut monitor, reader, _) = started();
+    let (mut monitor, reader, seen) = started();
     monitor.lost(Loss::Overflow).unwrap();
+    resubscribe(&mut monitor);
     monitor
         .notification(&build::message(24, 0, 0, &[0; 12]))
         .unwrap();
-    assert_eq!(current(&reader), 3);
+    // The consumers are told, but nothing is readable before the snapshot.
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(seen[0].moves(), 3);
     answer_snapshot(&mut monitor);
     assert_eq!(current(&reader), 4);
 }
@@ -471,6 +511,7 @@ fn notifications_during_a_snapshot_still_move_the_generation() {
 fn a_table_over_its_cap_treats_every_message_of_its_kind_as_a_change() {
     let (mut monitor, reader, _) = started();
     monitor.lost(Loss::Overflow).unwrap();
+    resubscribe(&mut monitor);
     let links = monitor.request().unwrap();
     let mut datagram = Vec::new();
     for index in 0..=i32::try_from(super::LINKS_MAX).unwrap() {
@@ -496,5 +537,75 @@ fn stop_tells_every_consumer_and_refuses_everything_after() {
     assert_eq!(monitor.lost(Loss::Resumed), Err(Stopped));
     for each in &seen {
         assert_eq!(each.stops(), 1);
+    }
+}
+
+#[test]
+fn an_overrun_in_a_dump_reply_of_any_sequence_starts_the_snapshot_again() {
+    let (mut monitor, _reader, seen) = started();
+    monitor.lost(Loss::Resumed).unwrap();
+    let links = monitor.request().unwrap();
+    monitor
+        .reply(&build::message(4, 0, links.sequence.wrapping_add(9), &[]))
+        .unwrap();
+    assert_eq!(seen[0].last_loss(), loss_code(Loss::Malformed));
+    assert_ne!(monitor.request().unwrap().sequence, links.sequence);
+}
+
+#[test]
+fn a_done_followed_by_malformed_bytes_completes_nothing() {
+    let (mut monitor, reader, seen) = started();
+    monitor.lost(Loss::Resumed).unwrap();
+    let links = monitor.request().unwrap();
+    let mut datagram = up_link(links.sequence, 2);
+    datagram.extend(done(links.sequence, MULTI));
+    monitor.reply(&datagram).unwrap();
+    let addresses = monitor.request().unwrap();
+    let mut datagram = done(addresses.sequence, MULTI);
+    datagram.extend([0; 15]);
+    monitor.reply(&datagram).unwrap();
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(seen[0].snapshots(), 1);
+    assert_eq!(seen[0].last_loss(), loss_code(Loss::Malformed));
+}
+
+#[test]
+fn a_link_s_group_master_or_name_changing_moves_the_generation() {
+    let (mut monitor, reader, _) = started();
+    let with = |attributes: &[(u16, &[u8])]| {
+        build::link(16, 2, 0x0001_0041, |body| {
+            build::attribute(body, 16, &[6]);
+            for (kind, value) in attributes {
+                build::attribute(body, *kind, value);
+            }
+        })
+    };
+    // The same link, now naming its group, master and name: three
+    // changes, then the same message again: none.
+    monitor
+        .notification(&with(&[(27, &5_u32.to_ne_bytes())]))
+        .unwrap();
+    assert_eq!(current(&reader), 2);
+    let full: [(u16, &[u8]); 3] = [
+        (27, &5_u32.to_ne_bytes()),
+        (10, &9_u32.to_ne_bytes()),
+        (3, b"eth0\0"),
+    ];
+    monitor.notification(&with(&full[..2])).unwrap();
+    assert_eq!(current(&reader), 3);
+    monitor.notification(&with(&full)).unwrap();
+    assert_eq!(current(&reader), 4);
+    monitor.notification(&with(&full)).unwrap();
+    assert_eq!(current(&reader), 4);
+}
+
+#[test]
+fn halt_makes_the_generation_unavailable_without_calling_any_hook() {
+    let (mut monitor, reader, seen) = started();
+    monitor.halt();
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(monitor.lost(Loss::Resumed), Err(Stopped));
+    for each in &seen {
+        assert_eq!((each.moves(), each.stops()), (1, 0));
     }
 }

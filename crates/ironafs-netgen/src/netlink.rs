@@ -53,9 +53,12 @@ const RTM_GETNEXTHOP: u16 = 106;
 const DUMP_FLAGS: u16 = 0x0301;
 const NLM_F_DUMP_INTR: u16 = 0x0010;
 
-/// The attributes read: `IFLA_OPERSTATE`; `IFA_ADDRESS`, `IFA_LOCAL`,
-/// `IFA_FLAGS`.
+/// The attributes read: `IFLA_OPERSTATE`, `IFLA_IFNAME`, `IFLA_MASTER`,
+/// `IFLA_GROUP`; `IFA_ADDRESS`, `IFA_LOCAL`, `IFA_FLAGS`.
 const IFLA_OPERSTATE: u16 = 16;
+const IFLA_IFNAME: u16 = 3;
+const IFLA_MASTER: u16 = 10;
+const IFLA_GROUP: u16 = 27;
 const IFA_ADDRESS: u16 = 1;
 const IFA_LOCAL: u16 = 2;
 const IFA_FLAGS: u16 = 8;
@@ -121,13 +124,25 @@ pub(crate) struct Address {
     pub(crate) scope: u8,
 }
 
-/// A link and what decides its usability.
+/// A link: its index and what decides its usability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Link {
     pub(crate) index: i32,
+    pub(crate) state: LinkState,
+}
+
+/// What a link change can change for routing (5.1, point 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LinkState {
     /// The link's flags, only those of `USABILITY`.
     pub(crate) usability: u32,
     pub(crate) operstate: Option<u8>,
+    /// `IFLA_GROUP`, which a policy rule can match.
+    pub(crate) group: Option<u32>,
+    /// `IFLA_MASTER`: the device, a VRF among them, it is enslaved to.
+    pub(crate) master: Option<u32>,
+    /// `IFLA_IFNAME`, zero-padded: a scoped cell names its interface.
+    pub(crate) name: [u8; 16],
 }
 
 /// What one message says.
@@ -281,20 +296,38 @@ fn link(body: &[u8]) -> Result<Link, Malformed> {
     let fixed = body.get(..LINK_BODY).ok_or(Malformed::ShortBody)?;
     let index = i32::from_ne_bytes(array(fixed.get(4..8).ok_or(Malformed::ShortBody)?)?);
     let flags = u32_at(fixed, 8)?;
-    let mut operstate = None;
+    let mut state = LinkState {
+        usability: flags & USABILITY,
+        operstate: None,
+        group: None,
+        master: None,
+        name: [0; 16],
+    };
     let rest = body.get(LINK_BODY..).unwrap_or_default();
     for attribute in (Attributes { rest }) {
         let (kind, value) = attribute?;
-        if kind == IFLA_OPERSTATE {
-            let [state] = <[u8; 1]>::try_from(value).map_err(|_| Malformed::BadValue)?;
-            operstate = Some(state);
+        match kind {
+            IFLA_OPERSTATE => {
+                let [operstate] = <[u8; 1]>::try_from(value).map_err(|_| Malformed::BadValue)?;
+                state.operstate = Some(operstate);
+            }
+            IFLA_GROUP => state.group = Some(u32_value(value)?),
+            IFLA_MASTER => state.master = Some(u32_value(value)?),
+            IFLA_IFNAME => {
+                if value.is_empty() || value.len() > state.name.len() {
+                    return Err(Malformed::BadValue);
+                }
+                state.name = [0; 16];
+                state
+                    .name
+                    .get_mut(..value.len())
+                    .ok_or(Malformed::BadValue)?
+                    .copy_from_slice(value);
+            }
+            _ => {}
         }
     }
-    Ok(Link {
-        index,
-        usability: flags & USABILITY,
-        operstate,
-    })
+    Ok(Link { index, state })
 }
 
 /// An address message's body.
@@ -330,7 +363,7 @@ fn address(body: &[u8]) -> Result<Address, Malformed> {
                     prefix = Some(bytes);
                 }
             }
-            IFA_FLAGS => flags = u32::from_ne_bytes(array(value).map_err(|_| Malformed::BadValue)?),
+            IFA_FLAGS => flags = u32_value(value)?,
             _ => {}
         }
     }
@@ -373,6 +406,13 @@ pub(crate) fn dump_request(kind: Dump, sequence: u32) -> [u8; 20] {
 /// The `N` bytes of `bytes`, which must be exactly `N` long.
 fn array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], Malformed> {
     <[u8; N]>::try_from(bytes).map_err(|_| Malformed::ShortBody)
+}
+
+/// A four-byte host-order value.
+fn u32_value(value: &[u8]) -> Result<u32, Malformed> {
+    Ok(u32::from_ne_bytes(
+        <[u8; 4]>::try_from(value).map_err(|_| Malformed::BadValue)?,
+    ))
 }
 
 /// The host-order `u16` at `at`.
