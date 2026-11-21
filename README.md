@@ -154,9 +154,9 @@ reviews a change needs ([docs/workflow.md](docs/workflow.md)).
 
 | Family | Models | Role |
 |---|---|---|
-| Anthropic | Claude Opus 5.5; Claude Mythos 5.2 for security reviews, judgements and architecture decisions | Plans, routes and checks the work; reviews |
-| OpenAI | GPT-6.2 Sol (through codex) | Writes the code; design and research reviews |
-| Zhipu | GLM 5.3 | First reviewer of codex's code |
+| Anthropic | Claude Opus 5.5; Claude Mythos 5.2 for security reviews, judgements and architecture decisions | Plans, routes and checks the work; writes the code; reviews others' work |
+| OpenAI | GPT-6.2 Sol (through codex) | Reviews, design and research; extra coding capacity |
+| Zhipu | GLM 5.3 | First reviewer of the code |
 | Google | Gemini 4 Carbon | Second-family reviews |
 | DeepSeek | DeepSeek V4.1 Flash | Second-family reviews |
 

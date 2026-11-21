@@ -3,7 +3,7 @@
 
 name: Design question or proposal
 description: A question about a decision, or a proposal for one.
-labels: ["type:design"]
+labels: ["type:design", "needs-triage"]
 body:
   - type: textarea
     id: question

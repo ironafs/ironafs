@@ -10,7 +10,9 @@ below. Partly superseded by [ADR 0003](0003-branch-work-and-ai-disclosure.md)
 ## Context
 
 - IronAFS is built with AI models in defined roles (`docs/workflow.md` §2):
-  Claude Code controls, codex implements, other families review. The owner
+  Claude Code controls, codex implements, other families review (as at
+  acceptance; from M2a, Claude Code subagents are the default implementer
+  and codex adds capacity, `docs/workflow.md` §2). The owner
   wants this visible: the repository, ADRs, workflow, change classes and
   model usage are meant to become public.
 - Each change on `main` should credit both sides: the human who answers for
@@ -146,7 +148,7 @@ Signed-off-by: Adrian Ana <adrian@adrianana.com>
 | id | Lane | Family |
 |---|---|---|
 | `claude-code` | Claude Code, controller and Claude subagent seats | Anthropic |
-| `codex` | codex CLI, implementer and GPT read-only seat | OpenAI |
+| `codex` | codex CLI, implementer for extra capacity and GPT read-only seat | OpenAI |
 | `agy` | agy CLI, implementer when codex is out | Google |
 | `gemini` | Gemini review via agy | Google |
 | `glm` | GLM via headless Claude Code on Z.ai | Zhipu |
@@ -504,3 +506,7 @@ All fixed:
   - the PR title is the commit subject;
   - the handoff records the ADRs as accepted.
 
+Correction, 2026-11-20 (#40), changing no decision: the Context's roles
+line is marked as the roles at acceptance and points to the default
+implementer from M2a, and the `codex` agent-id row says "implementer for
+extra capacity", matching `docs/workflow.md` §2.

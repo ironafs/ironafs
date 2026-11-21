@@ -10,8 +10,9 @@ with the reason in the commit body.
 damage a plausible mistake in it could do. The class decides everything else:
 what must be checked, which models review it, and who may merge it. Routine
 changes stay fast; risky ones get more eyes. Claude Code runs the work as the
-controller; other model families write and review code so that no model is
-the only one checking its own work.
+controller and, through the subagents it dispatches, writes most of the code;
+other model families review it, so that no model is the only one checking
+its own work.
 
 ## 1. Classes: the ranking
 
@@ -59,11 +60,12 @@ lanes are not used.
 
 | Role | Who | How |
 |---|---|---|
-| **Controller** | the maintainer's Claude Code session (following the maintainer's private instructions) | Plans, briefs, routes, verifies findings, lands changes after the owner's approval. Writes code only for work only it can run. |
-| **Implementer** | codex CLI, `gpt-6.2-sol` | `codex exec` with a written brief; `medium` effort for mechanical I/P work, `high` for S and R; the model routing table governs (§2, "Model routing"). |
+| **Controller** | the maintainer's Claude Code session (following the maintainer's private instructions) | Plans, briefs, routes, verifies findings, lands changes after the owner's approval. Writes code itself only for work only it can run; other code comes from the implementers it dispatches. |
+| **Implementer** | Claude Code subagents, Opus 5.5 | Dispatched by the controller, one task at a time, with a written brief, test first. The default from M2a: the designs are Claude-written, so Claude implementing keeps one author family and leaves GLM and GPT free for the required and security seats. |
+| **Implementer for extra capacity** | codex CLI, `gpt-6.2-sol` | `codex exec` with a written brief, on a task separate from Claude's; `medium` effort for mechanical I/P work, `high` for S and R. Its seats exclude OpenAI and the design's family. |
 | **Implementer when codex is out of quota** | agy CLI (Gemini) | Same brief; a session allowlist that denies git. Brief paths must sit inside `--add-dir`. |
-| **First reviewer of codex-written code** | GLM 5.3 (`glm-review`) | Headless Claude Code on Z.ai's endpoint, read-only. |
-| **Second family when the class needs two** | Gemini Carbon via agy (`gemini-review`), or DeepSeek (`deepseek-review`) | DeepSeek off-peak only (not Mon–Fri 01–04 or 06–10 UTC). |
+| **First reviewer of implemented code** | GLM 5.3 (`glm-review`) | Headless Claude Code on Z.ai's endpoint, read-only. |
+| **Second family when the class needs two** | GPT read-only, Gemini Carbon via agy (`gemini-review`), DeepSeek (`deepseek-review`) or a Claude seat, whichever wrote none of the change and is not already the first reviewer | DeepSeek off-peak only (not Mon–Fri 01–04 or 06–10 UTC). |
 | **Design, rulings, research, refutations on work codex did not write** | GPT read-only: `codex exec -s read-only -m gpt-6.2-sol - < brief.md`; `-m gpt-6.2-astra -c model_reasoning_effort=xhigh` for the strongest row (§2, "Model routing") | GLM second when a second view is needed. |
 | **Claude seats** (review, reproduction, hard judgement, security) | Claude Code subagents: Opus by default; Mythos 5.2 (`claude-mythos-5-2`, Claude Code's `fable` alias) for the strongest row of §2's "Model routing", including every Claude security review | Never a required seat on Claude-written work. |
 
@@ -84,8 +86,8 @@ draft, gathered or synthesised research the change draws on, or proposed
 fixes that another family wrote in, as long as none of that family's text
 is in the change; such a family may hold a required seat, and the review
 record says what its earlier part was. Outside contributors' declared
-tools count. The controller writes code only for work
-only it can run, so most code comes from codex.
+tools count. Most code is written by Claude Code subagents the controller
+dispatches; codex adds capacity on separate tasks.
 
 **First reviewer, by author.** The table is an order of preference. Skip any
 family that wrote the design or the code. Each row's own order comes first;
@@ -97,7 +99,7 @@ seat.
 |---|---|
 | codex (OpenAI) | GLM |
 | agy (Google) | GLM |
-| Claude | GPT read-only, or GLM |
+| Claude | GLM, or GPT read-only |
 | outside contributor | GLM, or GPT read-only if the contributor declared GLM |
 | the owner, with no model writing | GLM, or GPT read-only |
 
@@ -212,9 +214,9 @@ other model pin in this file, `AI.md` and the skills.
 |---|---|---|---|---|---|
 | **Light:** optional helpers | `gpt-6.2-sol`, medium | Haiku (`claude-haiku-5-5`) | `gemini-3.8-flash-medium` | `glm-5.3-flash` | `deepseek-flash`, default |
 | **Light:** research gathering | `gpt-6.2-sol`, medium | Sonnet (`claude-sonnet-5-5`) | `gemini-4-argon-medium` | `glm-5.3`, high | `deepseek-flash`, default |
-| Class I and P implementation (`high` where it is not mechanical) | `gpt-6.2-sol`, medium | Opus (work only the controller can run) | `gemini-4-carbon-medium` (when codex is out of quota) | — | — |
+| Class I and P implementation (`high` where it is not mechanical) | `gpt-6.2-sol`, medium (extra capacity) | Opus (`claude-opus-5-5`), the default implementer | `gemini-4-carbon-medium` (when codex is out of quota) | — | — |
 | Class I and P required reviews, P contracts, refutations and verifications on I and P work, research synthesis that is not load-bearing | `gpt-6.2-sol`, high | Opus (`claude-opus-5-5`) | `gemini-4-carbon-medium` | `glm-5.3`, high | `deepseek-flash`, default |
-| Class S and R implementation | `gpt-6.2-sol`, high | Opus (controller-only work) | `gemini-4-carbon-high` (when codex is out of quota) | — | — |
+| Class S and R implementation | `gpt-6.2-sol`, high (extra capacity) | Opus (`claude-opus-5-5`), the default implementer | `gemini-4-carbon-high` (when codex is out of quota) | — | — |
 | Ordinary class S and R reviews, S design review before code, refutations on S and R work, reproduction, the consistency pass | `gpt-6.2-sol`, xhigh | Opus (`claude-opus-5-5`) | `gemini-4-carbon-high` | `glm-5.3`, high | `deepseek-flash`, default |
 | **Strongest:** the judgement seat, security reviews, class R designs, format freezes, architecture ADRs, promoted implementation, synthesis of a load-bearing research question | `gpt-6.2-astra`, xhigh | Mythos 5.2 (`claude-mythos-5-2`) | `gemini-4-carbon-high`, where eligible | `glm-5.3`, max | `deepseek-flash`, max, where eligible |
 
@@ -401,8 +403,10 @@ hold everything.
   - Relationships (blocked by, parent and sub-issues) use GitHub's fields,
     not prose, and only when the two issues really concern the same thing.
 - **Picking a task.** Take the highest-priority issue that is **ready**:
-  open, triaged (it has its `class:*` label), not `owner-decision`, not
-  `option` unless the owner asks, and with every issue blocking it closed.
+  open, triaged (it has its `class:*` and `area:*` labels and no
+  `needs-triage`), not
+  `owner-decision`, not `option` unless the owner asks, and with every
+  issue blocking it closed.
   - Claim it with a comment before starting, naming the branch.
   - Whoever stops before finishing says so in a comment: the branch, the last
     pushed commit and what remains. The task is then free to pick up.
@@ -468,21 +472,47 @@ hold everything.
 
   Where ADR 0004 says "M2", it means M2a and M2b together; each test is
   placed in one of them by its issue.
-- **Labels:**
+- **Labels.** Every issue has exactly one `type:*` label and, once
+  triaged, at least one `area:*` label, normally one. Every PR and every
+  triaged task issue has exactly one `class:*` label, from triage on. An
+  issue has at most one priority label.
+  `needs-triage` and a `class:*` label are never on the same issue.
   - **Class:** `class:E`, `class:I`, `class:P`, `class:S`, `class:R` (§1).
-    Every PR and task issue has exactly one.
-  - **Type:** `type:bug`, `type:design`, `type:task`, `type:research`.
-  - **Area:** `area:rx`, `area:xdr`, `area:cache`, `area:auth`, `area:cli`,
-    `area:fuse`, `area:fskit`, `area:smb`, `area:cloudfiles`, `area:docs`,
-    `area:process`.
+  - **Type:**
+    - `type:bug`: something does not work as specified;
+    - `type:design`: a design question, ADR or specification;
+    - `type:task`: a unit of work, written as a brief;
+    - `type:research`: research to answer a question.
+  - **Area:**
+    - `area:rx`: the Rx transport and its security classes;
+    - `area:xdr`: XDR encoding and the interface definitions;
+    - `area:cache`: the client core: the cache manager and its state;
+    - `area:auth`: tokens, credentials and authentication;
+    - `area:cli`: the `afs` commands and their output;
+    - `area:fuse`: the Linux FUSE layer;
+    - `area:fskit`: the macOS FSKit layer;
+    - `area:smb`: the Windows SMB layer;
+    - `area:cloudfiles`: the Windows Cloud Files layer;
+    - `area:os`: the shared operating-system bindings; each front end keeps
+      its own platform label;
+    - `area:ops`: events, the shared control IPC and configuration;
+    - `area:test`: the simulator, test support, fuzzing, the test cell and
+      the harnesses;
+    - `area:docs`: documentation;
+    - `area:process`: how the project works: workflow, automation, CI and
+      repository settings.
   - **Status:**
+    - `needs-triage`: new, its class not yet confirmed. The issue forms set
+      it; the maintainer removes it when applying the `class:*` label.
     - `owner-decision`: waits on the owner;
     - `option`: an idea not yet decided. Its body names its trigger: the
       event or date that makes it worth deciding;
     - `debt`: known shortcuts to repay;
     - `parked`: paused, with a two-line comment saying why and what unblocks
       it.
-  - **Priority:** `p1`, `p2`, `p3`.
+  - **Priority:** `p1`, take next; `p2`, soon; `p3`, when convenient.
+  - **Dependencies:** `dependencies`, set on Dependabot's pull requests by
+    `.github/dependabot.yml`. They still get a `class:*` label at triage.
   - **For contributors:** `good first issue`, `help wanted`.
 - **Embargoed security work is the one exception** to "issues hold
   everything". It stays in the private advisory or an unpushed branch (§2,
@@ -492,8 +522,9 @@ hold everything.
   (`.github/ISSUE_TEMPLATE/`). The chooser hides blank issues from public
   contributors; maintainers can still open one, and a task still follows the
   four-part brief. Security reports go to `SECURITY.md`, never to an issue.
-- **Triage:** the maintainer confirms each new issue's class and applies
-  exactly one `class:*` label before anyone plans from it.
+- **Triage:** the maintainer confirms each new issue's or PR's class,
+  applies exactly one `class:*` label and at least one `area:*` label, and
+  removes `needs-triage`, before anyone plans from it.
 - **Dependabot** opens update PRs weekly for Cargo and GitHub Actions. They
   are proposals: the maintainer classifies each one, checks it against the
   `add-dependency` checklist, and sponsors it with their sign-off and
