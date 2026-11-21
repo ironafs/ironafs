@@ -16,7 +16,9 @@
 //! - by the declaration reader, which refuses what C cannot be compared
 //!   with: another ABI string, an attribute on a foreign function (such as
 //!   `link_name`), a `packed` struct, a renaming import, a type alias, and
-//!   a C type name not imported from `core::ffi`.
+//!   a C type name not imported from `core::ffi`; and by the generator, a
+//!   live member renamed opaque that no row names, and a struct of opaque
+//!   members alone.
 //!
 //! On Linux a second fixture, `struct sockaddr` from `<sys/socket.h>`
 //! (whose `sa_data` is `char[14]` in glibc and musl, while macOS adds a
@@ -130,6 +132,18 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
 /// Declarations the reader must refuse: the case, the text it replaces,
 /// and a phrase of the reader's error.
 const READER: &[(&str, &str, &str, &str)] = &[
+    (
+        "a live member renamed opaque, which no row names",
+        "    tv_nsec: c_long,\n",
+        "    _opaque_nsec: [c_long; 1],\n",
+        "its row does not name it",
+    ),
+    (
+        "a struct of opaque members alone",
+        "struct timespec {\n    tv_sec: c_long,\n    tv_nsec: c_long,\n}",
+        "struct timespec {\n    _opaque: [c_long; 2],\n}",
+        "every member is opaque",
+    ),
     (
         "a type alias",
         "const EINTR",

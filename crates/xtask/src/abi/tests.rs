@@ -511,11 +511,20 @@ fn c_source_asserts_an_array_member_by_its_element_type_and_count() {
     }
 }
 
+/// The declarations of `source`, with `opaque` as the row's named opaque
+/// fields.
+fn read_with_opaque(source: &str, opaque: &[&str]) -> Declarations {
+    let mut found = read(source);
+    found.opaque = opaque.iter().map(|name| (*name).to_owned()).collect();
+    found
+}
+
 #[test]
 fn c_source_binds_an_opaque_tail_only_by_the_struct_s_size_and_alignment() {
-    let found = read(
+    let found = read_with_opaque(
         "use core::ffi::{c_int, c_ulong};\n\
          #[repr(C)]\nstruct statvfs { f_bsize: c_ulong, f_namemax: c_ulong, _opaque_tail: [c_int; 6] }\n",
+        &["statvfs._opaque_tail"],
     );
     let source = c_source("row", &[], &[], &[], &found, DataModel::Lp64).unwrap();
     assert!(
@@ -531,22 +540,65 @@ fn c_source_binds_an_opaque_tail_only_by_the_struct_s_size_and_alignment() {
 }
 
 #[test]
-fn c_source_refuses_an_opaque_field_that_is_not_the_last_or_not_an_array() {
-    for (source, error) in [
+fn c_source_refuses_an_opaque_field_its_row_does_not_name_or_in_the_wrong_place() {
+    let tail = "use core::ffi::{c_int, c_ulong};\n#[repr(C)]\nstruct s { a: c_ulong, _opaque: [c_int; 2] }\n";
+    for (source, opaque, error) in [
+        (
+            // A live member renamed opaque, which no row names.
+            tail,
+            &[][..],
+            "struct s: `_opaque` is opaque, but its row does not name it in sites.json's `opaque`",
+        ),
         (
             "use core::ffi::c_int;\n#[repr(C)]\nstruct s { _opaque: [c_int; 2], a: c_int }\n",
-            "struct s: an opaque field (`_opaque`) is the last field, an array",
+            &["s._opaque"][..],
+            "struct s: an opaque field (`_opaque`) is the last field, an array of integers",
         ),
         (
             "use core::ffi::c_int;\n#[repr(C)]\nstruct s { a: c_int, _opaque: c_int }\n",
-            "struct s: an opaque field (`_opaque`) is the last field, an array",
+            &["s._opaque"][..],
+            "struct s: an opaque field (`_opaque`) is the last field, an array of integers",
+        ),
+        (
+            "use core::ffi::c_void;\n#[repr(C)]\nstruct s { a: u32, _opaque: [*mut c_void; 2] }\n",
+            &["s._opaque"][..],
+            "struct s: an opaque field (`_opaque`) is the last field, an array of integers",
+        ),
+        (
+            // A struct whose every member is opaque checks no member.
+            "use core::ffi::c_int;\n#[repr(C)]\nstruct s { _opaque: [c_int; 6] }\n",
+            &["s._opaque"][..],
+            "struct s: every member is opaque, so no member would be checked",
+        ),
+        (
+            tail,
+            &["s._opaque", "t._opaque"][..],
+            "sites.json names the opaque field `t._opaque`, which the declarations do not hold",
         ),
     ] {
         assert_eq!(
-            c_source("row", &[], &[], &[], &read(source), DataModel::Lp64).unwrap_err(),
+            c_source(
+                "row",
+                &[],
+                &[],
+                &[],
+                &read_with_opaque(source, opaque),
+                DataModel::Lp64
+            )
+            .unwrap_err(),
             error
         );
     }
+}
+
+#[test]
+fn declarations_refuse_an_opaque_field_others_can_reach() {
+    assert_eq!(
+        refused(
+            "use core::ffi::c_int;\n#[repr(C)]\nstruct s { a: c_int, pub(super) _opaque: [c_int; 2] }\n"
+        ),
+        "line 3: an opaque field is private, so no code outside its struct's module reads it"
+    );
 }
 
 #[test]

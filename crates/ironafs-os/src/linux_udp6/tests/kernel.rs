@@ -4,10 +4,11 @@
 //! The tests of `linux-udp6` (ADR 0005, sheet 21) that need the running
 //! kernel, so Miri does not build them. Each runs in whatever network
 //! namespace the test runs in, under its `net.ipv6.bindv6only` (the guest
-//! runs them at 0 and at 1): an IPv4 socket and this socket share a port,
-//! in either order, which only `IPV6_V6ONLY` allows at 0; a port held by
-//! another IPv6 socket is `InUse`; a scoped address opens no descriptor;
-//! the socket is close-on-exec and carries datagrams. An address family
+//! and CI run them at 0 and at 1, each in a namespace of their own, and an
+//! ignored test checks the value set): an IPv4 socket and this socket share
+//! a port, in either order, which only `IPV6_V6ONLY` allows at 0; a port
+//! held by another IPv6 socket is `InUse`; a scoped address opens no
+//! descriptor; the socket is close-on-exec and carries datagrams. An address family
 //! denied by a sandbox is an ignored test, run under a filter that denies
 //! `AF_INET6`.
 
@@ -29,6 +30,10 @@ fn open_descriptors() -> usize {
 fn port(socket: &UdpSocket) -> u16 {
     socket.local_addr().unwrap().port()
 }
+
+/// The `net.ipv6.bindv6only` value a run in a namespace of its own sets,
+/// for the ignored test that checks the run got it.
+const BINDV6ONLY: &str = "IRONAFS_OS_TEST_BINDV6ONLY";
 
 /// The value of `net.ipv6.bindv6only` here, for the failure message.
 fn bindv6only() -> String {
@@ -108,4 +113,11 @@ fn a_sandbox_that_denies_the_family_is_unsupported() {
         Err(Udp6Error::Unsupported(error)) => assert_eq!(error.raw_os_error(), Some(97)),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+#[ignore = "needs IRONAFS_OS_TEST_BINDV6ONLY, the value this run set in a network namespace of its own"]
+fn the_namespace_s_bindv6only_is_the_one_this_run_set() {
+    let wanted = std::env::var(BINDV6ONLY).unwrap();
+    assert_eq!(bindv6only().trim(), wanted.trim());
 }

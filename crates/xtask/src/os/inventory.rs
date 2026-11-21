@@ -97,6 +97,10 @@ pub(crate) struct Code {
     /// with a C name: (constant, expression), for macros such as
     /// `CMSG_LEN(sizeof(int))`.
     pub(crate) expressions: Vec<(String, String)>,
+    /// The struct fields the ABI check binds by their struct's size alone
+    /// (`opaque`, optional): `struct.field`, each a trailing array of
+    /// integers the C libraries name differently (`statvfs`'s spares).
+    pub(crate) opaque: Vec<String>,
     pub(crate) extern_blocks: Vec<ExternBlock>,
     pub(crate) blocks: Vec<Block>,
     pub(crate) impls: usize,
@@ -323,6 +327,7 @@ fn parse_code(code: &Value) -> Result<Code, String> {
         headers: strings("headers")?,
         defines: defines(code)?,
         expressions: expressions(code)?,
+        opaque: opaque(code)?,
         extern_blocks,
         blocks,
         impls,
@@ -355,10 +360,8 @@ fn defines(code: &Value) -> Result<Vec<String>, String> {
 
 /// The C expressions a row's ABI check compares constants with
 /// (`expressions`, optional): an object from a constant's name to an
-/// expression of names, numbers, spaces, parentheses and the operators
-/// `*`, `+`, `-`, `|`, `<<` and `>>` (a group mask is an or of shifted
-/// bits), since each is written into the C file: no quote, `#`, `;`, `/`
-/// or line break, so no expression can end the assertion it stands in.
+/// expression `well_formed` accepts (a group mask is an or of shifted
+/// bits), since each is written into the C file.
 fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
     let Some(expressions) = code.get("expressions") else {
         return Ok(Vec::new());
@@ -374,21 +377,89 @@ fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
             let expression = value.as_str().unwrap_or_default();
-            let expression_ok = !expression.trim().is_empty()
-                && expression
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"_ ()*+-|<>".contains(&byte));
+            let expression_ok = well_formed(expression);
             if name_ok && expression_ok {
                 Ok((name.clone(), expression.to_owned()))
             } else {
                 Err(format!(
                     "`expressions` maps {name:?} to {value:?}: a constant's name must map to an \
-                     expression of names, numbers, spaces, parentheses, `*`, `+`, `-`, `|`, `<` \
-                     and `>`"
+                     expression of names, numbers, spaces, balanced parentheses and the \
+                     operators `*`, `+`, `-`, `|`, `<<` and `>>`"
                 ))
             }
         })
         .collect()
+}
+
+/// The row's opaque fields (`opaque`, optional): `struct.field` names.
+fn opaque(code: &Value) -> Result<Vec<String>, String> {
+    let Some(opaque) = code.get("opaque") else {
+        return Ok(Vec::new());
+    };
+    let Value::Array(items) = opaque else {
+        return Err("`opaque` is not a list".to_owned());
+    };
+    items
+        .iter()
+        .map(|item| {
+            let name = item.as_str().unwrap_or_default();
+            let parts: Vec<&str> = name.split('.').collect();
+            let ok = parts.len() == 2
+                && parts.iter().all(|part| {
+                    !part.is_empty()
+                        && part
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                });
+            if ok {
+                Ok(name.to_owned())
+            } else {
+                Err(format!(
+                    "`opaque` holds {item:?}, not a `struct.field` name"
+                ))
+            }
+        })
+        .collect()
+}
+
+/// Whether `expression` may stand in the ABI check's `(<expression>) ==
+/// <value>`: names, numbers and spaces; parentheses that balance and never
+/// close more than they opened, so the expression cannot leave its own
+/// parentheses; and the operators `*`, `+`, `-`, `|`, `<<` and `>>` only
+/// (no `||`, no comparison). No quote, `#`, `;`, `/`, comma or line break
+/// can appear, so nothing can end the assertion it stands in.
+fn well_formed(expression: &str) -> bool {
+    if expression.trim().is_empty() {
+        return false;
+    }
+    let bytes = expression.as_bytes();
+    let mut depth = 0_usize;
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
+        match byte {
+            b'(' => depth += 1,
+            b')' => match depth.checked_sub(1) {
+                Some(less) => depth = less,
+                None => return false,
+            },
+            b'|' if bytes.get(at + 1) == Some(&b'|') => return false,
+            b'<' | b'>' => {
+                let pair = bytes.get(at + 1) == Some(&byte);
+                let third = bytes
+                    .get(at + 2)
+                    .is_some_and(|next| *next == b'<' || *next == b'>');
+                if !pair || third {
+                    return false;
+                }
+                at += 1;
+            }
+            b'*' | b'+' | b'-' | b'|' | b' ' | b'_' => {}
+            other if other.is_ascii_alphanumeric() => {}
+            _ => return false,
+        }
+        at += 1;
+    }
+    depth == 0
 }
 
 /// The feature macros a row may ask the ABI check to define.
@@ -596,6 +667,22 @@ fn row_problems(row: &Row) -> Vec<String> {
     found
 }
 
+/// A row whose block column says it adopts one descriptor ("one that
+/// adopts the descriptor", "one that adopts a received descriptor") holds
+/// exactly one adoption.
+fn adoption_problems(id: &str, blocks: &str, code: &Code) -> Option<String> {
+    if !blocks.contains("one that adopts") {
+        return None;
+    }
+    let held = code
+        .blocks
+        .iter()
+        .filter(|block| block.kind == BlockKind::Adopt)
+        .count();
+    (held != 1)
+        .then(|| format!("{id}: holds {held} adoptions; the ADR's row adopts one descriptor"))
+}
+
 /// How an implemented row's code departs from what the ADR's own row
 /// approves: every declared function and every block's callee is named in
 /// the row's foreign-item or block column; a block with no `#[link]` is
@@ -604,7 +691,8 @@ fn row_problems(row: &Row) -> Vec<String> {
 /// row that says its descriptor is "adopted as an `OwnedFd`", as point 6.3
 /// spells it); the `safe fn` declarations are those the declared
 /// column allows; a row whose block column says "one" holds one site in
-/// `unsafe`; and the copy's open flag is the ADR's (an open owner
+/// `unsafe`, and one that says "one that adopts" exactly one adoption;
+/// and the copy's open flag is the ADR's (an open owner
 /// decision). The prose of other block counts is bound by review.
 fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
     let mut found = Vec::new();
@@ -675,6 +763,7 @@ fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
             code.impls
         ));
     }
+    found.extend(adoption_problems(id, blocks, code));
     let says_one = blocks == "one" || blocks.starts_with("one,") || blocks.starts_with("one (");
     if says_one && code.blocks.len() != 1 {
         found.push(format!(

@@ -17,8 +17,11 @@
 //! (`--test-threads 1`).
 //!
 //! The messages are read here with this test's own minimal reader of the
-//! netlink header (`netlink(7)`), which the crate does not have: decoding
-//! is outside it.
+//! netlink header and of the address, route, rule and link messages
+//! (`netlink(7)`, `rtnetlink(7)`), which the crate does not have: decoding
+//! is outside it. Each change is matched by its type, family, prefix
+//! length and address (a link change by its MTU), so an earlier or other
+//! event of the same type cannot satisfy it.
 
 use std::fmt::Write as _;
 
@@ -40,7 +43,15 @@ const RTM_NEWRULE: u16 = 32;
 const RTM_DELRULE: u16 = 33;
 const RTM_NEWNEXTHOP: u16 = 104;
 const RTM_DELNEXTHOP: u16 = 105;
+/// `NHA_ID`: a nexthop object's id (`<linux/nexthop.h>`).
+const NHA_ID: u16 = 1;
 const NLM_F_REQUEST: u16 = 1;
+const AF_INET: u8 = 2;
+const AF_INET6: u8 = 10;
+const IFA_ADDRESS: u16 = 1;
+const RTA_DST: u16 = 1;
+const FRA_SRC: u16 = 2;
+const IFLA_MTU: u16 = 4;
 const NLM_F_DUMP: u16 = 0x300;
 
 /// A request to dump every link: a header and a `struct rtgenmsg` of
@@ -74,14 +85,128 @@ fn types(datagram: &[u8]) -> Vec<u16> {
     found
 }
 
-/// Receives datagrams on `socket` until one holds a message of `wanted`.
-fn wait_for(socket: &RouteSocket, wanted: u16) {
+/// One notification, as this test's reader of `rtnetlink(7)`'s messages
+/// sees it: its type, its family, the prefix length of the object it names,
+/// the object's address (an address's `IFA_ADDRESS`, a route's
+/// `RTA_DST`, a rule's `FRA_SRC`), and a link's `IFLA_MTU`.
+#[derive(Debug, PartialEq, Eq)]
+struct Event {
+    kind: u16,
+    family: u8,
+    length: u8,
+    address: Vec<u8>,
+    mtu: Option<u32>,
+}
+
+/// The events of one datagram, each message's and attribute's length
+/// checked against what holds it.
+fn events(datagram: &[u8]) -> Vec<Event> {
+    let mut found = Vec::new();
+    let mut rest = datagram;
+    while rest.len() >= HEADER {
+        let length = u32::from_ne_bytes(rest[0..4].try_into().unwrap()) as usize;
+        assert!(
+            (HEADER..=rest.len()).contains(&length),
+            "a message of {length} bytes"
+        );
+        let kind = u16::from_ne_bytes(rest[4..6].try_into().unwrap());
+        let payload = &rest[HEADER..length];
+        // The fixed part before the attributes, the prefix length's
+        // offset in it, and the attribute naming the object.
+        let shape = match kind {
+            RTM_NEWADDR | RTM_DELADDR => Some((8, 1, IFA_ADDRESS)),
+            RTM_NEWROUTE | RTM_DELROUTE => Some((12, 1, RTA_DST)),
+            RTM_NEWRULE | RTM_DELRULE => Some((12, 2, FRA_SRC)),
+            RTM_NEWLINK => Some((16, 1, IFLA_MTU)),
+            RTM_NEWNEXTHOP | RTM_DELNEXTHOP => Some((8, 1, NHA_ID)),
+            _ => None,
+        };
+        if let Some((fixed, prefix, wanted)) = shape {
+            assert!(payload.len() >= fixed, "{kind}: {} bytes", payload.len());
+            let mut event = Event {
+                kind,
+                // A nexthop is matched by its id alone.
+                family: if matches!(kind, RTM_NEWNEXTHOP | RTM_DELNEXTHOP) {
+                    0
+                } else {
+                    payload[0]
+                },
+                length: if matches!(kind, RTM_NEWLINK | RTM_NEWNEXTHOP | RTM_DELNEXTHOP) {
+                    0
+                } else {
+                    payload[prefix]
+                },
+                address: Vec::new(),
+                mtu: None,
+            };
+            let mut attributes = &payload[fixed..];
+            while attributes.len() >= 4 {
+                let size = usize::from(u16::from_ne_bytes(attributes[0..2].try_into().unwrap()));
+                let tag = u16::from_ne_bytes(attributes[2..4].try_into().unwrap()) & 0x3fff;
+                assert!(
+                    (4..=attributes.len()).contains(&size),
+                    "an attribute of {size} bytes"
+                );
+                let data = &attributes[4..size];
+                if tag == wanted && kind == RTM_NEWLINK {
+                    event.mtu = Some(u32::from_ne_bytes(data.try_into().unwrap()));
+                } else if tag == wanted {
+                    event.address = data.to_vec();
+                }
+                attributes = &attributes[((size + 3) & !3).min(attributes.len())..];
+            }
+            found.push(event);
+        }
+        rest = &rest[((length + 3) & !3).min(rest.len())..];
+    }
+    found
+}
+
+/// Receives datagrams on `socket` until one holds `wanted`.
+fn wait_for(socket: &RouteSocket, wanted: &Event) {
     let mut buffer = vec![0_u8; 32_768];
     loop {
         let count = socket.receive(&mut buffer).unwrap();
-        if types(&buffer[..count]).contains(&wanted) {
+        if events(&buffer[..count]).contains(wanted) {
             return;
         }
+    }
+}
+
+/// The event of `kind` for the object of `family` at `address`/`length`.
+fn object(kind: u16, family: u8, address: &str, length: u8) -> Event {
+    let address = match address.parse::<std::net::IpAddr>().unwrap() {
+        std::net::IpAddr::V4(v4) => v4.octets().to_vec(),
+        std::net::IpAddr::V6(v6) => v6.octets().to_vec(),
+    };
+    Event {
+        kind,
+        family,
+        length,
+        address,
+        mtu: None,
+    }
+}
+
+/// A link event of lo carrying `mtu`.
+fn link_mtu(mtu: u32) -> Event {
+    Event {
+        kind: RTM_NEWLINK,
+        family: 0,
+        length: 0,
+        address: Vec::new(),
+        mtu: Some(mtu),
+    }
+}
+
+/// The event of `kind` for the nexthop object `id`.
+fn nexthop(kind: u16, id: u32) -> Event {
+    Event {
+        kind,
+        family: 0,
+        length: 0,
+        address: id.to_ne_bytes().to_vec(),
+        mtu: None,
     }
 }
 
@@ -133,50 +258,50 @@ fn each_change_of_link_address_route_and_rule_is_seen_on_the_notify_socket() {
         (
             "address add 2001:db8:1::1/64 dev lo",
             "address del 2001:db8:1::1/64 dev lo",
-            RTM_NEWADDR,
-            RTM_DELADDR,
+            object(RTM_NEWADDR, AF_INET6, "2001:db8:1::1", 64),
+            object(RTM_DELADDR, AF_INET6, "2001:db8:1::1", 64),
         ),
         (
             "address add 192.0.2.1/24 dev lo",
             "address del 192.0.2.1/24 dev lo",
-            RTM_NEWADDR,
-            RTM_DELADDR,
+            object(RTM_NEWADDR, AF_INET, "192.0.2.1", 24),
+            object(RTM_DELADDR, AF_INET, "192.0.2.1", 24),
         ),
         (
             "-6 route add 2001:db8:2::/64 dev lo",
             "-6 route del 2001:db8:2::/64 dev lo",
-            RTM_NEWROUTE,
-            RTM_DELROUTE,
+            object(RTM_NEWROUTE, AF_INET6, "2001:db8:2::", 64),
+            object(RTM_DELROUTE, AF_INET6, "2001:db8:2::", 64),
         ),
         (
             "route add 198.51.100.0/24 dev lo",
             "route del 198.51.100.0/24 dev lo",
-            RTM_NEWROUTE,
-            RTM_DELROUTE,
+            object(RTM_NEWROUTE, AF_INET, "198.51.100.0", 24),
+            object(RTM_DELROUTE, AF_INET, "198.51.100.0", 24),
         ),
         (
             "-6 rule add from 2001:db8:3::/64 table 100",
             "-6 rule del from 2001:db8:3::/64 table 100",
-            RTM_NEWRULE,
-            RTM_DELRULE,
+            object(RTM_NEWRULE, AF_INET6, "2001:db8:3::", 64),
+            object(RTM_DELRULE, AF_INET6, "2001:db8:3::", 64),
         ),
         (
             "rule add from 203.0.113.0/24 table 100",
             "rule del from 203.0.113.0/24 table 100",
-            RTM_NEWRULE,
-            RTM_DELRULE,
+            object(RTM_NEWRULE, AF_INET, "203.0.113.0", 24),
+            object(RTM_DELRULE, AF_INET, "203.0.113.0", 24),
         ),
         (
             "link set lo mtu 1500",
             "link set lo mtu 65536",
-            RTM_NEWLINK,
-            RTM_NEWLINK,
+            link_mtu(1500),
+            link_mtu(65536),
         ),
     ] {
         ip(add);
-        wait_for(&socket, added);
+        wait_for(&socket, &added);
         ip(delete);
-        wait_for(&socket, deleted);
+        wait_for(&socket, &deleted);
     }
 }
 
@@ -186,9 +311,9 @@ fn a_nexthop_object_added_and_removed_is_seen_on_the_notify_socket() {
     ip("link set lo up");
     let socket = RouteSocket::notify().unwrap();
     ip("nexthop add id 7 dev lo");
-    wait_for(&socket, RTM_NEWNEXTHOP);
+    wait_for(&socket, &nexthop(RTM_NEWNEXTHOP, 7));
     ip("nexthop del id 7");
-    wait_for(&socket, RTM_DELNEXTHOP);
+    wait_for(&socket, &nexthop(RTM_DELNEXTHOP, 7));
 }
 
 #[test]

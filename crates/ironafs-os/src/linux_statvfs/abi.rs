@@ -13,8 +13,9 @@
 //! asserts by name). Its last 24 bytes differ by library and release
 //! (glibc 2.28: `int __f_spare[6]`; glibc 2.41: `unsigned int f_type; int
 //! __f_spare[5]`; musl: `unsigned int f_type; int __reserved[5]`), and
-//! are never read here, so they are an opaque tail, which the check binds
-//! by the struct's size and alignment.
+//! are never read here, so they are an opaque tail: private, named in the
+//! row's `opaque` in sites.json, and bound by the struct's size and
+//! alignment.
 
 use core::ffi::{c_int, c_ulong};
 
@@ -48,7 +49,7 @@ pub(super) struct statvfs {
     pub(super) f_fsid: c_ulong,
     pub(super) f_flag: c_ulong,
     pub(super) f_namemax: c_ulong,
-    pub(super) _opaque_tail: [c_int; 6],
+    _opaque_tail: [c_int; 6],
 }
 
 impl statvfs {

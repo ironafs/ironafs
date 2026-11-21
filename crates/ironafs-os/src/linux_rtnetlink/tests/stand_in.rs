@@ -27,6 +27,7 @@ fn from_kernel(bytes: &[u8]) -> Reply {
         bytes: bytes.to_vec(),
         sender: netlink(0, 0),
         name_length: 12,
+        untouched: false,
     }
 }
 
@@ -179,5 +180,20 @@ fn a_receive_with_nothing_to_return_after_an_interruption_ends_with_its_own_errn
     assert!(matches!(
         socket.receive(&mut [0_u8; 8]),
         Err(RouteError::Receive(error)) if error.raw_os_error() == Some(22)
+    ));
+}
+
+#[test]
+fn a_receive_that_writes_no_sender_is_no_sender() {
+    // A call that reports a datagram but leaves the address buffer and its
+    // length as the wrapper set them: the wrapper's own initial address
+    // must not pass for the kernel's.
+    let socket = RouteSocket::notify().unwrap();
+    let mut untouched = from_kernel(&[1; 8]);
+    untouched.untouched = true;
+    reply(untouched);
+    assert!(matches!(
+        socket.receive(&mut [0_u8; 16]),
+        Err(RouteError::BadSender)
     ));
 }

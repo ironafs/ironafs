@@ -6,10 +6,11 @@
 //! coreutils' `stat --file-system` (free blocks for unprivileged users
 //! times the fundamental block size, `%a` and `%S`); a filesystem is
 //! measured by its own descriptor (`/proc` has nothing free, a tmpfs has);
-//! writing a mebibyte to `/dev/shm` takes it from the answer; and a
-//! descriptor that is not a directory's is refused before the call, with
-//! no descriptor left open. A tmpfs of known size, empty and full, is an
-//! ignored test run where one is mounted (`IRONAFS_OS_TEST_TMPFS`).
+//! and a descriptor that is not a directory's is refused before the call,
+//! with no descriptor left open. A tmpfs of known size, empty and full, is an
+//! ignored test run where one is mounted (`IRONAFS_OS_TEST_TMPFS`): its
+//! exact readings, and 64 KiB written taken from the answer, are made on a
+//! mount no other test writes to.
 
 use crate::dump::harness::Command;
 use std::fs::File;
@@ -68,11 +69,13 @@ fn open_descriptors() -> usize {
 }
 
 #[test]
-fn the_answer_is_what_stat_says_for_proc_and_dev_shm() {
-    for path in ["/proc", "/dev/shm"] {
-        let path = Path::new(path);
-        assert_eq!(measured(path), stat_says(path), "{}", path.display());
-    }
+fn the_answer_for_proc_is_what_stat_says() {
+    // `/proc` never changes its free space, so the two readings agree
+    // exactly; a shared mount that other tests or processes write to could
+    // change between them, so exact readings of a writable filesystem are
+    // made on the dedicated tmpfs (the ignored test below).
+    let proc = Path::new("/proc");
+    assert_eq!(measured(proc), stat_says(proc));
 }
 
 #[test]
@@ -98,22 +101,6 @@ fn the_answer_for_the_root_and_temporary_directories_is_what_stat_says() {
 fn each_descriptor_measures_its_own_filesystem() {
     assert_eq!(measured(Path::new("/proc")), 0);
     assert!(measured(Path::new("/dev/shm")) > 0);
-}
-
-#[test]
-fn a_mebibyte_written_to_dev_shm_is_taken_from_the_answer() {
-    let directory = std::env::temp_dir();
-    let shm = Path::new("/dev/shm");
-    let name = shm.join(format!("ironafs-os-statvfs-{}", std::process::id()));
-    let before = measured(shm);
-    let mut file = File::create(&name).unwrap();
-    file.write_all(&vec![1_u8; usize::try_from(MIB).unwrap()])
-        .unwrap();
-    file.sync_all().unwrap();
-    let after = measured(shm);
-    std::fs::remove_file(&name).unwrap();
-    assert!(before - after >= MIB, "{before} then {after}");
-    assert!(measured(&directory) > 0);
 }
 
 #[test]
@@ -148,6 +135,15 @@ fn a_tmpfs_of_known_size_measures_its_size_empty_and_nothing_full() {
     let root = std::env::var(TMPFS).unwrap();
     let root = Path::new(&root);
     assert_eq!(measured(root), MIB);
+    assert_eq!(measured(root), stat_says(root));
+    // 64 KiB, a whole number of pages on every page size the targets use,
+    // is taken from the answer exactly.
+    let mut part = File::create(root.join("part")).unwrap();
+    part.write_all(&vec![1_u8; 65_536]).unwrap();
+    part.sync_all().unwrap();
+    drop(part);
+    assert_eq!(measured(root), MIB - 65_536);
+    std::fs::remove_file(root.join("part")).unwrap();
     let mut file = File::create(root.join("fill")).unwrap();
     let block = vec![1_u8; 4096];
     while file.write_all(&block).is_ok() {}
