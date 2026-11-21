@@ -94,8 +94,9 @@ This is the intended shape, not code that exists. The architecture is
 decided in [ADR 0004](docs/adr/0004-architecture.md), accepted on
 2026-11-20.
 
-**Windows, planned:** an online `\\afs` path through Windows' own SMB client to
-an SMB 3.1.1 server of IronAFS's own on the local machine, behind a gate on
+**Windows, planned:** an online path through Windows' own SMB client to an
+SMB 3.1.1 server of IronAFS's own on the local machine, as `\\afs` where
+that name can be used and otherwise by the loopback address, behind a gate on
 identity, security, application compatibility and coherency. What has been
 measured is the transport: Windows' SMB client reaching a listener on the
 local machine beside Windows' own file sharing, on Windows 10 22H2 and
