@@ -32,6 +32,7 @@ the evidence that refutes it.
 | [2026-11-20-workflow-implementer](2026-11-20-workflow-implementer.md) | Issue #40: Claude implements from M2a; label rules and triage |
 | [2026-11-21-m2a-01-xdr-spec](2026-11-21-m2a-01-xdr-spec.md) | Issue #42: `docs/specs/`, its template and the XDR profile with caps |
 | [2026-11-21-m2a-63-testing](2026-11-21-m2a-63-testing.md) | Issue #63: the test strategy |
+| [2026-11-21-m2a-75-nightly](2026-11-21-m2a-75-nightly.md) | Issue #75, part: the nightly and weekly workflows and the freshness check |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
