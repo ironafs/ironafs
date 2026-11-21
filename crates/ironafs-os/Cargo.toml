@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# The one crate that may hold `unsafe` (ADR 0005): the operating-system
+# calls that have no safe route, each a named site of ADR 0005's closed
+# list, recorded in `sites.json` and checked by `cargo xtask check-os`. No
+# dependencies, no features, no build script (ADR 0005, point 1.4).
+[package]
+name = "ironafs-os"
+description = "IronAFS's operating-system bindings: the calls that need unsafe, behind safe interfaces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# The workspace's lint table with one change, `unsafe_code = "deny"`
+# instead of "forbid", so each site's named `#[expect(unsafe_code)]` can
+# lower it (ADR 0005, point 1.5; coding standards rule 5). Cargo cannot
+# combine `workspace = true` with an override, so the table is restated;
+# `cargo xtask check-deps` fails if it differs from the workspace's in
+# anything else.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+elided_lifetimes_in_paths = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+mod_module_files = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+string_slice = "deny"
+dbg_macro = "deny"
+allow_attributes = "deny"

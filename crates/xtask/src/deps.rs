@@ -11,6 +11,7 @@
 mod pure_source;
 mod self_test;
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io::Write;
@@ -158,11 +159,11 @@ const CRYPTO_HOMES: &[&str] = &["ironafs-crypto", "ironafs-os"];
 /// library (ADR 0004, C5, point 4).
 const NAMED_FFI: &[&str] = &["ironafs-gss"];
 
-/// Crates whose ADR lets them keep their own `[lints]` table, such as the
-/// `unsafe` bindings of `ironafs-os` once its ADR is accepted (ADR 0004,
-/// C5, point 5). Empty until such an ADR exists. A pure crate is never
+/// Crates whose ADR lets them keep their own `[lints]` table: the `unsafe`
+/// bindings of `ironafs-os` (ADR 0005, point 1.5). Each one's table must
+/// equal the workspace's except `OWN_LINTS_CHANGE`. A pure crate is never
 /// listed: `check-pure` forbids its unsafe code on the command line.
-const OWN_LINTS: &[&str] = &[];
+pub(crate) const OWN_LINTS: &[&str] = &["ironafs-os"];
 
 /// The edition every target of the workspace is compiled in: the one whose
 /// lexical rules the token reader of `rust_source` follows.
@@ -277,6 +278,13 @@ pub(crate) enum Violation {
     ShippedTarget {
         name: String,
         target: String,
+    },
+    /// A crate in `OWN_LINTS` whose lint table is not the workspace's with
+    /// `unsafe_code` denied.
+    OwnLints {
+        name: String,
+        manifest: PathBuf,
+        differences: Vec<String>,
     },
     NoWorkspaceLints {
         name: String,
@@ -421,6 +429,17 @@ impl fmt::Display for Violation {
                 formatter,
                 "{name} has a {target} target: a pure crate and ironafs-client ship only their \
                  library, and a build script would run I/O at build time (ADR 0004, C3, point 1)"
+            ),
+            Self::OwnLints {
+                name,
+                manifest,
+                differences,
+            } => write!(
+                formatter,
+                "{}: {name}'s own lint table must equal the workspace's except \
+                 `unsafe_code = \"deny\"` (ADR 0005, point 1.5): {}",
+                manifest.display(),
+                differences.join("; ")
             ),
             Self::NoWorkspaceLints { name, manifest } => write!(
                 formatter,
@@ -669,11 +688,27 @@ fn direct_violations(
 /// Returns an error if a manifest cannot be read.
 fn lint_violations(workspace: &Workspace, own_lints: &[&str]) -> Result<Vec<Violation>, Error> {
     let mut violations = Vec::new();
+    let mut root_manifest: Option<String> = None;
     for member in &workspace.members {
+        let (text, manifest) = read_manifest(workspace, member)?;
         if own_lints.contains(&member.name.as_str()) {
+            if root_manifest.is_none() {
+                let path = workspace.root.join("Cargo.toml");
+                let text = fs::read_to_string(&path)
+                    .map_err(Error::path_io("read workspace manifest", &path))?;
+                root_manifest = Some(text);
+            }
+            let root = root_manifest.as_deref().unwrap_or_default();
+            let differences = own_lints_differences(root, &text);
+            if !differences.is_empty() {
+                violations.push(Violation::OwnLints {
+                    name: member.name.clone(),
+                    manifest,
+                    differences,
+                });
+            }
             continue;
         }
-        let (text, manifest) = read_manifest(workspace, member)?;
         if !inherits_workspace_lints(&text) {
             violations.push(Violation::NoWorkspaceLints {
                 name: member.name.clone(),
@@ -682,6 +717,107 @@ fn lint_violations(workspace: &Workspace, own_lints: &[&str]) -> Result<Vec<Viol
         }
     }
     Ok(violations)
+}
+
+/// The one lint a crate in `OWN_LINTS` sets differently from the
+/// workspace, and the level it sets (ADR 0005, point 1.5).
+const OWN_LINTS_CHANGE: (&str, &str, &str, &str) =
+    ("rust", "unsafe_code", "\"forbid\"", "\"deny\"");
+
+/// The lint entries of a manifest's lint tables, as (group, lint, value)
+/// with whitespace and comments dropped: the tables `[<prefix>.<group>]`.
+/// `None` if the manifest has a lint table this reader does not read
+/// exactly: a multi-line string, a `[<prefix>]` table or a dotted
+/// `<prefix>` key, or any other table whose name mentions lints.
+fn lint_entries(manifest: &str, prefix: &str) -> Option<BTreeSet<(String, String, String)>> {
+    if manifest.contains("\"\"\"") || manifest.contains("'''") {
+        return None;
+    }
+    let group_prefix = format!("{prefix}.");
+    let mut table: Option<String> = None;
+    let mut entries = BTreeSet::new();
+    for line in manifest.lines() {
+        let line: String = line
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .filter(|next| !next.is_whitespace())
+            .collect();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(header) = line.strip_prefix('[') {
+            let name = header.trim_start_matches('[').trim_end_matches(']');
+            let group = name.strip_prefix(&group_prefix);
+            if group.is_none_or(|group| group.contains('.')) && name.contains("lints") {
+                return None;
+            }
+            table = group.map(str::to_owned);
+            continue;
+        }
+        match &table {
+            Some(group) => {
+                let (name, value) = line.split_once('=')?;
+                entries.insert((group.clone(), name.to_owned(), value.to_owned()));
+            }
+            None if line.starts_with("lints") => return None,
+            None => {}
+        }
+    }
+    Some(entries)
+}
+
+/// How a crate's own lint tables depart from the workspace's tables with
+/// `OWN_LINTS_CHANGE` applied, one entry per difference: empty when they
+/// are equal.
+fn own_lints_differences(workspace_manifest: &str, manifest: &str) -> Vec<String> {
+    let (group, lint, from, to) = OWN_LINTS_CHANGE;
+    let Some(mut expected) = lint_entries(workspace_manifest, "workspace.lints") else {
+        return vec!["the workspace's lint tables cannot be read exactly".to_owned()];
+    };
+    let key = (group.to_owned(), lint.to_owned(), from.to_owned());
+    if !expected.remove(&key) {
+        return vec![format!(
+            "the workspace does not set {group}::{lint} = {from}"
+        )];
+    }
+    expected.insert((group.to_owned(), lint.to_owned(), to.to_owned()));
+    let Some(found) = lint_entries(manifest, "lints") else {
+        return vec![
+            "its lint tables cannot be read exactly: write only `[lints.<group>]` tables, \
+             with no multi-line string"
+                .to_owned(),
+        ];
+    };
+    if found.is_empty() {
+        return vec!["it has no lint table".to_owned()];
+    }
+    let value_of = |entries: &BTreeSet<(String, String, String)>, group: &str, lint: &str| {
+        entries
+            .iter()
+            .find(|entry| entry.0 == group && entry.1 == lint)
+            .map(|entry| entry.2.clone())
+    };
+    let lints: BTreeSet<(&str, &str)> = expected
+        .iter()
+        .chain(&found)
+        .map(|(group, lint, _)| (group.as_str(), lint.as_str()))
+        .collect();
+    lints
+        .into_iter()
+        .filter_map(|(group, lint)| {
+            match (
+                value_of(&expected, group, lint),
+                value_of(&found, group, lint),
+            ) {
+                (Some(want), Some(have)) if want == have => None,
+                (Some(want), Some(have)) => Some(format!("{group}::{lint} is {have}, not {want}")),
+                (Some(want), None) => Some(format!("{group}::{lint} = {want} is missing")),
+                (None, _) => Some(format!("{group}::{lint} is not in the workspace's table")),
+            }
+        })
+        .collect()
 }
 
 /// A member's manifest, and its path as shown, relative to the workspace

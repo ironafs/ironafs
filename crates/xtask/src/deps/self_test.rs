@@ -93,6 +93,7 @@ fn clean() -> Fixture {
     }
     fixture.add_third_party("libc", &[]);
     fixture.add_third_party("gss-ffi", &["libc"]);
+    fixture.lints("ironafs-os", OS_LINTS);
     fixture.manifest_tail(
         "ironafs-cache",
         "\n[dev-dependencies]\nironafs-sim = { path = \"../ironafs-sim\" }\n\
@@ -152,6 +153,10 @@ fn clean_sources(fixture: &mut Fixture) {
     );
 }
 
+/// `ironafs-os`'s own lint table in the fixture: the fixture workspace's
+/// one lint, with unsafe code denied instead of forbidden.
+const OS_LINTS: &str = "\n[lints.rust]\nunsafe_code = \"deny\"\n";
+
 /// The file a planted source case writes, in `ironafs-client`.
 const PLANTED_CRATE: &str = "ironafs-client";
 const PLANTED: &str = "crates/ironafs-client/src/planted.rs";
@@ -195,6 +200,13 @@ fn is_third_party(violation: &Violation, from: &str, to: &str) -> bool {
 fn is_without_lints(violation: &Violation, name: &str) -> bool {
     matches!(violation, Violation::NoWorkspaceLints { name: found, manifest }
         if found == name && manifest == Path::new(&format!("crates/{name}/Cargo.toml")))
+}
+
+fn is_own_lints(violation: &Violation, name: &str) -> bool {
+    matches!(violation, Violation::OwnLints { name: found, manifest, differences }
+        if found == name
+            && manifest == Path::new(&format!("crates/{name}/Cargo.toml"))
+            && differences.len() == 1)
 }
 
 fn is_without_edition(violation: &Violation, name: &str) -> bool {
@@ -1052,6 +1064,26 @@ const CASES: &[Case] = &[
             |found| is_without_edition(found, "ironafsd"),
             |found| is_without_lints(found, "ironafsd"),
         ],
+    },
+    Case {
+        name: "ironafs-os allowing unsafe code in its own table",
+        plant: |fixture| fixture.lints("ironafs-os", "\n[lints.rust]\nunsafe_code = \"allow\"\n"),
+        expect: &[|found| is_own_lints(found, "ironafs-os")],
+    },
+    Case {
+        name: "ironafs-os lowering a lint the workspace sets",
+        plant: |fixture| {
+            fixture.lints(
+                "ironafs-os",
+                &format!("{OS_LINTS}unsafe_op_in_unsafe_fn = \"allow\"\n"),
+            );
+        },
+        expect: &[|found| is_own_lints(found, "ironafs-os")],
+    },
+    Case {
+        name: "ironafs-os inheriting the workspace table, which forbids its sites",
+        plant: |fixture| fixture.lints("ironafs-os", "\n[lints]\nworkspace = true\n"),
+        expect: &[|found| is_own_lints(found, "ironafs-os")],
     },
     Case {
         name: "a target-scoped lints table",
