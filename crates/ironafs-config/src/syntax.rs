@@ -144,7 +144,7 @@ impl Table {
 }
 
 /// A parsed file: the tables its headers declare, and its key/value pairs.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Document {
     /// The path of every table, explicit or implicit; index 0 is the root.
     paths: Vec<Vec<String>>,
