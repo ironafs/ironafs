@@ -42,13 +42,27 @@ Security problems go to [SECURITY.md](SECURITY.md), not to public issues.
 `rustup` installs the pinned toolchain and targets from
 `rust-toolchain.toml` on first use. Install [cargo-nextest](https://nexte.st/)
 separately, then run `cargo xtask check`. Run `cargo xtask hooks install` to
-opt in to the `pre-push` hook for local checks and the `commit-msg` hook for
-branch commit trailers. Use
+opt in to the `pre-push` hook and the `commit-msg` hook for branch commit
+trailers. The `pre-push` hook refuses any update of `main`, scans the
+commits you push and their messages for secrets with
+[gitleaks](https://github.com/gitleaks/gitleaks), which you install
+separately, and then runs `cargo xtask check`. It refuses the push if
+gitleaks finds a secret or cannot run. Running the install command again
+updates hooks that an earlier version of xtask installed. Use
 `cargo xtask hooks install --force` to replace a hook that xtask did not
 install. This moves the existing hook to `pre-push.xtask-backup` or
 `commit-msg.xtask-backup` in the hooks directory and prints the backup path.
 The command refuses if that path is already in use. Use
 `cargo xtask hooks uninstall` to remove the managed hooks.
+
+If you use Claude Code, the project's `.claude/settings.json` runs
+`cargo xtask guard` before each Bash command the agent runs. It blocks a
+commit or push on `main`, a branch commit without `Assisted-by:`, published
+text (an issue, pull request, comment, review or release notes) without its
+disclosure line, and `gh pr merge` without `--match-head-commit` and
+`--body-file`, and says what to fix. It fails closed: a command it cannot
+read, or a guard that cannot build, blocks the command. It checks only that
+a disclosure line is present and well formed, never who wrote the text.
 
 To run the checks individually, use the following commands.
 
