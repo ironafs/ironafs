@@ -1,17 +1,27 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `check-pure --self-test`: builds a clean fixture whose pure crates pass,
-//! then plants each way a pure crate could reach the standard library, a
-//! foreign function or changed compiler flags, and proves the check fails
-//! on each with what was planted. A workspace with no pure crate passes.
+//! `check-pure --self-test`: builds a clean fixture whose pure crates pass
+//! and prints its exact matrix, then plants each way a pure crate could
+//! reach the standard library, a foreign function or changed compiler
+//! flags, or break the crate root's form, and proves the check fails on
+//! each with what was planted. Negative controls build the clean fixture
+//! with a crate, a target or a profile skipped, and with an extra crate,
+//! and each must fail the matrix. A fixture that adds `ironafs-rxkad` is
+//! checked with no change to the check, and a workspace with no pure crate
+//! passes.
 
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::Path;
 
-use super::{Cargo, Violation, build_violations, core_sysroot, pure_members, static_violations};
+use super::matrix::{Gap, Triple};
+use super::{
+    Cargo, Plan, Violation, build_violations, core_sysroot, pure_members, report, static_violations,
+};
 use crate::Error;
 use crate::fixture::{self, Fixture};
+use crate::metadata::Workspace;
 
 const CHECK: &str = "check-pure";
 
@@ -40,6 +50,12 @@ fn top_source(head: &str) -> String {
 
 fn plant_head(fixture: &mut Fixture, head: &str) {
     fixture.file(TOP, "src/lib.rs", Some(&top_source(head)));
+}
+
+/// Adds `code` after the clean body, from line 13.
+fn plant_code(fixture: &mut Fixture, code: &str) {
+    let source = format!("{}{code}", top_source("#![no_std]"));
+    fixture.file(TOP, "src/lib.rs", Some(&source));
 }
 
 /// Adds `code` after the clean body and lets the crate's own manifest allow
@@ -151,6 +167,15 @@ fn is_text(violation: &Violation, line: usize, word: &str) -> bool {
 
 fn is_not_no_std(violation: &Violation) -> bool {
     matches!(violation, Violation::NotNoStd(file) if file == Path::new(TOP_LIB))
+}
+
+fn is_no_alloc(violation: &Violation) -> bool {
+    matches!(violation, Violation::NoAlloc(file) if file == Path::new(TOP_LIB))
+}
+
+fn is_root_cfg(violation: &Violation, line: usize) -> bool {
+    matches!(violation, Violation::RootCfg { file, line: at }
+        if file == Path::new(TOP_LIB) && *at == line)
 }
 
 fn is_closure(violation: &Violation, to: &str) -> bool {
@@ -298,6 +323,7 @@ const CASES: &[Case] = &[
         },
         expect: &[
             |found| is_source(found, 13, "unsafe"),
+            |found| is_source(found, 13, "arch"),
             |found| is_source(found, 13, "asm!"),
             |found| is_build(found, "dev", "unsafe"),
             |found| is_build(found, "release", "unsafe"),
@@ -342,7 +368,60 @@ const CASES: &[Case] = &[
     Case {
         name: "extern crate alloc under a cfg",
         plant: |fixture| plant_head(fixture, "#![no_std]\n#[cfg(not(panic = \"abort\"))]"),
-        expect: &[|found| is_source(found, 3, "extern")],
+        expect: &[|found| is_source(found, 3, "extern"), is_no_alloc],
+    },
+    Case {
+        name: "a core-only crate root without extern crate alloc",
+        plant: |fixture| {
+            fixture.file(
+                TOP,
+                "src/lib.rs",
+                Some("#![no_std]\n\n/// Big-endian.\npub fn encode(value: u32) -> [u8; 4] { value.to_be_bytes() }\n"),
+            );
+        },
+        expect: &[is_no_alloc],
+    },
+    Case {
+        name: "no_std after an item",
+        plant: |fixture| {
+            fixture.file(
+                TOP,
+                "src/lib.rs",
+                Some("extern crate alloc;\n#![no_std]\n\npub fn f() {}\n"),
+            );
+        },
+        expect: &[
+            is_not_no_std,
+            |found| is_source(found, 2, "no_std"),
+            |found| is_build(found, "dev", "inner attribute"),
+            |found| is_build(found, "release", "inner attribute"),
+        ],
+    },
+    Case {
+        name: "cfg_attr(not(test), no_std), which every checked build enables",
+        plant: |fixture| plant_head(fixture, "#![cfg_attr(not(test), no_std)]"),
+        expect: &[is_not_no_std, |found| is_source(found, 1, "no_std")],
+    },
+    Case {
+        name: "a crate-level cfg at the root",
+        plant: |fixture| plant_head(fixture, "#![no_std]\n#![cfg(not(windows))]"),
+        expect: &[|found| is_root_cfg(found, 2)],
+    },
+    Case {
+        name: "the processor's identity through a safe function of core::arch",
+        plant: |fixture| {
+            plant_code(
+                fixture,
+                "#[cfg(target_arch = \"x86_64\")]\n\
+                 pub fn id() -> u32 { core::arch::x86_64::__cpuid(0).eax }\n\
+                 #[cfg(target_arch = \"x86_64\")]\n\
+                 pub fn read() -> fn(u32) -> core::arch::x86_64::CpuidResult { core::arch::x86_64::__cpuid }\n",
+            );
+        },
+        expect: &[
+            |found| is_source(found, 14, "arch"),
+            |found| is_source(found, 16, "arch"),
+        ],
     },
     Case {
         name: "assembly under a panic strategy no build uses",
@@ -354,6 +433,7 @@ const CASES: &[Case] = &[
         },
         expect: &[
             |found| is_source(found, 3, "unsafe"),
+            |found| is_source(found, 3, "arch"),
             |found| is_source(found, 3, "asm!"),
         ],
     },
@@ -502,6 +582,7 @@ const CASES: &[Case] = &[
         expect: &[
             |found| is_config(found, ".cargo/config.toml", 2, "rustflags"),
             |found| is_source(found, 13, "unsafe"),
+            |found| is_source(found, 13, "arch"),
             |found| is_source(found, 13, "asm!"),
             |found| is_build(found, "dev", "unsafe"),
             |found| is_build(found, "release", "unsafe"),
@@ -636,15 +717,56 @@ pub(super) fn run(
     result
 }
 
+/// A negative control of the matrix: the clean fixture built with a
+/// changed plan, compared with the full plan's triples.
+struct Control {
+    name: &'static str,
+    change: for<'a> fn(&mut Plan<'a>, &'a Workspace),
+    expect: fn(&Gap) -> bool,
+}
+
+const CONTROLS: &[Control] = &[
+    Control {
+        name: "a run with one pure crate skipped",
+        change: |plan, _| plan.members.retain(|member| member.name != TOP),
+        expect: |gap| matches!(gap, Gap::Missing(triple) if triple.name == TOP),
+    },
+    Control {
+        name: "a run with one target skipped",
+        change: |plan, _| {
+            plan.targets.pop();
+        },
+        expect: |gap| matches!(gap, Gap::Missing(_)),
+    },
+    Control {
+        name: "a run with the release profile skipped",
+        change: |plan, _| plan.profiles.retain(|profile| *profile != "release"),
+        expect: |gap| matches!(gap, Gap::Missing(triple) if triple.profile == "release"),
+    },
+    Control {
+        name: "a run with an extra crate built",
+        change: |plan, workspace| {
+            plan.members.extend(
+                workspace
+                    .members
+                    .iter()
+                    .filter(|member| member.name == EXTRA),
+            );
+        },
+        expect: |gap| matches!(gap, Gap::Extra(triple) if triple.name == EXTRA),
+    },
+];
+
+/// A crate on no pure list that builds against core alone, which the
+/// extra-crate control builds as if it were pure.
+const EXTRA: &str = "ironafs-net";
+
 fn run_in(
     dir: &Path,
     toolchain: &Path,
     targets: &[String],
     output: &mut impl Write,
 ) -> Result<(), Error> {
-    let report = |output: &mut dyn Write, line: String| {
-        writeln!(output, "{line}").map_err(Error::io("report check-pure self-test"))
-    };
     let sysroot = dir.join("sysroot");
     core_sysroot(toolchain, targets, &sysroot)?;
     let build = Build {
@@ -652,46 +774,156 @@ fn run_in(
         targets,
     };
 
-    let (found, configs, pure) = build.check(&clean(), &dir.join("clean"), "the clean fixture")?;
-    if !found.is_empty() || configs != 1 || pure != 2 {
-        return Err(failure("the clean fixture", &found));
+    let clean_run = build.check(&clean(), &dir.join("clean"), "the clean fixture", None)?;
+    let crates = || ["ironafs-time", TOP].map(str::to_owned);
+    if !clean_run.found.is_empty()
+        || clean_run.configs != 1
+        || clean_run.pure != 2
+        || clean_run.compiled.len() != 2 * targets.len() * 2
+        || !clean_run.names().into_iter().eq(crates())
+    {
+        return Err(failure("the clean fixture", &clean_run.found));
     }
+    say(output, "passed: the clean fixture")?;
+    let mut lines = Vec::new();
     report(
-        output,
-        format!(
-            "passed: the clean fixture (2 pure crates built for {} targets in dev and release)",
-            targets.len()
-        ),
-    )?;
+        &clean_run.workspace,
+        clean_run.configs,
+        targets.len(),
+        &clean_run.compiled,
+        &mut lines,
+    )
+    .map_err(|_| failure("the clean fixture's report", &[]))?;
+    say(output, String::from_utf8_lossy(&lines).trim_end())?;
 
     for (index, case) in CASES.iter().enumerate() {
         let mut planted = clean();
         (case.plant)(&mut planted);
-        let (found, _, _) = build.check(&planted, &dir.join(format!("case-{index}")), case.name)?;
-        match found.first() {
-            Some(first) if as_planted(case, &found) => {
-                report(output, format!("caught: {}: {first}", case.name))?;
+        let run = build.check(
+            &planted,
+            &dir.join(format!("case-{index}")),
+            case.name,
+            None,
+        )?;
+        match run.found.first() {
+            Some(first) if as_planted(case, &run.found) => {
+                say(output, &format!("caught: {}: {first}", case.name))?;
             }
-            _ => return Err(failure(case.name, &found)),
+            _ => return Err(failure(case.name, &run.found)),
         }
     }
+
+    run_controls(&build, dir, output)?;
+    run_later(&build, dir, output)?;
 
     let mut none = Fixture::default();
     none.add_crate("ironafs-client", &[]);
     none.add_crate("ironafs-cli", &["ironafs-client"]);
-    let (found, _, pure) = build.check(&none, &dir.join("none"), "no pure crates")?;
-    if !found.is_empty() || pure != 0 {
-        return Err(failure("no pure crates", &found));
+    let run = build.check(&none, &dir.join("none"), "no pure crates", None)?;
+    if !run.found.is_empty() || run.pure != 0 || !run.compiled.is_empty() {
+        return Err(failure("no pure crates", &run.found));
     }
-    report(output, "passed: no pure crates yet".to_owned())?;
-    report(
+    say(output, "passed: no pure crates yet")?;
+    say(
         output,
-        format!(
-            "check-pure --self-test: the clean fixture and a workspace with no pure crate passed \
-             and {} planted cases failed as planted",
-            CASES.len()
+        &format!(
+            "check-pure --self-test: the clean fixture, a fixture that adds ironafs-rxkad and a \
+         workspace with no pure crate passed; {} planted cases and {} matrix controls failed as \
+         planted",
+            CASES.len() + 1,
+            CONTROLS.len()
         ),
     )
+}
+
+/// Builds the clean fixture with each control's changed plan, and requires
+/// each to fail the matrix, and only the matrix.
+fn run_controls(build: &Build<'_>, dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    for (index, control) in CONTROLS.iter().enumerate() {
+        let mut fixture = clean();
+        fixture.add_crate(EXTRA, &[]);
+        fixture.file(EXTRA, "src/lib.rs", Some("#![no_std]\npub fn f() {}\n"));
+        let run = build.check(
+            &fixture,
+            &dir.join(format!("control-{index}")),
+            control.name,
+            Some(control.change),
+        )?;
+        let gaps: Vec<&Gap> = run
+            .found
+            .iter()
+            .filter_map(|found| match found {
+                Violation::Matrix(gap) => Some(gap),
+                _ => None,
+            })
+            .collect();
+        match run.found.first() {
+            Some(first)
+                if gaps.len() == run.found.len()
+                    && gaps.iter().all(|gap| (control.expect)(gap)) =>
+            {
+                say(output, &format!("caught: {}: {first}", control.name))?;
+            }
+            _ => return Err(failure(control.name, &run.found)),
+        }
+    }
+    Ok(())
+}
+
+/// A later pure crate is checked from the commit that adds it, with no
+/// change to the check: a clean `ironafs-rxkad` passes with all its
+/// triples, and one that names `std` fails.
+fn run_later(build: &Build<'_>, dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    let mut later = clean();
+    later.add_crate("ironafs-rxkad", &["ironafs-xdr"]);
+    later.file(
+        "ironafs-rxkad",
+        "src/lib.rs",
+        Some("#![no_std]\nextern crate alloc;\n\npub fn level() -> u8 { 1 }\n"),
+    );
+    let run = build.check(
+        &later,
+        &dir.join("later"),
+        "a fixture that adds ironafs-rxkad",
+        None,
+    )?;
+    let rxkad = run
+        .compiled
+        .iter()
+        .filter(|triple| triple.name == "ironafs-rxkad")
+        .count();
+    if !run.found.is_empty() || run.pure != 3 || rxkad != build.targets.len() * 2 {
+        return Err(failure("a fixture that adds ironafs-rxkad", &run.found));
+    }
+    say(
+        output,
+        &format!("passed: a fixture that adds ironafs-rxkad, checked for its {rxkad} triples"),
+    )?;
+    let mut planted = later;
+    planted.file(
+        "ironafs-rxkad",
+        "src/lib.rs",
+        Some("#![no_std]\nextern crate alloc;\nextern crate std;\n"),
+    );
+    let run = build.check(
+        &planted,
+        &dir.join("later-planted"),
+        "ironafs-rxkad with std",
+        None,
+    )?;
+    let caught = run
+        .found
+        .iter()
+        .any(|found| matches!(found, Violation::Build { name, .. } if name == "ironafs-rxkad"));
+    if !caught {
+        return Err(failure("ironafs-rxkad with std", &run.found));
+    }
+    say(output, "caught: ironafs-rxkad with extern crate std")?;
+    Ok(())
+}
+
+fn say(output: &mut impl Write, line: &str) -> Result<(), Error> {
+    writeln!(output, "{line}").map_err(Error::io("report check-pure self-test"))
 }
 
 fn failure(case: &'static str, found: &[Violation]) -> Error {
@@ -708,16 +940,35 @@ struct Build<'a> {
     targets: &'a [String],
 }
 
+/// What one fixture's run found.
+struct Run {
+    workspace: Workspace,
+    found: Vec<Violation>,
+    configs: usize,
+    pure: usize,
+    compiled: BTreeSet<Triple>,
+}
+
+impl Run {
+    fn names(&self) -> BTreeSet<String> {
+        self.compiled
+            .iter()
+            .map(|triple| triple.name.clone())
+            .collect()
+    }
+}
+
 impl Build<'_> {
     /// Writes a fixture, reads it back through `cargo metadata`, and runs
-    /// every rule and the build on it. Returns the violations, the number of
-    /// cargo configuration files read and the number of pure crates.
+    /// every rule and the build on it. `change`, for a negative control,
+    /// changes the plan built; the triples compared stay the full plan's.
     fn check(
         &self,
         fixture: &Fixture,
         dir: &Path,
         case: &'static str,
-    ) -> Result<(Vec<Violation>, usize, usize), Error> {
+        change: Option<for<'a> fn(&mut Plan<'a>, &'a Workspace)>,
+    ) -> Result<Run, Error> {
         let workspace = fixture.load(dir, CHECK, case)?;
         let (mut found, configs) = static_violations(&workspace)?;
         let manifest = workspace.root.join("Cargo.toml");
@@ -726,13 +977,28 @@ impl Build<'_> {
             manifest: Some(&manifest),
             config: &config,
         };
-        found.extend(build_violations(
+        let full = Plan::full(&workspace, self.targets);
+        let expected = full.expected();
+        let mut plan = Plan::full(&workspace, self.targets);
+        if let Some(change) = change {
+            change(&mut plan, &workspace);
+        }
+        let built = build_violations(
             &workspace,
             &cargo,
             self.sysroot,
-            self.targets,
+            &plan,
+            &expected,
             &dir.join("build"),
-        )?);
-        Ok((found, configs, pure_members(&workspace).len()))
+        )?;
+        found.extend(built.violations);
+        let pure = pure_members(&workspace).len();
+        Ok(Run {
+            workspace,
+            found,
+            configs,
+            pure,
+            compiled: built.compiled,
+        })
     }
 }
