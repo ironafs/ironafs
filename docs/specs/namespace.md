@@ -1513,5 +1513,5 @@ Q1 and Q2 block all code written from 5.1 and 5.4.
 
 ## 14. Review
 
-No review record yet. The record will be
-`docs/reviews/2026-11-21-m2a-80-namespace.md`.
+The review record is
+[2026-11-21-m2a-80-namespace](../reviews/2026-11-21-m2a-80-namespace.md).

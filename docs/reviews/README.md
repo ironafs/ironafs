@@ -32,6 +32,7 @@ the evidence that refutes it.
 | [2026-11-20-workflow-implementer](2026-11-20-workflow-implementer.md) | Issue #40: Claude implements from M2a; label rules and triage |
 | [2026-11-21-m2a-01-xdr-spec](2026-11-21-m2a-01-xdr-spec.md) | Issue #42: `docs/specs/`, its template and the XDR profile with caps |
 | [2026-11-21-m2a-65-vl-fs-read](2026-11-21-m2a-65-vl-fs-read.md) | Issue #65: volume location and file-service reads and operation grants, the version from documents only |
+| [2026-11-21-m2a-80-namespace](2026-11-21-m2a-80-namespace.md) | Issue #80: the namespace (mount points, volume selection and `@sys`), the version from documents only |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
