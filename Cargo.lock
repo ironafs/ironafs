@@ -11,6 +11,14 @@ name = "ironafs-cli"
 version = "0.0.0"
 
 [[package]]
+name = "ironafs-fuse"
+version = "0.0.0"
+dependencies = [
+ "ironafs-test-support",
+ "ironafs-vfs",
+]
+
+[[package]]
 name = "ironafs-rx"
 version = "0.0.0"
 dependencies = [
