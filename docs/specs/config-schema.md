@@ -172,7 +172,8 @@ that does not apply stays, with one line saying why.
 - **Known key:** a schema path in 5.2's tables that is not retired
   (5.7, point 3). Any other path is **unknown**. A **known table** is a
   path that 5.2 uses as a table: `cells`, `cells.<cell>`, `network`,
-  `discovery`, `cache`, `namespace`, `security` and `policy`.
+  `discovery`, `cache`, `namespace` and `security`, and `policy` in P
+  only (in F it is unknown, 5.4, point 6).
 - **Security key:** a known key whose unknown value refuses cells, never
   the whole file or policy (N8, point 2; O19, point 6). In M2a these are
   the reserved floor keys of 5.4, point 5.
@@ -243,8 +244,9 @@ that does not apply stays, with one line saying why.
 6. **Defaults never widen.** A missing or empty source contributes
    nothing, and an untrusted one is refused (point 4), never replaced by
    defaults. The defaults of the flat-list confirmation, the explicit
-   servers and the scope are the narrowest values those keys have: no
-   confirmation, no servers, scope `host` `[OWN]`. Discovery is on by
+   servers and the scope add no destination: no confirmation, no servers,
+   and scope `host`, which keeps the cell on the host's own resolver path
+   (#60, 5.6.3) `[OWN]`. Discovery is on by
    default `[OWN]`: C33, point 1, puts DNS after configuration in the
    lookup order and point 8 lets an administrator turn it off; DNS then
    goes only where 5.6.3 of the DNS client specification lets it. A
@@ -709,8 +711,9 @@ These are names and shapes only. What each part decides is its own.
      envelope path (the envelope cannot be "required" of itself);
    - `has_value(path)`: for a path without `*`, true when the policy itself
      sets it (a default, or a value from F, does not count); for a path
-     with `*`, true when the policy defines at least one cell and every
-     cell table in the policy sets that key. A reserved key's value counts
+     with `*`, true when the policy has at least one configured cell
+     (5.2.2, point 1) and every configured cell of the policy sets that
+     key. A reserved key's value counts
      as a value, though every such value refuses its cells;
    - the client's own version (5.3, point 6).
 3. **The classic files** (part (d)): part (d) returns a
@@ -738,8 +741,10 @@ These are names and shapes only. What each part decides is its own.
    separately `[OWN]`: a new valid policy with a refused local
    configuration is merged with the last good `LocalLayer` (plus the
    refusal's cell rules); a valid local configuration with a policy that
-   gives no `PolicyInput` fences service whatever F holds. Neither outcome
-   keeps the other layer's previous value. This page gives it the refusal kinds of
+   gives no `PolicyInput` fences service whatever F holds. A failing layer
+   keeps its last good value where its rule allows one (O18, point 5, for
+   F; the last good policy only when unreadable, for P); a passing layer
+   takes its new value. This page gives it the refusal kinds of
    section 7 and, per key, whether a change applies on reload or needs a
    restart (5.2's "Applies" column).
 6. **The last good policy** (part (f)): part (f) stores and loads a
@@ -867,8 +872,8 @@ in `crates/ironafs-config/tests/it/`.
 7. **Cells:** two spellings of one cell refused; a cell in F and in P
    combined per key.
 8. **Property:** any document of known keys with valid values validates,
-   and merging is deterministic: the same sources give the same effective
-   configuration and origins.
+   and merging is deterministic: the same sources and the same `Running`
+   give the same effective configuration and origins.
 9. **No partial use:** a refusal returns no layer (the types make a
    partial `LocalLayer` impossible to build).
 
@@ -971,6 +976,48 @@ of this page.
 Open: Q6's registration (above), and the cross-specification notes for
 #60 (5.6.4, point 6; Q2) and #80 (5.2, point 2; 5.2.6, point 2).
 
+### 13.1 Blockers before this page leaves draft
+
+The review's stop rule was reached with these four findings open. The page
+stays draft, and no code is written from it until each is fixed and a
+scoped re-review of that fix passes. Each is quoted as the reviewer wrote
+it.
+
+1. "The per-source table gives no precedence when policy sources fail in
+   different ways. It also treats a single missing policy file as absence
+   of the whole policy. The part (c) interface still lists no explicit
+   `managed_before` or typed input for a trust failure that occurs before
+   bytes are available."
+   - Fix: across policy files the worst state decides (untrusted or
+     malformed, then unreadable, then valid); a file listed but gone at
+     open is unreadable, and only a missing or empty policy directory is
+     absent; part (c)'s input becomes the list of per-source states plus
+     `managed_before`, named in 5.8, point 2.
+   - Closed by: a scoped re-review of that change to 5.1, point 7, and
+     5.8, point 2.
+2. "The walk pins each opened component, and listing uses a checked
+   directory descriptor. The text still permits opening listed files
+   through a fresh walk that reaches a replacement directory."
+   - Fix: each listed file is opened with `openat` relative to the very
+     directory descriptor that was checked and listed, never by a new walk.
+   - Closed by: a scoped re-review of 5.1, point 3.
+3. "The final open requires only `O_NOFOLLOW`. The walk does not require
+   a regular file or prevent blocking before it can check the
+   descriptor."
+   - Fix: the file is opened with `O_NOFOLLOW | O_NONBLOCK | O_NOCTTY |
+     O_CLOEXEC`, then `fstat` must show a regular file, else the source is
+     untrusted.
+   - Closed by: a scoped re-review of 5.1, point 3, and its test in 10,
+     point 4.
+4. "The configured-cell rule excludes an implicit parent created solely by
+   ignored policy content. The validation section still checks every cell
+   segment and compares cell tables for aliases. The `required` interface
+   still quantifies over every cell table."
+   - Fix: 5.5, points 2 and 3, check the segment of, and compare, only
+     configured cells (5.2.2, point 1). The `required` part is already
+     fixed in 5.8, point 2.
+   - Closed by: a scoped re-review of 5.5, points 2 and 3.
+
 ## 14. Review
 
-No review record yet.
+[2026-11-21-m2a-93-config-schema](../reviews/2026-11-21-m2a-93-config-schema.md).
