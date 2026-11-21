@@ -403,8 +403,9 @@ hold everything.
   - Relationships (blocked by, parent and sub-issues) use GitHub's fields,
     not prose, and only when the two issues really concern the same thing.
 - **Picking a task.** Take the highest-priority issue that is **ready**:
-  open, triaged (it has its `class:*` label), not `owner-decision`, not
-  `option` unless the owner asks, and with every issue blocking it closed.
+  open, triaged (it has its `class:*` label and no `needs-triage`), not
+  `owner-decision`, not `option` unless the owner asks, and with every
+  issue blocking it closed.
   - Claim it with a comment before starting, naming the branch.
   - Whoever stops before finishing says so in a comment: the branch, the last
     pushed commit and what remains. The task is then free to pick up.
@@ -470,27 +471,46 @@ hold everything.
 
   Where ADR 0004 says "M2", it means M2a and M2b together; each test is
   placed in one of them by its issue.
-- **Labels:**
+- **Labels.** Every issue has exactly one `type:*` label and, once
+  triaged, at least one `area:*` label, normally one. Every PR and every
+  triaged task issue has exactly one `class:*` label. An issue has at most one priority label.
+  `needs-triage` and a `class:*` label are never on the same issue.
   - **Class:** `class:E`, `class:I`, `class:P`, `class:S`, `class:R` (§1).
-    Every PR and task issue has exactly one.
-  - **Type:** `type:bug`, `type:design`, `type:task`, `type:research`.
-  - **Area:** `area:rx`, `area:xdr`, `area:cache`, `area:auth`, `area:cli`,
-    `area:fuse`, `area:fskit`, `area:smb`, `area:cloudfiles`, `area:docs`,
-    `area:process`, `area:test`, `area:os`, `area:ops`.
-    - `area:test`: the simulator, test support, fuzzing, the test cell and
-      the harnesses;
+  - **Type:**
+    - `type:bug`: something does not work as specified;
+    - `type:design`: a design question, ADR or specification;
+    - `type:task`: a unit of work, written as a brief;
+    - `type:research`: research to answer a question.
+  - **Area:**
+    - `area:rx`: the Rx transport and its security classes;
+    - `area:xdr`: XDR encoding and the interface definitions;
+    - `area:cache`: the client core: the cache manager and its state;
+    - `area:auth`: tokens, credentials and authentication;
+    - `area:cli`: the `afs` commands and their output;
+    - `area:fuse`: the Linux FUSE layer;
+    - `area:fskit`: the macOS FSKit layer;
+    - `area:smb`: the Windows SMB layer;
+    - `area:cloudfiles`: the Windows Cloud Files layer;
     - `area:os`: the shared operating-system bindings; each front end keeps
       its own platform label;
-    - `area:ops`: events, the shared control IPC and configuration.
-      `area:cli` is for the commands and their output.
+    - `area:ops`: events, the shared control IPC and configuration;
+    - `area:test`: the simulator, test support, fuzzing, the test cell and
+      the harnesses;
+    - `area:docs`: documentation;
+    - `area:process`: how the project works: workflow, automation, CI and
+      repository settings.
   - **Status:**
+    - `needs-triage`: new, its class not yet confirmed. The issue forms set
+      it; the maintainer removes it when applying the `class:*` label.
     - `owner-decision`: waits on the owner;
     - `option`: an idea not yet decided. Its body names its trigger: the
       event or date that makes it worth deciding;
     - `debt`: known shortcuts to repay;
     - `parked`: paused, with a two-line comment saying why and what unblocks
       it.
-  - **Priority:** `p1`, `p2`, `p3`.
+  - **Priority:** `p1`, take next; `p2`, soon; `p3`, when convenient.
+  - **Dependencies:** `dependencies`, set on Dependabot's pull requests by
+    `.github/dependabot.yml`. They still get a `class:*` label at triage.
   - **For contributors:** `good first issue`, `help wanted`.
 - **Embargoed security work is the one exception** to "issues hold
   everything". It stays in the private advisory or an unpushed branch (§2,
@@ -500,8 +520,9 @@ hold everything.
   (`.github/ISSUE_TEMPLATE/`). The chooser hides blank issues from public
   contributors; maintainers can still open one, and a task still follows the
   four-part brief. Security reports go to `SECURITY.md`, never to an issue.
-- **Triage:** the maintainer confirms each new issue's class and applies
-  exactly one `class:*` label before anyone plans from it.
+- **Triage:** the maintainer confirms each new issue's class, applies
+  exactly one `class:*` label and removes `needs-triage`, before anyone
+  plans from it.
 - **Dependabot** opens update PRs weekly for Cargo and GitHub Actions. They
   are proposals: the maintainer classifies each one, checks it against the
   `add-dependency` checklist, and sponsors it with their sign-off and
