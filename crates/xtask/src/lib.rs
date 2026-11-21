@@ -4,6 +4,7 @@
 //! The `cargo xtask` entry point and its diagnostic and exit-status handling.
 
 mod args;
+mod bans;
 mod check;
 mod deps;
 mod fixture;
@@ -143,6 +144,7 @@ fn run_task(
 ) -> Result<(), Error> {
     match args::parse(arguments).map_err(Error::Usage)? {
         args::Task::Check => check::run(output),
+        args::Task::CheckBans { self_test } => bans::run(self_test, output),
         args::Task::CheckDeps { self_test } => deps::run(self_test, output),
         args::Task::CheckGrants { self_test } => grants::run(self_test, output),
         args::Task::CheckPure { self_test } => pure::run(self_test, output),
