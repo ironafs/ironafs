@@ -12,14 +12,16 @@
 //!
 //! - the capability table: every caller and handle capability is minted
 //!   through a [`Mint`](ironafs_vfs::Mint), and any the core did not
-//!   record for the binding that presents it is refused (C8, point 2);
+//!   record for the binding that presents it is refused with `Stale`
+//!   (C8, point 2; contract specification, 5.3, point 3);
 //! - the invalidation stream of each binding, coalesced per node, with
 //!   its acknowledgements and overflow (C17);
 //! - weak and authoritative breaks (C24), and an injected purge failure,
 //!   which stales one node in every binding (C15, point 6).
 //!
 //! The contract's operations and its request and completion interfaces
-//! are not defined yet, so the core has no read, lookup or reply path:
+//! are not in `ironafs-vfs` yet (the contract specification drafts
+//! them), so the core has no read, lookup or reply path:
 //! [`ScriptedCore::open_handle`] stands in for open until the contract
 //! has one. The bytes it serves per context, the set-uid file and the
 //! device entry, and a reply whose state changes before submission wait
@@ -29,17 +31,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ironafs_vfs::{
     Ack, Attestation, BindingId, CallerCap, ContextId, Effects, Event, HandleCap, HandleId, NodeId,
-    Scope, VfsError,
+    Revision, Scope, VfsError,
 };
 
 use ledger::Ledger;
-use stream::Stream;
+use stream::{Acked, Stream};
 
 mod ledger;
 mod stream;
-
-/// The default byte bound of a binding's pending events.
-const DEFAULT_EVENT_BOUND: usize = 64 * 1024;
 
 /// How strong the evidence behind a callback break is (ADR 0004, C24).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -67,7 +66,8 @@ pub enum Evidence {
 ///     .unwrap();
 /// assert_eq!(core.check_caller(mount, &caller), Ok(ContextId(1)));
 /// // A capability minted for one binding does not act on another.
-/// assert_eq!(core.check_caller(other, &caller), Err(VfsError::Access));
+/// assert_eq!(core.check_caller(other, &caller), Err(VfsError::Stale));
+/// assert_eq!(core.layer_faults(), 1);
 /// ```
 #[derive(Debug)]
 pub struct ScriptedCore {
@@ -76,15 +76,33 @@ pub struct ScriptedCore {
     streams: BTreeMap<BindingId, Stream>,
     suspect: BTreeSet<NodeId>,
     /// The nodes whose purge failed, with each binding whose purge of
-    /// them has not succeeded since.
-    stale: BTreeSet<(NodeId, BindingId)>,
+    /// them has not succeeded since, and the revision under which the
+    /// purge was offered again.
+    stale: BTreeMap<(NodeId, BindingId), Revision>,
+    /// Layer faults the streams counted.
+    faults: u64,
 }
 
 impl ScriptedCore {
+    /// The default byte bound of a binding's pending events: the contract
+    /// specification's proposed 1 MiB of slot state per binding (5.10,
+    /// point 9).
+    pub const DEFAULT_EVENT_BOUND: usize = 1024 * 1024;
+
+    /// How many layer faults the core counted: a capability presented on
+    /// a binding other than its own (contract specification, 5.3,
+    /// point 3), a release of a capability it has no record of (5.6,
+    /// point 2), and an acknowledgement or purge failure naming nothing
+    /// delivered (5.10, point 6).
+    #[must_use]
+    pub fn layer_faults(&self) -> u64 {
+        self.ledger.faults().saturating_add(self.faults)
+    }
+
     /// A core with no bindings, whose capability nonces come from `seed`.
     #[must_use]
     pub fn new(seed: u64) -> Self {
-        Self::with_event_bound(seed, DEFAULT_EVENT_BOUND)
+        Self::with_event_bound(seed, Self::DEFAULT_EVENT_BOUND)
     }
 
     /// As [`ScriptedCore::new`], with each binding's pending events
@@ -96,7 +114,8 @@ impl ScriptedCore {
             event_bound: bytes,
             streams: BTreeMap::new(),
             suspect: BTreeSet::new(),
-            stale: BTreeSet::new(),
+            stale: BTreeMap::new(),
+            faults: 0,
         }
     }
 
@@ -115,7 +134,7 @@ impl ScriptedCore {
         self.ledger.detach(binding);
         self.streams.remove(&binding);
         // Its operating system's cache went with it.
-        self.stale.retain(|(_, failed)| *failed != binding);
+        self.stale.retain(|(_, failed), _| *failed != binding);
     }
 
     /// Scripts the credential context the core gives a caller that the
@@ -132,7 +151,9 @@ impl ScriptedCore {
     /// # Errors
     ///
     /// [`VfsError::Stale`] if `binding` is not attached;
-    /// [`VfsError::Access`] if no context is scripted for `attestation`.
+    /// [`VfsError::Access`] if no context is scripted for `attestation`
+    /// (the contract specification does not yet say what the core answers
+    /// an attestation it has no context for).
     pub fn mint_caller(
         &mut self,
         binding: BindingId,
@@ -146,10 +167,10 @@ impl ScriptedCore {
     ///
     /// # Errors
     ///
-    /// [`VfsError::Access`] if the core did not mint `cap` for `binding`
-    /// (another binding's, another mint's, or altered);
-    /// [`VfsError::Stale`] if `binding` is detached or the generation is
-    /// retired.
+    /// [`VfsError::Stale`] if the core did not mint `cap` for `binding`
+    /// (another mint's, or altered), if it minted it for another binding
+    /// (also counted as a layer fault), if `binding` is detached, or if
+    /// the generation is retired (contract specification, 5.3, point 3).
     pub fn check_caller(&self, binding: BindingId, cap: &CallerCap) -> Result<ContextId, VfsError> {
         self.ledger.check_caller(binding, cap)
     }
@@ -164,11 +185,13 @@ impl ScriptedCore {
 
     /// Opens a handle on `node` for `caller`, on `binding`, and mints its
     /// capability (C13, point 1). This is the script's stand-in for the
-    /// contract's open: it checks the caller and nothing about the node.
+    /// contract's open: it checks the caller, and refuses a node a failed
+    /// purge left stale (C15, point 6).
     ///
     /// # Errors
     ///
-    /// As [`ScriptedCore::check_caller`] for `caller`.
+    /// As [`ScriptedCore::check_caller`] for `caller`;
+    /// [`VfsError::Stale`] if `node` is stale.
     pub fn open_handle(
         &mut self,
         binding: BindingId,
@@ -187,9 +210,11 @@ impl ScriptedCore {
     ///
     /// # Errors
     ///
-    /// [`VfsError::Access`] if the core did not mint `cap` for `binding`,
-    /// or the handle was released; [`VfsError::Stale`] if the handle is
-    /// revoked, its generation retired or `binding` detached.
+    /// [`VfsError::Stale`] if the core has no record of `cap` (another
+    /// mint's, altered, or released), if it minted it for another binding
+    /// (also counted as a layer fault), or if the handle is revoked, its
+    /// generation retired or `binding` detached (contract specification,
+    /// 5.3, point 3).
     pub fn check_handle(&self, binding: BindingId, cap: &HandleCap) -> Result<NodeId, VfsError> {
         self.ledger.check_handle(binding, cap)
     }
@@ -201,8 +226,9 @@ impl ScriptedCore {
     }
 
     /// Releases the handle `cap` names, if the core minted `cap` for
-    /// `binding`. Release never fails (C9, point 4): any other capability
-    /// releases nothing.
+    /// `binding`, live or revoked. Release never fails (C9, point 4): any
+    /// other capability releases nothing and is counted as a layer fault
+    /// (contract specification, 5.6, point 2).
     pub fn release(&mut self, binding: BindingId, cap: HandleCap) {
         self.ledger.release(binding, cap);
     }
@@ -254,26 +280,37 @@ impl ScriptedCore {
     }
 
     /// `binding` acknowledges that it applied an event's purge (C17,
-    /// point 2). Only the delivered revision it names is cleared; effects
-    /// merged after that delivery stay pending under their higher
-    /// revision (C17, point 6). An acknowledgement of a revision no longer
-    /// delivered clears nothing.
-    ///
-    /// # Errors
-    ///
-    /// [`VfsError::Stale`] if `binding` is not attached;
-    /// [`VfsError::OutOfRange`] if the revision was never issued to
-    /// `binding`. Nothing is cleared on an error.
-    pub fn ack(&mut self, binding: BindingId, ack: Ack) -> Result<(), VfsError> {
-        let applied = self
-            .streams
-            .get_mut(&binding)
-            .ok_or(VfsError::Stale)?
-            .ack(ack)?;
-        if applied && let Ack::Node { node, .. } = ack {
-            self.stale.remove(&(node, binding));
+    /// point 2; contract specification, 5.10, point 3). Only the delivered
+    /// revision it names is cleared; effects merged after that delivery
+    /// stay pending under their higher revision (C17, point 6). An
+    /// acknowledgement has no reply: one that names a node with no pending
+    /// slot, a revision never delivered (zero included) or an overflow not
+    /// pending, or comes from a binding not attached, changes nothing and
+    /// is counted as a layer fault; a repeated one changes nothing (5.10,
+    /// point 6).
+    pub fn ack(&mut self, binding: BindingId, ack: Ack) {
+        let Some(stream) = self.streams.get_mut(&binding) else {
+            self.fault();
+            return;
+        };
+        match stream.ack(ack) {
+            Acked::Node(node, revision) => {
+                if self
+                    .stale
+                    .get(&(node, binding))
+                    .is_some_and(|offered| *offered <= revision)
+                {
+                    self.stale.remove(&(node, binding));
+                }
+            }
+            Acked::Overflow(revision) => {
+                // The overflow purged every node the binding holds.
+                self.stale
+                    .retain(|(_, failed), offered| *failed != binding || *offered > revision);
+            }
+            Acked::Nothing => {}
+            Acked::Fault => self.fault(),
         }
-        Ok(())
     }
 
     /// Whether `binding` must gate replies on `node` (C16, point 5): the
@@ -286,28 +323,31 @@ impl ScriptedCore {
             .is_some_and(|stream| stream.gated(node))
     }
 
-    /// `binding` could not apply `node`'s purge (C15, point 6; C17,
-    /// point 5). The operating system may still serve the node's old
-    /// state, so the node answers [`VfsError::Stale`] in every binding:
-    /// every context's handles on it, on every binding, are revoked, and
-    /// new opens of it are refused until `binding` acknowledges a purge of
-    /// it. The purge is offered to `binding` again. Nothing else changes:
-    /// no other node, handle or pending event.
+    /// `binding` could not apply the purge of `node` it was delivered
+    /// under `revision`, a node event's or an overflow's (C15, point 6;
+    /// C17, point 5; contract specification, 5.10, point 5). The operating
+    /// system may still serve the node's old state, so the node answers
+    /// [`VfsError::Stale`] in every binding: every context's handles on it,
+    /// on every binding, are revoked, and new opens of it are refused until
+    /// `binding` acknowledges a purge that covers it. The purge is offered
+    /// to `binding` again, as a node event or within an overflow. Nothing
+    /// else changes: no other node, handle or pending event.
     ///
-    /// # Errors
-    ///
-    /// [`VfsError::Stale`] if `binding` is not attached;
-    /// [`VfsError::NotFound`] if it does not hold `node`. Nothing changes
-    /// on an error.
-    pub fn purge_failed(&mut self, binding: BindingId, node: NodeId) -> Result<(), VfsError> {
-        let stream = self.streams.get_mut(&binding).ok_or(VfsError::Stale)?;
-        if !stream.holds(node) {
-            return Err(VfsError::NotFound);
-        }
-        stream.retry(node);
+    /// The report has no reply (5.6, point 1): one from a binding not
+    /// attached, for a node it does not hold, or naming a revision never
+    /// delivered to it changes nothing and is counted as a layer fault.
+    pub fn purge_failed(&mut self, binding: BindingId, node: NodeId, revision: Revision) {
+        let Some(stream) = self
+            .streams
+            .get_mut(&binding)
+            .filter(|stream| stream.may_have_failed(node, revision))
+        else {
+            self.fault();
+            return;
+        };
+        let offered = stream.retry(node);
         self.ledger.revoke_node(node);
-        self.stale.insert((node, binding));
-        Ok(())
+        self.stale.insert((node, binding), offered);
     }
 
     /// Whether a failed purge left `node` stale (C15, point 6).
@@ -317,5 +357,9 @@ impl ScriptedCore {
             .range((node, BindingId(0))..=(node, BindingId(u64::MAX)))
             .next()
             .is_some()
+    }
+
+    fn fault(&mut self) {
+        self.faults = self.faults.saturating_add(1);
     }
 }

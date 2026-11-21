@@ -47,7 +47,10 @@ fn caller_acts_on_its_own_binding() {
 fn caller_minted_for_one_binding_is_refused_on_another() {
     let (mut core, first, second) = core();
     let cap = caller(&mut core, first);
-    assert_eq!(core.check_caller(second, &cap), Err(VfsError::Access));
+    assert_eq!(core.layer_faults(), 0);
+    assert_eq!(core.check_caller(second, &cap), Err(VfsError::Stale));
+    // A capability recorded for another binding is a layer fault.
+    assert_eq!(core.layer_faults(), 1);
 }
 
 #[test]
@@ -57,11 +60,11 @@ fn caller_from_a_foreign_mint_is_refused() {
     // A copy of every visible field, nonce included, from a mint the core
     // never recorded: refused only if the core checks its own table.
     let forged = Mint::new().caller(first, ALICE_CONTEXT, real.generation(), real.nonce() ^ 1);
-    assert_eq!(core.check_caller(first, &forged), Err(VfsError::Access));
+    assert_eq!(core.check_caller(first, &forged), Err(VfsError::Stale));
     let other_context = Mint::new().caller(first, ContextId(2), real.generation(), real.nonce());
     assert_eq!(
         core.check_caller(first, &other_context),
-        Err(VfsError::Access)
+        Err(VfsError::Stale)
     );
 }
 
@@ -117,7 +120,9 @@ fn handle_acts_on_its_own_binding() {
 fn handle_minted_for_one_binding_is_refused_on_another() {
     let (mut core, first, second) = core();
     let cap = handle(&mut core, first);
-    assert_eq!(core.check_handle(second, &cap), Err(VfsError::Access));
+    let before = core.layer_faults();
+    assert_eq!(core.check_handle(second, &cap), Err(VfsError::Stale));
+    assert_eq!(core.layer_faults(), before + 1);
 }
 
 #[test]
@@ -125,7 +130,7 @@ fn handle_from_a_foreign_mint_is_refused() {
     let (mut core, first, _) = core();
     let real = handle(&mut core, first);
     let forged = Mint::new().handle(first, real.handle(), real.nonce() ^ 1);
-    assert_eq!(core.check_handle(first, &forged), Err(VfsError::Access));
+    assert_eq!(core.check_handle(first, &forged), Err(VfsError::Stale));
 }
 
 #[test]
@@ -134,7 +139,7 @@ fn open_with_a_caller_of_another_binding_is_refused() {
     let cap = caller(&mut core, first);
     assert_eq!(
         core.open_handle(second, &cap, FILE).map(|cap| cap.handle()),
-        Err(VfsError::Access)
+        Err(VfsError::Stale)
     );
 }
 
@@ -172,10 +177,14 @@ fn detach_makes_its_handles_and_callers_stale() {
 fn release_ends_the_handle() {
     let (mut core, first, _) = core();
     let cap = handle(&mut core, first);
-    let id = cap.handle();
+    let kept = handle(&mut core, first);
+    // The same id and nonce, so the probe passes while the handle lives.
+    let probe = Mint::new().handle(first, cap.handle(), cap.nonce());
+    assert_eq!(core.check_handle(first, &probe), Ok(FILE));
     core.release(first, cap);
-    let forged = Mint::new().handle(first, id, 0);
-    assert_eq!(core.check_handle(first, &forged), Err(VfsError::Access));
+    assert_eq!(core.check_handle(first, &probe), Err(VfsError::Stale));
+    assert_eq!(core.check_handle(first, &kept), Ok(FILE));
+    assert_eq!(core.layer_faults(), 0);
 }
 
 #[test]
@@ -187,4 +196,6 @@ fn release_on_another_binding_leaves_the_handle_live() {
     let copy = Mint::new().handle(first, cap.handle(), cap.nonce());
     core.release(second, copy);
     assert_eq!(core.check_handle(first, &cap), Ok(FILE));
+    // Release still answers success, and the failed check is a layer fault.
+    assert_eq!(core.layer_faults(), 1);
 }

@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 
 use ironafs_vfs::{
-    Ack, Effects, Entries, Event, Invalidation, NodeId, Overflow, Revision, Rights, Scope, VfsError,
+    Ack, Effects, Entries, Event, Invalidation, NodeId, Overflow, Revision, Rights, Scope,
 };
 
 #[cfg(test)]
@@ -59,6 +59,22 @@ pub(super) struct Stream {
     overflow: Option<PendingOverflow>,
     /// The last revision issued to this binding.
     last: Revision,
+    /// The highest revision delivered to it.
+    latest_delivered: Revision,
+}
+
+/// What an acknowledgement did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Acked {
+    /// It applied a node's purge up to this revision.
+    Node(NodeId, Revision),
+    /// It applied the overflow's purge up to this revision.
+    Overflow(Revision),
+    /// It repeated an earlier delivery's acknowledgement: nothing changed.
+    Nothing,
+    /// It named nothing delivered: nothing changed, and it is a layer
+    /// fault (contract specification, 5.10, point 6).
+    Fault,
 }
 
 impl Stream {
@@ -69,6 +85,7 @@ impl Stream {
             slots: BTreeMap::new(),
             overflow: None,
             last: Revision(0),
+            latest_delivered: Revision(0),
         }
     }
 
@@ -124,6 +141,7 @@ impl Stream {
             && pending.delivered.is_none()
         {
             pending.delivered = Some(pending.revision);
+            self.latest_delivered = self.latest_delivered.max(pending.revision);
             return Some(Event::Overflow(Overflow {
                 revision: pending.revision,
             }));
@@ -134,6 +152,7 @@ impl Stream {
             .find(|(_, slot)| slot.delivered.is_none())?;
         slot.delivered = Some(slot.revision);
         slot.since_delivery = Effects::NONE;
+        self.latest_delivered = self.latest_delivered.max(slot.revision);
         Some(Event::Node(Invalidation {
             node: *node,
             scope: slot.scope,
@@ -142,50 +161,69 @@ impl Stream {
         }))
     }
 
-    /// Applies `ack`, and says whether it acknowledged a delivered purge
-    /// of a node.
-    pub(super) fn ack(&mut self, ack: Ack) -> Result<bool, VfsError> {
-        let mut applied = false;
+    /// Applies `ack` (contract specification, 5.10, points 3 and 6).
+    pub(super) fn ack(&mut self, ack: Ack) -> Acked {
+        let revision = match ack {
+            Ack::Node { revision, .. } | Ack::Overflow { revision } => revision,
+        };
+        if !self.delivered_once(revision) {
+            return Acked::Fault;
+        }
         match ack {
             Ack::Node { node, revision } => {
-                self.issued(revision)?;
-                if let Some(slot) = self.slots.get_mut(&node)
-                    && slot.delivered == Some(revision)
-                {
-                    applied = true;
-                    if slot.revision == revision {
-                        self.slots.remove(&node);
-                    } else {
-                        slot.effects = mem::replace(&mut slot.since_delivery, Effects::NONE);
-                        slot.delivered = None;
-                    }
+                let Some(slot) = self.slots.get_mut(&node) else {
+                    return Acked::Fault;
+                };
+                if slot.delivered != Some(revision) {
+                    // An earlier delivery again: idempotent.
+                    return Acked::Nothing;
                 }
+                if slot.revision == revision {
+                    self.slots.remove(&node);
+                } else {
+                    slot.effects = mem::replace(&mut slot.since_delivery, Effects::NONE);
+                    slot.delivered = None;
+                }
+                Acked::Node(node, revision)
             }
             Ack::Overflow { revision } => {
-                self.issued(revision)?;
-                if let Some(pending) = self.overflow.as_mut()
-                    && pending.delivered == Some(revision)
-                {
-                    if pending.revision == revision {
-                        self.overflow = None;
-                    } else {
-                        pending.delivered = None;
-                    }
+                let Some(pending) = self.overflow.as_mut() else {
+                    return Acked::Fault;
+                };
+                if pending.delivered != Some(revision) {
+                    return Acked::Nothing;
                 }
+                if pending.revision == revision {
+                    self.overflow = None;
+                } else {
+                    pending.delivered = None;
+                }
+                Acked::Overflow(revision)
             }
         }
-        Ok(applied)
+    }
+
+    /// Whether a report naming `node` and `revision` can be the failure of
+    /// a purge this binding was delivered: it holds the node, and the
+    /// revision was delivered to it.
+    pub(super) fn may_have_failed(&self, node: NodeId, revision: Revision) -> bool {
+        self.holds(node) && self.delivered_once(revision)
     }
 
     /// The layer could not apply `node`'s purge: the purge is offered
-    /// again, widened to every effect, under a new revision. The failed
-    /// delivery is never acknowledged, so it clears nothing.
-    pub(super) fn retry(&mut self, node: NodeId) {
+    /// again, widened to every effect, under a new revision, which it
+    /// returns. The failed delivery is never acknowledged, so it clears
+    /// nothing. If the re-offer folds into an overflow, the overflow is
+    /// offered again instead, so the purge is never lost.
+    pub(super) fn retry(&mut self, node: NodeId) -> Revision {
         self.push(node, Scope::Object, &EVERYTHING);
         if let Some(slot) = self.slots.get_mut(&node) {
             slot.delivered = None;
             slot.since_delivery = Effects::NONE;
+        } else if let Some(pending) = self.overflow.as_mut() {
+            pending.delivered = None;
         }
+        self.last
     }
 
     pub(super) fn gated(&self, node: NodeId) -> bool {
@@ -197,11 +235,10 @@ impl Stream {
         self.last
     }
 
-    fn issued(&self, revision: Revision) -> Result<(), VfsError> {
-        if revision > self.last {
-            return Err(VfsError::OutOfRange);
-        }
-        Ok(())
+    /// Whether `revision` is one this binding was delivered: never zero,
+    /// which is never issued, and never above the latest delivery.
+    fn delivered_once(&self, revision: Revision) -> bool {
+        revision > Revision(0) && revision <= self.latest_delivered
     }
 
     fn pending_bytes(&self) -> usize {

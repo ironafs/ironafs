@@ -8,10 +8,14 @@
 //! Every capability a test hands back is checked against this table, never
 //! trusted for its own fields, so a capability minted for another binding,
 //! made by another [`Mint`], or of a retired generation is refused (C8,
-//! point 2; C14, point 3). Nonces come from a seeded [`SplitMix64`], so a
-//! run is replayed from its seed.
+//! point 2; C14, point 3). Every refusal is `Stale`, which tells the layer
+//! to attest the caller again and names no other binding; one recorded
+//! for another binding is also counted as a layer fault (contract
+//! specification, 5.3, point 3). Nonces come from a seeded
+//! [`SplitMix64`], so a run is replayed from its seed.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ironafs_vfs::{
     Attestation, BindingId, CallerCap, ContextId, CredentialGeneration, HandleCap, HandleId, Mint,
@@ -46,6 +50,9 @@ struct HandleRecord {
 pub(super) struct Ledger {
     mint: Mint,
     nonces: SplitMix64,
+    /// Capabilities presented on a binding other than their own, and
+    /// releases of a capability the core has no record of.
+    faults: AtomicU64,
     next_binding: u64,
     next_handle: u64,
     bindings: BTreeSet<BindingId>,
@@ -82,6 +89,7 @@ impl Ledger {
         Self {
             mint: Mint::new(),
             nonces: SplitMix64::new(seed),
+            faults: AtomicU64::new(0),
             next_binding: 0,
             next_handle: 0,
             bindings: BTreeSet::new(),
@@ -152,13 +160,13 @@ impl Ledger {
         if !self.attached(binding) {
             return Err(VfsError::Stale);
         }
-        let record = self.callers.get(&cap.nonce()).ok_or(VfsError::Access)?;
-        if record.binding != binding
-            || cap.binding() != binding
-            || record.context != cap.context()
-            || record.generation != cap.generation()
-        {
-            return Err(VfsError::Access);
+        let record = self.callers.get(&cap.nonce()).ok_or(VfsError::Stale)?;
+        if record.binding != binding || cap.binding() != binding {
+            self.fault();
+            return Err(VfsError::Stale);
+        }
+        if record.context != cap.context() || record.generation != cap.generation() {
+            return Err(VfsError::Stale);
         }
         if record.generation != self.generation(record.context) {
             return Err(VfsError::Stale);
@@ -202,7 +210,15 @@ impl Ledger {
         binding: BindingId,
         cap: &HandleCap,
     ) -> Result<NodeId, VfsError> {
-        let record = self.recorded(binding, cap).ok_or(VfsError::Access)?;
+        let record = self
+            .handles
+            .get(&cap.handle())
+            .filter(|record| record.nonce == cap.nonce())
+            .ok_or(VfsError::Stale)?;
+        if record.binding != binding || cap.binding() != binding {
+            self.fault();
+            return Err(VfsError::Stale);
+        }
         if !record.live
             || !self.attached(binding)
             || record.generation != self.generation(record.context)
@@ -227,24 +243,32 @@ impl Ledger {
         }
     }
 
-    /// Ends the handle if `cap` is the one recorded for it on `binding`.
-    /// Release never fails (C9, point 4), so a capability that is not is
-    /// ignored and releases nothing.
+    /// Ends the handle if `cap` is the one recorded for it on `binding`,
+    /// live or revoked. Release never fails (C9, point 4), so any other
+    /// capability releases nothing and is counted as a layer fault
+    /// (contract specification, 5.6, point 2).
     #[expect(
         clippy::needless_pass_by_value,
         reason = "release takes the capability, so the layer keeps no copy (C7, point 4)"
     )]
     pub(super) fn release(&mut self, binding: BindingId, cap: HandleCap) {
-        if self.recorded(binding, &cap).is_some() {
+        let recorded = self.handles.get(&cap.handle()).is_some_and(|record| {
+            record.binding == binding && cap.binding() == binding && record.nonce == cap.nonce()
+        });
+        if recorded {
             self.handles.remove(&cap.handle());
+        } else {
+            self.fault();
         }
     }
 
-    /// The record `cap` names, if the core minted it for `binding`.
-    fn recorded(&self, binding: BindingId, cap: &HandleCap) -> Option<&HandleRecord> {
-        self.handles.get(&cap.handle()).filter(|record| {
-            record.binding == binding && cap.binding() == binding && record.nonce == cap.nonce()
-        })
+    /// How many layer faults the table counted.
+    pub(super) fn faults(&self) -> u64 {
+        self.faults.load(Ordering::Relaxed)
+    }
+
+    fn fault(&self) {
+        self.faults.fetch_add(1, Ordering::Relaxed);
     }
 
     fn generation(&self, context: ContextId) -> CredentialGeneration {

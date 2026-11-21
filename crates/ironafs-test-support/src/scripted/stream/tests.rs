@@ -122,18 +122,16 @@ fn ack_of_delivered_revision_clears_the_slot() {
     weak(&mut core, FILE, &DATA);
     let event = node_event(&mut core, binding);
     assert!(core.gated(binding, FILE));
-    assert_eq!(
-        core.ack(
-            binding,
-            Ack::Node {
-                node: FILE,
-                revision: event.revision,
-            }
-        ),
-        Ok(())
+    core.ack(
+        binding,
+        Ack::Node {
+            node: FILE,
+            revision: event.revision,
+        },
     );
     assert!(!core.gated(binding, FILE));
     assert_eq!(core.next_event(binding), None);
+    assert_eq!(core.layer_faults(), 0);
 }
 
 #[test]
@@ -150,8 +148,7 @@ fn event_during_purge_stays_pending_under_higher_revision() {
             node: DIRECTORY,
             revision: applied.revision,
         },
-    )
-    .unwrap();
+    );
     assert!(core.gated(binding, DIRECTORY));
     let pending = node_event(&mut core, binding);
     assert!(pending.revision > applied.revision);
@@ -162,8 +159,7 @@ fn event_during_purge_stays_pending_under_higher_revision() {
             node: DIRECTORY,
             revision: pending.revision,
         },
-    )
-    .unwrap();
+    );
     assert!(!core.gated(binding, DIRECTORY));
 }
 
@@ -173,25 +169,27 @@ fn ack_of_a_revision_never_issued_clears_nothing() {
     let binding = holding(&mut core, &[FILE]);
     weak(&mut core, FILE, &DATA);
     let event = node_event(&mut core, binding);
-    assert_eq!(
-        core.ack(
-            binding,
-            Ack::Node {
-                node: FILE,
-                revision: Revision(event.revision.0 + 1),
-            }
-        ),
-        Err(VfsError::OutOfRange)
-    );
-    assert_eq!(
-        core.ack(
-            binding,
-            Ack::Overflow {
-                revision: Revision(u64::MAX),
-            }
-        ),
-        Err(VfsError::OutOfRange)
-    );
+    // Above the latest delivered, revision zero (never issued), and an
+    // overflow never delivered: each changes nothing and is a layer fault.
+    for ack in [
+        Ack::Node {
+            node: FILE,
+            revision: Revision(event.revision.0 + 1),
+        },
+        Ack::Node {
+            node: FILE,
+            revision: Revision(0),
+        },
+        Ack::Overflow {
+            revision: Revision(u64::MAX),
+        },
+        Ack::Overflow {
+            revision: Revision(0),
+        },
+    ] {
+        core.ack(binding, ack);
+    }
+    assert_eq!(core.layer_faults(), 4);
     assert!(core.gated(binding, FILE));
 }
 
@@ -201,18 +199,42 @@ fn ack_of_an_undelivered_revision_clears_nothing() {
     let binding = holding(&mut core, &[FILE]);
     weak(&mut core, FILE, &DATA);
     // Issued but never delivered: the layer cannot have applied it.
-    assert_eq!(
-        core.ack(
-            binding,
-            Ack::Node {
-                node: FILE,
-                revision: Revision(1),
-            }
-        ),
-        Ok(())
+    core.ack(
+        binding,
+        Ack::Node {
+            node: FILE,
+            revision: Revision(1),
+        },
     );
+    assert_eq!(core.layer_faults(), 1);
     assert!(core.gated(binding, FILE));
     assert_eq!(node_event(&mut core, binding).effects, DATA);
+}
+
+#[test]
+fn repeated_ack_changes_nothing() {
+    let mut core = ScriptedCore::new(1);
+    let binding = holding(&mut core, &[FILE]);
+    weak(&mut core, FILE, &DATA);
+    let first = node_event(&mut core, binding);
+    weak(&mut core, FILE, &ATTRIBUTES);
+    let ack = Ack::Node {
+        node: FILE,
+        revision: first.revision,
+    };
+    core.ack(binding, ack);
+    let second = node_event(&mut core, binding);
+    // The first acknowledgement again: the later effect stays pending.
+    core.ack(binding, ack);
+    assert!(core.gated(binding, FILE));
+    core.ack(
+        binding,
+        Ack::Node {
+            node: FILE,
+            revision: second.revision,
+        },
+    );
+    assert!(!core.gated(binding, FILE));
 }
 
 #[test]
@@ -229,8 +251,7 @@ fn ack_on_another_binding_clears_nothing() {
             node: FILE,
             revision: event.revision,
         },
-    )
-    .unwrap();
+    );
     assert!(core.gated(first, FILE));
     assert!(!core.gated(second, FILE));
 }
@@ -254,8 +275,7 @@ fn pending_bytes_over_bound_overflow() {
         Ack::Overflow {
             revision: Revision(2),
         },
-    )
-    .unwrap();
+    );
     assert!(!core.gated(binding, FILE));
     assert!(!core.gated(binding, DIRECTORY));
     assert_eq!(core.next_event(binding), None);
@@ -286,8 +306,7 @@ fn event_after_overflow_sweep_stays_pending_after_overflow_ack() {
         Ack::Overflow {
             revision: overflow.revision,
         },
-    )
-    .unwrap();
+    );
     assert!(core.gated(binding, FILE));
     assert!(!core.gated(binding, DIRECTORY));
     let pending = node_event(&mut core, binding);
@@ -299,8 +318,7 @@ fn event_after_overflow_sweep_stays_pending_after_overflow_ack() {
             node: FILE,
             revision: pending.revision,
         },
-    )
-    .unwrap();
+    );
     assert!(!core.gated(binding, FILE));
 }
 
@@ -321,13 +339,16 @@ fn weak_break_marks_node_suspect_authoritative_does_not() {
 fn hold_on_an_unknown_binding_is_stale() {
     let mut core = ScriptedCore::new(1);
     assert_eq!(core.hold(BindingId(99), FILE), Err(VfsError::Stale));
-    assert_eq!(
-        core.ack(
-            BindingId(99),
-            Ack::Overflow {
-                revision: Revision(1),
-            }
-        ),
-        Err(VfsError::Stale)
+    core.ack(
+        BindingId(99),
+        Ack::Overflow {
+            revision: Revision(1),
+        },
     );
+    assert_eq!(core.layer_faults(), 1);
+}
+
+#[test]
+fn default_event_bound_is_the_spec_figure() {
+    assert_eq!(ScriptedCore::DEFAULT_EVENT_BOUND, 1024 * 1024);
 }

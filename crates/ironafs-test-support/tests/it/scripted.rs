@@ -8,7 +8,8 @@
 
 use ironafs_test_support::{Evidence, ScriptedCore};
 use ironafs_vfs::{
-    Ack, Attestation, BindingId, ContextId, Effects, Event, HandleCap, NodeId, Scope, VfsError,
+    Ack, Attestation, BindingId, ContextId, Effects, Event, HandleCap, NodeId, Revision, Scope,
+    VfsError,
 };
 
 const ALICE: Attestation = Attestation::FuseUid { uid: 1000 };
@@ -52,14 +53,16 @@ fn open(
 fn capability_minted_for_another_binding_is_refused() {
     let (mut core, first, second) = core(64 * 1024);
     let caller = core.mint_caller(first, ALICE).unwrap();
-    assert_eq!(core.check_caller(second, &caller), Err(VfsError::Access));
+    assert_eq!(core.check_caller(second, &caller), Err(VfsError::Stale));
     assert_eq!(
         core.open_handle(second, &caller, FILE)
             .map(|cap| cap.handle()),
-        Err(VfsError::Access)
+        Err(VfsError::Stale)
     );
     let handle = core.open_handle(first, &caller, FILE).unwrap();
-    assert_eq!(core.check_handle(second, &handle), Err(VfsError::Access));
+    assert_eq!(core.check_handle(second, &handle), Err(VfsError::Stale));
+    // Each capability presented on the wrong binding is a layer fault.
+    assert_eq!(core.layer_faults(), 3);
     assert_eq!(core.check_handle(first, &handle), Ok(FILE));
 }
 
@@ -78,7 +81,8 @@ fn weak_break_and_purge_failure_stale_the_node_only() {
         panic!("expected a node event");
     };
     assert_eq!(event.node, FILE);
-    assert_eq!(core.purge_failed(first, FILE), Ok(()));
+    core.purge_failed(first, FILE, event.revision);
+    assert_eq!(core.layer_faults(), 0);
 
     // Both contexts' handles on FILE, in every binding, are revoked.
     assert!(core.node_stale(FILE));
@@ -104,7 +108,7 @@ fn failed_purge_is_delivered_again_and_its_ack_ends_the_staleness() {
     let Some(Event::Node(failed)) = core.next_event(first) else {
         panic!("expected a node event");
     };
-    core.purge_failed(first, FILE).unwrap();
+    core.purge_failed(first, FILE, failed.revision);
     // The purge failed, so the node is gated and offered again.
     assert!(core.gated(first, FILE));
     let Some(Event::Node(retry)) = core.next_event(first) else {
@@ -118,8 +122,7 @@ fn failed_purge_is_delivered_again_and_its_ack_ends_the_staleness() {
             node: FILE,
             revision: retry.revision,
         },
-    )
-    .unwrap();
+    );
     assert!(!core.node_stale(FILE));
     assert!(open(&mut core, first, ALICE, FILE).is_ok());
 }
@@ -135,14 +138,13 @@ fn purge_failure_under_overflow_stales_that_node_only() {
     let Some(Event::Overflow(overflow)) = core.next_event(first) else {
         panic!("expected an overflow");
     };
-    core.purge_failed(first, FILE).unwrap();
+    core.purge_failed(first, FILE, overflow.revision);
     core.ack(
         first,
         Ack::Overflow {
             revision: overflow.revision,
         },
-    )
-    .unwrap();
+    );
     assert!(core.node_stale(FILE));
     assert!(!core.node_stale(OTHER));
     assert_eq!(core.check_handle(first, &file), Err(VfsError::Stale));
@@ -152,24 +154,97 @@ fn purge_failure_under_overflow_stales_that_node_only() {
 }
 
 #[test]
-fn purge_failure_on_a_node_not_held_is_refused() {
+fn purge_failure_not_matching_a_delivery_changes_nothing() {
     let mut core = ScriptedCore::new(3);
     core.script_context(ALICE, ContextId(1));
     let first = core.attach();
     let second = core.attach();
+    core.hold(first, OTHER).unwrap();
     core.hold(second, FILE).unwrap();
     let handle = open(&mut core, second, ALICE, FILE).unwrap();
-    assert_eq!(core.purge_failed(first, FILE), Err(VfsError::NotFound));
-    assert_eq!(core.purge_failed(BindingId(99), FILE), Err(VfsError::Stale));
+    core.break_node(FILE, Evidence::Weak, Scope::Object, &DATA);
+    let Some(Event::Node(event)) = core.next_event(second) else {
+        panic!("expected a node event");
+    };
+    // A binding that does not hold the node, an unknown binding, and a
+    // revision that was never delivered: each is a layer fault and
+    // changes nothing.
+    core.purge_failed(first, FILE, event.revision);
+    core.purge_failed(BindingId(99), FILE, event.revision);
+    core.purge_failed(second, FILE, Revision(event.revision.0 + 1));
+    core.purge_failed(second, FILE, Revision(0));
+    assert_eq!(core.layer_faults(), 4);
     assert!(!core.node_stale(FILE));
     assert_eq!(core.check_handle(second, &handle), Ok(FILE));
+}
+
+#[test]
+fn reoffered_purge_folded_into_an_overflow_is_still_delivered() {
+    const THIRD: NodeId = NodeId(12);
+    // One slot fits; a second folds every slot into an overflow.
+    let (mut core, first, _) = core(64);
+    core.hold(first, THIRD).unwrap();
+    core.break_node(FILE, Evidence::Weak, Scope::Object, &DATA);
+    core.break_node(OTHER, Evidence::Weak, Scope::Object, &DATA);
+    let Some(Event::Overflow(swept)) = core.next_event(first) else {
+        panic!("expected an overflow");
+    };
+    // A new event takes the one slot that fits while the layer sweeps.
+    core.break_node(THIRD, Evidence::Weak, Scope::Object, &DATA);
+    // FILE's purge under the overflow fails: its re-offer needs a second
+    // slot, so it folds into the overflow, which must be offered again.
+    core.purge_failed(first, FILE, swept.revision);
+    assert!(core.node_stale(FILE));
+    let Some(Event::Overflow(again)) = core.next_event(first) else {
+        panic!("expected the overflow again");
+    };
+    assert!(again.revision > swept.revision);
+    core.ack(
+        first,
+        Ack::Overflow {
+            revision: again.revision,
+        },
+    );
+    // The overflow purged every held node, FILE included.
+    assert!(!core.node_stale(FILE));
+    assert!(!core.gated(first, FILE));
+    assert!(open(&mut core, first, ALICE, FILE).is_ok());
+    assert_eq!(core.layer_faults(), 0);
+}
+
+#[test]
+fn reoffered_purge_into_a_pending_overflow_is_delivered() {
+    // Every event overflows.
+    let (mut core, first, _) = core(0);
+    core.break_node(FILE, Evidence::Weak, Scope::Object, &DATA);
+    let Some(Event::Overflow(swept)) = core.next_event(first) else {
+        panic!("expected an overflow");
+    };
+    core.purge_failed(first, FILE, swept.revision);
+    // The failed overflow is not acknowledged; the re-offer comes as a
+    // new overflow revision.
+    let Some(Event::Overflow(again)) = core.next_event(first) else {
+        panic!("expected the overflow again");
+    };
+    assert!(again.revision > swept.revision);
+    core.ack(
+        first,
+        Ack::Overflow {
+            revision: again.revision,
+        },
+    );
+    assert!(!core.node_stale(FILE));
 }
 
 #[test]
 fn detach_ends_the_staleness_its_failed_purge_caused() {
     let (mut core, first, second) = core(64 * 1024);
     core.break_node(FILE, Evidence::Weak, Scope::Object, &DATA);
-    core.purge_failed(first, FILE).unwrap();
+    let Some(Event::Node(event)) = core.next_event(first) else {
+        panic!("expected a node event");
+    };
+    core.purge_failed(first, FILE, event.revision);
+    assert!(core.node_stale(FILE));
     // The binding whose operating system may hold the old state is gone.
     core.detach(first);
     assert!(!core.node_stale(FILE));
