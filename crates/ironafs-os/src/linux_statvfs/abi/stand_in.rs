@@ -11,6 +11,10 @@
 //! by a signal some number of times (-1 with `EINTR`), or failed once with
 //! an errno; [`last_error`] returns that errno, as the C library's would
 //! be, and [`calls`] counts the calls made.
+//!
+//! A call of a shape a stand-in does not model is refused with -1 and
+//! `EINVAL`, so no earlier errno is reported for it and a retry cannot
+//! loop.
 
 use core::ffi::c_int;
 use std::cell::Cell;
@@ -89,7 +93,10 @@ pub(in crate::linux_statvfs) const FRAGMENT: u64 = 4096;
 /// `struct statvfs`.
 #[expect(unsafe_code, reason = "linux-statvfs: Miri stand-in")]
 pub(in crate::linux_statvfs) unsafe fn fstatvfs(fd: c_int, buf: *mut statvfs) -> c_int {
-    if fd < 0 || planned_failure() {
+    if fd < 0 {
+        return refused();
+    }
+    if planned_failure() {
         return -1;
     }
     let figures = statvfs {
@@ -111,4 +118,15 @@ pub(in crate::linux_statvfs) unsafe fn fstatvfs(fd: c_int, buf: *mut statvfs) ->
     // struct, aligned; Miri checks it.
     let () = unsafe { core::ptr::write(buf, figures) };
     0
+}
+
+/// `EINVAL`.
+const EINVAL: c_int = 22;
+
+/// A call of a shape the stand-in does not model: -1, with `EINVAL` as
+/// its errno, so no earlier errno (such as a planned `EINTR`) is reported
+/// for it.
+fn refused<T: From<i8>>() -> T {
+    ERRNO.with(|cell| cell.set(EINVAL));
+    T::from(-1)
 }

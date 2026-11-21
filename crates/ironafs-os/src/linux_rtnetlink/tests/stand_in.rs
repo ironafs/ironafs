@@ -171,3 +171,13 @@ fn a_failed_send_is_returned_with_its_errno() {
         Err(RouteError::Send(error)) if error.raw_os_error() == Some(111)
     ));
 }
+
+#[test]
+fn a_receive_with_nothing_to_return_after_an_interruption_ends_with_its_own_errno() {
+    let socket = RouteSocket::request().unwrap();
+    plan(Plan::Interrupt(1));
+    assert!(matches!(
+        socket.receive(&mut [0_u8; 8]),
+        Err(RouteError::Receive(error)) if error.raw_os_error() == Some(22)
+    ));
+}

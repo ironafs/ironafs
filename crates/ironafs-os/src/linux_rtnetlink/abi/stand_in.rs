@@ -14,6 +14,10 @@
 //! signal some number of times (-1 with `EINTR`), or failed once with an
 //! errno; [`last_error`] returns that errno, as the C library's would
 //! be.
+//!
+//! A call of a shape a stand-in does not model is refused with -1 and
+//! `EINVAL`, so no earlier errno is reported for it and a retry cannot
+//! loop.
 
 use core::ffi::{c_int, c_void};
 use std::cell::{Cell, RefCell};
@@ -138,7 +142,7 @@ pub(in crate::linux_rtnetlink) unsafe fn socket(
     record(Call::Socket(domain, kind, protocol));
     match UnixStream::pair() {
         Ok((ours, _peer)) => ours.into_raw_fd(),
-        Err(_) => -1,
+        Err(_) => refused(),
     }
 }
 
@@ -155,7 +159,7 @@ pub(in crate::linux_rtnetlink) unsafe fn bind(
     addrlen: socklen_t,
 ) -> c_int {
     if sockfd < 0 || usize::try_from(addrlen) != Ok(NAME) {
-        return -1;
+        return refused();
     }
     let pointer: *const sockaddr_nl = addr.cast();
     #[expect(unsafe_code, reason = "linux-rtnetlink: Miri stand-in")]
@@ -182,7 +186,7 @@ pub(in crate::linux_rtnetlink) unsafe fn sendto(
     addrlen: socklen_t,
 ) -> isize {
     if sockfd < 0 || usize::try_from(addrlen) != Ok(NAME) {
-        return -1;
+        return refused();
     }
     if planned_failure() {
         record(Call::Failed);
@@ -224,11 +228,14 @@ pub(in crate::linux_rtnetlink) unsafe fn recvmsg(
     flags: c_int,
 ) -> isize {
     record(Call::Receive(flags));
-    if sockfd < 0 || planned_failure() {
+    if sockfd < 0 {
+        return refused();
+    }
+    if planned_failure() {
         return -1;
     }
     let Some(queued) = REPLIES.with(|replies| replies.borrow_mut().pop_front()) else {
-        return -1;
+        return refused();
     };
     #[expect(unsafe_code, reason = "linux-rtnetlink: Miri stand-in")]
     // SAFETY: the caller promises `msg` is valid for one read; Miri checks.
@@ -236,7 +243,7 @@ pub(in crate::linux_rtnetlink) unsafe fn recvmsg(
     let (buffers, count) = message.buffers();
     let (name, room) = message.name();
     if count != 1 || message.control_length() != 0 || usize::try_from(room) != Ok(NAME) {
-        return -1;
+        return refused();
     }
     #[expect(unsafe_code, reason = "linux-rtnetlink: Miri stand-in")]
     // SAFETY: `msg_iov` names one valid `iovec`, as promised; Miri checks.
@@ -265,4 +272,15 @@ pub(in crate::linux_rtnetlink) unsafe fn recvmsg(
     // SAFETY: as the read of `msg` above, for one write.
     let () = unsafe { core::ptr::write(msg, message) };
     isize::try_from(written).unwrap_or(-1)
+}
+
+/// `EINVAL`.
+const EINVAL: c_int = 22;
+
+/// A call of a shape the stand-in does not model: -1, with `EINVAL` as
+/// its errno, so no earlier errno (such as a planned `EINTR`) is reported
+/// for it.
+fn refused<T: From<i8>>() -> T {
+    ERRNO.with(|cell| cell.set(EINVAL));
+    T::from(-1)
 }

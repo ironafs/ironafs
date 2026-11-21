@@ -10,6 +10,10 @@
 //! pointer when the length is its size. Each records the call, in order,
 //! on this thread, and a test can make one of them fail with an errno,
 //! which [`last_error`] then returns, as the C library's would be.
+//!
+//! A call of a shape a stand-in does not model is refused with -1 and
+//! `EINVAL`, so no earlier errno is reported for it and a retry cannot
+//! loop.
 
 use core::ffi::{c_int, c_void};
 use std::cell::{Cell, RefCell};
@@ -86,7 +90,7 @@ pub(in crate::linux_udp6) unsafe fn socket(domain: c_int, kind: c_int, protocol:
     }
     match UnixStream::pair() {
         Ok((ours, _peer)) => ours.into_raw_fd(),
-        Err(_) => -1,
+        Err(_) => refused(),
     }
 }
 
@@ -105,7 +109,7 @@ pub(in crate::linux_udp6) unsafe fn setsockopt(
     optlen: socklen_t,
 ) -> c_int {
     if sockfd < 0 || usize::try_from(optlen) != Ok(size_of::<c_int>()) {
-        return -1;
+        return refused();
     }
     let pointer: *const c_int = optval.cast();
     #[expect(unsafe_code, reason = "linux-udp6: Miri stand-in")]
@@ -129,7 +133,7 @@ pub(in crate::linux_udp6) unsafe fn bind(
     addrlen: socklen_t,
 ) -> c_int {
     if sockfd < 0 || usize::try_from(addrlen) != Ok(size_of::<sockaddr_in6>()) {
-        return -1;
+        return refused();
     }
     let pointer: *const sockaddr_in6 = addr.cast();
     #[expect(unsafe_code, reason = "linux-udp6: Miri stand-in")]
@@ -138,4 +142,15 @@ pub(in crate::linux_udp6) unsafe fn bind(
     let name = unsafe { core::ptr::read(pointer) };
     record(Call::Bind(name, addrlen));
     if failing(Fail::Bind) { -1 } else { 0 }
+}
+
+/// `EINVAL`.
+const EINVAL: c_int = 22;
+
+/// A call of a shape the stand-in does not model: -1, with `EINVAL` as
+/// its errno, so no earlier errno (such as a planned `EINTR`) is reported
+/// for it.
+fn refused<T: From<i8>>() -> T {
+    ERRNO.with(|cell| cell.set(EINVAL));
+    T::from(-1)
 }
