@@ -78,6 +78,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The inventory check reads the parent commit's inventory.
+          fetch-depth: 2
       - name: Install Rust
         run: |
           rustup toolchain install --profile minimal --no-self-update --no-update
@@ -102,8 +104,15 @@ jobs:
           cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
           install -d "$cargo_bin"
           install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
-      - name: Run tests
-        run: cargo nextest run --workspace --profile ci --retries 0 --no-tests fail --locked
+      # Runs every test once (cargo nextest run --workspace --profile ci
+      # --retries 0 --no-tests fail --no-fail-fast --locked) and reconciles
+      # the run with tests/inventory and with the inventory of the commit
+      # before this one: on a pull request, the checked-out merge commit's
+      # first parent is the base branch; on a push to main, the previous main.
+      - name: Run tests and check the test inventory
+        run: cargo --locked xtask inventory --base HEAD^1
+      - name: Prove the inventory check catches planted failures
+        run: cargo --locked xtask inventory --self-test
       - name: Run doc-tests
         timeout-minutes: 5
         run: cargo test --doc --workspace --locked

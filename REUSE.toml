@@ -12,6 +12,7 @@ path = [
   ".claude/skills/**/SKILL.md",
   ".github/pull_request_template.md",
   "crates/xtask/tests/fixtures/trailers/*.txt",
+  "tests/inventory/*.txt",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Adrian Ana <adrian@adrianana.com>"
