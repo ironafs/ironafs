@@ -4,8 +4,14 @@
 //! The foreign declarations of site `linux-fdpass`.
 
 use core::ffi::c_int;
+use std::io;
 
 use super::msghdr;
+
+/// The errno the last failed call on this thread set.
+pub(in crate::linux_fdpass) fn last_error() -> io::Error {
+    io::Error::last_os_error()
+}
 
 // SAFETY: `ssize_t sendmsg(int sockfd, const struct msghdr *msg, int
 // flags)` and `ssize_t recvmsg(int sockfd, struct msghdr *msg, int

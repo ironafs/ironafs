@@ -298,6 +298,10 @@ jobs:
               linux_peercred::tests::peer_credentials_of_a_socket_pair_name_this_process \
               linux_fdpass::tests::a_sent_descriptor_arrives_as_a_new_descriptor_for_the_same_socket \
               fdpass::tests::accept_hands_out_only_the_valid_case_and_never_leaks_across_the_sweep \
+              linux_peercred::tests::stand_in::a_short_and_an_over_long_length_from_the_call_are_refused \
+              linux_dontdump::tests::stand_in::a_failed_exclusion_hands_out_no_buffer \
+              linux_dontdump::tests::stand_in::a_dropped_buffer_is_all_zero_when_its_memory_is_released \
+              linux_fdpass::tests::stand_in::an_interrupted_send_and_receive_are_each_made_again \
               mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257; do
               grep -q "^test $test \.\.\. ok$" "miri-$target.log"
             done

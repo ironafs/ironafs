@@ -17,6 +17,8 @@ use crate::fdpass::FdPassError;
 
 #[cfg(not(miri))]
 mod kernel;
+#[cfg(miri)]
+mod stand_in;
 
 #[test]
 fn a_sent_descriptor_arrives_as_a_new_descriptor_for_the_same_socket() {

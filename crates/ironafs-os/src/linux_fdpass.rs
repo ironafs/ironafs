@@ -178,7 +178,7 @@ pub fn receive_fd(stream: &UnixStream) -> Result<OwnedFd, FdPassError> {
         payload: control.descriptors,
         byte,
     };
-    accept(&RULES, &received, adopt)
+    accept(&RULES, received, adopt)
 }
 
 /// One `sendmsg` call of `message` on `socket`: the bytes it sent.
@@ -203,7 +203,7 @@ fn send_message(socket: BorrowedFd<'_>, message: &msghdr) -> io::Result<usize> {
     // declarations are in `abi`, proved by the ABI check.
     let count = unsafe { abi::sendmsg(descriptor, pointer, flags) };
     // At once, with no call in between, on the thread that made it.
-    usize::try_from(count).map_err(|_| io::Error::last_os_error())
+    usize::try_from(count).map_err(|_| abi::last_error())
 }
 
 /// One `recvmsg` call into `message` on `socket`: the bytes it received.
@@ -228,7 +228,7 @@ fn receive_message(socket: BorrowedFd<'_>, message: &mut msghdr) -> io::Result<u
     // the ABI check.
     let count = unsafe { abi::recvmsg(descriptor, pointer, flags) };
     // At once, with no call in between, on the thread that made it.
-    usize::try_from(count).map_err(|_| io::Error::last_os_error())
+    usize::try_from(count).map_err(|_| abi::last_error())
 }
 
 /// Takes ownership of a descriptor a receive delivered.

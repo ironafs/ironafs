@@ -71,13 +71,14 @@ pub(super) use musl::{cmsghdr, msghdr};
 
 // The foreign functions, or under Miri, which cannot call them, the
 // in-crate stand-ins of ADR 0005, point 6.5, which the same calls reach,
-// so the wrappers' buffers, pointers and checks run unchanged.
+// so the wrappers' buffers, pointers and checks run unchanged; and the
+// errno the calls set, which a stand-in sets as planned.
 #[cfg(not(miri))]
 mod foreign;
 #[cfg(miri)]
-mod stand_in;
+pub(super) mod stand_in;
 
 #[cfg(not(miri))]
-pub(super) use foreign::{recvmsg, sendmsg};
+pub(super) use foreign::{last_error, recvmsg, sendmsg};
 #[cfg(miri)]
-pub(super) use stand_in::{recvmsg, sendmsg};
+pub(super) use stand_in::{last_error, recvmsg, sendmsg};

@@ -13,10 +13,16 @@
 //! the end of the stream. A call without `MSG_NOSIGNAL` (send) or
 //! `MSG_CMSG_CLOEXEC` (receive), or with a message of another shape,
 //! returns -1.
+//!
+//! A test can [`plan`] the next calls' answers instead: interrupted by a
+//! signal some number of times (-1 with `EINTR`, the message untouched),
+//! or failed once with an errno; [`last_error`] returns that errno, as the
+//! C library's would be, and [`calls`] counts the calls made.
 
 use core::ffi::c_int;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::io;
 use std::os::fd::{BorrowedFd, IntoRawFd, OwnedFd};
 
 use super::{MSG_CMSG_CLOEXEC, MSG_NOSIGNAL, SCM_RIGHTS, SOL_SOCKET, cmsghdr, iovec, msghdr};
@@ -25,6 +31,62 @@ use crate::linux_fdpass::{Control, ONE, SPACE, TWO};
 thread_local! {
     /// The messages sent and not yet received on this thread.
     static QUEUE: RefCell<VecDeque<(u8, Vec<OwnedFd>)>> = const { RefCell::new(VecDeque::new()) };
+    static PLAN: Cell<Plan> = const { Cell::new(Plan::Answer) };
+    static ERRNO: Cell<c_int> = const { Cell::new(0) };
+    static CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// `EINTR`.
+const EINTR: c_int = 4;
+
+/// The next calls' answer.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::linux_fdpass) enum Plan {
+    /// As the kernel answers.
+    Answer,
+    /// -1 with `EINTR` for this many calls, then as the kernel answers.
+    Interrupt(usize),
+    /// -1 with this errno, once.
+    Fail(c_int),
+}
+
+/// Plans the next calls' answer on this thread.
+pub(in crate::linux_fdpass) fn plan(next: Plan) {
+    PLAN.with(|plan| plan.set(next));
+}
+
+/// The calls made on this thread.
+pub(in crate::linux_fdpass) fn calls() -> usize {
+    CALLS.with(Cell::get)
+}
+
+/// The errno the last planned failure set.
+pub(in crate::linux_fdpass) fn last_error() -> io::Error {
+    io::Error::from_raw_os_error(ERRNO.with(Cell::get))
+}
+
+/// Counts a call and answers it as planned: `Some(-1)` for a planned
+/// failure, with its errno set, or `None` to answer as the kernel.
+fn planned() -> Option<isize> {
+    CALLS.with(|calls| calls.set(calls.get() + 1));
+    let errno = match PLAN.with(Cell::get) {
+        Plan::Answer => return None,
+        Plan::Interrupt(left) => {
+            let next = if left > 1 {
+                Plan::Interrupt(left - 1)
+            } else {
+                Plan::Answer
+            };
+            PLAN.with(|plan| plan.set(next));
+            EINTR
+        }
+        Plan::Fail(errno) => {
+            PLAN.with(|plan| plan.set(Plan::Answer));
+            errno
+        }
+    };
+    ERRNO.with(|cell| cell.set(errno));
+    Some(-1)
 }
 
 /// Reads and queues the message at `msg` as `sendmsg` would.
@@ -42,6 +104,9 @@ pub(in crate::linux_fdpass) unsafe fn sendmsg(
 ) -> isize {
     if sockfd < 0 || flags & MSG_NOSIGNAL == 0 {
         return -1;
+    }
+    if let Some(failed) = planned() {
+        return failed;
     }
     #[expect(unsafe_code, reason = "linux-fdpass: Miri stand-in")]
     // SAFETY: the caller promises `msg` is valid for one read; Miri checks.
@@ -107,6 +172,9 @@ pub(in crate::linux_fdpass) unsafe fn recvmsg(
 ) -> isize {
     if sockfd < 0 || flags & MSG_CMSG_CLOEXEC == 0 {
         return -1;
+    }
+    if let Some(failed) = planned() {
+        return failed;
     }
     let Some((byte, descriptors)) = QUEUE.with(|queue| queue.borrow_mut().pop_front()) else {
         return 0;
