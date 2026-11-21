@@ -284,7 +284,12 @@ fn guard_blocks_a_commit_after_a_branch_change_in_the_same_command() {
         "separate command",
     );
     blocked(&format!("git switch main; {COMMIT_OK}"), "separate command");
+    blocked(&format!("git switch main -- && {COMMIT_OK}"), "separate command");
+    blocked(&format!("git checkout main -- && {COMMIT_OK}"), "separate command");
+    blocked("git checkout -B main --", "resets main");
+    blocked("git switch -C main --", "resets main");
     allowed(&format!("git checkout -- file.rs && {COMMIT_OK}"));
+    allowed(&format!("git checkout main -- file.rs && {COMMIT_OK}"));
 }
 
 #[test]

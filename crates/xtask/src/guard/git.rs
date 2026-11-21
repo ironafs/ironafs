@@ -262,9 +262,17 @@ impl<R: Repo> Guard<'_, R> {
             "reset" => self.reset(rest, scope, place),
             "update-ref" => self.update_ref(rest, scope, place),
             "branch" => self.branch(rest),
-            "checkout" | "switch" if !has(&["--"]) => {
+            "checkout" | "switch" => {
                 self.force_create(rest);
-                scope.branch_changed = true;
+                // `git checkout <tree> -- <paths>` restores files and stays on
+                // the branch; a `--` with no path after it still switches.
+                let paths = rest
+                    .iter()
+                    .position(|word| word.literal() == Some("--"))
+                    .is_some_and(|end| end + 1 < rest.len());
+                if name == "switch" || !paths {
+                    scope.branch_changed = true;
+                }
             }
             "fast-import" | "filter-branch" | "replay" | "send-pack" | "http-push" => {
                 self.block(format!(
@@ -466,6 +474,9 @@ impl<R: Repo> Guard<'_, R> {
             let Some(text) = word.literal() else {
                 continue;
             };
+            if text == "--" {
+                return;
+            }
             let value = match text {
                 "-B" | "-C" | "--force-create" => {
                     index += 1;
