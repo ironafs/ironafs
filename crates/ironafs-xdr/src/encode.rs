@@ -39,6 +39,14 @@ pub trait Encode {
     fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error>;
 }
 
+/// A message type that holds no secret field at any depth, which the
+/// generated code marks per message. Only such a type may be encoded into a
+/// buffer the codec returns ([`encode`]); a secret-bearing message goes
+/// through [`encode_into`], into a buffer the caller zeroes on drop
+/// (`docs/specs/xdr.md`, 5.1, point 8). A type without the marker is held
+/// to the safe path.
+pub trait Plain: Encode {}
+
 /// The output of one message: its buffer, and the bytes it may still take.
 ///
 /// Its `Debug` shows the message's name and the bytes still to write,
@@ -62,16 +70,35 @@ impl fmt::Debug for Encoder<'_> {
 
 /// Encodes `value` as one `message` into a new buffer.
 ///
-/// For a secret-bearing message this is [`encode_into`] with a fresh, empty
-/// buffer: the codec requests it once and never grows it, and the caller
-/// owns it from then on, so the caller moves it into the type that zeroes
-/// it on drop (`docs/specs/xdr.md`, 5.1, point 8). On error the buffer has
-/// been zeroed and dropped.
+/// A type that holds a secret field does not build here: its generated
+/// code does not implement the marker of plain messages, so
+/// [`encode_into`], with a buffer the caller zeroes on drop, is its only
+/// path (`docs/specs/xdr.md`, 5.1, point 8):
+///
+/// ```compile_fail
+/// use ironafs_xdr::{Encode, Encoder, Error, Message, encode};
+///
+/// /// A secret-bearing message: a 4-byte key.
+/// struct Key([u8; 4]);
+///
+/// impl Encode for Key {
+///     fn encoded_len(&self) -> Result<u64, Error> {
+///         Ok(4)
+///     }
+///
+///     fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+///         encoder.put_fixed_opaque(&self.0)
+///     }
+/// }
+///
+/// const KEY: Message = Message { name: "demo.key", cap: 4, budget: 0, secret: true };
+/// let _ = encode(&KEY, &Key([1, 2, 3, 4]));
+/// ```
 ///
 /// # Errors
 ///
 /// As [`encode_into`].
-pub fn encode<T: Encode + ?Sized>(message: &Message, value: &T) -> Result<Vec<u8>, Error> {
+pub fn encode<T: Plain + ?Sized>(message: &Message, value: &T) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     encode_into(message, value, &mut out)?;
     Ok(out)
@@ -415,6 +442,12 @@ macro_rules! encode_number {
         }
     };
 }
+
+impl Plain for i32 {}
+impl Plain for u32 {}
+impl Plain for i64 {}
+impl Plain for u64 {}
+impl Plain for () {}
 
 encode_number!(i32, 4, put_i32);
 encode_number!(u32, 4, put_u32);

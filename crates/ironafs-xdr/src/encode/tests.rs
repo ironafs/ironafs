@@ -12,8 +12,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::{
-    Encode, Encoder, array_len, encode, encode_into, fixed_opaque_len, opaque_len, word_length,
-    zero_to_capacity,
+    Encode, Encoder, Plain, array_len, encode, encode_into, fixed_opaque_len, opaque_len,
+    word_length, zero_to_capacity,
 };
 use crate::{Cap, Error, ErrorKind, Message};
 
@@ -48,6 +48,8 @@ const SOME: Cap = Cap {
 /// Variable-length opaque under `SHORT`, as a message.
 struct Short<'a>(&'a [u8]);
 
+impl Plain for Short<'_> {}
+
 impl Encode for Short<'_> {
     fn encoded_len(&self) -> Result<u64, Error> {
         opaque_len(&SHORT, self.0.len())
@@ -60,6 +62,8 @@ impl Encode for Short<'_> {
 
 /// A value whose size understates what it writes.
 struct Liar;
+
+impl Plain for Liar {}
 
 impl Encode for Liar {
     fn encoded_len(&self) -> Result<u64, Error> {
@@ -154,6 +158,8 @@ fn array_len_compares_count_with_bound_and_bytes_with_cap() {
 #[test]
 fn put_array_writes_count_then_elements() {
     struct Pair;
+    impl Plain for Pair {}
+
     impl Encode for Pair {
         fn encoded_len(&self) -> Result<u64, Error> {
             array_len(&SOME, &[7_u32, 8])
@@ -217,6 +223,8 @@ fn value_writing_past_its_size_fails_and_leaves_nothing() {
 #[test]
 fn value_writing_short_of_its_size_fails() {
     struct Short8;
+    impl Plain for Short8 {}
+
     impl Encode for Short8 {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(8)
@@ -233,6 +241,8 @@ fn value_writing_short_of_its_size_fails() {
 #[test]
 fn bool_encodes_as_zero_or_one() {
     struct Flags;
+    impl Plain for Flags {}
+
     impl Encode for Flags {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(8)
@@ -250,6 +260,8 @@ fn bool_encodes_as_zero_or_one() {
 fn put_opaque_refuses_over_cap_even_after_a_size_pass_that_passed() {
     /// Sizes itself as 12 bytes, then writes 5 bytes under a cap of 4.
     struct Sneaky;
+    impl Plain for Sneaky {}
+
     impl Encode for Sneaky {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(12)
@@ -272,6 +284,8 @@ fn put_opaque_refuses_over_cap_even_after_a_size_pass_that_passed() {
 fn encoder_debug_shows_no_output_bytes() {
     /// Writes a key-like word, then formats the encoder.
     struct Peek;
+    impl Plain for Peek {}
+
     impl Encode for Peek {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(4)

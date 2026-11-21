@@ -47,9 +47,9 @@ use core::mem::size_of;
 
 use ironafs_xdr::limits::INLINE_MAX;
 use ironafs_xdr::{
-    BorrowedBytes, BorrowedWord, Cap, Decode, Decoder, Encode, Encoder, Error, Message, Vacant,
-    array_heap_ratio, array_len, array_reservations, fixed_array_len, fixed_opaque_len, max,
-    opaque_len, proven, sum,
+    BorrowedBytes, BorrowedWord, Cap, Decode, Decoder, Encode, Encoder, Error, Message, Plain,
+    Vacant, array_heap_ratio, array_len, array_reservations, fixed_array_len, fixed_opaque_len,
+    max, opaque_len, proven, sum,
 };
 
 /// The message row of a test type decoded on its own.
@@ -113,6 +113,8 @@ impl<'a> Decode<'a> for Shade {
     }
 }
 
+impl Plain for Shade {}
+
 impl Encode for Shade {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
@@ -139,6 +141,8 @@ impl<'a> Decode<'a> for Flag {
         decoder.read_bool("test.flag").map(Self)
     }
 }
+
+impl Plain for Flag {}
 
 impl Encode for Flag {
     fn encoded_len(&self) -> Result<u64, Error> {
@@ -189,6 +193,8 @@ impl<'a> Decode<'a> for Solo {
     }
 }
 
+impl Plain for Solo {}
+
 impl Encode for Solo {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
@@ -233,6 +239,8 @@ impl<'a> Decode<'a> for Entry {
         }
     }
 }
+
+impl Plain for Entry {}
 
 impl Encode for Entry {
     fn encoded_len(&self) -> Result<u64, Error> {
@@ -286,6 +294,8 @@ impl<'a> Decode<'a> for Label {
         decoder.opaque_owned(&LABEL_CAP).map(Self)
     }
 }
+
+impl Plain for Label {}
 
 impl Encode for Label {
     fn encoded_len(&self) -> Result<u64, Error> {
@@ -348,6 +358,8 @@ impl<'a> Decode<'a> for Note {
     }
 }
 
+impl Plain for Note {}
+
 impl Encode for Note {
     fn encoded_len(&self) -> Result<u64, Error> {
         let mut total = opaque_len(&TITLE, self.title.len())?;
@@ -383,6 +395,8 @@ impl<'a> Decode<'a> for Pair {
     }
 }
 
+impl Plain for Pair {}
+
 impl Encode for Pair {
     fn encoded_len(&self) -> Result<u64, Error> {
         fixed_array_len(&self.0)
@@ -417,6 +431,8 @@ macro_rules! array_type {
                 decoder.array(&$cap).map(Self)
             }
         }
+
+        impl Plain for $name {}
 
         impl Encode for $name {
             fn encoded_len(&self) -> Result<u64, Error> {
@@ -454,6 +470,8 @@ impl<'a> Decode<'a> for Five {
     }
 }
 
+impl Plain for Five {}
+
 impl Encode for Five {
     fn encoded_len(&self) -> Result<u64, Error> {
         fixed_opaque_len(5)
@@ -486,6 +504,8 @@ impl<'a> Decode<'a> for Blob {
         decoder.opaque_owned(&BLOB_CAP).map(Self)
     }
 }
+
+impl Plain for Blob {}
 
 impl Encode for Blob {
     fn encoded_len(&self) -> Result<u64, Error> {
@@ -523,6 +543,8 @@ impl<'a> Decode<'a> for Quad {
         })
     }
 }
+
+impl Plain for Quad {}
 
 impl Encode for Quad {
     fn encoded_len(&self) -> Result<u64, Error> {
@@ -570,6 +592,8 @@ impl<'a> Decode<'a> for Wide {
     }
 }
 
+impl Plain for Wide {}
+
 impl Encode for Wide {
     fn encoded_len(&self) -> Result<u64, Error> {
         match self {
@@ -612,6 +636,8 @@ impl<'a> Decode<'a> for Deep16 {
     }
 }
 
+impl Plain for Deep16 {}
+
 impl Encode for Deep16 {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(72)
@@ -645,6 +671,8 @@ macro_rules! deep_link {
                 })
             }
         }
+
+        impl Plain for $name {}
 
         impl Encode for $name {
             fn encoded_len(&self) -> Result<u64, Error> {
@@ -800,6 +828,8 @@ impl<'a> Decode<'a> for Every {
         })
     }
 }
+
+impl Plain for Every {}
 
 impl Encode for Every {
     fn encoded_len(&self) -> Result<u64, Error> {

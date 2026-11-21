@@ -42,6 +42,8 @@
 //!     }
 //! }
 //!
+//! impl ironafs_xdr::Plain for Greeting {}
+//!
 //! impl Encode for Greeting {
 //!     fn encoded_len(&self) -> Result<u64, Error> {
 //!         sum(4, opaque_len(&NAME, self.name.len())?)
@@ -117,8 +119,8 @@ pub use decode::{
     decode, decode_traced, max, out_of_line_heap_ratio, out_of_line_reservations, proven,
 };
 pub use encode::{
-    Encode, Encoder, array_len, encode, encode_into, fixed_array_len, fixed_opaque_len, opaque_len,
-    sum,
+    Encode, Encoder, Plain, array_len, encode, encode_into, fixed_array_len, fixed_opaque_len,
+    opaque_len, sum,
 };
 pub use error::{Error, ErrorKind};
 pub use spec::{Cap, Message};

@@ -8,10 +8,10 @@ use std::fmt::Debug;
 
 use ironafs_test_support::{Property, Source};
 use ironafs_xdr::{
-    BorrowedBytes, BorrowedWord, Decode, Encode, ErrorKind, Message, Reservation, decode, encode,
+    BorrowedBytes, BorrowedWord, Decode, ErrorKind, Message, Plain, Reservation, decode, encode,
 };
 
-use crate::support::{self, hex, size, traced};
+use crate::support::{self, hex, sealed_bytes, size, traced};
 use crate::types::{
     BLOB, Blob, DEEP, Deep, ENTRY, EVERY, Entry, Every, FIVE, Five, INTS, Ints, LABEL, Label,
     NAMES, NOTE, Names, Note, PAIR, Pair, SEALED, SHADE, SOLOS, Sealed, Shade, Solos, TAGS, Tags,
@@ -19,9 +19,9 @@ use crate::types::{
 };
 
 /// A type the properties run over.
-trait Tested: for<'a> Decode<'a> + Encode + PartialEq + Debug {}
+trait Tested: for<'a> Decode<'a> + Plain + PartialEq + Debug {}
 
-impl<T: for<'a> Decode<'a> + Encode + PartialEq + Debug> Tested for T {}
+impl<T: for<'a> Decode<'a> + Plain + PartialEq + Debug> Tested for T {}
 
 /// The heap ratio and reservation ratio of `T`.
 fn ratios<T: Tested>() -> (u64, u64) {
@@ -409,7 +409,7 @@ fn sealed_borrows_everything_and_shows_nothing() {
             serial: [0; 4],
             tag: vec![],
         };
-        let bytes = encode(&SEALED, &parts.sealed()).unwrap();
+        let bytes = sealed_bytes(&parts.sealed());
         format!("{:?}", decode::<Sealed<'_>>(&SEALED, &bytes).unwrap())
     };
     assert_eq!(
@@ -417,7 +417,7 @@ fn sealed_borrows_everything_and_shows_nothing() {
         "Sealed { key: BorrowedBytes, serial: BorrowedWord, tag: BorrowedBytes }"
     );
     Property::new("sealed: borrowed, silent and round-trips").check(sealed_parts, |parts| {
-        let bytes = encode(&SEALED, &parts.sealed()).unwrap();
+        let bytes = sealed_bytes(&parts.sealed());
         let (decoded, seen) = traced::<Sealed<'_>>(&SEALED, &bytes);
         let decoded = decoded.unwrap();
         assert_eq!(seen, []);
@@ -430,6 +430,6 @@ fn sealed_borrows_everything_and_shows_nothing() {
         assert_eq!(format!("{decoded:?}"), reference);
         assert_eq!(format!("{:?}", decoded.key), "BorrowedBytes");
         assert_eq!(format!("{:?}", decoded.serial), "BorrowedWord");
-        assert_eq!(encode(&SEALED, &decoded).unwrap(), bytes);
+        assert_eq!(sealed_bytes(&decoded), bytes);
     });
 }

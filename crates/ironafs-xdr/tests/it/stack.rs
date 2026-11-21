@@ -9,9 +9,9 @@ use std::fmt::Debug;
 use std::thread;
 
 use ironafs_xdr::limits::SMALL_STACK;
-use ironafs_xdr::{BorrowedBytes, BorrowedWord, Decode, Encode, Message, decode, encode};
+use ironafs_xdr::{BorrowedBytes, BorrowedWord, Decode, Message, Plain, decode, encode};
 
-use crate::support::deep_from;
+use crate::support::{deep_from, sealed_bytes};
 use crate::types::{
     BLOB, Blob, DEEP, Deep16, ENTRY, EVERY, Entry, Every, FIVE, FLAG, Five, Flag, INTS, Ints,
     LABEL, Label, NAMES, NOTE, Names, Note, PAIR, Pair, Quad, SEALED, SHADE, SOLOS, Sealed, Shade,
@@ -23,7 +23,7 @@ use crate::types::{
 #[track_caller]
 fn fits<T>(message: &'static Message, value: &T, size: usize)
 where
-    T: for<'a> Decode<'a> + Encode + PartialEq + Debug + Send + 'static,
+    T: for<'a> Decode<'a> + Plain + PartialEq + Debug + Send + 'static,
 {
     let bytes = encode(message, value).unwrap();
     assert_eq!(bytes.len(), size, "{value:?}");
@@ -109,7 +109,7 @@ fn sealed_decode_fits_small_stack() {
         serial: BorrowedWord::new(&serial),
         tag: BorrowedBytes::new(&tag),
     };
-    let bytes = encode(&SEALED, &sealed).unwrap();
+    let bytes = sealed_bytes(&sealed);
     assert_eq!(bytes.len(), 20 + 4 + 12);
     let expected = bytes.clone();
     let decoded = thread::Builder::new()
@@ -120,7 +120,7 @@ fn sealed_decode_fits_small_stack() {
                 decoded.key.reveal().to_vec(),
                 decoded.serial.reveal_u32(),
                 decoded.tag.reveal().to_vec(),
-                encode(&SEALED, &decoded).unwrap(),
+                sealed_bytes(&decoded),
             )
         })
         .unwrap()
