@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Spike for #47 (the test cell fixture), section 1 of its plan. Throwaway:
+# this file lives only on the spike-47-cell branch and is never merged. It
+# measures, on each GitHub-hosted Ubuntu runner, the least-privileged way to
+# run a disposable synthetic AFS cell in containers, and how file data is
+# seeded without an AFS kernel module. No secrets, no registry login; keys
+# are made per run inside the containers and never printed.
+
+name: spike-cell
+
+on:
+  push:
+    branches: [spike-47-cell]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cell:
+    name: cell (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-26.04, ubuntu-24.04-arm, ubuntu-26.04-arm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the cell spike
+        env:
+          RUNNER_LABEL: ${{ matrix.runner }}
+        run: bash spike/cell/run.sh
