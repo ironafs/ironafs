@@ -335,9 +335,10 @@ authoritative.
    contract finding is open (one moved into a specification item is
    closed in the change and stays open in its issue), and no judgement is
    pending or inconclusive (one recorded as moot is closed): a pull
-   request, squash-merged after the owner's approval, with the trailer block and sign-off of ADR 0002 (the root commit
-   of the public history is the one exception; ADR 0002 gives its checklist). R also needs the owner's
-   decision.
+   request, squash-merged after the owner's approval, with the trailer
+   block and sign-off of ADR 0002 (the root commit of the public history is
+   the one exception; ADR 0002 gives its checklist). R also needs the
+   owner's decision.
 
 ## 3a. Reuse and consistency
 
