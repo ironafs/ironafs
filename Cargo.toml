@@ -13,6 +13,11 @@ license = "GPL-3.0-or-later"
 repository = "https://github.com/ironafs/ironafs"
 publish = false
 
+# Every workspace crate another member depends on, stated once (coding
+# standards rule 20).
+[workspace.dependencies]
+ironafs-time = { path = "crates/ironafs-time" }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
