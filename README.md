@@ -19,9 +19,9 @@ operating system and no kernel code of its own.
 ## Why
 
 The widely deployed AFS clients depend on kernel components: a kernel module
-on Linux, a kernel extension on macOS, a driver on Windows. (An experimental
-FUSE-based client exists, but never became the norm.) Kernel code is getting
-harder to ship everywhere.
+on Linux, a kernel extension on macOS, a driver on Windows. (OpenAFS also
+includes an experimental FUSE-based client.) Kernel code is getting harder
+to ship everywhere.
 
 - **On macOS,** third-party kernel extensions need reduced security settings
   on Apple silicon. Apple's replacement for filesystem extensions is FSKit,
