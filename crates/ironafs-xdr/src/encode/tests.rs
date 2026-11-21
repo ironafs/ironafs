@@ -588,3 +588,27 @@ fn put_carries_the_bytes_left_back_to_its_parent() {
     let error = encode_message(&MESSAGE, &Two, &mut Vec::new()).unwrap_err();
     assert_error(&error, ErrorKind::MessageTooLarge, Some("test.m"), Some(32));
 }
+
+#[test]
+fn a_write_past_the_capacity_is_refused_whatever_the_count() {
+    // The count is right by construction (`Encoder`); the capacity check
+    // holds the buffer in place even if it were not.
+    let mut out: Vec<u8> = Vec::with_capacity(4);
+    let before = (out.as_ptr(), out.capacity());
+    let room = u64::try_from(out.capacity()).unwrap();
+    let mut remaining = room + 8;
+    let mut encoder: Encoder<'_, u32> = Encoder {
+        out: &mut out,
+        remaining: &mut remaining,
+        message: MESSAGE.name,
+        cap: MESSAGE.cap,
+        value: core::marker::PhantomData,
+    };
+    let filled = (0..room).try_for_each(|_| encoder.put_bytes(&[0xaa]));
+    assert_eq!(filled, Ok(()));
+    let error = encoder.put_u32(1).unwrap_err();
+    assert_error(&error, ErrorKind::MessageTooLarge, Some("test.m"), Some(32));
+    assert_eq!(remaining, 8, "a refused write takes nothing from the count");
+    assert_eq!((out.as_ptr(), out.capacity()), before);
+    assert_eq!(u64::try_from(out.len()).unwrap(), room);
+}

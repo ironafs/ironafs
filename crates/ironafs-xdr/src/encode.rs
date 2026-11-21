@@ -187,14 +187,21 @@ pub trait Encode {
 }
 
 /// The output of one message, as the value of type `T` being written sees
-/// it: its buffer, and the bytes it may still take.
+/// it: its buffer, and the bytes the message may still take.
+///
+/// Every encoder of one message shares the one count of the bytes left, by
+/// reference: a component's encoder ([`Encoder::put`]) takes each byte it
+/// writes from the same count as its parent's, as it writes it. So the
+/// count is right at every moment, also when a component's `encode`
+/// unwinds and its parent catches the unwind, and no write passes the
+/// size requested for the output.
 ///
 /// Its `Debug` shows the message's name only: neither the output, which
 /// may hold a secret-bearing message, nor the bytes still to write, which
 /// would tell a secret field's length.
 pub struct Encoder<'o, T: ?Sized> {
     out: &'o mut Vec<u8>,
-    remaining: u64,
+    remaining: &'o mut u64,
     message: &'static str,
     cap: u32,
     value: PhantomData<fn(&T)>,
@@ -303,10 +310,16 @@ pub fn encode<T: Encode + MessageType + ?Sized>(value: &T) -> Result<Vec<u8>, Er
 ///   message is refused with `AllocationFailed`. The output is written by
 ///   `push` alone, within that size. So every byte the encoder writes
 ///   stays in the one allocation the caller holds.
-/// - **Every call starts and every error ends with a wipe.** Before
-///   anything else, the encoder overwrites `out` and its spare capacity
-///   with zeros and leaves it empty; on any error, whatever it raises,
-///   it does so again. On success `out` holds exactly the message.
+/// - **Every call starts with a wipe, and so ends unless it succeeds.**
+///   Before anything else, the encoder overwrites `out` and its spare
+///   capacity with zeros and leaves it empty; on any error, whatever it
+///   raises, and when a value's `encode` unwinds, it does so again. On
+///   success `out` holds exactly the message.
+/// - **A value's unwind moves nothing.** Each byte is counted against
+///   the message's size as it is written, in the one count every
+///   component's encoder shares, and no write passes the buffer's
+///   capacity. So a value that catches a component's unwind and writes
+///   on is held to the same size, and the allocation stays in place.
 /// - **The wipe that holds is the caller's.** The encoder's zeroing is
 ///   best effort: ordinary writes to memory that is about to be cleared
 ///   may be removed by the compiler, and a pure crate cannot write any
@@ -340,11 +353,26 @@ fn encode_message<T: Encode + ?Sized>(
     out: &mut Vec<u8>,
 ) -> Result<(), Error> {
     wipe(out);
-    let written = write(message, value, out);
-    if written.is_err() {
-        wipe(out);
+    let mut output = Output { out, keep: false };
+    write(message, value, output.out)?;
+    output.keep = true;
+    Ok(())
+}
+
+/// The caller's buffer while a message is written into it. Unless the
+/// message was written whole, leaving it wipes the buffer: on an error,
+/// and when a value's `encode` unwinds.
+struct Output<'o> {
+    out: &'o mut Vec<u8>,
+    keep: bool,
+}
+
+impl Drop for Output<'_> {
+    fn drop(&mut self) {
+        if !self.keep {
+            wipe(self.out);
+        }
     }
-    written
 }
 
 /// `MessageTooLarge` naming `message`.
@@ -383,15 +411,16 @@ fn write<T: Encode + ?Sized>(message: &Message, value: &T, out: &mut Vec<u8>) ->
     )]
     out.try_reserve_exact(length)
         .map_err(|_| Error::new(ErrorKind::AllocationFailed))?;
+    let mut remaining = size;
     let mut encoder = Encoder {
         out,
-        remaining: size,
+        remaining: &mut remaining,
         message: message.name,
         cap: message.cap,
         value: PhantomData,
     };
     value.encode(&mut encoder)?;
-    if encoder.remaining == 0 {
+    if *encoder.remaining == 0 {
         Ok(())
     } else {
         Err(encoder.overrun())
@@ -582,16 +611,13 @@ impl<T: Encode + ?Sized> Encoder<'_, T> {
                 "a type that writes a secret component must declare SECRET"
             );
         }
-        let mut encoder = Encoder {
+        component.encode(&mut Encoder {
             out: &mut *self.out,
-            remaining: self.remaining,
+            remaining: &mut *self.remaining,
             message: self.message,
             cap: self.cap,
             value: PhantomData,
-        };
-        let written = component.encode(&mut encoder);
-        self.remaining = encoder.remaining;
-        written
+        })
     }
 
     /// Writes a variable-length array: its count word, then each element.
@@ -629,14 +655,22 @@ impl<T: Encode + ?Sized> Encoder<'_, T> {
         Ok(())
     }
 
-    /// Pushes `bytes`, within the size requested for the output, so the
-    /// buffer never grows.
+    /// Pushes `bytes`, within the size requested for the output and
+    /// within the buffer's capacity, so the buffer never grows: `push`
+    /// within the capacity never reallocates. The count alone keeps every
+    /// write within the size; the capacity is checked as well, so that
+    /// the allocation's staying in place does not rest on the count.
     fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), Error> {
         let length = u64::try_from(bytes.len()).map_err(|_| self.overrun())?;
-        self.remaining = self
+        let left = self
             .remaining
             .checked_sub(length)
             .ok_or_else(|| self.overrun())?;
+        let room = self.out.capacity().saturating_sub(self.out.len());
+        if bytes.len() > room {
+            return Err(self.overrun());
+        }
+        *self.remaining = left;
         for byte in bytes {
             self.out.push(*byte);
         }
