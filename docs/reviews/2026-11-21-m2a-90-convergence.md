@@ -25,6 +25,15 @@ Class I. Issue #54.
   that shows the counts falling, few findings introduced by the fixes and
   the kinds narrowing. Otherwise the change is split, its mechanism moves
   into specification items, it is redesigned, or its blocker is recorded.
+- The owner's review-depth rule, approved on 2026-11-21, added in
+  `b3c8acc` to §3, steps 1 and 3:
+  - text is classed by what it governs, not by its form;
+  - an issue brief gets two reviews before it is filed: one non-author
+    family, plus a focused pass by a second non-author family;
+  - a design point is deferred only if the current work is correct
+    whichever way it is decided;
+  - review runs per brief, and acceptance defects found later, are
+    counted.
 - The fixes also touched `AI.md` (the owner's checklist) and this
   directory's README (the record format), so that both agree with the new
   rules.
@@ -36,10 +45,23 @@ Class I. Issue #54.
 |---|---|---|---|---|---|---|
 | 1, review | `f81aa7d..8ccfdec` | GLM | glm-5.3 (uncalibrated on IronAFS) | high | FAIL: 1 blocker, 3 major, 6 minor | not reported |
 | 2, fix verification | `8ccfdec..a82aeaf` | GLM | glm-5.3 (uncalibrated on IronAFS) | high | FAIL: 1 minor | not reported |
+| 3, review of the added rule | `9782a22..b3c8acc` | GLM | glm-5.3 (uncalibrated on IronAFS) | high | PASS: 4 minor | not reported |
 
-There were only two rounds, so no convergence note was required. Round 2
-found all ten round-1 findings fixed. Its one minor finding was fixed in
-`496ce0d` and recorded here under the stop rule, with no further round.
+Round 2 found all ten round-1 findings fixed. Its one minor finding was
+fixed in `496ce0d`. Round 3 reviewed the owner's review-depth rule, which
+was added after round 2. Its four minor findings were fixed in `29e936b`
+and recorded here under the stop rule, with no further round.
+
+**Convergence note.** This note was required before round 3 but was
+written after it: a departure from the new rule, recorded here.
+
+- Counts of blockers and majors per round: 1 and 3, then 0 and 0, then
+  0 and 0.
+- Introduced by the last fix: round 2's one finding was introduced by fix
+  round 1. Round 3's four findings came from text new in `b3c8acc`; none
+  came from a fix.
+- Kind: no drift. All findings were contract or consistency findings, and
+  they narrowed from loopholes in closure to wording and definitions.
 
 ## Findings
 
@@ -93,6 +115,23 @@ Round 2:
   later sha only if every change to those files since then was a verified
   fix. The split change's record carries the part's findings.
 
+Round 3:
+
+- **Minor, fixed in `29e936b`** (origin: introduced in `b3c8acc`; kind:
+  contract). "Marked ready" named a step that no rule performs. The rule
+  now applies before a brief is filed or dispatched.
+- **Minor, fixed in `29e936b`** (origin: introduced in `b3c8acc`; kind:
+  contract). "The same revision" could not be pinned for issue text. It
+  is now the draft file, pinned by its sha256 prefix.
+- **Minor, fixed in `29e936b`** (origin: introduced in `b3c8acc`; kind:
+  contract). The antecedent of "each one" was ambiguous. The text now
+  says "each prerequisite".
+- **Minor, fixed in `29e936b`** (origin: introduced in `b3c8acc`; kind:
+  missing mechanism). Brief reviews and their counts had no record. They
+  go in the `docs/reviews/` record for the batch of briefs filed
+  together. The second pass is also stated to be by a non-author family,
+  which was a cheap item from round 3's uncertain list.
+
 Cheap items from round 2's uncertain list, fixed in the same commit: the
 skill's final-diff verification is scoped to class I and above, and the
 skill's judgement question names correctness or contract defects, as the
@@ -104,5 +143,13 @@ Left as they are:
   refutation seat. This rule predates this change, and the issue scoped
   the refutation seat to blockers and majors.
 - The convergence criteria are qualitative, as adopted.
+- From round 3's uncertain list:
+  - the focus of the second pass is not defined;
+  - no routing row names the pin for a brief review;
+  - no process row in §1 shows how much of the closure rules text may
+    drop;
+  - a deferral can exist before any issue depends on it, and nothing
+    adds the blocker link when a dependent issue is created later;
+  - the task issue form has no fields for prerequisites.
 - The tree was searched for the old stop rule and the old checklist
   wording. Only the files changed here held them.
