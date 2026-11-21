@@ -120,23 +120,53 @@ jobs:
         run: cargo test --doc --workspace --locked
       - name: Run the dump marker tests, with core files and with a piped collector
         # ADR 0004, O26, point 5, and ADR 0005, sheets 11 and 12: each image
-        # goes to <dir>/core.<pid>, first written by the kernel, then through
-        # a pipe to tee, with core_pipe_limit above zero so the kernel waits
-        # for the collector. The tests run as root (the id-change and
-        # set-id exec tests, and the peer under another uid, need it),
-        # through nextest's target runner.
+        # goes to <dir>/core.<pid> in a directory only the runner's user can
+        # enter, first written by the kernel, then piped to a collector that
+        # copies its standard input to that one file (with core_pipe_limit
+        # above zero, so the kernel waits for it). The marker tests run as
+        # the runner's user, whose shell raised the core-file limit: sudo
+        # would set it back to 0 (sudoers(5): "the core dump file size ...
+        # is set by sudoers to 0 by default"). Each named case must pass in
+        # each mode.
         timeout-minutes: 10
         run: |
           dir="$RUNNER_TEMP/ironafs-cores"
-          mkdir -p "$dir"
-          chmod 0777 "$dir"
+          mkdir -m 0700 "$dir"
+          collector="$RUNNER_TEMP/ironafs-core-collector"
+          printf '#!/bin/sh\nexec /usr/bin/cat > "$1"\n' > "$collector"
+          chmod 0755 "$collector"
           ulimit -c unlimited
           export IRONAFS_CORE_DIR="$dir"
-          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="sudo --preserve-env=IRONAFS_CORE_DIR"
-          filter='test(/leaves_no_image|dump_of_an_unprotected|id_change|set_id_exec|another_uid/)'
-          for pattern in "$dir/core.%p" "|/usr/bin/tee $dir/core.%p"; do
+          markers="unix_nodump::tests::kernel::disable_dumps_leaves_no_image_where_an_unprotected_child_leaves_its_marker
+          linux_dontdump::tests::kernel::dump_of_an_unprotected_child_holds_its_control_marker_and_not_its_secret_buffer"
+          filter=$(printf 'test(=%s) | ' $markers)
+          for pattern in "$dir/core.%p" "|$collector $dir/core.%p"; do
             sudo sysctl -w kernel.core_pipe_limit=16 "kernel.core_pattern=$pattern"
-            cargo nextest run -p ironafs-os --profile ci --retries 0 --no-tests fail --locked --run-ignored only -E "$filter"
+            status=0
+            cargo nextest run -p ironafs-os --profile ci --retries 0 --no-tests fail --locked --run-ignored only -E "${filter% | }" > markers.log 2>&1 || status=$?
+            cat markers.log
+            test "$status" -eq 0
+            for test in $markers; do
+              grep -Eq "^ +PASS .* ironafs-os $test\$" markers.log
+            done
+          done
+      - name: Run the tests that need root, each named
+        # The id-change and set-id exec resets of the dumpable attribute,
+        # and a peer under another uid, through nextest's target runner.
+        timeout-minutes: 10
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo
+        run: |
+          privileged="unix_nodump::tests::kernel::an_exec_as_another_user_resets_the_attribute_and_disable_dumps_restores_it
+          unix_nodump::tests::kernel::a_set_id_exec_resets_the_attribute_to_suid_dumpable_and_disable_dumps_restores_it
+          linux_peercred::tests::kernel::peer_credentials_name_a_peer_under_another_uid"
+          filter=$(printf 'test(=%s) | ' $privileged)
+          status=0
+          cargo nextest run -p ironafs-os --profile ci --retries 0 --no-tests fail --locked --run-ignored only -E "${filter% | }" > privileged.log 2>&1 || status=$?
+          cat privileged.log
+          test "$status" -eq 0
+          for test in $privileged; do
+            grep -Eq "^ +PASS .* ironafs-os $test\$" privileged.log
           done
 
   os-linux:

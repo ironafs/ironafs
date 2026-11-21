@@ -20,8 +20,11 @@
 //! variable [`CORE_DIR`]: either straight to the file
 //! (`kernel.core_pattern = <dir>/core.%p`, with a non-zero core-file limit
 //! in the shell that runs the tests) or through a pipe to a program that
-//! records every image it is handed
-//! (`kernel.core_pattern = |/usr/bin/tee <dir>/core.%p`, with
+//! records every image it is handed, copying its standard input to that one
+//! file (`kernel.core_pattern = |<collector> <dir>/core.%p`, the collector
+//! a script `exec cat > "$1"`; not `tee`, whose standard output the kernel
+//! leaves closed, so the image file can take its place and be written
+//! twice; with
 //! `kernel.core_pipe_limit` above zero, so the kernel waits for the
 //! collector to exit before the child is reaped; core(5)). Those tests are
 //! ignored by default and run where the machine is so configured.
@@ -198,7 +201,8 @@ impl Collector {
 
     /// The image the child `pid` left, removed from the directory, or
     /// `None` if it left none. A present image must be a whole ELF core
-    /// file: every segment its program headers name is in it.
+    /// file, exactly: every segment its program headers name is in it, and
+    /// nothing after the last.
     pub(crate) fn take_image(&self, pid: u32) -> Option<Vec<u8>> {
         let path = self.dir.join(format!("core.{pid}"));
         let image = match fs::read(&path) {
@@ -209,9 +213,12 @@ impl Collector {
         fs::remove_file(&path).unwrap();
         let end = elf_core_end(&image)
             .unwrap_or_else(|| panic!("{}: not an ELF core file", path.display()));
-        assert!(
-            image.len() >= end,
-            "{}: {} bytes of an image of {end}: truncated",
+        // Exactly that long: shorter is truncated, longer is a collector
+        // that wrote some of it twice.
+        assert_eq!(
+            image.len(),
+            end,
+            "{}: {} bytes where the image's headers give {end}",
             path.display(),
             image.len()
         );
@@ -262,4 +269,44 @@ fn elf_core_end(image: &[u8]) -> Option<usize> {
         end = end.max(offset + size);
     }
     Some(end)
+}
+
+/// A directory made for one test, entered by its owner alone, and removed
+/// with everything in it when dropped, on every path out of the test.
+#[derive(Debug)]
+pub(crate) struct PrivateDir {
+    path: PathBuf,
+}
+
+impl PrivateDir {
+    /// A new directory under the system's temporary directory, its name
+    /// `prefix`, this process's id and a count, so no two are the same.
+    pub(crate) fn create(prefix: &str) -> io::Result<Self> {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNT: AtomicU32 = AtomicU32::new(0);
+        let count = COUNT.fetch_add(1, Ordering::Relaxed);
+        Self::at(std::env::temp_dir().join(format!("{prefix}-{}-{count}", std::process::id())))
+    }
+
+    /// A new directory at `path`, mode 0700.
+    pub(crate) fn at(path: PathBuf) -> io::Result<Self> {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        // Not recursive: a path that exists already, whoever made it, is
+        // refused, so nothing placed there in advance is used.
+        fs::DirBuilder::new().mode(0o700).create(&path)?;
+        let made = Self { path };
+        fs::set_permissions(&made.path, fs::Permissions::from_mode(0o700))?;
+        Ok(made)
+    }
+
+    /// The directory's path.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for PrivateDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
