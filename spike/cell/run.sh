@@ -22,8 +22,9 @@
 #    fileservers, both fileservers answering from another container and from
 #    the host's network namespace, and no AFS kernel module on the host.
 #    In the modes in SEED_MODES: the packages' documentation on afsd.fuse
-#    and its cache, a 20 s foreground run of each afsd.fuse variant (cache
-#    home and options) with its output and exit status, a server-side view,
+#    and its cache, a 25 s foreground run of each afsd.fuse variant (where
+#    its configuration is read from, the order of its arguments, -blocks),
+#    probed at 6, 15 and 20 s, with its argv, parse, output and exit status, a server-side view,
 #    one afsio diagnostic call (afsio is unusable in this build), then two
 #    seeding routes through afsd.fuse (with a ticket; under bos setauth
 #    off), each with fs setacl where fs reaches afsd.fuse and a release, and
@@ -39,15 +40,15 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/env.sh"
 
 runner_label=${RUNNER_LABEL:-local}
-# Rounds 3 and 4: mode a only (round 2's mode c control passed on all four
+# Rounds 3 to 5: mode a only (round 2's mode c control passed on all four
 # runners).
 read -r -a spike_modes <<<"${SPIKE_MODES:-a}"
 read -r -a seed_modes <<<"${SEED_MODES:-a}"
-# The tmpfs is afsd.fuse's cache home (round 3: the cache it sized was far
-# below cacheinfo's; incell.sh's CACHE_TMPFS).
+# The tmpfs is afsd.fuse's cache home (incell.sh's CACHE_TMPFS; round 4:
+# the ASSERT on the cache size came with 512 MiB free on it).
 FUSE_FLAGS=(--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined
   --tmpfs "/var/cache/openafs:rw,size=512m,mode=0700")
-FUSE_VARIANT="tmpfs" # replaced by the first variant the fuse-diag step finds serving
+FUSE_VARIANT="etc-flags" # replaced by the first variant the fuse-diag step finds serving
 run_id="$(date -u +%Y%m%d%H%M%S)-$$"
 prefix="spike47-$run_id"
 work=$(mktemp -d)
@@ -229,9 +230,9 @@ fuse_container() {
   show "$mode: $role mount (variant $FUSE_VARIANT)" ex "$mode" "$role" fuse-wait
 }
 
-# fuse_diag <mode>: run every afsd.fuse variant for 20 s in a container of
-# its own and keep the first that stays alive and serves /afs as
-# FUSE_VARIANT.
+# fuse_diag <mode>: run every afsd.fuse variant for 25 s in a container of
+# its own, record one row per variant, and keep the first that stays alive
+# and serves /afs at every probe as FUSE_VARIANT.
 fuse_diag() {
   local mode=$1 logf chosen
   if ! try "$mode: fuse-diag container" start_container "$mode" fuse-diag "$IP_FUSE_DIAG" "${flags[@]}" "${FUSE_FLAGS[@]}" ||
@@ -240,9 +241,14 @@ fuse_diag() {
     return
   fi
   logf="$work/logs/$mode-fuse-diag.log"
-  log "$mode: afsd.fuse variants, 20 s each (output below)"
+  log "$mode: afsd.fuse variants, 25 s each (output below)"
   ex "$mode" fuse-diag fuse-diag >"$logf" 2>&1
   sed 's/^/    | /' "$logf"
+  local row n=0
+  while IFS= read -r row; do
+    n=$((n + 1))
+    rec "$mode" "variant:$(printf '%02d' "$n")" "$row"
+  done < <(sed -n 's/^variant-row: //p' "$logf")
   chosen=$(sed -n 's/^fuse-variant-ok: //p' "$logf" | tail -n 1)
   if [[ -n $chosen && $chosen != none ]]; then
     FUSE_VARIANT=$chosen
@@ -539,8 +545,16 @@ summary="$work/summary.md"
     [[ $(get "$m" seeding) == ran ]] || continue
     printf '\n#### Seeding routes, mode %s (fuse containers: %s; NoAuth cleared before the reads: %s)\n\n' \
       "$m" "$(get "$m" fuse_flags)" "$(get "$m" noauth_cleared)"
-    printf -- '- afsd.fuse variant alive and serving /afs (20 s foreground runs): %s\n' "$(get "$m" fuse_variant)"
+    printf -- '- afsd.fuse variant alive and serving /afs at 6, 15 and 20 s: %s\n' "$(get "$m" fuse_variant)"
     printf -- '- the one afsio call (anonymous read of a missing name, before seeding): %s\n\n' "$(get "$m" anon_probe)"
+    printf '| variant | argv | /usr/vice/etc | parsed | 6 s | 15 s | 20 s | ASSERT | exit |\n'
+    printf '|---|---|---|---|---|---|---|---|---|\n'
+    awk -F'\t' -v m="$m" '$1 == m && $2 ~ /^variant:/ { print $3 }' "$results" |
+      while IFS='|' read -r vn vargv vvice vparsed v6 v15 v20 vassert vexit; do
+        printf "| %s | \`%s\` | %s | %s | %s | %s | %s | %s | %s |\n" \
+          "$vn" "$vargv" "$vvice" "$vparsed" "$v6" "$v15" "$v20" "${vassert:--}" "$vexit"
+      done
+    printf '\nProbe cells: alive/mounted/answers (y or n).\n\n'
     printf '| route |'
     printf ' %s |' "${route_fields[@]}"
     printf '\n|---|'

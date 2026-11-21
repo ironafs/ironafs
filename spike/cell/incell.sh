@@ -439,67 +439,127 @@ assert_no_credentials() {
 
 # afsd.fuse, a user-space cache manager over /dev/fuse.
 #
-# Round 3: every variant exited at once with "afsd: ASSERT: cacheFiles 1000
-# diskblocks -26": the cache it sized was far below the 50000 blocks in
-# cacheinfo. Round 4 gives the cache a filesystem of known size and names
-# the cache explicitly. The afsd manual page's cacheinfo format is one line,
-# <mount dir>:<cache dir>:<cache size in 1 KiB blocks>. Two cache homes:
-#   CACHE_TMPFS  a tmpfs that run.sh mounts on the fuse containers (512 MiB);
-#   CACHE_LAYER  a directory on the container's writable layer.
+# Round 4: every flag-only start died within 6 s with "afsd: ASSERT:
+# cacheFiles 1000  diskblocks -26" (cacheinfo /afs:<cache>:50000 in
+# /etc/openafs, a 512 MiB tmpfs under the cache), leaving a dead mount; and
+# every start with a valued switch failed to parse ("Too many values after
+# switch -files" with `... -files 2000 -f /afs`). Round 5's variants test:
+#   H1  afsd.fuse does not read /etc/openafs/cacheinfo (the cache size it
+#       uses is neither 50000 nor the free space): it reads
+#       /usr/vice/etc/cacheinfo (H1a, a copy of cacheinfo there), or all its
+#       configuration from /usr/vice/etc (H1b, /usr/vice/etc -> /etc/openafs),
+#       or -confdir names the directory (H1c);
+#   H2  the FUSE arguments (-f, -s, the mount point) are taken out before
+#       afsd's switches are parsed, so a trailing mount point becomes another
+#       value of the last valued switch: valued switches first and a flag last
+#       parse (H2a), the mount point first parses (H2b), `--` ends the values
+#       (H2c), and without a mount point the switches parse (H2d);
+#   H3  -blocks overrides the cache size, for a disk cache (H3a) and a memory
+#       cache (H3b).
+# The cacheinfo format (afsd and cacheinfo manual pages): one line,
+# <mount dir>:<cache dir>:<cache size in 1 KiB blocks>.
 CACHE_TMPFS=/var/cache/openafs
-CACHE_LAYER=/var/lib/openafs-cache
 CACHE_BLOCKS=50000
 
 cmd_fuse_prepare() {
   cmd_client_setup
   write_krb5_conf
-  mkdir -p /afs "$CACHE_TMPFS" "$CACHE_LAYER"
-  fuse_variant_args tmpfs
+  mkdir -p /afs "$CACHE_TMPFS"
+  fuse_variant_args "${1:-etc-flags}" || die "unknown variant ${1:-}"
   fuse_cache_prepare
   command -v afsd.fuse || die "afsd.fuse is not installed"
 }
 
-# fuse_variant_args <variant>: sets FUSE_ARGS and CACHE_DIR. The tmpfs cache
-# with cacheinfo alone comes first; the others vary one thing (explicit
-# sizes, the writable layer, fewer cache files, a memory cache, FUSE's
-# background and single-threaded forms). afsd's -debug trace is not used:
-# its detail could carry internal names into the log, which is later read by
-# a model (ADR 0001).
+# fuse_variant_args <variant>: sets FUSE_ARGS, CACHE_DIR and VICE (where
+# /usr/vice/etc comes from: none, file = a copy of cacheinfo only, link = a
+# symlink to /etc/openafs), and HYPOTHESIS (one line for the log). afsd's
+# -debug trace is not used: its detail could carry internal names into the
+# log, which is later read by a model (ADR 0001).
 fuse_variant_args() {
   CACHE_DIR=$CACHE_TMPFS
-  local -a base=(-dynroot -fakestat)
+  VICE="none"
+  local -a flags=(-dynroot -fakestat)
+  local -a valued=(-blocks "$CACHE_BLOCKS" -files 2000)
   case $1 in
-    tmpfs) FUSE_ARGS=("${base[@]}" -f /afs) ;;
-    tmpfs-explicit)
-      FUSE_ARGS=("${base[@]}" -cachedir "$CACHE_TMPFS" -blocks "$CACHE_BLOCKS" -files 2000 -f /afs) ;;
-    tmpfs-verbose) FUSE_ARGS=("${base[@]}" -verbose -f /afs) ;;
-    layer) CACHE_DIR=$CACHE_LAYER; FUSE_ARGS=("${base[@]}" -f /afs) ;;
-    layer-explicit)
-      CACHE_DIR=$CACHE_LAYER
-      FUSE_ARGS=("${base[@]}" -cachedir "$CACHE_LAYER" -blocks "$CACHE_BLOCKS" -files 2000 -f /afs) ;;
-    few-files) FUSE_ARGS=("${base[@]}" -blocks "$CACHE_BLOCKS" -files 500 -f /afs) ;;
-    memcache) FUSE_ARGS=("${base[@]}" -memcache -blocks 20000 -f /afs) ;;
-    bg) FUSE_ARGS=("${base[@]}" /afs) ;;
-    single) FUSE_ARGS=("${base[@]}" -f -s /afs) ;;
+    etc-flags)
+      HYPOTHESIS="control: round 4's form, cacheinfo in /etc/openafs only (expect the ASSERT)"
+      FUSE_ARGS=("${flags[@]}" -f /afs) ;;
+    vice-file-flags)
+      VICE="file"
+      HYPOTHESIS="H1a: cacheinfo is read from /usr/vice/etc/cacheinfo"
+      FUSE_ARGS=("${flags[@]}" -f /afs) ;;
+    vice-link-flags)
+      VICE="link"
+      HYPOTHESIS="H1b: all client configuration is read from /usr/vice/etc"
+      FUSE_ARGS=("${flags[@]}" -f /afs) ;;
+    valued-first)
+      HYPOTHESIS="H2a + H3a: valued switches first, then flags, -f and /afs; -blocks sets the size"
+      FUSE_ARGS=("${valued[@]}" "${flags[@]}" -f /afs) ;;
+    valued-first-blocks)
+      HYPOTHESIS="H2a + H3a with one valued switch (-blocks only; files derived)"
+      FUSE_ARGS=(-blocks "$CACHE_BLOCKS" "${flags[@]}" -f /afs) ;;
+    mount-first)
+      HYPOTHESIS="H2b: the mount point and -f first, afsd switches after"
+      FUSE_ARGS=(/afs -f "${valued[@]}" "${flags[@]}") ;;
+    dashdash)
+      HYPOTHESIS="H2c: -- ends the afsd switches; the FUSE part after it"
+      FUSE_ARGS=("${flags[@]}" "${valued[@]}" -- -f /afs) ;;
+    no-mountpoint)
+      HYPOTHESIS="H2d: valued switch last and no mount point argument (mount dir from cacheinfo?)"
+      FUSE_ARGS=("${flags[@]}" "${valued[@]}" -f) ;;
+    confdir-first)
+      HYPOTHESIS="H1c (+ H2a order): -confdir /etc/openafs names the configuration directory"
+      FUSE_ARGS=(-confdir /etc/openafs "${flags[@]}" -f /afs) ;;
+    memcache-first)
+      HYPOTHESIS="H3b (+ H2a order): a memory cache sized by -blocks, no disk cache"
+      FUSE_ARGS=(-memcache -blocks 20000 "${flags[@]}" -f /afs) ;;
+    vice-link-valued)
+      VICE="link"
+      HYPOTHESIS="H1b + H2a + H3a combined, with -cachedir"
+      FUSE_ARGS=(-cachedir "$CACHE_TMPFS" "${valued[@]}" "${flags[@]}" -f /afs) ;;
+    vice-link-single)
+      VICE="link"
+      HYPOTHESIS="H1b with FUSE's single-threaded form (-s)"
+      FUSE_ARGS=("${flags[@]}" -f -s /afs) ;;
     *) return 1 ;;
   esac
 }
-FUSE_VARIANTS=(tmpfs tmpfs-explicit tmpfs-verbose layer layer-explicit few-files memcache bg single)
+FUSE_VARIANTS=(etc-flags vice-file-flags vice-link-flags valued-first valued-first-blocks
+  mount-first dashdash no-mountpoint confdir-first memcache-first vice-link-valued
+  vice-link-single)
 
-# An empty cache directory and a cacheinfo naming it, before each start.
+# An empty cache directory, a cacheinfo naming it, and /usr/vice/etc as the
+# variant asks, before each start.
 fuse_cache_prepare() {
   mkdir -p "$CACHE_DIR"
   chmod 0700 "$CACHE_DIR"
   find "$CACHE_DIR" -mindepth 1 -delete 2>/dev/null
   printf '/afs:%s:%s\n' "$CACHE_DIR" "$CACHE_BLOCKS" >/etc/openafs/cacheinfo
+  rm -rf /usr/vice/etc
+  case $VICE in
+    file)
+      mkdir -p /usr/vice/etc
+      cp /etc/openafs/cacheinfo /usr/vice/etc/cacheinfo ;;
+    link)
+      mkdir -p /usr/vice
+      ln -s /etc/openafs /usr/vice/etc ;;
+  esac
 }
 
-# The cache homes as the kernel sees them (type, size, free space).
+vice_view() {
+  if [[ -L /usr/vice/etc ]]; then
+    printf 'symlink to %s' "$(readlink /usr/vice/etc)"
+  elif [[ -d /usr/vice/etc ]]; then
+    printf 'directory: %s' "$(find /usr/vice/etc -mindepth 1 -maxdepth 1 -printf '%f ')"
+  else
+    printf 'absent'
+  fi
+}
+
+# The cache home as the kernel sees it (type, size, free space).
 cache_fs_view() {
-  local d
-  for d in "$CACHE_TMPFS" "$CACHE_LAYER"; do
-    say "cache home $d: $(stat -f -c 'type %T, block %S, blocks %b, free %f' "$d" 2>&1); $(df -k "$d" 2>&1 | awk 'NR == 2 { print $2 " KiB, " $4 " KiB free" }')"
-  done
+  local d=$CACHE_TMPFS
+  say "cache home $d: $(stat -f -c 'type %T, block %S, blocks %b, free %f' "$d" 2>&1); $(df -k "$d" 2>&1 | awk 'NR == 2 { print $2 " KiB, " $4 " KiB free" }')"
 }
 
 # No procps in the image (round 2's pgrep check always said NOT running).
@@ -534,9 +594,9 @@ fuse_log_tail() {
 # output and the exit status go to the log.
 cmd_fuse_run() {
   local rc
-  fuse_variant_args "${1:-tmpfs}" || die "unknown variant ${1:-}"
+  fuse_variant_args "${1:-etc-flags}" || die "unknown variant ${1:-}"
   fuse_cache_prepare
-  say "afsd.fuse ${FUSE_ARGS[*]} (cacheinfo: $(cat /etc/openafs/cacheinfo))" >/var/log/afsd.fuse.log
+  say "afsd.fuse ${FUSE_ARGS[*]} (cacheinfo: $(cat /etc/openafs/cacheinfo); /usr/vice/etc: $(vice_view))" >/var/log/afsd.fuse.log
   afsd.fuse "${FUSE_ARGS[@]}" >>/var/log/afsd.fuse.log 2>&1
   rc=$?
   say "afsd.fuse exit status $rc$( ((rc > 128)) && echo " (signal $((rc - 128)))")" >>/var/log/afsd.fuse.log
@@ -553,45 +613,73 @@ cmd_fuse_wait() {
   return 1
 }
 
-# fuse-diag: each variant for up to 20 s in this container; probe at 6 s and
-# at 15 s; print its output (head and tail), its exit status and whether it
-# served. Exit 124 means it was still running at 20 s. The first variant
-# that served at both probes is printed as "fuse-variant-ok: <name>".
+# PARSE_BAD: output lines that mean the command line was refused.
+PARSE_BAD='Too many values|[Uu]nrecognized|[Uu]nknown (switch|option)|[Aa]mbiguous|[Uu]sage:|missing (mount|argument)|[Ii]nvalid (argument|option)'
+
+# probe_now: process alive, /afs a FUSE mount, /afs answers stat.
+# Sets ALIVE, MOUNTED, ANSWERS.
+probe_now() {
+  afsd_alive && ALIVE=yes || ALIVE=no
+  fuse_mounted && MOUNTED=yes || MOUNTED=no
+  ANSWERS=no
+  [[ $MOUNTED == yes ]] && timeout 5 stat /afs >/dev/null 2>&1 && ANSWERS=yes
+}
+
+# fuse-diag: each variant for up to 25 s in this container, probed at 6, 15
+# and 20 s. Each prints its exact argv, the hypothesis, whether it parsed,
+# alive/mounted/answering at each probe, the ASSERT line if any, its exit
+# status and output, and one machine-read line:
+#   variant-row: <name>|<argv>|<vice>|<parsed>|<6 s>|<15 s>|<20 s>|<assert>|<exit>
+# where each probe is alive/mounted/answers as y or n. The first variant that
+# answered at all three probes is printed as "fuse-variant-ok: <name>".
 cmd_fuse_diag() {
-  local v pid rc alive mounted served served_late lsout chosen="" log=/tmp/fuse-diag.log
+  local v pid rc parsed assert lsout row chosen="" log=/tmp/fuse-diag.log t now
+  local -a probes
   say "fuse.conf: $(grep -v '^#' /etc/fuse.conf 2>/dev/null | grep -v '^$' | tr '\n' ' ' || echo absent)"
   say "fusermount: $(command -v fusermount3 fusermount | tr '\n' ' ')"
   say "/dev/fuse: $(ls -l /dev/fuse 2>&1)"
   say "/proc/fs/openafs: $([[ -e /proc/fs/openafs ]] && echo present || echo absent)"
-  say "uid: $(id -u); /etc/openafs: $(find /etc/openafs -maxdepth 1 -type f -printf '%f ' 2>&1); /usr/vice/etc: $(find /usr/vice/etc -maxdepth 1 -printf '%f ' 2>&1)"
+  say "uid: $(id -u); /etc/openafs: $(find /etc/openafs -maxdepth 1 -type f -printf '%f ' 2>&1)"
   cache_fs_view
   say "tmpfs mount: $(grep " $CACHE_TMPFS " /proc/mounts || echo 'none (not mounted)')"
   fuse_unmount
   for v in "${FUSE_VARIANTS[@]}"; do
     fuse_variant_args "$v"
     fuse_cache_prepare
-    say "=== variant $v: afsd.fuse ${FUSE_ARGS[*]}; cacheinfo $(cat /etc/openafs/cacheinfo)"
+    say "=== variant $v"
+    say "hypothesis: $HYPOTHESIS"
+    say "argv: afsd.fuse $(printf '%q ' "${FUSE_ARGS[@]}")"
+    say "cacheinfo /etc/openafs: $(cat /etc/openafs/cacheinfo); /usr/vice/etc: $(vice_view); /usr/vice/etc/cacheinfo: $(cat /usr/vice/etc/cacheinfo 2>&1)"
     : >"$log"
-    timeout 20 afsd.fuse "${FUSE_ARGS[@]}" >"$log" 2>&1 &
+    timeout 25 afsd.fuse "${FUSE_ARGS[@]}" >"$log" 2>&1 &
     pid=$!
-    sleep 6
-    afsd_alive && alive=yes || alive=no
-    fuse_mounted && mounted=yes || mounted=no
-    served=no
-    if lsout=$(timeout 5 ls -la /afs 2>&1); then served=yes; fi
-    say "at 6 s: process alive=$alive mounted=$mounted ls /afs: $(head -n 3 <<<"$lsout" | tr '\n' ' ')"
-    if [[ $served == yes ]]; then
-      say "ls /afs/$CELL: $(timeout 10 ls "/afs/$CELL" 2>&1 | head -n 3 | tr '\n' ' ')"
-      say "fs wscell: $(timeout 10 fs wscell 2>&1 | tr '\n' ' ')"
-      say "fs listacl /afs/.$CELL: $(timeout 10 fs listacl -path "/afs/.$CELL" 2>&1 | tr '\n' ' ')"
-    fi
-    sleep 4
-    served_late=no
-    afsd_alive && timeout 5 stat /afs >/dev/null 2>&1 && served_late=yes
-    say "at 15 s: alive and answering stat: $served_late; cache files: $(find "$CACHE_DIR" -type f 2>/dev/null | wc -l), $(du -sk "$CACHE_DIR" 2>/dev/null | cut -f1) KiB"
+    probes=()
+    now=0
+    for t in 6 15 20; do
+      sleep $((t - now))
+      now=$t
+      probe_now
+      probes+=("${ALIVE:0:1}/${MOUNTED:0:1}/${ANSWERS:0:1}")
+      say "at $t s: alive=$ALIVE mounted=$MOUNTED answers=$ANSWERS"
+      if [[ $t == 6 && $ANSWERS == yes ]]; then
+        lsout=$(timeout 5 ls -la /afs 2>&1)
+        say "ls /afs: $(head -n 4 <<<"$lsout" | tr '\n' ' ')"
+        say "ls /afs/$CELL: $(timeout 10 ls "/afs/$CELL" 2>&1 | head -n 3 | tr '\n' ' ')"
+        say "fs wscell: $(timeout 10 fs wscell 2>&1 | tr '\n' ' ')"
+      fi
+    done
+    say "cache files: $(find "$CACHE_DIR" -type f 2>/dev/null | wc -l), $(du -sk "$CACHE_DIR" 2>/dev/null | cut -f1) KiB"
     wait "$pid"
     rc=$?
-    say "exit status $rc$( ((rc == 124)) && echo ' (still running at 20 s, stopped by timeout)')$( ((rc > 128)) && echo " (signal $((rc - 128)))")"
+    say "exit status $rc$( ((rc == 124)) && echo ' (still running at 25 s, stopped by timeout)')$( ((rc > 128)) && echo " (signal $((rc - 128)))")"
+    if grep -Eq "$PARSE_BAD" "$log"; then
+      parsed="no: $(grep -Em1 "$PARSE_BAD" "$log")"
+    else
+      parsed=yes
+    fi
+    assert=$(grep -m1 'ASSERT' "$log")
+    say "parsed: $parsed"
+    say "assert: ${assert:-none}"
     say "--- output ($(wc -l <"$log") lines; head 40, tail 15) ---"
     if (($(wc -l <"$log") > 55)); then
       head -n 40 "$log"
@@ -600,9 +688,14 @@ cmd_fuse_diag() {
     else
       cat "$log"
     fi
-    if [[ -z $chosen && $served == yes && $served_late == yes ]]; then chosen=$v; fi
+    row="$v|afsd.fuse ${FUSE_ARGS[*]}|$VICE|${parsed//|//}|${probes[0]}|${probes[1]}|${probes[2]}|${assert//|//}|$rc"
+    say "variant-row: ${row//$'\t'/ }"
+    if [[ -z $chosen && ${probes[0]} == y/y/y && ${probes[1]} == y/y/y && ${probes[2]} == y/y/y ]]; then
+      chosen=$v
+    fi
     fuse_unmount
   done
+  rm -rf /usr/vice/etc
   if [[ -n $chosen ]]; then
     say "fuse-variant-ok: $chosen"
     return 0
