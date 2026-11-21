@@ -87,14 +87,14 @@ pub(in crate::linux_peercred) unsafe fn getsockopt(
     optlen: *mut socklen_t,
 ) -> c_int {
     if sockfd < 0 || level != SOL_SOCKET || optname != SO_PEERCRED {
-        return -1;
+        return refused();
     }
     #[expect(unsafe_code, reason = "linux-peercred: Miri stand-in")]
     // SAFETY: the caller promises `optlen` is valid for one read; Miri
     // checks it.
     let room = unsafe { core::ptr::read(optlen) };
     if room < SIZE {
-        return -1;
+        return refused();
     }
     let pid = i32::try_from(std::process::id()).unwrap_or(-1);
     let (length, uid) = match take() {
@@ -117,4 +117,15 @@ pub(in crate::linux_peercred) unsafe fn getsockopt(
     // SAFETY: as the read above, for one write.
     let () = unsafe { core::ptr::write(optlen, length) };
     0
+}
+
+/// `EINVAL`.
+const EINVAL: c_int = 22;
+
+/// A call of a shape the stand-in does not model: -1, with `EINVAL` as
+/// its errno, so no earlier errno (such as a planned `EINTR`) is reported
+/// for it.
+fn refused() -> c_int {
+    ERRNO.with(|cell| cell.set(EINVAL));
+    -1
 }
