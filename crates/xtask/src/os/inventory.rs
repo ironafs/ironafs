@@ -321,8 +321,10 @@ fn defines(code: &Value) -> Result<Vec<String>, String> {
 
 /// The C expressions a row's ABI check compares constants with
 /// (`expressions`, optional): an object from a constant's name to an
-/// expression of names, numbers, spaces, `*`, `+` and parentheses, since
-/// each is written into the C file.
+/// expression of names, numbers, spaces, parentheses and the operators
+/// `*`, `+`, `-`, `|`, `<<` and `>>` (a group mask is an or of shifted
+/// bits), since each is written into the C file: no quote, `#`, `;`, `/`
+/// or line break, so no expression can end the assertion it stands in.
 fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
     let Some(expressions) = code.get("expressions") else {
         return Ok(Vec::new());
@@ -341,13 +343,14 @@ fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
             let expression_ok = !expression.trim().is_empty()
                 && expression
                     .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"_ ()*+".contains(&byte));
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_ ()*+-|<>".contains(&byte));
             if name_ok && expression_ok {
                 Ok((name.clone(), expression.to_owned()))
             } else {
                 Err(format!(
                     "`expressions` maps {name:?} to {value:?}: a constant's name must map to an \
-                     expression of names, numbers, spaces, `*`, `+` and parentheses"
+                     expression of names, numbers, spaces, parentheses, `*`, `+`, `-`, `|`, `<` \
+                     and `>`"
                 ))
             }
         })

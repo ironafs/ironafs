@@ -725,6 +725,47 @@ fn struct_layout(
     Ok((offset.next_multiple_of(align), align, offsets))
 }
 
+/// The assertions of one struct: its size and alignment, and each named
+/// field's offset and type (an opaque tail is bound by the size alone).
+fn struct_assertions(
+    item: &Struct,
+    declarations: &Declarations,
+    model: DataModel,
+) -> Result<Vec<(String, String)>, String> {
+    let name = &item.name;
+    let (size, align, offsets) = struct_layout(item, declarations, model, 0)?;
+    let mut found = vec![
+        (
+            format!("sizeof(struct {name}) == {size}"),
+            format!("sizeof(struct {name})"),
+        ),
+        (
+            format!("_Alignof(struct {name}) == {align}"),
+            format!("_Alignof(struct {name})"),
+        ),
+    ];
+    let last = item.fields.len().saturating_sub(1);
+    for (index, ((field, field_type), offset)) in item.fields.iter().zip(offsets).enumerate() {
+        if field.starts_with(OPAQUE) {
+            if index != last || !matches!(field_type, CType::Array { .. }) {
+                return Err(format!(
+                    "struct {name}: an opaque field (`{field}`) is the last field, an array"
+                ));
+            }
+            continue;
+        }
+        found.push((
+            format!("offsetof(struct {name}, {field}) == {offset}"),
+            format!("offsetof(struct {name}, {field})"),
+        ));
+        found.push((
+            member_check(name, field, field_type, declarations, model)?,
+            format!("type of {name}.{field}"),
+        ));
+    }
+    Ok(found)
+}
+
 /// The C11 file of assertions for one row.
 ///
 /// # Errors
@@ -780,34 +821,8 @@ pub(crate) fn c_source(
         }
     }
     for item in &declarations.structs {
-        let name = &item.name;
-        let (size, align, offsets) = struct_layout(item, declarations, model, 0)?;
-        assert(
-            format!("sizeof(struct {name}) == {size}"),
-            format!("sizeof(struct {name})"),
-        );
-        assert(
-            format!("_Alignof(struct {name}) == {align}"),
-            format!("_Alignof(struct {name})"),
-        );
-        let last = item.fields.len().saturating_sub(1);
-        for (index, ((field, field_type), offset)) in item.fields.iter().zip(offsets).enumerate() {
-            if field.starts_with(OPAQUE) {
-                if index != last || !matches!(field_type, CType::Array { .. }) {
-                    return Err(format!(
-                        "struct {name}: an opaque field (`{field}`) is the last field, an array"
-                    ));
-                }
-                continue;
-            }
-            assert(
-                format!("offsetof(struct {name}, {field}) == {offset}"),
-                format!("offsetof(struct {name}, {field})"),
-            );
-            assert(
-                member_check(name, field, field_type, declarations, model)?,
-                format!("type of {name}.{field}"),
-            );
+        for (condition, what) in struct_assertions(item, declarations, model)? {
+            assert(condition, what);
         }
     }
     unmapped_expressions(expressions, declarations)?;

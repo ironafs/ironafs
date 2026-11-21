@@ -95,7 +95,16 @@ fn parse_reads_a_row_s_c_expressions_and_refuses_any_outside_their_alphabet() {
             "CMSG_LEN(sizeof(int))".to_owned()
         )]
     );
+    assert_eq!(
+        clock(&parse(&with("{\"GROUPS\": \"A | B | (1u << (C - 1)) >> 0\"}")).unwrap()).expressions,
+        [(
+            "GROUPS".to_owned(),
+            "A | B | (1u << (C - 1)) >> 0".to_owned()
+        )]
+    );
     for refused in [
+        "{\"X\": \"1 /* 2 */\"}",
+        "{\"X\": \"1, 2\"}",
         "{\"X\": \"1; int y\"}",
         "{\"X\": \"\\\"s\\\"\"}",
         "{\"X\": \"1)\\n#include <x.h>\\n(1\"}",
