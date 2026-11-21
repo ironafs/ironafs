@@ -47,11 +47,13 @@
 //! }
 //!
 //! impl Encode for Greeting {
+//!     const SECRET: bool = false;
+//!
 //!     fn encoded_len(&self) -> Result<u64, Error> {
 //!         sum(4, opaque_len(&NAME, self.name.len())?)
 //!     }
 //!
-//!     fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+//!     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
 //!         encoder.put_u32(self.count)?;
 //!         encoder.put_opaque(&NAME, &self.name)
 //!     }

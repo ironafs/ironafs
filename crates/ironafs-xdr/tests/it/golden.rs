@@ -9,7 +9,7 @@
 
 use std::fmt::Debug;
 
-use ironafs_xdr::{Decode, Encode, Message, decode};
+use ironafs_xdr::{Decode, Decoder, Encode, Encoder, Error, Message, MessageType, decode};
 
 use crate::support::{encoded, hex};
 use crate::types::{
@@ -24,18 +24,46 @@ const PRIMITIVE: Message = Message {
     secret: false,
 };
 
+/// A primitive value as a whole message under `PRIMITIVE`.
+#[derive(Debug, PartialEq)]
+struct Primitive<T>(T);
+
+impl<T> MessageType for Primitive<T> {
+    const MESSAGE: Message = PRIMITIVE;
+}
+
+impl<T: Encode> Encode for Primitive<T> {
+    const SECRET: bool = T::SECRET;
+
+    fn encoded_len(&self) -> Result<u64, Error> {
+        self.0.encoded_len()
+    }
+
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+        encoder.put(&self.0)
+    }
+}
+
+impl<'a, T: Decode<'a>> Decode<'a> for Primitive<T> {
+    const S_MIN: u64 = T::S_MIN;
+    const DEPTH: u32 = T::DEPTH;
+    const HEAP_RATIO: Option<u64> = T::HEAP_RATIO;
+    const RESERVATIONS: Option<u64> = T::RESERVATIONS;
+
+    fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
+        T::decode(decoder).map(Self)
+    }
+}
+
 /// Checks `value` against `expected` in both directions.
 #[track_caller]
 fn both_ways<T>(message: &Message, value: &T, expected: &str)
 where
-    T: for<'a> Decode<'a> + Encode + PartialEq + Debug,
+    T: for<'a> Decode<'a> + Encode + MessageType + PartialEq + Debug,
 {
+    assert_eq!(*message, T::MESSAGE);
     let bytes = hex(expected);
-    assert_eq!(
-        encoded(message, value).unwrap(),
-        bytes,
-        "encoding {value:?}"
-    );
+    assert_eq!(encoded(value).unwrap(), bytes, "encoding {value:?}");
     assert_eq!(
         &decode::<T>(message, &bytes).unwrap(),
         value,
@@ -46,27 +74,31 @@ where
 /// G1, §4.1: two's complement, most significant byte first.
 #[test]
 fn golden_g1_int() {
-    both_ways(&PRIMITIVE, &0_i32, "00000000");
+    both_ways(&PRIMITIVE, &Primitive(0_i32), "00000000");
     // −1 is all ones.
-    both_ways(&PRIMITIVE, &-1_i32, "ffffffff");
+    both_ways(&PRIMITIVE, &Primitive(-1_i32), "ffffffff");
     // −2³¹: only the sign bit.
-    both_ways(&PRIMITIVE, &i32::MIN, "80000000");
+    both_ways(&PRIMITIVE, &Primitive(i32::MIN), "80000000");
     // 2³¹ − 1: all but the sign bit.
-    both_ways(&PRIMITIVE, &i32::MAX, "7fffffff");
+    both_ways(&PRIMITIVE, &Primitive(i32::MAX), "7fffffff");
 }
 
 /// G2, §4.2.
 #[test]
 fn golden_g2_unsigned_int() {
-    both_ways(&PRIMITIVE, &1_u32, "00000001");
-    both_ways(&PRIMITIVE, &u32::MAX, "ffffffff");
+    both_ways(&PRIMITIVE, &Primitive(1_u32), "00000001");
+    both_ways(&PRIMITIVE, &Primitive(u32::MAX), "ffffffff");
 }
 
 /// G3, §4.5: eight bytes, most significant first.
 #[test]
 fn golden_g3_hyper() {
-    both_ways(&PRIMITIVE, &-1_i64, "ffffffff ffffffff");
-    both_ways(&PRIMITIVE, &0x0102_0304_0506_0708_u64, "01020304 05060708");
+    both_ways(&PRIMITIVE, &Primitive(-1_i64), "ffffffff ffffffff");
+    both_ways(
+        &PRIMITIVE,
+        &Primitive(0x0102_0304_0506_0708_u64),
+        "01020304 05060708",
+    );
 }
 
 /// G4, §4.4: the enumeration FALSE = 0, TRUE = 1.
@@ -170,5 +202,5 @@ fn golden_g12_note() {
 /// G13, §4.16: void is nothing.
 #[test]
 fn golden_g13_void() {
-    both_ways(&PRIMITIVE, &(), "");
+    both_ways(&PRIMITIVE, &Primitive(()), "");
 }

@@ -38,7 +38,10 @@ pub struct Message {
     /// decoding one input (5.2, point 9).
     pub budget: u64,
     /// Whether the message holds a secret field at any depth. Errors from
-    /// decoding it carry no offset or length (section 7, point 2).
+    /// decoding it carry no offset or length (section 7, point 2). A
+    /// message type that can hold a secret by its encoding
+    /// ([`Encode::SECRET`](crate::Encode::SECRET)) and says otherwise here
+    /// does not build in [`encode_into`](crate::encode_into).
     pub secret: bool,
 }
 

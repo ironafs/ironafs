@@ -114,11 +114,13 @@ impl<'a> Decode<'a> for Shade {
 }
 
 impl Encode for Shade {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_i32(self.value())
     }
 }
@@ -141,11 +143,13 @@ impl<'a> Decode<'a> for Flag {
 }
 
 impl Encode for Flag {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_bool(self.0)
     }
 }
@@ -190,11 +194,13 @@ impl<'a> Decode<'a> for Solo {
 }
 
 impl Encode for Solo {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_i32(5)
     }
 }
@@ -235,6 +241,8 @@ impl<'a> Decode<'a> for Entry {
 }
 
 impl Encode for Entry {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         match self {
             Self::Plain => Ok(4),
@@ -243,7 +251,7 @@ impl Encode for Entry {
         }
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         match self {
             Self::Plain => encoder.put_i32(0),
             Self::Linked(target) => {
@@ -284,11 +292,13 @@ impl<'a> Decode<'a> for Label {
 }
 
 impl Encode for Label {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         opaque_len(&LABEL_CAP, self.0.len())
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_opaque(&LABEL_CAP, &self.0)
     }
 }
@@ -345,6 +355,8 @@ impl<'a> Decode<'a> for Note {
 }
 
 impl Encode for Note {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         let mut total = opaque_len(&TITLE, self.title.len())?;
         total = sum(total, self.what.encoded_len()?)?;
@@ -352,9 +364,9 @@ impl Encode for Note {
         sum(total, opaque_len(&BODY, self.body.len())?)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_opaque(&TITLE, &self.title)?;
-        self.what.encode(encoder)?;
+        encoder.put(&self.what)?;
         encoder.put_opaque(&OWNER, &self.owner)?;
         encoder.put_opaque(&BODY, &self.body)
     }
@@ -380,11 +392,13 @@ impl<'a> Decode<'a> for Pair {
 }
 
 impl Encode for Pair {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         fixed_array_len(&self.0)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_fixed_array(&self.0)
     }
 }
@@ -419,11 +433,13 @@ macro_rules! array_type {
         }
 
         impl Encode for $name {
+            const SECRET: bool = false;
+
             fn encoded_len(&self) -> Result<u64, Error> {
                 array_len(&$cap, &self.0)
             }
 
-            fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+            fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
                 encoder.put_array(&$cap, &self.0)
             }
         }
@@ -455,11 +471,13 @@ impl<'a> Decode<'a> for Five {
 }
 
 impl Encode for Five {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         fixed_opaque_len(5)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_fixed_opaque(&self.0)
     }
 }
@@ -488,11 +506,13 @@ impl<'a> Decode<'a> for Blob {
 }
 
 impl Encode for Blob {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         opaque_len(&BLOB_CAP, self.0.len())
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_opaque(&BLOB_CAP, &self.0)
     }
 }
@@ -525,11 +545,13 @@ impl<'a> Decode<'a> for Quad {
 }
 
 impl Encode for Quad {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(240)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_fixed_opaque(&self.a)?;
         encoder.put_fixed_opaque(&self.b)?;
         encoder.put_fixed_opaque(&self.c)?;
@@ -571,6 +593,8 @@ impl<'a> Decode<'a> for Wide {
 }
 
 impl Encode for Wide {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         match self {
             Self::Small => Ok(4),
@@ -578,12 +602,12 @@ impl Encode for Wide {
         }
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         match self {
             Self::Small => encoder.put_bool(false),
             Self::Big(block) => {
                 encoder.put_bool(true)?;
-                block.encode(encoder)
+                encoder.put(block)
             }
         }
     }
@@ -613,11 +637,13 @@ impl<'a> Decode<'a> for Deep16 {
 }
 
 impl Encode for Deep16 {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(72)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_u64(self.value)?;
         encoder.put_fixed_opaque(&self.pad)
     }
@@ -647,13 +673,15 @@ macro_rules! deep_link {
         }
 
         impl Encode for $name {
+            const SECRET: bool = false;
+
             fn encoded_len(&self) -> Result<u64, Error> {
                 sum(8, self.next.encoded_len()?)
             }
 
-            fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+            fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
                 encoder.put_u64(self.value)?;
-                self.next.encode(encoder)
+                encoder.put(&self.next)
             }
         }
     )*};
@@ -722,12 +750,15 @@ impl<'a> Decode<'a> for Sealed<'a> {
 }
 
 impl Encode for Sealed<'_> {
+    // Its key field is secret, by its cap table.
+    const SECRET: bool = true;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         let total = sum(opaque_len(&KEY, self.key.reveal().len())?, 4)?;
         sum(total, opaque_len(&TAG, self.tag.reveal().len())?)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_opaque(&KEY, self.key.reveal())?;
         encoder.put_u32(self.serial.reveal_u32())?;
         encoder.put_opaque(&TAG, self.tag.reveal())
@@ -814,6 +845,8 @@ impl<'a> Decode<'a> for Every {
 }
 
 impl Encode for Every {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         let mut total = 32;
         total = sum(total, fixed_opaque_len(BIG_LEN)?)?;
@@ -824,19 +857,19 @@ impl Encode for Every {
         sum(total, self.what.encoded_len()?)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_i32(self.int)?;
         encoder.put_u32(self.unsigned)?;
         encoder.put_i64(self.hyper)?;
         encoder.put_u64(self.unsigned_hyper)?;
         encoder.put_bool(self.flag)?;
-        self.shade.encode(encoder)?;
+        encoder.put(&self.shade)?;
         encoder.put_fixed_opaque(&self.big)?;
         encoder.put_opaque(&VAR, &self.var)?;
-        self.name.encode(encoder)?;
+        encoder.put(&self.name)?;
         encoder.put_fixed_array(&self.fixed)?;
         encoder.put_array(&LIST, &self.list)?;
-        self.what.encode(encoder)
+        encoder.put(&self.what)
     }
 }
 

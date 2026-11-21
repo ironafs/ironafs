@@ -9,7 +9,7 @@ use std::fmt::Debug;
 use std::thread;
 
 use ironafs_xdr::limits::SMALL_STACK;
-use ironafs_xdr::{BorrowedBytes, BorrowedWord, Decode, Encode, Message, decode};
+use ironafs_xdr::{BorrowedBytes, BorrowedWord, Decode, Encode, Message, MessageType, decode};
 
 use crate::support::{deep_from, encoded, sealed_bytes};
 use crate::types::{
@@ -23,9 +23,10 @@ use crate::types::{
 #[track_caller]
 fn fits<T>(message: &'static Message, value: &T, size: usize)
 where
-    T: for<'a> Decode<'a> + Encode + PartialEq + Debug + Send + 'static,
+    T: for<'a> Decode<'a> + Encode + MessageType + PartialEq + Debug + Send + 'static,
 {
-    let bytes = encoded(message, value).unwrap();
+    assert_eq!(*message, T::MESSAGE);
+    let bytes = encoded(value).unwrap();
     assert_eq!(bytes.len(), size, "{value:?}");
     let decoded = thread::Builder::new()
         .stack_size(SMALL_STACK)

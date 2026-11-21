@@ -12,7 +12,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::{
-    Encode, Encoder, array_len, encode_into, fixed_opaque_len, opaque_len, word_length,
+    Encode, Encoder, array_len, encode_message, fixed_opaque_len, opaque_len, word_length,
     zero_to_capacity,
 };
 use crate::{Cap, Error, ErrorKind, Message};
@@ -49,11 +49,13 @@ const SOME: Cap = Cap {
 struct Short<'a>(&'a [u8]);
 
 impl Encode for Short<'_> {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         opaque_len(&SHORT, self.0.len())
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_opaque(&SHORT, self.0)
     }
 }
@@ -62,11 +64,13 @@ impl Encode for Short<'_> {
 struct Liar;
 
 impl Encode for Liar {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(8)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_u32(1)?;
         encoder.put_u64(1)
     }
@@ -76,7 +80,7 @@ impl Encode for Liar {
 /// message may take.
 fn encode_with<T: Encode>(message: &Message, value: &T) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
-    encode_into(message, value, &mut out)?;
+    encode_message(message, value, &mut out)?;
     Ok(out)
 }
 
@@ -166,11 +170,13 @@ fn array_len_compares_count_with_bound_and_bytes_with_cap() {
 fn put_array_writes_count_then_elements() {
     struct Pair;
     impl Encode for Pair {
+        const SECRET: bool = false;
+
         fn encoded_len(&self) -> Result<u64, Error> {
             array_len(&SOME, &[7_u32, 8])
         }
 
-        fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+        fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
             encoder.put_array(&SOME, &[7_u32, 8])
         }
     }
@@ -198,7 +204,7 @@ fn word_length_refuses_lengths_past_32_bits() {
 fn encode_over_message_cap_reserves_nothing() {
     let message = Message { cap: 7, ..MESSAGE };
     let mut out = Vec::new();
-    let error = encode_into(&message, &Short(b"abcd"), &mut out).unwrap_err();
+    let error = encode_message(&message, &Short(b"abcd"), &mut out).unwrap_err();
     assert_error(&error, ErrorKind::MessageTooLarge, Some("test.m"), Some(7));
     assert_eq!(out.capacity(), 0);
 }
@@ -206,13 +212,13 @@ fn encode_over_message_cap_reserves_nothing() {
 #[test]
 fn encode_into_requests_once_and_never_grows() {
     let mut out = Vec::new();
-    encode_into(&MESSAGE, &Short(b"abc"), &mut out).unwrap();
+    encode_message(&MESSAGE, &Short(b"abc"), &mut out).unwrap();
     assert_eq!(out, [0, 0, 0, 3, b'a', b'b', b'c', 0]);
     // A buffer that already has the room is written in place.
     let mut out = Vec::with_capacity(8);
     out.push(0xee);
     let before = out.as_ptr();
-    encode_into(&MESSAGE, &Short(b"abc"), &mut out).unwrap();
+    encode_message(&MESSAGE, &Short(b"abc"), &mut out).unwrap();
     assert_eq!(out.as_ptr(), before);
     assert_eq!(out, [0, 0, 0, 3, b'a', b'b', b'c', 0]);
 }
@@ -220,7 +226,7 @@ fn encode_into_requests_once_and_never_grows() {
 #[test]
 fn value_writing_past_its_size_fails_and_leaves_nothing() {
     let mut out = Vec::new();
-    let error = encode_into(&MESSAGE, &Liar, &mut out).unwrap_err();
+    let error = encode_message(&MESSAGE, &Liar, &mut out).unwrap_err();
     assert_error(&error, ErrorKind::MessageTooLarge, Some("test.m"), Some(32));
     assert_eq!(out, []);
 }
@@ -229,11 +235,13 @@ fn value_writing_past_its_size_fails_and_leaves_nothing() {
 fn value_writing_short_of_its_size_fails() {
     struct Short8;
     impl Encode for Short8 {
+        const SECRET: bool = false;
+
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(8)
         }
 
-        fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+        fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
             encoder.put_u32(1)
         }
     }
@@ -245,11 +253,13 @@ fn value_writing_short_of_its_size_fails() {
 fn bool_encodes_as_zero_or_one() {
     struct Flags;
     impl Encode for Flags {
+        const SECRET: bool = false;
+
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(8)
         }
 
-        fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+        fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
             encoder.put_bool(false)?;
             encoder.put_bool(true)
         }
@@ -265,11 +275,13 @@ fn put_opaque_refuses_over_cap_even_after_a_size_pass_that_passed() {
     /// Sizes itself as 12 bytes, then writes 5 bytes under a cap of 4.
     struct Sneaky;
     impl Encode for Sneaky {
+        const SECRET: bool = false;
+
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(12)
         }
 
-        fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+        fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
             encoder.put_opaque(&SHORT, b"abcde")
         }
     }
@@ -287,11 +299,13 @@ fn encoder_debug_shows_no_output_bytes() {
     /// Writes a key-like word, then formats the encoder.
     struct Peek;
     impl Encode for Peek {
+        const SECRET: bool = false;
+
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(4)
         }
 
-        fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+        fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
             encoder.put_u32(0x5ec2_e7ed)?;
             let plain = format!("{encoder:?}");
             let alternate = format!("{encoder:#?}");
@@ -320,7 +334,7 @@ fn encode_into_failure_leaves_buffer_empty_in_place() {
     let mut out = Vec::with_capacity(32);
     out.extend_from_slice(&[0xaa; 32]);
     let before = (out.as_ptr(), out.capacity());
-    let error = encode_into(&MESSAGE, &Liar, &mut out).unwrap_err();
+    let error = encode_message(&MESSAGE, &Liar, &mut out).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::MessageTooLarge);
     assert_eq!(out, []);
     assert_eq!((out.as_ptr(), out.capacity()), before);
@@ -330,7 +344,7 @@ fn encode_into_failure_leaves_buffer_empty_in_place() {
 fn encode_into_reuses_a_buffer_holding_old_bytes() {
     let mut out = vec![0xaa; 32];
     let before = out.as_ptr();
-    encode_into(&MESSAGE, &Short(b"ab"), &mut out).unwrap();
+    encode_message(&MESSAGE, &Short(b"ab"), &mut out).unwrap();
     assert_eq!(out, [0, 0, 0, 2, b'a', b'b', 0, 0]);
     assert_eq!(out.as_ptr(), before);
 }
@@ -345,11 +359,13 @@ fn encoder_debug_shows_the_message_name_only() {
     /// Formats the encoder before and after writing.
     struct Twice;
     impl Encode for Twice {
+        const SECRET: bool = false;
+
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(8)
         }
 
-        fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+        fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
             let before = format!("{encoder:?}");
             encoder.put_u32(1)?;
             let after = format!("{encoder:#?}");
@@ -360,7 +376,7 @@ fn encoder_debug_shows_the_message_name_only() {
         }
     }
     let mut out = Vec::new();
-    encode_into(&SECRET, &Twice, &mut out).unwrap();
+    encode_message(&SECRET, &Twice, &mut out).unwrap();
 }
 
 #[test]
@@ -371,7 +387,7 @@ fn encode_into_never_grows_an_allocated_buffer_for_any_message() {
         let mut out = Vec::with_capacity(4);
         out.extend_from_slice(&[0xaa; 4]);
         let before = (out.as_ptr(), out.capacity());
-        let error = encode_into(&message, &Short(b"abc"), &mut out).unwrap_err();
+        let error = encode_message(&message, &Short(b"abc"), &mut out).unwrap_err();
         assert_error(&error, ErrorKind::AllocationFailed, None, None);
         assert_eq!(out, []);
         assert_eq!((out.as_ptr(), out.capacity()), before);
@@ -382,11 +398,13 @@ fn encode_into_never_grows_an_allocated_buffer_for_any_message() {
 struct Twelve;
 
 impl Encode for Twelve {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(12)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_u32(1)?;
         encoder.put_u32(2)?;
         encoder.put_u32(3)
@@ -408,25 +426,25 @@ fn encode_into_empties_the_buffer_on_every_error() {
         // The value's own size check refuses it.
         (
             &MESSAGE,
-            &|m, out| encode_into(m, &Short(b"abcdefghi"), out),
+            &|m, out| encode_message(m, &Short(b"abcdefghi"), out),
             ErrorKind::LengthOverBound,
         ),
         // Above the message cap, before anything is reserved.
         (
             &small,
-            &|m, out| encode_into(m, &Short(b"abcd"), out),
+            &|m, out| encode_message(m, &Short(b"abcd"), out),
             ErrorKind::MessageTooLarge,
         ),
         // An allocated buffer too small for the message.
         (
             &MESSAGE,
-            &|m, out| encode_into(m, &Twelve, out),
+            &|m, out| encode_message(m, &Twelve, out),
             ErrorKind::AllocationFailed,
         ),
         // A value that writes past its size.
         (
             &MESSAGE,
-            &|m, out| encode_into(m, &Liar, out),
+            &|m, out| encode_message(m, &Liar, out),
             ErrorKind::MessageTooLarge,
         ),
     ];
@@ -445,11 +463,11 @@ fn secret_encode_into_writes_in_place_or_into_a_fresh_buffer() {
     let mut out = Vec::with_capacity(8);
     out.push(0xaa);
     let before = out.as_ptr();
-    encode_into(&SECRET, &Short(b"abc"), &mut out).unwrap();
+    encode_message(&SECRET, &Short(b"abc"), &mut out).unwrap();
     assert_eq!(out, [0, 0, 0, 3, b'a', b'b', b'c', 0]);
     assert_eq!(out.as_ptr(), before);
     let mut fresh = Vec::new();
-    encode_into(&SECRET, &Short(b"abc"), &mut fresh).unwrap();
+    encode_message(&SECRET, &Short(b"abc"), &mut fresh).unwrap();
     assert_eq!(fresh, [0, 0, 0, 3, b'a', b'b', b'c', 0]);
 }
 
@@ -461,11 +479,13 @@ impl crate::MessageType for Greeting {
 }
 
 impl Encode for Greeting {
+    const SECRET: bool = false;
+
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
     }
 
-    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_u32(9)
     }
 }
@@ -473,4 +493,82 @@ impl Encode for Greeting {
 #[test]
 fn encode_uses_the_descriptor_its_type_carries() {
     assert_eq!(super::encode(&Greeting).unwrap(), [0, 0, 0, 9]);
+}
+
+#[test]
+fn encode_into_uses_the_descriptor_its_type_carries() {
+    let mut out = Vec::new();
+    super::encode_into(&Greeting, &mut out).unwrap();
+    assert_eq!(out, [0, 0, 0, 9]);
+}
+
+/// A secret leaf: its own field is secret.
+struct Key;
+
+impl Encode for Key {
+    const SECRET: bool = true;
+
+    fn encoded_len(&self) -> Result<u64, Error> {
+        Ok(4)
+    }
+
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+        encoder.put_u32(0x5ec2_e7ed)
+    }
+}
+
+/// Holds a value of `C`, secret exactly when `C` is: how generated code
+/// takes its flag from its components.
+struct Holder<C>(C);
+
+impl<C: Encode> Encode for Holder<C> {
+    const SECRET: bool = C::SECRET;
+
+    fn encoded_len(&self) -> Result<u64, Error> {
+        self.0.encoded_len()
+    }
+
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+        encoder.put(&self.0)
+    }
+}
+
+impl<C: Encode> crate::MessageType for Holder<C> {
+    const MESSAGE: Message = Message {
+        secret: C::SECRET,
+        ..MESSAGE
+    };
+}
+
+// Secrecy carries up through any depth of nesting, at compile time.
+const _: () = assert!(Holder::<Holder<Key>>::SECRET);
+const _: () = assert!(<Holder<Holder<Key>> as crate::MessageType>::MESSAGE.secret);
+const _: () = assert!(!Holder::<Holder<u32>>::SECRET);
+
+#[test]
+fn a_holder_of_a_secret_encodes_only_into_the_callers_buffer() {
+    let mut out = Vec::new();
+    super::encode_into(&Holder(Holder(Key)), &mut out).unwrap();
+    assert_eq!(out, [0x5e, 0xc2, 0xe7, 0xed]);
+    assert_eq!(super::encode(&Holder(7_u32)).unwrap(), [0, 0, 0, 7]);
+}
+
+#[test]
+fn put_carries_the_bytes_left_back_to_its_parent() {
+    /// Sizes itself as one word, then writes two through its components.
+    struct Two;
+    impl Encode for Two {
+        const SECRET: bool = false;
+
+        fn encoded_len(&self) -> Result<u64, Error> {
+            Ok(4)
+        }
+
+        fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+            encoder.put(&1_u32)?;
+            encoder.put(&2_u32)
+        }
+    }
+    let error = encode_message(&MESSAGE, &Two, &mut Vec::new()).unwrap_err();
+    assert_error(&error, ErrorKind::MessageTooLarge, Some("test.m"), Some(32));
 }
