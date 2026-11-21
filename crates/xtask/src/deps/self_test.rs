@@ -1161,6 +1161,31 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         "caught: ironafs-os with a dependency table".to_owned(),
     )?;
 
+    // A development dependency under an escaped quoted key, which no text
+    // search for "dependencies" finds, and which the resolved graph drops.
+    let mut escaped = Fixture::default();
+    escaped.add_crate("ironafs-os", &[]);
+    escaped.add_crate("ironafs-time", &[]);
+    escaped.lints("ironafs-os", OS_LINTS);
+    escaped.manifest_tail(
+        "ironafs-os",
+        "\n[\"dev-depend\\u0065ncies\"]\nironafs-time = { path = \"../ironafs-time\" }\n",
+    );
+    let workspace = escaped.load(&dir.join("escaped"), CHECK, "an escaped dependency key")?;
+    let found = super::dependency_table_violations(&workspace, &["ironafs-os"])?;
+    let as_planted = matches!(found.as_slice(), [Violation::DependencyTable { name, line, .. }]
+        if name == "ironafs-os" && line == "declares the dev ironafs-time");
+    if !as_planted {
+        return Err(failure(
+            "ironafs-os with a dev-dependency under an escaped key",
+            &found,
+        ));
+    }
+    report(
+        output,
+        "caught: ironafs-os with a dev-dependency under an escaped key".to_owned(),
+    )?;
+
     let empty = Workspace {
         root: dir.to_path_buf(),
         target_dir: dir.to_path_buf(),
@@ -1176,7 +1201,7 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         output,
         format!(
             "check-deps --self-test: the clean fixture passed and {} planted cases failed as planted",
-            CASES.len() + 2
+            CASES.len() + 3
         ),
     )
 }

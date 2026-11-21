@@ -859,7 +859,15 @@ fn dependency_table_violations(
         .filter(|member| names.contains(&member.name.as_str()))
     {
         let (text, manifest) = read_manifest(workspace, member)?;
-        if let Some(line) = dependency_line(&text) {
+        // Cargo's own reading of the manifest catches every declared
+        // dependency, however its key is spelled (an escaped quoted key
+        // included); the text check adds empty tables, which cargo does
+        // not report.
+        let declared = member
+            .declared_dependencies
+            .first()
+            .map(|dependency| format!("declares the {dependency}"));
+        if let Some(line) = declared.or_else(|| dependency_line(&text)) {
             violations.push(Violation::DependencyTable {
                 name: member.name.clone(),
                 manifest,
