@@ -162,7 +162,7 @@ Section 9 shows where each is kept and which test fails if it is broken.
      restore made while the client was down (5.7);
    - the evidence record each credential context keeps per volume, its
      provenance, its caps and its eviction (5.1.2, 5.2);
-   - the comparison of a new observation with the record, and its three
+   - the comparison of a new observation with the record, and its four
      outcomes (5.4, 5.6);
    - the events that make the evidence ambiguous for the observing
      context, the inputs that only mark entries suspect, and the inputs
@@ -241,7 +241,8 @@ Section 9 shows where each is kept and which test fails if it is broken.
    (point 3). So a restore that such an event could hide is never served
    from the old bytes, and weak input never destroys or re-epochs
    anything. A server reset therefore costs a refetch, not an epoch
-   change, unless the refetch shows a difference (5.6, point 12).
+   change, unless the refetch shows a lower data version, or other bytes
+   under an equal one (5.6, point 12).
 6. The cost is stated in each place: a cold cache after every restart, a
    refetch of a whole volume after a move, a release, a replica switch or
    an evicted record, and, after a server-wide or volume-wide event, one
@@ -361,7 +362,7 @@ in the size bound of 5.2:
 
 | Field | Type | Bytes | Meaning |
 |---|---|---|---|
-| key | context id and generation (`u64` each), cell index (`u32`) and configuration generation (`u64`), volume id (`u32`) | 32 | the record's key |
+| key | context id and generation (`u64` each), cell index (`u32`), the cell's protocol identifier (`u32` code) and configuration generation (`u64`), volume id (`u32`) | 36 | the record's key (C40, point 3, and N27 put the protocol identifier beside the cell) |
 | `epoch` | `u64` | 8 | the local volume epoch, from N38, point 8's counter |
 | `vl_ids` | four optional `u32` (read/write, read-only, backup, release clone), each a presence octet and a value | 20 | 5.1.1, row 2 |
 | `volume_type` | closed enumeration: read/write, read-only, backup | 1 | 5.1.1, row 5 |
@@ -371,11 +372,11 @@ in the size bound of 5.2:
 | `entry_flags` | `u32`, raw | 4 | recorded only (5.4, point 5) |
 | `volsync` | at most `inc.volsync_keep_max` bytes, with a length octet, or "not kept" | 65 | recorded only (5.4, point 5) |
 | `provenance` | two entries: one for the values a VL entry carries (`vl_ids`, `volume_type`, the site fields, `entry_flags`), one for `volsync`. Each holds the procedure that carried them ([vl-fs-read.md](vl-fs-read.md), 5.1.4's IronAFS name, as a one-octet code), the connection's security profile (N39's class, level and suite: one, one and four octets; "null class" in M2a), the boot-clock instant of the reply (C37, `u64`), and the server's suspect epoch when the call was sent (the callback specification, 5.6, point 1, `u64`) | 2 × 23 = 46 | C25, point 1's "where each observation came from"; shown by O13 (5.6, point 11) |
-| `suspicion` | closed enumeration (none; another context's ambiguity; wide suspicion seen at a serve) and the boot-clock instant it was set | 9 | for display only (5.6, point 11); a chunk's own suspicion is its fence tuple (5.6, points 4 to 6), never this field |
+| `suspicion` | the last suspicion seen: closed enumeration (none; wide suspicion found at a serve) and the boot-clock instant it was found | 9 | for display only (5.6, point 11): it says when a serve last found one, not whether a chunk is suspect now. A chunk's own suspicion is its fence tuple (5.6, points 4 to 6), never this field |
 | `last_outcome` | closed enumeration (confirmed, ambiguous, new), the trigger id of 5.6, point 2 (one octet, 0 for none) and the boot-clock instant | 10 | for display (5.6, point 11) |
 | `holders` | `u32` count | 4 | the holders the context has on the volume; a record with a holder is pinned (5.2) |
 | `last_used` | boot-clock instant, `u64` | 8 | for eviction (5.2) |
-| total | | 229 | at most `inc.record_max` |
+| total | | 233 | at most `inc.record_max` |
 
 The record holds no value read from another context and no value from a
 reply that failed any check.
@@ -392,36 +393,75 @@ caps only on what it keeps `[OWN]`:
 | Name | Value | Applies to | Why |
 |---|---|---|---|
 | `inc.volsync_keep_max` | 64 bytes | the copy of one volume sync record kept in a record | a guess: the record's size is MISSING ([vl-fs-read.md](vl-fs-read.md), 5.1.3, point 4; Q2). A longer one is "not kept", which changes no outcome while the record is not compared (5.4, point 5); Q2 resets the cap from the captured size |
-| `inc.record_max` | 256 bytes | one evidence record, all fields | the fields of 5.1.2 at their widths sum to 229 bytes; a compile-time size assertion |
+| `inc.record_max` | 256 bytes | one evidence record, all fields | the fields of 5.1.2 at their widths sum to 233 bytes; a compile-time size assertion |
 | `inc.records.per_context_max` | 1 024 records | the records one credential context holds | a context reads few volumes at once; each record is charged to the context's metadata budget (C27, point 4) |
-| `inc.records.total_max` | 65 536 records | the records the daemon holds | bounds the table at 16 MiB whatever the number of contexts |
+| `inc.records.total_max` | 65 536 records | the records the daemon holds beyond each context's floor | bounds that part of the table at 16 MiB whatever the number of contexts |
+| `inc.records.floor_per_context` | 32 records | the records each live credential context may always hold, outside `inc.records.total_max` | C27, point 4's floor: no other context's use can take them, so every context can always record its first 32 volumes. The floor is charged to the context's metadata budget; the table's whole size is `inc.record_max` × (`inc.records.total_max` + `inc.records.floor_per_context` × the number of live contexts), and the number of live contexts is bounded by the credential context table (C40) |
+| `inc.records.idle_reclaim_after` | 600 s | how long a context's records must go unused before another context may reclaim its unpinned records above its floor | C27, point 4: idle contexts are evicted first |
 
 Eviction and the full table `[OWN]`:
 
 1. A record with a holder is **pinned**: it is never evicted. The owner
    of each holder (the contract specification for handles and
    snapshots, the journal specification for records) raises and lowers
-   `holders`. Pinned records count against both caps.
-2. At `inc.records.per_context_max`, or at `inc.records.total_max`, a new
-   record evicts the least recently used **unpinned** record **of the
-   same context**, never another context's (C24, point 3: another
-   context's state is not moved by this context's activity).
-3. Evicting a record abandons its `epoch`: no later record of the context
-   holds that value (N38, point 8's counter never repeats), so no chunk
-   cached under it is reachable again. Nothing else needs retiring,
-   because an unpinned record has no holder. Eviction destroys no bytes
-   and no journal record.
-4. A context with no unpinned record to evict cannot keep a record for
-   the new volume. The outcome is **unrecorded** (5.4, point 2): the
+   `holders`. Pinned records count against the caps like any other.
+2. **The floor.** A context's first `inc.records.floor_per_context`
+   records are its floor: they do not count against
+   `inc.records.total_max`, and nothing but the context's own activity
+   evicts them. A context's records beyond its floor are its **shared
+   part**, which does count.
+3. **Making room,** when a new record is needed, in this order:
+   1. if the context holds fewer records than its floor, the record is
+      made in its floor;
+   2. otherwise, if the context is at `inc.records.per_context_max`, its
+      own least recently used **unpinned** record is evicted;
+   3. otherwise, if the shared part is at `inc.records.total_max`: the
+      context's own least recently used unpinned record in its shared
+      part is evicted; if it has none, the least recently used unpinned
+      shared-part record of the context idle longest is reclaimed,
+      provided that context has used none of its records for
+      `inc.records.idle_reclaim_after`; if none qualifies, the context's
+      own least recently used unpinned floor record is evicted;
+   4. if no record can be evicted, the outcome is **unrecorded** (point
+      5).
+4. **What eviction and reclaim do.** Evicting or reclaiming a record
+   abandons its `epoch`: no later record of that context holds that value
+   (N38, point 8's counter never repeats), so no chunk cached under it is
+   reachable again, and that context's next observation of the volume is
+   "new". Nothing else needs retiring, because an unpinned record has no
+   holder. Neither destroys bytes or journal records. Reclaim from an
+   idle context is C27, point 4's budget policy ("idle contexts are
+   evicted first"), applied to a context's metadata as the store applies
+   it to chunks; it is not evidence about the volume and infers nothing
+   from any input, so it is not weak evidence under C24, and it costs
+   the idle context what evicting its chunks would: a refetch when it
+   comes back. It never reaches a pinned record or a floor record of
+   another context. The records of a retired context generation are
+   removed when the generation retires: no later observation can carry
+   that key. Its handles and snapshots end with the generation; its
+   journal records are detached from it first (C18, point 9), and from
+   then on their recorded incarnation is treated as 5.8, point 3, treats
+   a record from an earlier run: unconfirmed, and kept quarantined.
+5. **Unrecorded.** A context reaches it only when every record it holds
+   is pinned (it holds a holder on each volume it has a record for) and
+   no idle context's shared-part record can be reclaimed. The
    observation's values are compared with nothing, a fresh `epoch` is
    taken from the counter for that one request and held only by it, and
    nothing the request fetches is cached, as C20, point 1, treats
-   unauthenticated data. The next request does the same until the table
-   has room. The cost falls on that context alone: it reads that volume
-   uncached. A request that would make a holder on an unrecorded volume
-   (an open, a directory snapshot, a journal record) is refused with the
-   retryable busy error, as a pin over budget is (C11, point 10), because
-   a holder needs a record to pin.
+   unauthenticated data. A request that would make a holder on an
+   unrecorded volume (an open, a directory snapshot, a journal record) is
+   refused with the retryable busy error, as a pin over budget is (C11,
+   point 10), because a holder needs a record to pin. **Bound:** the
+   state ends as soon as the context releases one holder, or another
+   context's shared-part records go idle for
+   `inc.records.idle_reclaim_after`; a context holding holders on fewer
+   than `inc.records.floor_per_context` volumes never reaches it. The
+   cost falls on that context alone.
+6. **Holders.** `holders` is a `u32`. Adding a holder that would overflow
+   it is refused with the retryable busy error, and the count is never
+   wrapped (section 6, A2). Each holder's own owner bounds how many
+   exist (C27, point 4's caps on pinned bytes, metadata and journal
+   bytes), far below 2³².
 
 ### 5.3 Versions
 
@@ -442,9 +482,9 @@ in this order `[OWN]`:
    values are compared with nothing and kept nowhere.
 2. **Lookup.** The record of (context and generation, cell, volume id).
    If none exists, the outcome is **new** if 5.2 lets a record be made,
-   and **unrecorded** otherwise (5.2, point 4); points 3 to 6 do not
+   and **unrecorded** otherwise (5.2, point 5); points 3 to 6 do not
    apply. "New" is safe whatever the context held before: an earlier
-   record's epoch is never reused (5.2, point 3; 5.8), so nothing cached
+   record's epoch is never reused (5.2, point 4; 5.8), so nothing cached
    under it is reachable, and a record with a holder is never missing
    within a run (5.2, point 1). Journal records from an earlier run are
    5.8, point 3's.
@@ -495,9 +535,12 @@ Not applicable: nothing is encoded or sent.
    - **new:** a record is made from the observation with `epoch` set to
      the next value of N38, point 8's counter;
    - **ambiguous:** an incarnation change in the observing context
-     (point 3), then the record is replaced by one made from the
-     observation, with a new `epoch`;
-   - **unrecorded:** 5.2, point 4.
+     (point 3), then the record's evidence values, their provenance and
+     `last_outcome` are replaced from the observation, with the new
+     `epoch`. Its `holders` and `last_used` are kept: the holders are
+     still held, and the record stays pinned while they are, so the
+     replacement never makes a held volume evictable (5.2, point 1);
+   - **unrecorded:** 5.2, point 5.
 2. **Triggers of ambiguity,** each the observing context's own
    observation. Each is C25, point 3's ambiguity for that context
    `[ADR 0004 C25.3: Working]` unless it says `[OWN]`:
@@ -518,46 +561,51 @@ Not applicable: nothing is encoded or sent.
    C25, point 3, have no trigger of their own: point 7 says why for an
    off-line volume seen through aborts, point 12 for a server reset, and
    section 13, Q3, Q4 and Q10, what settles them.
-3. **An incarnation change,** in this order `[ADR 0004 C16.1: Firm]`:
-   1. the record's `epoch` takes the counter's next value, in the core,
-      before any event is queued, so every later operation of the context
-      sees it; a chunk key under the old epoch is unreachable in the
-      context from that moment (C27, point 1), and its bytes are not
-      destroyed here (they are clean data the store may evict by its own
-      policy);
-   2. every fetch of the context in flight for the volume fails its
+3. **An incarnation change,** in this order `[ADR 0004 C16.1: Firm]`.
+   Steps 1 to 3 change state in the core, in one step under the core's
+   lock for the volume; only when all three are done does step 4 queue
+   anything, so every later operation, in any context, sees all three:
+   1. the record's `epoch` takes the counter's next value, so every later
+      operation of the context sees it; a chunk key under the old epoch
+      is unreachable in the context from that moment (C27, point 1), and
+      its bytes are not destroyed here (they are clean data the store may
+      evict by its own policy);
+   2. the volume's break counter is raised, which is the weak input every
+      other context gets (point 4);
+   3. every fetch of the context in flight for the volume fails its
       fence: the cache records the local volume epoch in the fetch when
       it is sent and compares it when the reply is installed, as it
       compares the fence tuple (the callback specification, 5.6,
-      point 3), and C16, point 2, applies to a reply that fails;
-   3. the incarnation change event names the context, its generation,
-      the cell and the volume id, and is delivered to the context's
+      point 3), and C16, point 2, applies to a reply that fails. The one
+      exception is the reply whose own check caused the change (T7 or
+      T8, point 6): it is installed under the new epoch as part of this
+      step, with the new fence tuple, and is not fetched again;
+   4. the incarnation change event names the context, its generation,
+      the cell and the volume id, and is queued to the context's
       handles, directory snapshots and Windows identities, and to its
       journal records for the volume, whose owners apply C25, point 5
-      `[ADR 0004 C25.5: Working]`. It names nothing in another context;
-   4. the volume's break counter is raised, which is the weak input every
-      other context gets: point 4.
+      `[ADR 0004 C25.5: Working]`. It names nothing in another context.
 4. **Another context's ambiguity** is weak input for every other context
    `[ADR 0004 C25.4: Working; C24.2: Firm]`. It reaches them through the
    one counter the cache already compares on every serve: the volume's
    break counter of the fence tuple (the callback specification, 5.6,
-   point 2) is raised, in the core, as step 4 of point 3, before any
+   point 2) is raised, in the core, as step 2 of point 3, before any
    event is queued (C16, point 1). So every other context's chunk of the
    volume is under wide suspicion at its next serve, and is not served
    until point 6 revalidates it, whatever that context's own next
    observation shows; its next observation is still compared as 5.4
-   says. The context's record shows the suspicion in its `suspicion`
-   field, for display. Its `epoch`, its handles and its journal records
-   are unchanged `[ADR 0004 C24.3, C24.6: Firm]`. Raising the counter
-   also fails, by C16, point 2, any fetch of the volume in flight in
-   every context, a cost of one bounded retry each.
+   says. Its `epoch`, its handles and its journal records are unchanged
+   `[ADR 0004 C24.3, C24.6: Firm]`. Raising the counter also fails, by
+   C16, point 2, any fetch of the volume in flight in every context:
+   each is retried within C16, point 2's bounded budget, and a read
+   whose retries are all fenced fails with `Stale`.
 5. **What the callback service reports** reaches this specification only
    through the fence tuple the cache compares on every serve (the
    callback specification, 5.6, points 2 to 5). It never triggers
    ambiguity and never changes an `epoch` `[ADR 0004 C24.6: Firm]`. A
    change in a shared value of a chunk's fence tuple is a wide suspicion
    (section 4): point 6 applies. When a serve finds one, the record's
-   `suspicion` field is set for display.
+   `suspicion` field records it, with the instant, for display.
 6. **Revalidating a chunk under wide suspicion** `[OWN]`. A suspect entry
    is revalidated by its reader under its own credentials (C24, point 2);
    for a clean data or directory chunk under wide suspicion, whatever
@@ -633,16 +681,28 @@ Not applicable: nothing is encoded or sent.
 11. **Showing the evidence** `[ADR 0004 O13.1, O13.2: Working]`. `afs
     cache show` gives, for the caller's own context only, the record's
     compared and recorded values, their provenance (5.1.2), the record's
-    `epoch`, its `suspicion` field (point 4 or 5) and its `last_outcome`,
-    from 5.1.2. Server text never reaches it: no value of the record is
-    a string.
+    `epoch`, its `last_outcome`, and its `suspicion` field as "the last
+    suspicion a serve found, and when" (point 5). Whether each of the
+    path's chunks is suspect now is computed when the command runs, by
+    comparing the chunk's recorded fence tuple with the current one, as
+    a serve would, without serving it. Server text never reaches it: no
+    value of the record is a string.
 12. **A server reset** `[OWN]`, within C24 (Firm). C25, point 3, names a
     server reset among the cases that need a fresh local epoch in "the
     observing context". The client learns of a reset only from the
     callback service (the callback specification, 5.6, point 9, rows R1
     and B0) or from an abort (point 7); neither arrives on a context's
-    own call, so no context observes it, and C24, points 3, 4 and 6,
-    bar weak input from changing any context's epoch. So a reset moves
+    own call, so no context observes it. For the other contexts and the
+    shared state, C24 bars an epoch change on such input: points 3 and 4
+    reserve changes to another context's or shared state for
+    authoritative evidence, and point 6's closed list keeps epochs,
+    handles and journal records. For a context's own state, C24, point
+    2, lists what weak input may do (suspend promises, revoke grants,
+    mark entries suspect) and an epoch change is not on it; the list is
+    not called closed, so whether a context may re-epoch itself on a
+    reset is not barred in so many words. This version reads it
+    conservatively, as not authorised, and leaves the choice to the
+    owner (section 13, Q10). So a reset moves
     the server's suspect epoch, every chunk of that server is under wide
     suspicion, and point 6 revalidates each by refetch: an epoch changes
     only when a reader's own refetch shows a lower version or other
@@ -734,8 +794,8 @@ are fetched again before they are served (5.6, points 6 and 12).
 | Id | Operation | Operands' range | Bound and result at overflow |
 |---|---|---|---|
 | A1 | the next local volume epoch (5.6, points 1 and 3) | N38, point 8's `u64` counter | `checked_add`; at overflow the counter is exhausted and the observation fails with the generic failure ([vl-fs-read.md](vl-fs-read.md), section 13, Q11), the volume is unusable in that context, and an event is emitted; the counter never wraps, so no epoch repeats. At one new epoch per microsecond it lasts over 500 000 years |
-| A2 | record counts against the caps, and the `holders` count (5.2) | `u32` counters | `checked_add` and `checked_sub`; a count cannot exceed its cap, because a record is made only after the cap check |
-| A3 | the table's bytes, `inc.record_max × inc.records.total_max` (5.2) | constants | a compile-time assertion that the product fits in `usize` and equals 16 MiB |
+| A2 | record counts against the caps, and the `holders` count (5.2) | `u32` counters | `checked_add` and `checked_sub`. A record count cannot exceed its cap, because a record is made only after the cap check. A `holders` add that would overflow refuses the new holder with the retryable busy error (5.2, point 6); a subtract below zero is a fault in IronAFS, counted and reported, and leaves the count at zero, never wrapped |
+| A3 | the table's bytes, `inc.record_max × (inc.records.total_max + inc.records.floor_per_context × live contexts)` (5.2) | constants, and the live-context count, bounded by the credential context table (C40) | a compile-time assertion that `inc.record_max × inc.records.total_max` fits in `usize` and equals 16 MiB; the floors add 8 KiB per live context, checked with `checked_mul` and `checked_add` against the context table's cap when that cap is fixed |
 | A4 | comparing bytes in verify by refetch (5.6, point 6) | two chunks, each at most `fs.fetch.chunk_max` | the data versions are compared first (a lower one is T8); under an equal data version, equal lengths are checked first: a different length is T7; then a constant-memory comparison with no arithmetic on untrusted values |
 
 `[OWN]` for every row.
@@ -745,7 +805,7 @@ are fetched again before they are served (5.6, points 6 and 12).
 1. **No outcome is an error to the caller** `[OWN]`. Ambiguity itself
    fails no read: after an incarnation change the read goes on under the
    new epoch. The fetches it causes can fail, as any fetch can (point 3).
-   The one refusal is 5.2, point 4's busy error for a holder on an
+   The one refusal is 5.2, points 5 and 6's busy error for a holder on an
    unrecorded volume.
 2. **Exhausted epoch counter** (A1): the generic failure, counted and
    reported; nothing is served under an old epoch.
@@ -780,7 +840,7 @@ the user's own key (N5, point 2).
 | Using one context's observation to move another's state | 5.6, points 4 and 5: weak input only marks suspect; every epoch change is the context's own observation |
 | Forged callback resets, breaks naming a volume, or overloads, to force refetches | each wide suspicion costs at most one refetch per cached chunk, on its next use. How often suspicion can be renewed is the callback specification's: a server's suspect epoch moves at most once per `cb.advance_interval` (its 5.6, point 7), but a break naming a volume from a source that is a known server raises that volume's break counter at once, within that server's rate bucket (its 5.6, points 8 and 9, row B1). So a forger who keeps renewing it can make every read of that volume a refetch: the cache gives no bandwidth saving for that data while it lasts, and at most doubles the bytes read (a refetch per use instead of a fetch per use); integrity is unaffected |
 | A forged abort to retire a volume's handles or journal records | 5.6, point 7; ADR 0006, decision 1, point 5 |
-| Filling the record table | per-context cap with eviction inside the same context only; the total cap never evicts another context; a context that cannot keep a record reads that volume uncached (5.2) |
+| Filling the record table | each context's floor is outside the shared cap and evicted only by its own activity; a context at the shared cap evicts its own unpinned records first, and reclaims only unpinned shared-part records of a context idle for `inc.records.idle_reclaim_after`, never a pinned or floor record (5.2, point 3). A context reaches "unrecorded" only when every record it holds is pinned, so another context can make it reach that state only by keeping its own records active and pinned, and even then the victim keeps its floor (5.2, point 5) |
 | A restore made while the client was down, with equal data versions | no clean chunk survives a restart (5.8) |
 | A restore in place during a run, inside a window that only aborts show | not detected: section 13, Q3 records it and its remedy |
 | A restore hidden by a server reset that raised every data version it touched | read as ordinary changes: new bytes are served, but handles and journal records are not invalidated on the reset alone (5.6, point 12); section 13, Q10 |
@@ -797,7 +857,7 @@ the user's own key (N5, point 2).
 | C25, point 4 | 5.6, point 8 (the cache applies it) | AC11 |
 | C25, point 5 | 5.6, point 3, step 3 (the event and its scope) | AC4 (the event names only the observing context) |
 | C25, point 6 | 5.6, point 10 (vl-fs-read.md, 5.4, point 11) | vl-fs-read.md's acceptance cases |
-| C26, point 3 | 5.8, point 5 (the callback specification) | the callback specification's restart case |
+| C26, point 3 | 5.8, point 6 (the callback specification) | the callback specification's restart case |
 | C26, point 4 | 5.7; 5.8 | AC1 |
 | C28, point 3 | 5.8, point 3 | AC17 |
 | C24, points 2 to 6 | 5.6, points 4 to 6 and 12 | AC7, AC8, AC10 |
@@ -831,10 +891,13 @@ None: nothing is encoded or decoded here.
   point 8).
 - **Table bounds (model test):** against a reference model, the table
   never holds more than its caps; an eviction at either cap removes only
-  an unpinned record of the context making the observation; a pinned
-  record is never evicted; a context with no unpinned record to evict
-  gets the outcome "unrecorded" and no record, and its request to make a
-  holder is refused as busy.
+  an unpinned record of the context making the observation, or an
+  unpinned shared-part record of a context idle for
+  `inc.records.idle_reclaim_after`; a pinned record and another
+  context's floor record are never evicted; a context with no record
+  that 5.2, point 3, lets it evict gets the outcome "unrecorded" and no
+  record, and its request to make a holder is refused as busy; an
+  ambiguous outcome keeps `holders`.
 
 ### 10.3 Reject corpus
 
@@ -877,8 +940,9 @@ able to restore a volume from a dump it holds:
   used one, V, whose record is evicted while A still has chunks of V
   cached; A reads V again. Result: the outcome is "new", with an epoch
   that no earlier record held; V's old chunks are not reachable; the
-  data is fetched again. Variant: A holds a handle on every volume it
-  has a record for, and opens a file on one more. Result: no record is
+  data is fetched again. Variant: A is at
+  `inc.records.per_context_max` with a handle on every volume it has a
+  record for, and opens a file on one more. Result: no record is
   evicted; the open is refused as busy.
 - **AC7. Another context's ambiguity.** A and B both cache F; A observes
   T2; B reads F. Result: the volume's break counter was raised before
@@ -914,12 +978,22 @@ able to restore a volume from a dump it holds:
   Result: no record is made; both reads fetch.
 - **AC14. Showing the evidence.** `afs cache show` for F as A shows A's
   record (5.6, point 11); as user B, it shows only B's.
-- **AC15. Table full of other contexts.** The table is at
-  `inc.records.total_max` with records of other contexts only; a new
-  context C observes a volume. Result: no other context's record is
-  evicted; C's outcome is "unrecorded" each time, each of C's reads of
-  that volume fetches and caches nothing, and C's open of a file there
-  is refused as busy.
+- **AC15. Table full of other contexts.** The shared part is at
+  `inc.records.total_max`, all of it other contexts' records in active
+  use; a new context C observes volumes. Result: C's first
+  `inc.records.floor_per_context` volumes get "new" records in its
+  floor, and no other context's record is evicted; C's next volume
+  evicts C's own least recently used unpinned floor record. Variant 1:
+  C holds a handle on each of its floor volumes and observes one more.
+  Result: "unrecorded": a read of a file there fetches and caches
+  nothing; an open of a file, and a directory listing that would make a
+  directory snapshot, are each refused as busy. When C closes one
+  handle, its next observation gets a record. Variant 2: one other
+  context D has used none of its records for
+  `inc.records.idle_reclaim_after`. Result: C's next record reclaims
+  D's least recently used unpinned shared-part record; D's floor and
+  pinned records are untouched; D's next observation of that volume is
+  "new".
 - **AC16. Reset with a lower version.** A caches F at data version v;
   the server restores an older dump in which F has version v − 1, and
   sends a callback reset; A reads F. Result: wide suspicion; the refetch
@@ -975,7 +1049,8 @@ This specification's own choices are reopened if:
 - verify by refetch measurably costs too much after server restarts
   (5.6, point 6);
 - a context needs more than `inc.records.per_context_max` volumes at
-  once.
+  once, or contexts are measured reaching "unrecorded" in ordinary use
+  (`inc.records.floor_per_context`, `inc.records.idle_reclaim_after`).
 
 ## 12. Sources
 
@@ -986,7 +1061,7 @@ This specification's own choices are reopened if:
 | I3 | DOCUMENTATION | OpenAFS Administration Guide, "Dumping and Restoring Volumes" (HDRWQ240), section "About Restoring Volumes", register of editions row E15. A lead only | 5.1.1, 5.7 |
 | I4 | DOCUMENTATION | J. Altman, "AFS Dump Stream Format", last updated 4 August 2024, AFS Assigned Numbers Registry, register of editions row E16: "Summary", "Volume ID", "Volume Name", "Volume IDs", "Volume Timestamps", "Volume Next Uniquifier", "Full vs Incremental Volume dumps", "Vnode Data Version". A lead only | 5.1.1, 5.7 |
 | C | DECISION | [Claim record](../reviews/2026-11-20-adr-0004-claims.md) rows `[ADR-008]` and `[DES-057]`, re-read on 2026-11-21 (section 12.2) | 12.2 |
-| D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C6, C11, C16, C20, C21, C24, C25, C26, C27, C28, C29, C33, C37 ([part 1](../adr/0004-architecture-1-core.md)); O13, O42, O45, O50 ([part 3](../adr/0004-architecture-3-operations.md)); N5, N27, N38, N39 ([part 4](../adr/0004-architecture-4-negotiation.md)) | 1, 2, 5, 8, 9, 11 |
+| D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C6, C11, C16, C18, C20, C21, C24, C25, C26, C27, C28, C29, C33, C37, C40 ([part 1](../adr/0004-architecture-1-core.md)); O13, O42, O45, O50 ([part 3](../adr/0004-architecture-3-operations.md)); N5, N27, N38, N39 ([part 4](../adr/0004-architecture-4-negotiation.md)) | 1, 2, 5, 8, 9, 11 |
 | D2 | DECISION | [ADR 0006](../adr/0006-rx-unprotected-packets.md), decision 1, points 5 and 6 | 1, 5.6, 8, 9 |
 | D3 | DECISION | [vl-fs-read.md](vl-fs-read.md): 5.1.3, 5.1.4, 5.2, 5.4, 5.9 and section 7; the callback specification (#66): 5.2 and 5.6, points 1 to 7 and 11 | 2, 4, 5, 8 |
 | D4 | DECISION | [ADR 0001](../adr/0001-licence-and-dont-copy.md), "Don't copy"; [coding standards](../coding-standards.md), rules 1, 2 and 15 | 6, 7, 10, 12 |
@@ -1106,9 +1181,12 @@ was found and is raised as section 13, Q3.
 - **Q10. C25, point 3's "server reset" against C24 (Firm).** C25, point 3,
   asks the observing context to start a fresh local epoch after a
   server reset, and C25, point 5, makes that an incarnation change. No
-  context observes a reset on its own call (5.6, point 12), and C24,
-  points 3, 4 and 6, bar weak input from changing any context's epoch
-  or retiring its handles and journal records. This version keeps C24:
+  context observes a reset on its own call (5.6, point 12). C24, points
+  3, 4 and 6, bar weak input from changing another context's or shared
+  state, its epoch, handles or journal records; for a context's own
+  state, C24, point 2's list does not include an epoch change, but is
+  not called closed, so the own-context case is an interpretation, not
+  a Firm bar. This version reads it as not authorised and keeps C24:
   a reset makes every chunk of the server wide-suspect, the bytes are
   fetched again before they are served, and an epoch changes only on a
   reader's own T7 or T8. The residual: a restore hidden by a reset that
@@ -1117,11 +1195,13 @@ was found and is raised as section 13, Q3.
   on the reset alone. Blocks: nothing in M2a (C20); the authenticated
   cache of M2b. Recommendation, a design issue for the owner: amend C25,
   point 3, to say that a server reset is handled by revalidating bytes
-  (5.6, points 6 and 12) rather than by an epoch change, since C24 is
-  Firm and the reset is weak input; or, if the owner wants handles
-  invalidated on a reset, decide whether a context may treat a reset on
-  a server it holds handles with as its own observation, which needs a
-  change to C24 and so a superseding ADR.
+  (5.6, points 6 and 12) rather than by an epoch change, since the reset
+  is weak input; or, if the owner wants handles invalidated on a reset,
+  decide whether C24, point 2, lets a context change its own epoch on
+  weak input. Saying so, for the own context only, would be an
+  interpretation of point 2's open list, recorded by amending C25
+  (Working); treating the reset as authoritative for other contexts
+  would change C24, points 3, 4 or 6, and so need a superseding ADR.
 
 ## 14. Review
 
