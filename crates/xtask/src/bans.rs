@@ -13,6 +13,10 @@
 //! `clippy.toml`, and requires the ban's warning on every planted line and
 //! no unresolved ban.
 //!
+//! Clippy reads only the configuration nearest a crate and merges nothing,
+//! so a crate's own `clippy.toml` replaces the root's for that crate. Each
+//! such file is checked the same way, and must carry every ban itself.
+//!
 //! What the bans cannot see is named in the root `clippy.toml`. The core's
 //! own rules (`ironafs-client` names no clock at all) are in `check-deps`,
 //! and the pure crates cannot name the standard library (`check-pure`).
@@ -22,7 +26,7 @@ mod self_test;
 use std::fmt;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::fixture::write_file;
 use crate::metadata;
@@ -280,6 +284,85 @@ pub(crate) fn check(
     Ok(violations)
 }
 
+/// A violation and the configuration file it is in, relative to the
+/// workspace root.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Found {
+    pub(crate) file: String,
+    pub(crate) violation: Violation,
+}
+
+impl fmt::Display for Found {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.file, self.violation)
+    }
+}
+
+/// The names clippy looks for in each directory, in its order.
+const CONFIG_NAMES: [&str; 2] = [".clippy.toml", "clippy.toml"];
+
+/// The clippy configurations, relative to `root`, that a member crate in
+/// `member_dirs` can be linted with: each file `is_file` finds under one of
+/// `CONFIG_NAMES` in a member's directory or a directory between it and
+/// the root, the root's own included, sorted and each named once.
+///
+/// Clippy reads only the nearest configuration and merges nothing, so each
+/// of these must carry every ban itself.
+pub(crate) fn config_files(
+    root: &Path,
+    member_dirs: &[PathBuf],
+    is_file: impl Fn(&Path) -> bool,
+) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = member_dirs
+        .iter()
+        .flat_map(|member| member.ancestors())
+        .filter(|dir| dir.starts_with(root))
+        .flat_map(|dir| CONFIG_NAMES.map(|name| dir.join(name)))
+        .filter(|path| is_file(path))
+        .filter_map(|path| path.strip_prefix(root).ok().map(Path::to_path_buf))
+        .collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// Checks the bans of the workspace at `root`, whose member crates are in
+/// `member_dirs`: its `clippy.toml`, which must exist, and every other
+/// configuration a member can be linted with (`config_files`), each with
+/// fixtures under its own directory below `dir`.
+///
+/// # Errors
+///
+/// Returns an error if a configuration cannot be read, a fixture cannot be
+/// written or cargo cannot be started.
+pub(crate) fn check_tree(
+    root: &Path,
+    member_dirs: &[PathBuf],
+    toolchain_toml: &str,
+    dir: &Path,
+) -> Result<Vec<Found>, Error> {
+    let mut files = config_files(root, member_dirs, Path::is_file);
+    let own = PathBuf::from("clippy.toml");
+    if !files.contains(&own) {
+        files.insert(0, own);
+    }
+    let mut found = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        let path = root.join(file);
+        let text = fs::read_to_string(&path).map_err(Error::path_io("read", &path))?;
+        let name = file.display().to_string();
+        found.extend(
+            check(&text, toolchain_toml, &dir.join(index.to_string()))?
+                .into_iter()
+                .map(|violation| Found {
+                    file: name.clone(),
+                    violation,
+                }),
+        );
+    }
+    Ok(found)
+}
+
 /// Checks this repository's bans, or with `self_test` proves on planted
 /// configurations that a removed or misspelt ban is caught.
 ///
@@ -297,8 +380,13 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     if self_test {
         return self_test::run(&workspace.target_dir, &clippy_toml, &toolchain_toml, output);
     }
+    let member_dirs: Vec<PathBuf> = workspace
+        .members
+        .iter()
+        .map(|member| member.dir.clone())
+        .collect();
     let dir = crate::fixture::fresh_dir(&workspace.target_dir, CHECK)?;
-    let result = check(&clippy_toml, &toolchain_toml, &dir);
+    let result = check_tree(&workspace.root, &member_dirs, &toolchain_toml, &dir);
     crate::fixture::remove_dir(&dir)?;
     let violations = result?;
     if !violations.is_empty() {
@@ -307,10 +395,15 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
             violations: violations.iter().map(ToString::to_string).collect(),
         });
     }
+    let files: Vec<String> = config_files(&workspace.root, &member_dirs, Path::is_file)
+        .iter()
+        .map(|file| file.display().to_string())
+        .collect();
     writeln!(
         output,
-        "check-bans: {} planted calls each tripped their ban in clippy.toml; no ban is unresolved",
-        BANS.len()
+        "check-bans: {} planted calls each tripped their ban in each of {}; no ban is unresolved",
+        BANS.len(),
+        files.join(", ")
     )
     .map_err(Error::io("report check-bans"))
 }

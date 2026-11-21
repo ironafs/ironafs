@@ -4,7 +4,9 @@
 //! Tests for reading the bans' configuration and clippy's output on the
 //! fixture.
 
-use super::{BANS, Ban, Lint, Violation, fired_violations, listed, planted_source};
+use std::path::{Path, PathBuf};
+
+use super::{BANS, Ban, Lint, Violation, config_files, fired_violations, listed, planted_source};
 
 /// Clippy's short-format warning for `ban` fired on line `line`, spelt
 /// here rather than through `Lint::word`, so the test does not share the
@@ -168,5 +170,61 @@ fn violations_say_what_failed() {
     assert_eq!(
         Violation::Clippy("error: oops".to_owned()).to_string(),
         "clippy did not finish on the planted calls: error: oops"
+    );
+}
+
+/// The configurations found under `/w` for members in `members`, when
+/// exactly the files in `existing` exist.
+fn configs(members: &[&str], existing: &[&str]) -> Vec<PathBuf> {
+    let root = Path::new("/w");
+    let members: Vec<PathBuf> = members.iter().map(|member| root.join(member)).collect();
+    config_files(root, &members, |path| {
+        existing.iter().any(|file| root.join(file) == path)
+    })
+}
+
+#[test]
+fn config_files_finds_the_root_file() {
+    assert_eq!(
+        configs(&["crates/a"], &["clippy.toml"]),
+        [PathBuf::from("clippy.toml")]
+    );
+}
+
+#[test]
+fn config_files_finds_a_member_own_file_and_one_between_it_and_the_root() {
+    assert_eq!(
+        configs(
+            &["crates/a", "crates/b"],
+            &["clippy.toml", "crates/a/clippy.toml", "crates/.clippy.toml"]
+        ),
+        [
+            PathBuf::from("clippy.toml"),
+            PathBuf::from("crates/.clippy.toml"),
+            PathBuf::from("crates/a/clippy.toml"),
+        ]
+    );
+}
+
+#[test]
+fn config_files_finds_a_dotted_root_file_and_names_each_file_once() {
+    assert_eq!(
+        configs(&["crates/a", "crates/b"], &[".clippy.toml", "clippy.toml"]),
+        [PathBuf::from(".clippy.toml"), PathBuf::from("clippy.toml")]
+    );
+}
+
+#[test]
+fn config_files_ignores_files_outside_the_workspace_and_beside_no_member() {
+    assert_eq!(
+        configs(
+            &["crates/a", "/elsewhere/c"],
+            &[
+                "clippy.toml",
+                "crates/b/clippy.toml",
+                "/elsewhere/c/clippy.toml"
+            ]
+        ),
+        [PathBuf::from("clippy.toml")]
     );
 }
