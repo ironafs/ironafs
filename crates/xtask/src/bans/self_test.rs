@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `check-bans --self-test`: runs the check on the repository's
-//! `clippy.toml`, which must pass, then on copies with one ban removed and
-//! one ban misspelt, and proves the check fails on each, naming that ban.
+//! `clippy.toml`, which must pass, then on copies with a method ban
+//! removed, a type ban removed and a ban misspelt, and proves the check
+//! fails on each, naming that ban.
 
 use std::io::Write;
 use std::path::Path;
@@ -14,6 +15,7 @@ use crate::fixture;
 
 /// The ban each planted case breaks.
 const REMOVED: &str = "std::time::SystemTime::now";
+const REMOVED_TYPE: &str = "std::process::Command";
 const MISSPELT: &str = "std::time::Instant::elapsed";
 
 /// A planted configuration, what every violation it gives must be, and
@@ -37,6 +39,17 @@ const CASES: &[Case] = &[
         expect: |found| names(found, REMOVED),
         // Clippy itself stops firing, not only the listing check.
         needs: |found| matches!(found, Violation::NotFired { path, .. } if *path == REMOVED),
+    },
+    Case {
+        name: "a type ban removed from clippy.toml",
+        plant: |text| {
+            text.lines()
+                .filter(|line| !line.contains(&format!("\"{REMOVED_TYPE}\"")))
+                .flat_map(|line| [line, "\n"])
+                .collect()
+        },
+        expect: |found| names(found, REMOVED_TYPE),
+        needs: |found| matches!(found, Violation::NotFired { path, .. } if *path == REMOVED_TYPE),
     },
     Case {
         name: "a ban misspelt in clippy.toml",

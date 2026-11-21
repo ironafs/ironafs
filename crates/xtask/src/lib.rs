@@ -3,6 +3,15 @@
 
 //! The `cargo xtask` entry point and its diagnostic and exit-status handling.
 
+// Repository automation runs cargo, git, rustup and the checks' tools, and
+// is never shipped, so the subprocess ban of coding standards rule 7 does
+// not apply to it. The clock bans still do.
+#![expect(
+    clippy::disallowed_types,
+    reason = "rule 7: xtask is repository automation, never shipped; it runs cargo, git and \
+              other tools as subprocesses"
+)]
+
 mod args;
 mod bans;
 mod check;

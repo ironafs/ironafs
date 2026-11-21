@@ -2,15 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The clock and randomness bans of coding standards rule 7, kept by
-//! clippy's `disallowed-methods` in the root `clippy.toml`, and proved to
-//! fire.
+//! clippy's `disallowed-methods` and `disallowed-types` in the root
+//! `clippy.toml`, and proved to fire.
 //!
 //! A ban clippy cannot resolve only warns, and a ban removed from the file
 //! is silent, so neither is trusted as written. The check builds a small
-//! fixture crate that calls each banned item in each form code can reach
-//! it (a call, a function path, a method call), lints it with the
-//! repository's own `clippy.toml`, and requires a disallowed-method
-//! warning on every planted line and no unresolved ban.
+//! fixture crate that reaches each banned item in each form code can (a
+//! call, a function path, a method call; for a type, a constructor, a
+//! `Default`, a `collect`), lints it with the repository's own
+//! `clippy.toml`, and requires the ban's warning on every planted line and
+//! no unresolved ban.
 //!
 //! What the bans cannot see is named in the root `clippy.toml`. The core's
 //! own rules (`ironafs-client` names no clock at all) are in `check-deps`,
@@ -34,40 +35,98 @@ mod tests;
 
 const CHECK: &str = "check-bans";
 
+/// The clippy lint a ban is listed under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lint {
+    /// `disallowed-methods`: a call, function path or method call.
+    Method,
+    /// `disallowed-types`: any naming of the type.
+    Type,
+}
+
+impl Lint {
+    /// What clippy's warning calls a banned item of this lint.
+    pub(crate) const fn word(self) -> &'static str {
+        match self {
+            Self::Method => "method",
+            Self::Type => "type",
+        }
+    }
+}
+
 /// One ban and a planted line that must trip it. Each planted line defines
 /// one function, named for its form, and is written on its own line of the
 /// fixture.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Ban {
+    pub(crate) lint: Lint,
     pub(crate) path: &'static str,
     pub(crate) planted: &'static str,
 }
 
 /// Every ban rule 7 needs, each in every form that reaches it.
+///
+/// The hashed collections and their hasher are banned as types: a map or
+/// set built with `new`, `default`, `from` or `collect` seeds its hasher
+/// from the operating system without naming a method a method ban could
+/// see, and `RandomState::default` is a trait method no method path
+/// names. A subprocess can read the host's clock or randomness, so
+/// `Command` is banned too.
 pub(crate) const BANS: &[Ban] = &[
     Ban {
+        lint: Lint::Method,
         path: "std::time::Instant::now",
         planted: "pub fn instant_call() -> std::time::Instant { std::time::Instant::now() }",
     },
     Ban {
+        lint: Lint::Method,
         path: "std::time::Instant::now",
         planted: "pub fn instant_path() -> fn() -> std::time::Instant { std::time::Instant::now }",
     },
     Ban {
+        lint: Lint::Method,
         path: "std::time::Instant::elapsed",
         planted: "pub fn instant_method(at: std::time::Instant) -> core::time::Duration { at.elapsed() }",
     },
     Ban {
+        lint: Lint::Method,
         path: "std::time::SystemTime::now",
         planted: "pub fn system_call() -> std::time::SystemTime { std::time::SystemTime::now() }",
     },
     Ban {
+        lint: Lint::Method,
         path: "std::time::SystemTime::elapsed",
         planted: "pub fn system_method(at: std::time::SystemTime) -> bool { at.elapsed().is_ok() }",
     },
     Ban {
-        path: "std::hash::RandomState::new",
-        planted: "pub fn random_state() -> std::hash::RandomState { std::hash::RandomState::new() }",
+        lint: Lint::Type,
+        path: "std::hash::RandomState",
+        planted: "pub fn random_state() -> u64 { use std::hash::BuildHasher; std::hash::RandomState::new().hash_one(1_u8) }",
+    },
+    Ban {
+        lint: Lint::Type,
+        path: "std::hash::RandomState",
+        planted: "pub fn random_default() -> std::hash::RandomState { Default::default() }",
+    },
+    Ban {
+        lint: Lint::Type,
+        path: "std::collections::HashMap",
+        planted: "pub fn hash_map() -> usize { std::collections::HashMap::<u8, u8>::default().len() }",
+    },
+    Ban {
+        lint: Lint::Type,
+        path: "std::collections::HashMap",
+        planted: "pub fn hash_map_collect() -> usize { [(1_u8, 2_u8)].into_iter().collect::<std::collections::HashMap<_, _>>().len() }",
+    },
+    Ban {
+        lint: Lint::Type,
+        path: "std::collections::HashSet",
+        planted: "pub fn hash_set() -> usize { std::collections::HashSet::<u8>::new().len() }",
+    },
+    Ban {
+        lint: Lint::Type,
+        path: "std::process::Command",
+        planted: "pub fn subprocess() -> bool { std::process::Command::new(\"date\").status().is_ok() }",
     },
 ];
 
@@ -137,7 +196,7 @@ pub(crate) fn fired_violations(output: &str) -> Vec<Violation> {
         .collect();
     for (index, ban) in BANS.iter().enumerate() {
         let at = format!("src/lib.rs:{}:", index + 1);
-        let says = format!("disallowed method `{}`", ban.path);
+        let says = format!("disallowed {} `{}`", ban.lint.word(), ban.path);
         if !output
             .lines()
             .any(|line| line.starts_with(&at) && line.contains(&says))

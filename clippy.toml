@@ -14,17 +14,28 @@ doc-valid-idents = ["IronAFS", "OpenAFS", "AuriStor", "FSKit", "macOS", ".."]
 # Coding standards rule 7: time and randomness come only through the Clock
 # and Rng interfaces of ironafs-time. One entry per line, written as
 # `path = "..."`: `cargo xtask check-bans` reads them so and proves each
-# fires on a planted call, function path and method call.
+# fires on planted code.
 #
-# Not seen by these bans, and kept elsewhere: the core's waits with a
-# timeout, sleeps and threads (check-deps on ironafs-client); everything
-# the standard library offers, in the pure crates (check-pure); and a
-# random hasher state reached through `Default` or a hashed collection's
-# `new`, which call no banned path.
+# The hashed collections and their hasher are banned as types, since a map
+# built with `new`, `default`, `from` or `collect` seeds its hasher from the
+# operating system through no method a method ban can see; use a BTreeMap,
+# or a hasher seeded through Rng under a named expect. A subprocess can read
+# the host's clock or randomness, so Command is banned; the one exemption
+# is xtask, repository automation that is never shipped, by a crate-level
+# expect.
+#
+# Kept elsewhere: the core's waits with a timeout, sleeps and threads
+# (check-deps on ironafs-client), and everything the standard library
+# offers, in the pure crates (check-pure).
 disallowed-methods = [
   { path = "std::time::Instant::now", reason = "coding standards rule 7: read time through the Clock interface of ironafs-time" },
   { path = "std::time::Instant::elapsed", reason = "coding standards rule 7: elapsed reads the system clock; read time through the Clock interface of ironafs-time" },
   { path = "std::time::SystemTime::now", reason = "coding standards rule 7: read wall time through the Clock interface of ironafs-time" },
   { path = "std::time::SystemTime::elapsed", reason = "coding standards rule 7: elapsed reads the system clock; read wall time through the Clock interface of ironafs-time" },
-  { path = "std::hash::RandomState::new", reason = "coding standards rule 7: a random hasher state draws from the operating system; draw randomness through the Rng interface of ironafs-time" },
+]
+disallowed-types = [
+  { path = "std::hash::RandomState", reason = "coding standards rule 7: a random hasher state draws from the operating system; draw randomness through the Rng interface of ironafs-time" },
+  { path = "std::collections::HashMap", reason = "coding standards rule 7: its default hasher draws from the operating system; use a BTreeMap or a hasher seeded through Rng" },
+  { path = "std::collections::HashSet", reason = "coding standards rule 7: its default hasher draws from the operating system; use a BTreeSet or a hasher seeded through Rng" },
+  { path = "std::process::Command", reason = "coding standards rule 7: a subprocess can read the host's clock or randomness outside the seam" },
 ]

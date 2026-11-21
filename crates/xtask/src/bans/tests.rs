@@ -4,18 +4,27 @@
 //! Tests for reading the bans' configuration and clippy's output on the
 //! fixture.
 
-use super::{BANS, Violation, fired_violations, listed, planted_source};
+use super::{BANS, Ban, Lint, Violation, fired_violations, listed, planted_source};
 
-/// Clippy's short-format warning for a ban fired on line `line`.
-fn warning(line: usize, path: &str) -> String {
-    format!("src/lib.rs:{line}:9: warning: use of a disallowed method `{path}`\n")
+/// Clippy's short-format warning for `ban` fired on line `line`, spelt
+/// here rather than through `Lint::word`, so the test does not share the
+/// code it checks.
+fn warning(line: usize, ban: &Ban) -> String {
+    let word = match ban.lint {
+        Lint::Method => "method",
+        Lint::Type => "type",
+    };
+    format!(
+        "src/lib.rs:{line}:9: warning: use of a disallowed {word} `{}`\n",
+        ban.path
+    )
 }
 
 /// The output of a fixture run in which every ban fired.
 fn all_fired() -> String {
     BANS.iter()
         .enumerate()
-        .map(|(index, ban)| warning(index + 1, ban.path))
+        .map(|(index, ban)| warning(index + 1, ban))
         .collect()
 }
 
@@ -76,7 +85,7 @@ fn fired_violations_reports_a_planted_line_with_no_warning() {
 #[test]
 fn fired_violations_needs_the_warning_for_the_line_own_path() {
     // A warning on line 2 for another ban's path does not count for line 2.
-    let output = all_fired().replace(&warning(2, BANS[1].path), &warning(2, BANS[3].path));
+    let output = all_fired().replace(&warning(2, &BANS[1]), &warning(2, &BANS[3]));
     assert_ne!(BANS[1].path, BANS[3].path);
     let ban = &BANS[1];
     assert_eq!(
@@ -86,6 +95,41 @@ fn fired_violations_needs_the_warning_for_the_line_own_path() {
             planted: ban.planted
         }]
     );
+}
+
+#[test]
+fn fired_violations_needs_the_lint_the_ban_is_listed_under() {
+    // A type ban's path reported as a disallowed method does not count.
+    let index = BANS.iter().position(|ban| ban.lint == Lint::Type).unwrap();
+    let ban = &BANS[index];
+    let method = Ban {
+        lint: Lint::Method,
+        ..*ban
+    };
+    let output = all_fired().replace(&warning(index + 1, ban), &warning(index + 1, &method));
+    assert_eq!(
+        fired_violations(&output),
+        [Violation::NotFired {
+            path: ban.path,
+            planted: ban.planted
+        }]
+    );
+}
+
+#[test]
+fn bans_cover_the_hashed_collections_their_hasher_and_subprocesses() {
+    for path in [
+        "std::hash::RandomState",
+        "std::collections::HashMap",
+        "std::collections::HashSet",
+        "std::process::Command",
+    ] {
+        assert!(
+            BANS.iter()
+                .any(|ban| ban.path == path && ban.lint == Lint::Type),
+            "{path}"
+        );
+    }
 }
 
 #[test]
