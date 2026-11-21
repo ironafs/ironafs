@@ -196,13 +196,52 @@ round 3.
 - **Minor:** an ambiguous outcome did not update the record's last use.
   Fixed.
 
+## Second-family pass (Gemini, then DeepSeek)
+
+After the stop rule, a second pass on the reviewed head `11cec86`,
+read-only:
+
+| Seat | Model | What it read |
+|---|---|---|
+| gemini | gemini-4-carbon-medium | the diff only, inlined in two parts, with no file access |
+| deepseek | deepseek-flash | the repository at `11cec86`: it checked each Gemini finding against the text (CONFIRMED, REFUTED or UNVERIFIABLE) and added its own |
+
+Gemini's finding on row E15's hash was not carried forward: the row
+holds a 64-digit SHA-256 value (checked). The items DeepSeek did not refute, F1 to F13,
+were each checked against the text by the implementer before any
+change. The fixes are in the commit on top of `11cec86` that adds this
+section; **they have not been reviewed.**
+
+| Item | Severity | Disposition | Origin | Kind |
+|---|---|---|---|---|
+| F1: row E8's corroboration cell named only vl-fs-read.md's Q7 and Q8 for the facts this specification added | minor | fixed: the cell adds this specification's section 13, Q1 and Q9 | pre-existing (`67ee757`) | consistency between parts |
+| F2: the Q10 summary here, 5.6, point 12, and Q10 said a reset never arrives on a context's own call; an abort saying the server is restarting does | minor | fixed: all three say the abort ends the owning context's own call but is weak input that ADR 0006, decision 1, point 5, bars from retiring anything, and that the callback reset is held back by the conservative reading of C24, point 2 | introduced by an earlier fix round (`7daee8f`; the summary in `11cec86`) | correctness |
+| F3: a verify-by-refetch reply was not checked against the fence tuple and epoch it was sent under before its branches, and the T7 or T8 reply was installed "with the new fence tuple", which could hide a break that arrived while it was in flight | major | fixed: 5.6, point 6, checks the reply's send-time epoch and fence tuple first, in one step under the volume's lock with the branch it leads to; a reply that fails retries and triggers nothing; 5.6, point 3, step 3, installs the T7 or T8 bytes with their send-time tuple, only the volume's break counter taking step 2's value. New AC8 variant | introduced by an earlier fix round (`fb15722`) | correctness |
+| F4: a file-service reply carried no site, so a failover to another site with no new VL reply was not T2, and a record made "new" from a file-service reply had no value for the VL fields | major | fixed: a file-service observation carries the site its call was sent to (5.4, point 3); version ids and type gain a "not observed" state, which differs from any later value (fail safe); `entry_flags` gains "not kept" and provenance a "none" code (234 bytes); an ambiguous outcome clears recorded values the observation does not carry. New AC3 variant. The finding's proposal to carry the routing VL entry's ids too was not taken: that entry may not be the context's own observation | pre-existing (`67ee757`) | correctness |
+| F5: 5.4, point 4, made every reply during a release ambiguous again, invalidating handles each time, and a flag clearing had no trigger | major | fixed: any change of the release state, either way, is T3; while the record's release state is not "none", nothing fetched from the volume is cached, so an equal flag need not be ambiguity again. AC4 and the comparison property updated | pre-existing (`67ee757`) | correctness |
+| F6: T8 fired only on a verify by refetch, so a status call that saw a lower version first applied the file-level rule and the volume's epoch never changed | major | fixed: T8 and 5.6, point 8, cover a status reply in the context's own call that shows a version lower than a chunk under wide suspicion; no bytes installed. New AC16 variant | introduced by an earlier fix round (`7daee8f`) | correctness |
+| F7: K contexts' ambiguity raises the shared volume break counter K times, which fences every context's fetches in flight and could end other contexts' reads with `Stale` | major (UNVERIFIABLE) | specification item, not changed: whether it is reachable depends on C16, point 2's retry bound and on how often a context can be made to observe ambiguity, which the callback specification (#66) and a rate rule for these raises would settle; a separate suspicion counter is a mechanism of its own | introduced by an earlier fix round (`7daee8f`) | missing mechanism |
+| F8: AC2 never compared a second observation with the record | minor | fixed: AC2 refreshes the VL entry with equal values between the reads and asserts the field-by-field comparison | pre-existing (`67ee757`) | other (test) |
+| F9: ADR 0006 does not exist at the reviewed head | major | base dependency, resolved at landing: ADR 0006 is on `main` (`1d75375`); not changed in this round | pre-existing (base) | consistency between parts |
+| F10: vl-fs-read.md called `site.partition` an attribute only, while this specification compares it | minor | fixed: vl-fs-read.md's use column names the comparison | pre-existing (`67ee757`) | consistency between parts |
+| F11: the table's caps, room-making, reclaim and holder changes had no stated atomic step, and `last_used` was set only at the outcome | major | fixed: new 5.2, point 7: each is one atomic step on the table, including 5.6, point 3, steps 1 to 3 for an ambiguous outcome; `last_used` is set at the lookup. A2 and the model test (interleavings) updated | pre-existing (`67ee757`), widened by the reclaim of `fb15722` | correctness |
+| F12: the threat row said a forged value costs the observing context only a refetch | minor | fixed: it names the incarnation change's effects on that context's handles, snapshots and journal records, and their explicit recovery | pre-existing (`67ee757`) | other (security analysis) |
+| F13: "new" and "confirmed" did not set `last_outcome`, and "new" did not set `last_used` | minor | fixed in 5.6, point 1 | introduced by an earlier fix round (`7daee8f`) | correctness |
+
 ## Q10: the server reset
 
 C25, point 3 (Working), asks the observing context to take a fresh
 local epoch after a server reset. A reset reaches the client only
-through the callback service or an abort, never on a context's own
-call. C24 (Firm) keeps such weak input from changing another context's
-or shared state. The specification keeps C24: a reset leads to a refetch
+through the callback service, which arrives on no context's call, or
+through an abort saying the server is restarting, which ends the owning
+context's own call. Neither is an observation. C24, points 3, 4 and 6
+(Firm), keep such weak input from changing another context's or shared
+state. For the owning context's own epoch, the abort is barred by ADR
+0006, decision 1, point 5 (Firm: an abort retires nothing, and an
+incarnation change retires handles and quarantines journal records),
+and the callback reset by the conservative reading of C24, point 2,
+whose list of what weak input may do has no epoch change and is not
+called closed. The specification keeps C24: a reset leads to a refetch
 of each chunk before it is served, and an epoch changes only on a
 reader's own observation (T7, T8). The residual: a restore hidden by a
 reset that raised every version it touched is read as ordinary changes.
@@ -255,3 +294,6 @@ asked to open any excluded section.
 - At the commit that adds this record: `cargo xtask check` passes
   (EXECUTED, macOS, 2026-11-21 UTC).
 - `814906d` was not verified by either lane (stop rule); see "Rounds".
+- At the commit with the second-family fixes: `cargo xtask check`
+  passes (EXECUTED, macOS, 2026-11-21 UTC). Those fixes were not
+  verified by any lane; see "Second-family pass".

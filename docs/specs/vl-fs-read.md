@@ -414,7 +414,7 @@ removed, and its use is redesigned, before any codec merges.
    | `volume_ids` | one volume id per version: read/write, read-only, backup, and a release clone id | the ids of the versions; 0 means that version does not exist `[V7 vos_examine(1), "OUTPUT": UNVERIFIED]`. The page lists the release clone id among the lines it takes from the VL entry, not from the volume header; that the wire entry carries it is still UNVERIFIED (Q8), and M2a never calls it |
    | `sites` | a bounded list of sites | where each version lives |
    | `site.server` | an IPv4 address, or a server identity resolved through `vl.get_addrs` | the server to call (5.1.4, point 3) |
-   | `site.partition` | `u32` | attribute only (status and diagnostics) |
+   | `site.partition` | `u32` | attribute (status and diagnostics); kept and compared as incarnation evidence by [volume-incarnation.md](volume-incarnation.md), 5.1.1 |
    | `site.flags` | `u32`, raw | which versions the site holds, and whether a read-only site is not released, of an old release or of a new release `[V7 vos_examine(1), "OUTPUT": UNVERIFIED]` |
    | `entry_flags` | `u32`, raw | which versions exist; recorded |
    | any other word | wire words | decoded, type-checked, not interpreted |

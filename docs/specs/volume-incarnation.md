@@ -217,8 +217,10 @@ Section 9 shows where each is kept and which test fails if it is broken.
    type, and, recorded but not compared, the volume sync record. Each
    value keeps where it came from (C25, point 1).
 3. Every reply the context itself decodes for that volume is compared
-   with the record. Equal values confirm it. A different value or a
-   release in progress is **ambiguity**: the context takes a new local
+   with the record. Equal values confirm it. A different value (among them
+   a release flag on the serving site that appears, changes or clears)
+   is **ambiguity**; while such a flag stays, nothing fetched from the
+   volume is cached. On ambiguity the context takes a new local
    volume epoch, so no chunk cached under the old one is reachable in
    that context, and emits an incarnation change for its own handles,
    snapshots and journal records (C25, points 3 and 5; N38, point 8). A
@@ -262,7 +264,8 @@ Section 9 shows where each is kept and which test fails if it is broken.
   own connections, that carries evidence values for a volume: a VL entry
   ([vl-fs-read.md](vl-fs-read.md), 5.1.4, points 1 and 2) or a
   file-service reply with a volume sync record (its 5.1.4, points 4 to
-  6). Only a reply that passed every check of vl-fs-read.md, 5.4, is an
+  6), with the serving site its call was sent to (5.4, point 3). Only a
+  reply that passed every check of vl-fs-read.md, 5.4, is an
   observation.
 - **Observing context:** the credential context that owns the connection
   the observation arrived on (C25, point 3).
@@ -315,7 +318,7 @@ event as before it.
 | volume id of the file id, and the id asked for | the key of the record; not evidence | kept `[I2 vos_move(1): UNVERIFIED]` | kept: the read-only id is allocated with the read/write volume `[I1 vos_create(1): UNVERIFIED]` | kept unless an id is given `[I2 vos_restore(1): UNVERIFIED]` `[I3 "About Restoring Volumes": UNVERIFIED]` | may be kept: an administrator can give the old id `[I1 vos_create(1), "-id": UNVERIFIED]` `[I3: UNVERIFIED]` |
 | `volume_ids`: the read/write, read-only, backup and release clone ids of the VL entry | compared | ? | the release clone id appears during a release and is removed after it `[I2 vos_release(1): UNVERIFIED]` `[I1 vos_examine(1), "OUTPUT": UNVERIFIED]`; whether the wire entry carries it is vl-fs-read.md's Q8 | kept for a restore in place, unless an id is given `[I2 vos_restore(1): UNVERIFIED]` | ? : the read-only and backup ids are allocated when the read/write volume is created `[I1 vos_create(1): UNVERIFIED]` `[I2 vos_backup(1): UNVERIFIED]`; whether they can be chosen too is not stated |
 | the serving site: `site.server` (identity or address) and `site.partition` | compared | changes `[I2 vos_move(1): UNVERIFIED]` | ? for the read-only sites; their set changes only by adding or removing a site | kept for a restore in place; changes for a restore to a new site `[I2 vos_restore(1): UNVERIFIED]` | may be kept |
-| `site.flags`: the release state of the serving site | compared: any release flag is a release in progress | ? | new release and old release flags are set during a release and cleared after a complete one; a new site is not released until its first release `[I2 vos_release(1): UNVERIFIED]` `[I1 vos_examine(1), "OUTPUT": UNVERIFIED]` | ? | ? |
+| `site.flags`: the release state of the serving site | compared: any change is ambiguity, and while a release flag is set nothing is cached (5.4, point 4) | ? | new release and old release flags are set during a release and cleared after a complete one; a new site is not released until its first release `[I2 vos_release(1): UNVERIFIED]` `[I1 vos_examine(1), "OUTPUT": UNVERIFIED]` | ? | ? |
 | the volume's type (read/write, read-only, backup), from the id asked and the entry | compared | kept: a move is of a read/write volume `[I2 vos_move(1): UNVERIFIED]` | kept: a release makes read-only copies `[I2 vos_release(1): UNVERIFIED]` | the restored volume is read/write, unless flagged read-only `[I2 vos_restore(1): UNVERIFIED]` | may be kept |
 | `entry_flags` | recorded only (5.4, point 5); its bits are vl-fs-read.md's Q8 | ? | ? | ? | ? |
 | the volume sync record, as words | recorded only (5.4, point 5) | ? | ? | ? | ? |
@@ -339,11 +342,16 @@ event as before it.
    ambiguity too, though it may be the same incarnation: no value read
    here shows that two sites hold one release (Q6). The cost is a refetch
    of that volume's data in that context after a replica failover.
-4. **A release flag on the serving site is ambiguity, not just a change.**
-   C25, point 3, names a release; the flags are the release as the VL
-   entry shows it. A site flagged old release or not released is never
-   served at all (C25, point 6; [vl-fs-read.md](vl-fs-read.md), 5.4,
-   point 11).
+4. **A release flag on the serving site makes the volume uncached, and
+   any change of it is ambiguity.** C25, point 3, names a release; the
+   flags are the release as the VL entry shows it. A flag that appears,
+   changes or clears is a difference (T3). While it stays, the site's
+   contents may change again with the flag unchanged (a release run
+   again), so nothing fetched then is cached. An equal flag is not
+   ambiguity again: that would invalidate the context's handles and
+   quarantine its journal records on every reply during the release. A
+   site flagged old release or not released is never served at all
+   (C25, point 6; [vl-fs-read.md](vl-fs-read.md), 5.4, point 11).
 5. **The volume sync record is recorded, not compared,** until the
    capture-backed revision says what its words mean (Q2). Comparing words
    of unknown meaning could make every store an incarnation change; not
@@ -364,19 +372,19 @@ in the size bound of 5.2:
 |---|---|---|---|
 | key | context id and generation (`u64` each), cell index (`u32`), the cell's protocol identifier (`u32` code) and configuration generation (`u64`), volume id (`u32`) | 36 | the record's key (C40, point 3, and N27 put the protocol identifier beside the cell) |
 | `epoch` | `u64` | 8 | the local volume epoch, from N38, point 8's counter |
-| `vl_ids` | four optional `u32` (read/write, read-only, backup, release clone), each a presence octet and a value | 20 | 5.1.1, row 2 |
-| `volume_type` | closed enumeration: read/write, read-only, backup | 1 | 5.1.1, row 5 |
+| `vl_ids` | four optional `u32` (read/write, read-only, backup, release clone), each a state octet (absent, present, or not observed: 5.4, point 2) and a value | 20 | 5.1.1, row 2 |
+| `volume_type` | closed enumeration: read/write, read-only, backup, not observed (5.4, point 2) | 1 | 5.1.1, row 5 |
 | `site_server` | tagged: a server identity (16 octets) or an IPv4 address (4 octets), one tag octet | 17 | 5.1.1, row 3 |
 | `site_partition` | `u32` | 4 | 5.1.1, row 3 |
 | `site_release` | closed enumeration: none, new release, old release, not released | 1 | 5.1.1, row 4 |
-| `entry_flags` | `u32`, raw | 4 | recorded only (5.4, point 5) |
+| `entry_flags` | `u32`, raw, with a presence octet ("not kept" when no VL entry has set it under this `epoch`) | 5 | recorded only (5.4, point 5) |
 | `volsync` | at most `inc.volsync_keep_max` bytes, with a length octet, or "not kept" | 65 | recorded only (5.4, point 5) |
-| `provenance` | two entries: one for the values a VL entry carries (`vl_ids`, `volume_type`, the site fields, `entry_flags`), one for `volsync`. Each holds the procedure that carried them ([vl-fs-read.md](vl-fs-read.md), 5.1.4's IronAFS name, as a one-octet code), the connection's security profile (N39's class, level and suite: one, one and four octets; "null class" in M2a), the boot-clock instant of the reply (C37, `u64`), and the server's suspect epoch when the call was sent (the callback specification, 5.6, point 1, `u64`) | 2 × 23 = 46 | C25, point 1's "where each observation came from"; shown by O13 (5.6, point 11) |
+| `provenance` | two entries: one for the values a VL entry carries (`vl_ids`, `volume_type`, the site fields, `entry_flags`), one for `volsync`. Each holds the procedure that carried them ([vl-fs-read.md](vl-fs-read.md), 5.1.4's IronAFS name, as a one-octet code), the connection's security profile (N39's class, level and suite: one, one and four octets; "null class" in M2a), the boot-clock instant of the reply (C37, `u64`), and the server's suspect epoch when the call was sent (the callback specification, 5.6, point 1, `u64`). Procedure code 0 means "none": no reply has set those values under this `epoch` | 2 × 23 = 46 | C25, point 1's "where each observation came from"; shown by O13 (5.6, point 11) |
 | `suspicion` | the last suspicion seen: closed enumeration (none; wide suspicion found at a serve) and the boot-clock instant it was found | 9 | for display only (5.6, point 11): it says when a serve last found one, not whether a chunk is suspect now. A chunk's own suspicion is its fence tuple (5.6, points 4 to 6), never this field |
 | `last_outcome` | closed enumeration (confirmed, ambiguous, new), the trigger id of 5.6, point 2 (one octet, 0 for none) and the boot-clock instant | 10 | for display (5.6, point 11) |
 | `holders` | `u32` count | 4 | the holders the context has on the volume; a record with a holder is pinned (5.2) |
 | `last_used` | boot-clock instant, `u64` | 8 | for eviction (5.2) |
-| total | | 233 | at most `inc.record_max` |
+| total | | 234 | at most `inc.record_max` |
 
 The record holds no value read from another context and no value from a
 reply that failed any check.
@@ -393,7 +401,7 @@ caps only on what it keeps `[OWN]`:
 | Name | Value | Applies to | Why |
 |---|---|---|---|
 | `inc.volsync_keep_max` | 64 bytes | the copy of one volume sync record kept in a record | a guess: the record's size is MISSING ([vl-fs-read.md](vl-fs-read.md), 5.1.3, point 4; Q2). A longer one is "not kept", which changes no outcome while the record is not compared (5.4, point 5); Q2 resets the cap from the captured size |
-| `inc.record_max` | 256 bytes | one evidence record, all fields | the fields of 5.1.2 at their widths sum to 233 bytes; a compile-time size assertion |
+| `inc.record_max` | 256 bytes | one evidence record, all fields | the fields of 5.1.2 at their widths sum to 234 bytes; a compile-time size assertion |
 | `inc.records.per_context_max` | 1 024 records | the records one credential context holds | a context reads few volumes at once; each record is charged to the context's metadata budget (C27, point 4) |
 | `inc.records.total_max` | 65 536 records | the records the daemon holds beyond each context's floor | bounds that part of the table at 16 MiB whatever the number of contexts |
 | `inc.records.floor_per_context` | 32 records | the records a context with a floor may always hold, outside `inc.records.total_max` | C27, point 4's floor: no other context's use can take them, so a context with a floor can always record its first 32 volumes. The floor is charged to the context's metadata budget |
@@ -474,6 +482,15 @@ Eviction and the full table `[OWN]`:
    wrapped (section 6, A2). Each holder's own owner bounds how many
    exist (C27, point 4's caps on pinned bytes, metadata and journal
    bytes), far below 2³².
+7. **One step on the table.** Each observation's lookup, comparison and
+   record update (5.4; 5.6, point 1), each making of room (point 3),
+   each reclaim and each change of `holders` is one atomic step of the
+   core on the table; for an ambiguous outcome that step includes 5.6,
+   point 3, steps 1 to 3. No observation, eviction, reclaim or holder
+   change sees another half done: two observations cannot both pass a
+   cap check for one slot, and a reclaim never takes a record an
+   observation or a holder change is using. `last_used` is updated at the
+   lookup, before the comparison, so a record in use is never idle.
 
 ### 5.3 Versions
 
@@ -494,27 +511,49 @@ in this order `[OWN]`:
    values are compared with nothing and kept nowhere.
 2. **Lookup.** The record of (context and generation, cell, volume id).
    If none exists, the outcome is **new** if 5.2 lets a record be made,
-   and **unrecorded** otherwise (5.2, point 5); points 3 to 6 do not
-   apply. "New" is safe whatever the context held before: an earlier
-   record's epoch is never reused (5.2, point 4; 5.8), so nothing cached
-   under it is reachable, and a record with a holder is never missing
-   within a run (5.2, point 1). Journal records from an earlier run are
+   and **unrecorded** otherwise (5.2, point 5); points 3, 5 and 6 do not
+   apply, and point 4's rule on caching does. A new record holds the
+   values the observation carries, with their provenance. What it does
+   not carry is "not observed" (the version ids and the type, which a
+   file-service observation never carries: a record evicted while the
+   context's calls are still routed by a cached VL entry), or "not kept"
+   with its provenance entry "none" (`entry_flags`, `volsync`). "New" is
+   safe whatever the context held before: an earlier record's epoch is
+   never reused (5.2, point 4; 5.8), so nothing cached under it is
+   reachable, and a record with a holder is never missing within a run
+   (5.2, point 1). Journal records from an earlier run are
    5.8, point 3's.
-3. **Compared values.** Each value of 5.1.1 marked "compared" that the
-   observation carries is compared for equality with the record's. A
-   value the observation does not carry (a file-service reply carries no
-   VL entry) is not compared and keeps the record's value. Any
-   difference is **ambiguous**. The comparison is exact, field by field,
-   in each value's decoded form ([vl-fs-read.md](vl-fs-read.md), 5.1.3):
-   a server identity is compared as its 16 octets (vl-fs-read.md, 5.1.3,
-   point 6), an address as its four octets; a server named by identity
-   in one entry and by address in the next is a difference.
-4. **Release state.** A `site_release` other than "none" for the serving
-   site is **ambiguous**, also when it equals the record's (T3).
+3. **Compared values.** A VL entry carries every value of 5.1.1 marked
+   "compared". A file-service observation carries the serving site its
+   call was sent to: the server the context's own connection reached,
+   and that site's partition and release state in the VL entry the call
+   was routed by ([vl-fs-read.md](vl-fs-read.md), 5.6, point 3). So a
+   switch to another site with no new VL reply (vl-fs-read.md, 5.9, rows
+   R7, R10 and R16) is compared like any other (T2). It carries no
+   version ids and no type. Each compared value the observation carries
+   is compared for equality with the record's. A value the observation
+   does not carry is not compared and keeps the record's value. A value
+   the record holds as "not observed" differs from every value an
+   observation carries: it is ambiguity, never filled in silently, at
+   the cost of one more incarnation change after an evicted record (T1,
+   T4). Any difference is **ambiguous**. The comparison is exact, field
+   by field, in each value's decoded form
+   ([vl-fs-read.md](vl-fs-read.md), 5.1.3): a server identity is
+   compared as its 16 octets (vl-fs-read.md, 5.1.3, point 6), an address
+   as its four octets; a server named by identity in one entry and by
+   address in the next is a difference.
+4. **Release state.** A change of `site_release` is a difference under
+   point 3 (T3), whichever way it goes: a release flag that appears,
+   changes or clears. While the record's `site_release` is not "none",
+   for a "new" record too, nothing the context fetches from the volume is
+   cached, as for an unrecorded volume (5.2, point 5); a record exists,
+   so holders are not refused. An equal flag is not ambiguity again
+   (5.1.1, reason 4).
 5. **Recorded values.** `entry_flags` and `volsync`, when the
    observation carries them, replace the record's copy and its provenance
    entry; a value the observation does not carry keeps the record's copy,
-   as in point 3. They are compared with nothing in this version. The capture-backed
+   as in point 3, except on an ambiguous outcome (5.6, point 1). They
+   are compared with nothing in this version. The capture-backed
    revision may make a word of the volume sync record compared (Q2); it
    then becomes a row of 5.1.1 with its own trigger.
 6. **Otherwise** the outcome is **confirmed**.
@@ -538,18 +577,25 @@ Not applicable: nothing is encoded or sent.
 
 1. **Outcomes** `[ADR 0004 C25.2, C25.3: Working]`:
    - **confirmed:** the record's compared values are unchanged, its
-     provenance and `last_used` are updated from the observation, and
+     provenance, `last_used` and `last_outcome` (confirmed, trigger id
+     0) are updated from the observation, and
      chunks under its `epoch` stay reachable in this context. Reachable
      is not servable: a chunk under suspicion is still revalidated as
      points 4 to 6 say, and a confirmed outcome clears no chunk's
      suspicion. Only point 6's refetch, or the cache's status
      revalidation for a narrow suspicion, does;
-   - **new:** a record is made from the observation with `epoch` set to
-     the next value of N38, point 8's counter;
+   - **new:** a record is made from the observation (5.4, point 2) with
+     `epoch` set to the next value of N38, point 8's counter,
+     `last_outcome` new (trigger id 0), `last_used` the observation's
+     instant and `holders` zero;
    - **ambiguous:** an incarnation change in the observing context
      (point 3), then the record's evidence values, their provenance and
      `last_outcome` are replaced from the observation, with the new
-     `epoch`, and `last_used` is updated as for any use. Its `holders`
+     `epoch`, and `last_used` is updated as for any use. A compared value
+     the observation does not carry keeps the record's (5.4, point 3); a
+     recorded value it does not carry becomes "not kept", with its
+     provenance entry "none", because it belongs to the earlier `epoch`
+     (5.4, point 5). Its `holders`
      is kept: the holders are still held, and the record stays pinned
      while they are, so the replacement never makes a held volume
      evictable (5.2, point 1);
@@ -562,12 +608,12 @@ Not applicable: nothing is encoded or sent.
    |---|---|---|
    | T1 | a VL version id differs, including a release clone id that appears, changes or goes (5.4, point 3) | a release (the release clone id); a re-creation that did not choose every id is `[OWN]`, from 5.1.1's reason 2 |
    | T2 | the serving server or partition differs: a move, a restore to a new site, a switch of replica site, including C33, point 7's refresh after "moved" or "offline" | a move; a replica switch is `[OWN]`, from 5.1.1's reason 3 |
-   | T3 | the serving site carries a release flag (5.4, point 4) | a release |
+   | T3 | the serving site's release state differs from the record's: a release flag appears, changes or clears (5.4, point 4) | a release |
    | T4 | the volume's type differs | `[OWN]`: a type change can only be a new volume under the id |
    | T5 | not a trigger: a volume with no record (never seen, evicted, or after a restart) takes the outcome "new" or "unrecorded" (5.4, point 2), and nothing cached under an earlier epoch is reachable (5.2, point 4; 5.8) | a restart of the client, and `[OWN]` for an evicted record |
    | T6 | not used: a restart is the "new" outcome of 5.8, point 2 | — |
    | T7 | verify by refetch returned bytes that differ from the cached chunk under the same file id and data version (point 6) | `[OWN]`: the only observation that shows a repeated data version with other bytes, C25, point 1's assumption made visible |
-   | T8 | verify by refetch returned a data version lower than the chunk's (point 6) | `[OWN]`: under a wide suspicion a lower version is read as the volume's, not only the file's (point 6's reason) |
+   | T8 | a reply of the context's own shows a file's data version lower than that of a chunk of the file under wide suspicion: a verify by refetch (point 6) or a status reply (point 8) | `[OWN]`: under a wide suspicion a lower version is read as the volume's, not only the file's (point 6's reason) |
 
    T5 and T6 keep their numbers so that the review record's references
    stay valid. "Seen offline" and "a server reset", the other cases of
@@ -591,8 +637,12 @@ Not applicable: nothing is encoded or sent.
       compares the fence tuple (the callback specification, 5.6,
       point 3), and C16, point 2, applies to a reply that fails. The one
       exception is the reply whose own check caused the change (T7 or
-      T8, point 6): it is installed under the new epoch as part of this
-      step, with the new fence tuple, and is not fetched again;
+      T8, points 6 and 8): it passed its fence check in this same step
+      (points 6 and 8), so no counter moved while it was in flight. If it
+      carried data, its bytes are installed under the new epoch as part
+      of this step, with the fence tuple they were sent under, in which
+      only the volume's break counter takes the value step 2 gave it,
+      and are not fetched again;
    4. the incarnation change event names the context, its generation,
       the cell and the volume id, and is queued to the context's
       handles, directory snapshots and Windows identities, and to its
@@ -628,6 +678,14 @@ Not applicable: nothing is encoded or sent.
    - the reader fetches the chunk's byte range again, in its own context,
      with a status in the same reply (vl-fs-read.md, 5.1.4, point 6), and
      the reply passes vl-fs-read.md, 5.4, point 9;
+   - before any branch below, the reply is checked against the local
+     volume epoch and the fence tuple recorded when the refetch was sent,
+     as any fetch is (point 3, step 3; the callback specification, 5.6,
+     point 3). If either changed while it was in flight, it fails its
+     fence (C16, point 2): no branch below applies, it triggers nothing,
+     and the refetch is retried. The check and the branch it leads to
+     are one step under the core's lock for the volume, so nothing
+     changes between them;
    - if the reply's data version is higher than the chunk's, the chunk is
      stale: the new bytes are installed under the new version, as for any
      changed file;
@@ -653,10 +711,10 @@ Not applicable: nothing is encoded or sent.
    it keeps everything C24, point 6, requires kept: bytes, epochs,
    handles and journal records change only on the reader's own
    observation (T7, T8). A lower data version is read as the volume's
-   here, not only the file's as point 8 does, because the window is the
-   volume's or the server's: an older dump restored in it lowers or
-   repeats versions across the volume. The comparison costs reading the
-   cached chunk once.
+   here, not only the file's as point 8 does outside a wide suspicion,
+   because the window is the volume's or the server's: an older dump
+   restored in it lowers or repeats versions across the volume. The
+   comparison costs reading the cached chunk once.
    The cost of the rule is that, after each wide suspicion, every cached
    chunk of the affected server or volume is fetched once more, in each
    context, on its next use: the cache saves latency but no bandwidth
@@ -672,7 +730,9 @@ Not applicable: nothing is encoded or sent.
    change retires handles and quarantines journal records (C25, point 5).
    What an abort may lower is ADR 0006, decision 1, point 6's, which the
    callback specification carries out (its 5.6, point 11). The VL entry
-   the client then fetches is an observation, and may trigger T2. So a
+   the client then fetches is an observation, and may trigger T2; so is
+   the reply from another site the client then tries, which carries that
+   site (5.4, point 3) and so is T2. So a
    volume "seen offline" only through aborts, and restored in place while
    it was off line, is not detected by this version unless a wide
    suspicion covers the same window: section 13, Q3.
@@ -681,7 +741,14 @@ Not applicable: nothing is encoded or sent.
    observing context, with weak input to other contexts `[ADR 0004
    C25.4: Working]`. It is not volume ambiguity here: one file's version,
    seen outside any window that covers the volume, says nothing about the
-   others. Under a wide suspicion it is T8 (point 6).
+   others. Under a wide suspicion it is T8, whichever reply shows it: a
+   verify by refetch (point 6), or a status reply in the context's own
+   call that shows a version lower than that of a chunk of the file under
+   wide suspicion. The status reply is checked against its fence as
+   point 6's refetch is, before this point applies, and carries no bytes,
+   so point 3, step 3, installs none. So the order of status and fetch
+   calls ([vl-fs-read.md](vl-fs-read.md), 5.6, point 1) does not decide
+   whether the volume's epoch changes.
 9. **Shared incarnation state.** None exists in this version. Before
    rxgk the pool is empty (C21), no record is shared between contexts,
    and no observation establishes that two contexts see the same
@@ -704,13 +771,17 @@ Not applicable: nothing is encoded or sent.
     server reset among the cases that need a fresh local epoch in "the
     observing context". The client learns of a reset only from the
     callback service (the callback specification, 5.6, point 9, rows R1
-    and B0) or from an abort (point 7); neither arrives on a context's
-    own call, so no context observes it. For the other contexts and the
-    shared state, C24 bars an epoch change on such input: points 3 and 4
-    reserve changes to another context's or shared state for
-    authoritative evidence, and point 6's closed list keeps epochs,
-    handles and journal records. For a context's own state, C24, point
-    2, lists what weak input may do (suspend promises, revoke grants,
+    and B0), which arrives on no context's call, or from an abort saying
+    the server is restarting (point 7), which ends a context's own call
+    but is not an observation: it is weak input (section 4), and ADR
+    0006, decision 1, point 5 (Firm), bars it from retiring anything,
+    which an incarnation change does. So no context observes a reset.
+    For the other contexts and the shared state, C24 bars an epoch
+    change on such input: points 3 and 4 reserve changes to another
+    context's or shared state for authoritative evidence, and point 6's
+    closed list keeps epochs, handles and journal records. For a
+    context's own state and the callback service's reset, C24, point 2,
+    lists what weak input may do (suspend promises, revoke grants,
     mark entries suspect) and an epoch change is not on it; the list is
     not called closed, so whether a context may re-epoch itself on a
     reset is not barred in so many words. This version reads it
@@ -763,9 +834,11 @@ after a restart.
 
 **Failure cases this answer avoids** (#78): it declares no discriminator
 that a restore with equal data versions defeats (points 1 and 2), and it
-never treats "cannot tell" as "unchanged": a changed value and a release
-in progress are ambiguous, a volume with no record gets a new epoch, and
-a reply that cannot be decoded serves nothing (5.4; 5.6, point 2). Where
+never treats "cannot tell" as "unchanged": a changed value (a release
+flag that appears or clears among them) is ambiguous, nothing fetched
+while a release is in progress is cached, a volume with no record gets a
+new epoch, and a reply that cannot be decoded serves nothing (5.4; 5.6,
+point 2). Where
 the evidence cannot speak at all (a reset, a pause, a suspend), the bytes
 are fetched again before they are served (5.6, points 6 and 12).
 
@@ -807,7 +880,7 @@ are fetched again before they are served (5.6, points 6 and 12).
 | Id | Operation | Operands' range | Bound and result at overflow |
 |---|---|---|---|
 | A1 | the next local volume epoch (5.6, points 1 and 3) | N38, point 8's `u64` counter | `checked_add`; at overflow the counter is exhausted and the observation fails with the generic failure ([vl-fs-read.md](vl-fs-read.md), section 13, Q11), the volume is unusable in that context, and an event is emitted; the counter never wraps, so no epoch repeats. At one new epoch per microsecond it lasts over 500 000 years |
-| A2 | record counts against the caps, and the `holders` count (5.2) | `u32` counters | `checked_add` and `checked_sub`. A record count cannot exceed its cap, because a record is made only after the cap check. A `holders` add that would overflow refuses the new holder with the retryable busy error (5.2, point 6); a subtract below zero is a fault in IronAFS, counted and reported, and leaves the count at zero, never wrapped |
+| A2 | record counts against the caps, and the `holders` count (5.2) | `u32` counters | `checked_add` and `checked_sub`. A record count cannot exceed its cap, because a record is made only after the cap check, in the same atomic step (5.2, point 7). A `holders` add that would overflow refuses the new holder with the retryable busy error (5.2, point 6); a subtract below zero is a fault in IronAFS, counted and reported, and leaves the count at zero, never wrapped |
 | A3 | the table's bytes, `inc.record_max × (inc.records.total_max + inc.records.floors_max × inc.records.floor_per_context)` (5.2) | constants | a compile-time assertion that the product fits in `usize` and equals 24 MiB (16 MiB shared, 8 MiB floors); a floor is granted only while fewer than `inc.records.floors_max` are held, a count checked with `checked_add` |
 | A4 | comparing bytes in verify by refetch (5.6, point 6) | two chunks, each at most `fs.fetch.chunk_max` | the data versions are compared first (a lower one is T8); under an equal data version, equal lengths are checked first: a different length is T7; then a constant-memory comparison with no arithmetic on untrusted values |
 
@@ -849,7 +922,7 @@ the user's own key (N5, point 2).
 | Threat | What stops it, or what it costs |
 |---|---|
 | A forged VL entry or volume sync record that makes a new incarnation look like the old one | under the null class, not stopped: such a forger can forge the data too (vl-fs-read.md, section 8), and nothing it sends is cached (C20). Under rxkad the forger needs the user's session key. No outcome of 5.4 is better for the forger than serving its own bytes |
-| A forged or changed value that makes the same incarnation look new | costs the observing context a refetch of the volume; it reaches no other context except as a suspicion (5.6, point 4) and never another context's epoch, handles or journal records (C24, points 3 and 6) |
+| A forged or changed value that makes the same incarnation look new | costs the observing context an incarnation change (5.6, point 3): a refetch of the volume, its handles, directory snapshots and Windows identities on the volume invalidated, and its pending journal records for the volume quarantined, recovered only by explicit recovery (C25, point 5; C28, point 3). That is a denial of service to that context by whoever can forge its replies: under the null class nothing is cached (C20), and under rxkad the forger needs the user's session key. It reaches no other context except as a suspicion (5.6, point 4) and never another context's epoch, handles or journal records (C24, points 3 and 6) |
 | Using one context's observation to move another's state | 5.6, points 4 and 5: weak input only marks suspect; every epoch change is the context's own observation |
 | Forged callback resets, breaks naming a volume, or overloads, to force refetches | each wide suspicion costs at most one refetch per cached chunk, on its next use. How often suspicion can be renewed is the callback specification's: a server's suspect epoch moves at most once per `cb.advance_interval` (its 5.6, point 7), but a break naming a volume from a source that is a known server raises that volume's break counter at once, within that server's rate bucket (its 5.6, points 8 and 9, row B1). So a forger who keeps renewing it can make every read of that volume a refetch: the cache gives no bandwidth saving for that data while it lasts, and at most doubles the bytes read (a refetch per use instead of a fetch per use); integrity is unaffected |
 | A forged abort to retire a volume's handles or journal records | 5.6, point 7; ADR 0006, decision 1, point 5 |
@@ -894,10 +967,13 @@ None: nothing is encoded or decoded here.
 
 ### 10.2 Properties
 
-- **Comparison:** for random pairs of observations, the outcome is
-  confirmed if and only if every compared value is equal and no release
-  flag is set (5.4); a change in any one compared value alone is
-  ambiguous.
+- **Comparison:** for random pairs of a record and an observation, VL
+  entries and file-service replies both, the outcome is confirmed if and
+  only if every compared value the observation carries equals the
+  record's and none of them is "not observed" in the record (5.4); a
+  change in any one compared value alone, the release state included, is
+  ambiguous; and while the record's release state is not "none", nothing
+  is cached.
 - **Epochs never repeat:** over random sequences of observations, outcomes,
   evictions and restarts, no two records ever hold the same `epoch`, and
   no `epoch` is reused after its record is replaced or evicted (N38,
@@ -910,7 +986,10 @@ None: nothing is encoded or decoded here.
   context's floor record are never evicted; a context with no record
   that 5.2, point 3, lets it evict gets the outcome "unrecorded" and no
   record, and its request to make a holder is refused as busy; an
-  ambiguous outcome keeps `holders`.
+  ambiguous outcome keeps `holders`. The model test also runs
+  interleavings of several contexts' observations, reclaims and holder
+  changes, and checks that no interleaving passes a cap or reclaims a
+  record in use (5.2, point 7).
 
 ### 10.3 Reject corpus
 
@@ -934,15 +1013,26 @@ able to restore a volume from a dump it holds:
   bytes; the daemon starts; A reads F. Result: the new bytes are served,
   fetched from the server (the fetch count shows it), and no chunk from
   the earlier run is read.
-- **AC2. Same incarnation, same run.** A reads F twice with no event
-  between. Result: the second read is served from cache; outcome
-  confirmed.
+- **AC2. Same incarnation, same run.** A reads F; A's VL entry expires
+  and is refreshed with the same values; A reads F again. Result: the
+  refreshed entry is compared field by field with A's record (5.4,
+  point 3), every compared value is equal, the outcome is confirmed, A's
+  `epoch` is unchanged, and the second read is served from cache.
 - **AC3. Move.** A reads F; the volume moves to another server; A's VL
   entry is refreshed and shows the new site. Result: T2; A's `epoch`
   changes; F is fetched again; the old chunk is not reachable in A.
+  Variant (failover): F is in a read-only volume with two sites; A's
+  fetch at its site is aborted with the "off line" code, and A's next
+  fetch goes to the other site with no new VL reply. Result: T2 on that
+  fetch's reply (5.4, point 3), which fails its fence and is fetched
+  again under the new epoch (5.6, point 3, step 3).
 - **AC4. Release.** A reads a file of a read-only volume; a release
   starts, and A's VL entry shows the serving site flagged. Result: T3;
-  A's epoch changes; the incarnation change event names A only.
+  A's epoch changes; the incarnation change event names A only. While
+  the flag stays, A's further replies are confirmed, A's reads of the
+  volume are fetched and nothing is cached, and A's opens succeed. When
+  a refreshed entry shows the flag cleared: T3 again, and A's epoch
+  changes once more.
 - **AC5. Re-creation under the same id.** The read-write volume is
   removed and created again with the same read/write id and new
   read-only and backup ids, and F's vnode, uniquifier and data version
@@ -972,7 +1062,10 @@ able to restore a volume from a dump it holds:
   the chunk is under wide suspicion; verify by refetch returns equal data
   version and other bytes; T7; A's epoch changes; the new bytes are
   served. Variant with equal bytes: the chunk is kept, A's epoch is
-  unchanged, and no handle or journal record of A is touched.
+  unchanged, and no handle or journal record of A is touched. Variant
+  with a break in flight: a break naming the volume arrives while A's
+  refetch is in flight. Result: the refetch's reply fails its fence
+  (5.6, point 6), triggers nothing, installs nothing, and is retried.
 - **AC9. Fetch in flight.** A starts a fetch of F; T2 is observed in A
   before the reply is installed. Result: the reply fails its fence (C16,
   point 2) and is never served.
@@ -1017,7 +1110,11 @@ able to restore a volume from a dump it holds:
   the server restores an older dump in which F has version v − 1, and
   sends a callback reset; A reads F. Result: wide suspicion; the refetch
   shows v − 1; T8; A's epoch changes and the incarnation change event
-  names A. Variant with v + 1: the new bytes are served as an ordinary
+  names A. Variant with a status first: A's first call after the reset
+  is a status call (a lookup or an attribute read before the read) that
+  shows v − 1. Result: T8 on the status reply (5.6, point 8); A's epoch
+  changes; the read then fetches F under the new epoch. Variant with
+  v + 1: the new bytes are served as an ordinary
   change, with A's epoch unchanged (5.6, point 12's residual).
 - **AC17. Journal record across a restart.** A has a journal record for
   a file of V; the daemon restarts; A's first observation of V is
@@ -1200,7 +1297,11 @@ was found and is raised as section 13, Q3.
 - **Q10. C25, point 3's "server reset" against C24 (Firm).** C25, point 3,
   asks the observing context to start a fresh local epoch after a
   server reset, and C25, point 5, makes that an incarnation change. No
-  context observes a reset on its own call (5.6, point 12). C24, points
+  context observes a reset (5.6, point 12): the callback service's reset
+  arrives on no context's call, and an abort saying the server is
+  restarting, though it ends a context's own call, is weak input that
+  ADR 0006, decision 1, point 5 (Firm), bars from retiring anything.
+  C24, points
   3, 4 and 6, bar weak input from changing another context's or shared
   state, its epoch, handles or journal records; for a context's own
   state, C24, point 2's list does not include an epoch change, but is
