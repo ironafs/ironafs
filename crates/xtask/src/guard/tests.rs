@@ -212,6 +212,64 @@ fn guard_blocks_commits_on_main_however_the_directory_is_given() {
 }
 
 #[test]
+fn guard_blocks_porcelain_that_moves_main() {
+    for command in [
+        "git -C /repo/main pull origin main",
+        "git -C /repo/main pull --rebase",
+        "git -C /repo/main rebase origin/main",
+        "git -C /repo/main rebase --continue",
+        "git -C /repo/main reset --hard abc1234",
+        "git -C /repo/main reset abc1234",
+        "git -C /repo/main update-ref HEAD abc1234",
+    ] {
+        blocked(command, ON_MAIN);
+    }
+    for command in [
+        "git rebase origin/main main",
+        "git rebase --onto abc1234 origin/main refs/heads/main",
+        "git update-ref refs/heads/main abc1234",
+        "git update-ref -d main",
+        "git branch -f main abc1234",
+        "git branch --force main",
+        "git branch -M main",
+        "git branch -m feature main",
+        "git branch -C feature main",
+        "git checkout -B main abc1234",
+        "git switch -C main",
+        "git switch --force-create=main abc1234",
+        "git fetch origin feature:main",
+        "git fetch . +feature:refs/heads/main",
+        "git fetch origin 'refs/heads/*:refs/heads/*'",
+        "git send-pack origin feature:main",
+        "git fast-import",
+        "git filter-branch -- --all",
+        "git update-ref --stdin",
+        "git fetch origin $REFSPEC",
+    ] {
+        blocked(command, "main");
+    }
+    for command in [
+        "git -C /repo/main pull --ff-only",
+        "git -C /repo/main reset --hard origin/main",
+        "git -C /repo/main reset -- file.rs",
+        "git -C /repo/main reset",
+        "git -C /repo/main rebase --abort",
+        "git pull origin main",
+        "git rebase origin/main",
+        "git rebase -i --onto origin/main abc1234",
+        "git reset --hard abc1234",
+        "git update-ref refs/heads/feature abc1234",
+        "git branch -f topic abc1234",
+        "git branch -d topic",
+        "git fetch origin",
+        "git fetch origin main",
+        "git fetch origin main:refs/remotes/origin/main",
+    ] {
+        allowed(command);
+    }
+}
+
+#[test]
 fn guard_blocks_a_commit_after_a_branch_change_in_the_same_command() {
     blocked(
         &format!("git checkout -b topic && {COMMIT_OK}"),

@@ -33,7 +33,9 @@ const BUILTINS: &[&str] = &[
     "describe",
     "diff",
     "diff-tree",
+    "fast-import",
     "fetch",
+    "filter-branch",
     "for-each-ref",
     "format-patch",
     "fsck",
@@ -41,6 +43,7 @@ const BUILTINS: &[&str] = &[
     "grep",
     "hash-object",
     "help",
+    "http-push",
     "init",
     "interpret-trailers",
     "log",
@@ -65,7 +68,9 @@ const BUILTINS: &[&str] = &[
     "rev-list",
     "rev-parse",
     "revert",
+    "replay",
     "rm",
+    "send-pack",
     "shortlog",
     "show",
     "show-ref",
@@ -227,8 +232,196 @@ impl<R: Repo> Guard<'_, R> {
                 self.not_on_main(place, scope, "am");
             }
             "push" => self.push(rest, scope, place),
-            "checkout" | "switch" if !has(&["--"]) => scope.branch_changed = true,
+            "pull" => {
+                self.fetch_refspecs(rest, "pull");
+                if !has(&["--ff-only"]) {
+                    self.not_on_main(place, scope, "pull");
+                }
+            }
+            "fetch" => self.fetch_refspecs(rest, "fetch"),
+            "rebase" => self.rebase(rest, scope, place),
+            "reset" => self.reset(rest, scope, place),
+            "update-ref" => self.update_ref(rest, scope, place),
+            "branch" => self.branch(rest),
+            "checkout" | "switch" if !has(&["--"]) => {
+                self.force_create(rest);
+                scope.branch_changed = true;
+            }
+            "fast-import" | "filter-branch" | "replay" | "send-pack" | "http-push" => {
+                self.block(format!(
+                    "git {name} can rewrite or update main without the guard seeing which refs it changes: use git push, git branch or git update-ref with literal refs"
+                ));
+            }
             _ => (),
+        }
+    }
+
+    /// `git pull` and `git fetch` refspecs: none may write `main`.
+    fn fetch_refspecs(&mut self, rest: &[Word], what: &str) {
+        let has = |flags: &[&str]| {
+            rest.iter()
+                .any(|word| word.literal().is_some_and(|text| flags.contains(&text)))
+        };
+        if has(&["--stdin"]) {
+            self.block(format!(
+                "git {what} --stdin: the guard cannot read refspecs that could write main; give them as arguments"
+            ));
+            return;
+        }
+        if has(&["--all", "--multiple"]) {
+            return;
+        }
+        let words = positionals(rest, FETCH_VALUES);
+        for refspec in words.get(1..).unwrap_or(&[]) {
+            let Some(text) = refspec.literal() else {
+                self.block(format!(
+                    "write the git {what} refspec literally so the guard can check that it does not write main"
+                ));
+                continue;
+            };
+            let text = text.strip_prefix('+').unwrap_or(text);
+            if let Some((_, destination)) = text.split_once(':') {
+                if destination.contains('*') {
+                    self.block(format!(
+                        "git {what} with a pattern destination can write main: fetch into refs/remotes/ or name the branch"
+                    ));
+                } else if names_main(destination) {
+                    self.block(format!(
+                        "this git {what} writes main: fetch into refs/remotes/; main changes only through an approved squash merge (ADR 0002, ADR 0003)"
+                    ));
+                }
+            }
+        }
+    }
+
+    fn rebase(&mut self, rest: &[Word], scope: &Scope, place: &Result<Place, String>) {
+        let has = |flags: &[&str]| {
+            rest.iter()
+                .any(|word| word.literal().is_some_and(|text| flags.contains(&text)))
+        };
+        if has(&["--abort", "--quit", "--show-current-patch", "--edit-todo"]) {
+            return;
+        }
+        let words = positionals(rest, REBASE_VALUES);
+        let branch = words.get(if has(&["--root"]) { 0 } else { 1 });
+        match branch.map(|word| word.literal()) {
+            Some(Some(branch)) if names_main(branch) => self.block(
+                "this git rebase rewrites main: rebase your task branch; main changes only through an approved squash merge (ADR 0002, ADR 0003)",
+            ),
+            Some(Some(_)) => (),
+            Some(None) => self.block(
+                "write the branch given to git rebase literally so the guard can check that it is not main",
+            ),
+            None => self.not_on_main(place, scope, "rebase"),
+        }
+    }
+
+    fn reset(&mut self, rest: &[Word], scope: &Scope, place: &Result<Place, String>) {
+        let before_paths = rest
+            .iter()
+            .position(|word| word.literal() == Some("--"))
+            .map_or(rest, |end| rest.get(..end).unwrap_or(rest));
+        let moves = positionals(before_paths, &[]).iter().any(|word| {
+            !matches!(
+                word.literal(),
+                Some(
+                    "HEAD"
+                        | "@"
+                        | "origin/main"
+                        | "refs/remotes/origin/main"
+                        | "@{u}"
+                        | "@{upstream}"
+                )
+            )
+        });
+        if moves {
+            self.not_on_main(place, scope, "reset");
+        }
+    }
+
+    fn update_ref(&mut self, rest: &[Word], scope: &Scope, place: &Result<Place, String>) {
+        let has = |flags: &[&str]| {
+            rest.iter()
+                .any(|word| word.literal().is_some_and(|text| flags.contains(&text)))
+        };
+        if has(&["--stdin"]) {
+            self.block(
+                "git update-ref --stdin: the guard cannot read refs that could include main; give the ref as an argument",
+            );
+            return;
+        }
+        match positionals(rest, &["-m"]).first().map(|word| word.literal()) {
+            Some(Some(reference)) if names_main(reference) => self.block(
+                "this git update-ref writes main: main changes only through an approved squash merge (ADR 0002, ADR 0003)",
+            ),
+            Some(Some("HEAD")) if !has(&["--no-deref"]) => {
+                self.not_on_main(place, scope, "update-ref HEAD");
+            }
+            Some(None) => self.block(
+                "write the ref given to git update-ref literally so the guard can check that it is not main",
+            ),
+            _ => (),
+        }
+    }
+
+    /// `git branch` with force, move, copy or delete may not touch `main`.
+    fn branch(&mut self, rest: &[Word]) {
+        let changes = rest.iter().filter_map(Word::literal).any(|text| {
+            matches!(text, "--force" | "--move" | "--copy" | "--delete")
+                || (text.starts_with('-')
+                    && !text.starts_with("--")
+                    && text.contains(['f', 'm', 'M', 'c', 'C', 'd', 'D']))
+        });
+        if !changes {
+            return;
+        }
+        for word in positionals(rest, BRANCH_VALUES) {
+            match word.literal() {
+                Some(name) if names_main(name) => {
+                    self.block(
+                        "this git branch forces, moves, copies or deletes main: main changes only through an approved squash merge (ADR 0002, ADR 0003)",
+                    );
+                    return;
+                }
+                Some(_) => (),
+                None => {
+                    self.block(
+                        "write the branch names given to git branch literally so the guard can check that they are not main",
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    /// `git checkout -B` and `git switch -C` reset the branch they name.
+    fn force_create(&mut self, rest: &[Word]) {
+        let mut index = 0;
+        while let Some(word) = rest.get(index) {
+            index += 1;
+            let Some(text) = word.literal() else {
+                continue;
+            };
+            let value = match text {
+                "-B" | "-C" | "--force-create" => {
+                    index += 1;
+                    rest.get(index - 1).map(Word::literal)
+                }
+                _ => text
+                    .strip_prefix("--force-create=")
+                    .or_else(|| text.strip_prefix("-B").filter(|tail| !tail.is_empty()))
+                    .or_else(|| text.strip_prefix("-C").filter(|tail| !tail.is_empty()))
+                    .map(Some),
+            };
+            match value {
+                Some(Some(name)) if names_main(name) => self.block(
+                    "this git checkout -B or switch -C resets main: main changes only through an approved squash merge (ADR 0002, ADR 0003)",
+                ),
+                Some(None) => self.block(
+                    "write the branch given to -B or -C literally so the guard can check that it is not main",
+                ),
+                _ => (),
+            }
         }
     }
 
@@ -475,6 +668,78 @@ impl<R: Repo> Guard<'_, R> {
             );
         }
     }
+}
+
+/// Options of `git fetch` and `git pull` whose value is the next word.
+const FETCH_VALUES: &[&str] = &[
+    "--depth",
+    "--deepen",
+    "--shallow-since",
+    "--shallow-exclude",
+    "--refmap",
+    "-j",
+    "--jobs",
+    "--upload-pack",
+    "-o",
+    "--server-option",
+    "--negotiation-tip",
+    "--recurse-submodules-default",
+    "-s",
+    "--strategy",
+    "-X",
+    "--strategy-option",
+];
+
+/// Options of `git rebase` whose value is the next word.
+const REBASE_VALUES: &[&str] = &[
+    "--onto",
+    "-s",
+    "--strategy",
+    "-X",
+    "--strategy-option",
+    "-x",
+    "--exec",
+    "-C",
+];
+
+/// Options of `git branch` whose value is the next word.
+const BRANCH_VALUES: &[&str] = &[
+    "-u",
+    "--set-upstream-to",
+    "--contains",
+    "--no-contains",
+    "--merged",
+    "--no-merged",
+    "--points-at",
+    "--sort",
+    "--format",
+];
+
+/// The words after the options, skipping the value of each option in
+/// `with_value`; words after `--` are kept.
+fn positionals<'w>(rest: &'w [Word], with_value: &[&str]) -> Vec<&'w Word> {
+    let mut found = Vec::new();
+    let mut options_done = false;
+    let mut index = 0;
+    while let Some(word) = rest.get(index) {
+        index += 1;
+        match word.literal() {
+            Some("--") if !options_done => options_done = true,
+            Some(text) if !options_done && text.len() > 1 && text.starts_with('-') => {
+                if with_value.contains(&text) {
+                    index += 1;
+                }
+            }
+            _ => found.push(word),
+        }
+    }
+    found
+}
+
+/// Whether a ref or refspec side names the branch `main`.
+fn names_main(reference: &str) -> bool {
+    let reference = reference.strip_prefix('+').unwrap_or(reference);
+    reference.strip_prefix("refs/heads/").unwrap_or(reference) == "main"
 }
 
 /// The message as `git commit --trailer` leaves it: the trailers join the
