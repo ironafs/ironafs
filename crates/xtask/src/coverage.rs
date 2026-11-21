@@ -181,14 +181,16 @@ fn prepare_export_path(path: &Path) -> Result<(), Error> {
     }
 }
 
-/// Reads the export, refusing one larger than `limit` bytes.
+/// Reads the export, refusing one larger than `limit` bytes. The length is
+/// checked on the bytes before they are decoded, so an oversized export is
+/// reported as such even when the limit splits a character.
 fn read_export(path: &Path, limit: u64) -> Result<String, Error> {
     let file = fs::File::open(path).map_err(Error::path_io("open coverage export", path))?;
-    let mut text = String::new();
+    let mut bytes = Vec::new();
     file.take(limit.saturating_add(1))
-        .read_to_string(&mut text)
+        .read_to_end(&mut bytes)
         .map_err(Error::path_io("read coverage export", path))?;
-    if u64::try_from(text.len()).map_or(true, |length| length > limit) {
+    if u64::try_from(bytes.len()).map_or(true, |length| length > limit) {
         return Err(Error::Rules {
             check: CHECK,
             violations: vec![format!(
@@ -197,7 +199,10 @@ fn read_export(path: &Path, limit: u64) -> Result<String, Error> {
             )],
         });
     }
-    Ok(text)
+    String::from_utf8(bytes).map_err(|_| Error::Rules {
+        check: CHECK,
+        violations: vec![format!("the export at {} is not UTF-8", path.display())],
+    })
 }
 
 /// The workspace crates that have a library, with their library directory

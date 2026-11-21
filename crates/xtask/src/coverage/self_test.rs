@@ -3,9 +3,10 @@
 
 //! `coverage --self-test`: plants each case that makes an export unusable
 //! (empty, malformed, summary-only, missing an expected crate, counting a
-//! test file or an excluded file, written by another tool version), a crate
-//! in no table or in two, and an exclusion without a reason, and proves
-//! each fails through the same path as the real run. A clean export must
+//! test file or an excluded file, written by another tool version, a file
+//! summarised twice, function records that disagree with the summaries), a
+//! crate in no table or in two, and an exclusion without a reason, and
+//! proves each fails through the same path as the real run. A clean export must
 //! pass, with the branch column reading "not available" on every row.
 //!
 //! The exports are built here as JSON text in the tool's format, so the
@@ -143,15 +144,26 @@ struct Case {
     expect: &'static str,
 }
 
-fn cases() -> Vec<Case> {
-    let case = |name, export, expect| Case {
+fn case(name: &'static str, export: String, expect: &'static str) -> Case {
+    Case {
         name,
         export,
         libraries: LIBRARIES,
         exclusions: "",
         tables: TABLES,
         expect,
-    };
+    }
+}
+
+fn cases() -> Vec<Case> {
+    export_cases()
+        .into_iter()
+        .chain(workspace_cases())
+        .collect()
+}
+
+/// Cases planted in the export's content.
+fn export_cases() -> Vec<Case> {
     vec![
         case("an empty export", String::new(), "the export is empty"),
         case(
@@ -203,6 +215,20 @@ fn cases() -> Vec<Case> {
             "not the pinned 0.9.1",
         ),
         case(
+            "a file summarised twice",
+            export(
+                &[
+                    "crates/ironafs-xdr/src/lib.rs",
+                    "crates/ironafs-xdr/src/decode.rs",
+                    "crates/ironafs-xdr/src/decode.rs",
+                    "crates/ironafs-client/src/lib.rs",
+                    "crates/xtask/src/lib.rs",
+                ],
+                TOOL_VERSION,
+            ),
+            "crates/ironafs-xdr/src/decode.rs has more than one summary",
+        ),
+        case(
             "function records that disagree with the file summaries",
             planted(&Plant {
                 no_records: true,
@@ -226,6 +252,12 @@ fn cases() -> Vec<Case> {
             }),
             "crate `ironafs-client` has no instrumented line",
         ),
+    ]
+}
+
+/// Cases planted in the workspace, the tables or the exclusion list.
+fn workspace_cases() -> Vec<Case> {
+    vec![
         Case {
             libraries: &[],
             tables: Tables {

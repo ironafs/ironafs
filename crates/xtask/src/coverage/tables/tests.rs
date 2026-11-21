@@ -464,3 +464,20 @@ fn a_crate_listed_as_not_built_but_measured_fails() {
         "{found:?}"
     );
 }
+
+#[test]
+fn a_file_summarised_twice_fails() {
+    let mut export = clean_export();
+    export
+        .files
+        .push(summary("crates/ironafs-xdr/src/decode.rs", (5, 0), (1, 1)));
+
+    let found = violations(&export, &libraries(), &tables(), "");
+
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].contains("more than one summary")
+            && found[0].contains("crates/ironafs-xdr/src/decode.rs"),
+        "{found:?}"
+    );
+}

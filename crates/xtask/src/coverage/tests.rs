@@ -62,6 +62,7 @@ fn self_test_catches_every_planted_case_and_passes_the_clean_one() {
         "an export counting a planted test file",
         "an excluded file in the export",
         "an export from another tool version",
+        "a file summarised twice",
         "function records that disagree with the file summaries",
         "a function record for a library file without a summary",
         "a measured crate with no instrumented line",
@@ -122,5 +123,21 @@ fn an_export_over_the_size_limit_is_refused_unread() {
         "{refused}"
     );
 
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_oversized_export_is_refused_even_when_the_limit_splits_a_character() {
+    let dir = scratch("split");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("export.json");
+    fs::write(&path, format!("{}é", "x".repeat(16))).unwrap();
+
+    let refused = read_export(&path, 16).unwrap_err();
+
+    assert!(
+        matches!(&refused, Error::Rules { violations, .. } if violations[0].contains("16 bytes")),
+        "{refused}"
+    );
     fs::remove_dir_all(&dir).unwrap();
 }

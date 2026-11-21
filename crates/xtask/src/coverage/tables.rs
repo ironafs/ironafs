@@ -308,10 +308,19 @@ struct Measured<'a> {
 }
 
 /// Places each export file in its crate's table (or table 2 if generated).
-/// A test file or an excluded file is a violation.
+/// A test file, an excluded file and a file summarised twice are
+/// violations; a repeated summary is not added.
 fn measure<'a>(places: &Places<'a>, violations: &mut Vec<String>) -> Measured<'a> {
     let mut measured = Measured::default();
+    let mut paths = BTreeSet::new();
     for file in &places.input.export.files {
+        if !paths.insert(file.path.as_str()) {
+            violations.push(format!(
+                "{} has more than one summary in the export",
+                places.relative(&file.path).unwrap_or(&file.path)
+            ));
+            continue;
+        }
         let Some(relative) = places.relative(&file.path) else {
             continue;
         };
