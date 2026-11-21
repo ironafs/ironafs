@@ -15,12 +15,18 @@
 //! `CLIPPY_CONF_DIR`, and `Clippy_Conf_Dir`, for their compilers, and one
 //! whose build script writes a `clippy.toml`, and proves each refused,
 //! beside one whose build script sets another variable, which passes.
+//! Last, it plants cargo configurations: one in a workspace whose `[env]`
+//! sets `CLIPPY_CONF_DIR` under an escaped key, one in cargo's home that
+//! sets it by a dotted key, and one cargo would read that cannot be read,
+//! and proves each refused, beside one whose `[env]` sets another
+//! variable, which passes.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::{
-    CHECK, CONF_DIR, Found, Lint, Violation, check_build_scripts, check_tree, unchanged_by,
+    CHECK, CONF_DIR, Found, Lint, Violation, cargo_env, check_build_scripts, check_tree,
+    unchanged_by,
 };
 use crate::Error;
 use crate::fixture::{self, write_file};
@@ -301,6 +307,7 @@ fn run_in(
         }
     }
     build_scripts(&dir.join("build"), toolchain_toml, &mut report)?;
+    cargo_configs(&dir.join("cargo"), &mut report)?;
     report(format!(
         "check-bans --self-test: the repository's bans passed and {} planted cases failed as \
          planted",
@@ -399,6 +406,75 @@ fn build_scripts(
     caught(case, &found, &|found| {
         found.file == ROOT_FILE && found.violation == Violation::Changed
     })
+}
+
+/// A planted cargo configuration: its case, the file under the case's
+/// directory, its text, and what each refusal of it must be.
+type CargoCase = (
+    &'static str,
+    &'static str,
+    &'static str,
+    fn(&Violation) -> bool,
+);
+
+/// Proves a cargo configuration whose `[env]` table sets `CLIPPY_CONF_DIR`,
+/// in the workspace or in cargo's home, or one cargo would read that
+/// cannot be read, is refused, and one that sets another variable is not.
+fn cargo_configs(
+    dir: &Path,
+    report: &mut impl FnMut(String) -> Result<(), Error>,
+) -> Result<(), Error> {
+    // Cargo's home is planted too, empty unless a case writes to it.
+    let check = |case: &str, file: Option<(&str, &str)>| -> Result<Vec<Found>, Error> {
+        let tree = dir.join(case);
+        let home = tree.join("home");
+        if let Some((file, text)) = file {
+            write_file(&tree.join(file), text)?;
+        }
+        Ok(cargo_env::check(&[tree.join("workspace")], Some(&home)))
+    };
+    let clean = "a workspace cargo configuration whose [env] sets another variable";
+    let found = check(
+        "clean",
+        Some(("workspace/.cargo/config.toml", "[env]\nPLANTED = \"x\"\n")),
+    )?;
+    if !found.is_empty() {
+        return Err(failure(clean, &found));
+    }
+    report(format!("passed: {clean}"))?;
+    let planted: [CargoCase; 3] = [
+        (
+            "a workspace cargo configuration whose [env] sets CLIPPY_CONF_DIR, escaped",
+            "workspace/.cargo/config.toml",
+            "[env]\n\"CLIPPY\\u005fCONF_DIR\" = { value = \"x\", force = true }\n",
+            |violation| matches!(violation, Violation::CargoEnv { name, .. } if name == CONF_DIR),
+        ),
+        (
+            "cargo's home configuration setting env.CLIPPY_CONF_DIR",
+            "home/config.toml",
+            "env.CLIPPY_CONF_DIR = \"x\"\n",
+            |violation| matches!(violation, Violation::CargoEnv { name, .. } if name == CONF_DIR),
+        ),
+        (
+            "a workspace cargo configuration check-bans cannot read",
+            "workspace/.cargo/config.toml/unreadable",
+            "",
+            |violation| matches!(violation, Violation::CargoUnread(_)),
+        ),
+    ];
+    for (index, (case, file, text, refused)) in planted.into_iter().enumerate() {
+        let found = check(&format!("case-{index}"), Some((file, text)))?;
+        let planted_file = |found: &Found| {
+            found.file.ends_with(file.trim_end_matches("/unreadable")) && refused(&found.violation)
+        };
+        if found.is_empty() || !found.iter().all(planted_file) {
+            return Err(failure(case, &found));
+        }
+        for violation in &found {
+            report(format!("caught: {case}: {violation}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn failure(case: &'static str, found: &[Found]) -> Error {

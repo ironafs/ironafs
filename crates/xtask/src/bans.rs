@@ -36,6 +36,10 @@
 //! and puts it back before the build ends is not seen: it is code run with
 //! the developer's rights, which rule 21 and `check-deps` hold, not this.
 //!
+//! Cargo's own configuration can set the variable for every compiler too,
+//! through an `[env]` table: the check reads each configuration file cargo
+//! would load and refuses one that does (`cargo_env`).
+//!
 //! The ban arrays are read in one format only (`read`); a ban key or a
 //! ban array line in any other form is refused, not skipped. Keys are
 //! matched as TOML decodes them, so a quoted or escaped spelling of a ban
@@ -45,6 +49,7 @@
 //! own rules (`ironafs-client` names no clock at all) are in `check-deps`,
 //! and the pure crates cannot name the standard library (`check-pure`).
 
+mod cargo_env;
 mod self_test;
 
 use std::ffi::OsStr;
@@ -194,6 +199,13 @@ pub(crate) enum Violation {
     BuildOverride { package: String, name: String },
     /// The workspace's clippy did not finish, with the error given.
     Unbuilt(String),
+    /// A cargo configuration's `[env]` table sets `name`, a variable
+    /// clippy reads, for every compiler cargo runs, on the line given.
+    CargoEnv { line: usize, name: String },
+    /// A cargo configuration includes another file, on the line given.
+    CargoInclude { line: usize },
+    /// A cargo configuration file cargo would read cannot be read.
+    CargoUnread(String),
     /// The configuration was added, removed or rewritten while the
     /// workspace was built.
     Changed,
@@ -240,6 +252,22 @@ impl fmt::Display for Violation {
                 formatter,
                 "the build script of {package} sets {name} for its crate's compiler, which \
                  changes the configuration or lints clippy runs with there: remove it"
+            ),
+            Self::CargoEnv { line, name } => write!(
+                formatter,
+                "line {line} sets {name} in cargo's [env] table, which cargo gives every \
+                 compiler it runs, so clippy would read it although the check removes it: \
+                 remove it"
+            ),
+            Self::CargoInclude { line } => write!(
+                formatter,
+                "line {line} includes another cargo configuration, which check-bans does not \
+                 follow, so an [env] table there would go unchecked: remove it"
+            ),
+            Self::CargoUnread(error) => write!(
+                formatter,
+                "cargo would read this configuration, but check-bans cannot, so an [env] table \
+                 in it would go unchecked: {error}"
             ),
             Self::Changed => write!(
                 formatter,
@@ -861,7 +889,12 @@ pub(crate) fn lint_workspace(name: &'static str) -> Result<(), Error> {
         .map(|member| member.dir.clone())
         .collect();
     let before = snapshot(&workspace.root, &member_dirs)?;
-    let status = workspace_clippy().status().map_err(Error::io(name))?;
+    // Cargo reads its configuration from the directory it runs in up, so
+    // it runs in the root, whose configuration check-bans reads.
+    let status = workspace_clippy()
+        .current_dir(&workspace.root)
+        .status()
+        .map_err(Error::io(name))?;
     let found = changed(&before, &snapshot(&workspace.root, &member_dirs)?);
     if !found.is_empty() {
         return Err(Error::Rules {
@@ -928,6 +961,17 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         .iter()
         .map(|member| member.dir.clone())
         .collect();
+    // Every cargo run below is in the root or under the target directory.
+    let cargo = cargo_env::check(
+        &[workspace.root.clone(), workspace.target_dir.clone()],
+        cargo_env::cargo_home().as_deref(),
+    );
+    if !cargo.is_empty() {
+        return Err(Error::Rules {
+            check: CHECK,
+            violations: cargo.iter().map(ToString::to_string).collect(),
+        });
+    }
     // The build scripts run first, so the configurations proved are the
     // ones left after them, and one they changed is refused.
     let build = unchanged_by(&workspace.root, &member_dirs, || {
@@ -958,7 +1002,8 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     writeln!(
         output,
         "check-bans: {} planted calls each tripped their ban in each of {}; no ban is \
-         unresolved, and no build script changes what clippy runs with",
+         unresolved, and no build script or cargo configuration changes what clippy runs \
+         with",
         BANS.len(),
         files.join(", ")
     )
