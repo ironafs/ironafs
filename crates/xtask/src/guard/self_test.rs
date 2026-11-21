@@ -107,6 +107,11 @@ const CASES: &[Case] = &[
         fix: "main",
     },
     Case {
+        name: "a push to main behind a runner the guard does not know",
+        command: "watch -n2 git push origin main",
+        fix: "pushes to main",
+    },
+    Case {
         name: "a comment without its disclosure line",
         command: "gh issue comment 1 --body 'text'",
         fix: "disclosure line",

@@ -513,6 +513,42 @@ fn guard_blocks_wrappers_it_cannot_read() {
 }
 
 #[test]
+fn guard_reads_through_commands_that_run_git_or_gh() {
+    for command in [
+        "coproc x git push origin main",
+        "watch -n2 git push origin main",
+        "strace -f git push origin main",
+        "taskset -c 0 git push origin main",
+        "ionice -c3 git push origin main",
+        "valgrind git push origin main",
+        "chronic /usr/bin/git push origin main",
+        "watch -n2 'git push origin main'",
+        "watch -n2 'cd /tmp; git push origin main'",
+    ] {
+        blocked(command, TO_MAIN);
+    }
+    blocked("unbuffer gh pr merge 5 --squash", "--match-head-commit");
+    blocked(
+        "watch GIT_DIR=/repo/main/.git git commit -m 'x' -m 'Assisted-by: none'",
+        ON_MAIN,
+    );
+    for command in [
+        "watch -n2 git status",
+        "strace -f git log -1",
+        "echo git push origin main",
+        "printf '%s\\n' git push origin main",
+        "grep -rn git docs",
+        "rg 'git push origin main' docs",
+        "man git push",
+        "which git gh",
+        "cargo build",
+        "ls git",
+    ] {
+        allowed(command);
+    }
+}
+
+#[test]
 fn guard_expands_git_aliases() {
     let repo = Fake {
         git_aliases: vec![("ci", "commit -v"), ("pm", "!git push origin main")],

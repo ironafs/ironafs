@@ -425,7 +425,9 @@ impl<R: Repo> Guard<'_, R> {
             "{" | "}" | "!" | "if" | "then" | "else" | "elif" | "fi" | "do" | "done" | "while"
             | "until" => self.assigned(args, stdin, scope, env, depth),
             "coproc" => {
-                // `coproc NAME { …; }` names the coprocess; `coproc cmd` does not.
+                // `coproc NAME { …; }` names the coprocess. Before a simple
+                // command bash takes no name: in `coproc x git …`, `x` is the
+                // command, which is read as a runner.
                 let body = match args.get(1).and_then(Word::literal) {
                     Some("{") => args.get(1..).unwrap_or(&[]),
                     _ => args,
@@ -499,8 +501,47 @@ impl<R: Repo> Guard<'_, R> {
             "popd" => scope.cwd = None,
             "git" => self.git(args, stdin, scope, env, depth),
             "gh" => self.gh(args, stdin, scope, depth),
-            _ => (),
+            _ if NOT_RUNNERS.contains(&base) => (),
+            _ => self.runner(args, stdin, scope, env, depth),
         }
+    }
+
+    /// A command the guard does not know, read as if it may run a command
+    /// given in its arguments, as `watch`, `strace` or `valgrind` do: the
+    /// first argument named `git` or `gh` is checked as that command, with
+    /// the assignments just before it, and an earlier argument that is a
+    /// command line naming git or gh is checked as a script. Commands in
+    /// [`NOT_RUNNERS`] are not read.
+    fn runner(
+        &mut self,
+        args: &[Word],
+        stdin: &Stdin,
+        scope: &mut Scope,
+        env: &mut Vec<(String, Option<String>)>,
+        depth: usize,
+    ) {
+        let start = args
+            .iter()
+            .position(|word| word.literal().is_some_and(is_git_or_gh));
+        for word in args.get(..start.unwrap_or(args.len())).unwrap_or(&[]) {
+            if let Some(text) = word.literal()
+                && text.contains(char::is_whitespace)
+                && names_git_or_gh(text)
+            {
+                let env = env.clone();
+                self.child_script(text, scope, &env, depth);
+            }
+        }
+        let Some(start) = start else {
+            return;
+        };
+        let first = args
+            .get(..start)
+            .unwrap_or(&[])
+            .iter()
+            .rposition(|word| assignment(word).is_none())
+            .map_or(0, |last| last + 1);
+        self.assigned(args.get(first..).unwrap_or(&[]), stdin, scope, env, depth);
     }
 
     fn env(
@@ -670,6 +711,26 @@ impl<R: Repo> Guard<'_, R> {
             )),
         }
     }
+}
+
+/// Commands that print, search or describe their arguments and never run
+/// them, so `echo git push origin main` is not read as a push.
+const NOT_RUNNERS: &[&str] = &[
+    ":", "[", "apropos", "echo", "egrep", "false", "fgrep", "grep", "help", "info", "man",
+    "printf", "rg", "test", "true", "type", "whatis", "whereis", "which",
+];
+
+/// Whether a word names the `git` or `gh` program, by any path.
+fn is_git_or_gh(text: &str) -> bool {
+    let base = text.rsplit(['/', '\\']).next().unwrap_or(text);
+    let base = base.strip_suffix(".exe").unwrap_or(base);
+    matches!(base, "git" | "gh")
+}
+
+/// Whether a command line given as one word names `git` or `gh` as a word.
+fn names_git_or_gh(text: &str) -> bool {
+    text.split(|ch: char| ch.is_whitespace() || ";&|()`".contains(ch))
+        .any(is_git_or_gh)
 }
 
 /// Splits `NAME=value`; the value is `None` when it expands at run time.
