@@ -9,7 +9,9 @@
 extern crate alloc;
 
 mod capability;
+mod error;
 
 pub use capability::{
     Attestation, BindingId, CallerCap, ContextId, CredentialGeneration, HandleCap, HandleId, Mint,
 };
+pub use error::{Surface, VfsError};
