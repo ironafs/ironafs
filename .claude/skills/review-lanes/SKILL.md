@@ -230,15 +230,19 @@ a pass:
 - A single seat's tail (one or two majors, no blocker, from one seat
   alone) goes to the judgement seat or, through the refutation seat, into
   specification items; never into another full round. The judgement seat
-  rules whether each major holds as a defect in what the change decides:
+  rules whether each major holds as a correctness or contract defect in
+  what the change decides:
   one that holds is fixed by a scoped fix verified at its seat's pin, or
   the change is split, redesigned or its blocker recorded; one that does
   not hold is closed as ruled and recorded, and any mechanism it asks for
   becomes a specification item.
 - A part is converged when each required seat's last conclusive verdict
   covered its files at a pinned sha and no finding in them is open. Split
-  it from that sha as a change of its own, with its own class, record and
-  merge.
-- Credit follows ADR 0002 unchanged. If no required seat's final verdict
-  covers the landed tree, a verification round on the final diff comes
-  before the merge.
+  it from the latest sha every required seat's verdict covers for those
+  files (a verdict covers a later sha only if every change to the files
+  since was a fix verified at its finding seat's pin), as a change of its
+  own, with its own class and merge; its record carries the part's
+  findings and their dispositions.
+- Credit follows ADR 0002 unchanged. For class I and above, if no
+  required seat's final verdict covers the landed tree, a verification
+  round on the final diff comes before the merge.

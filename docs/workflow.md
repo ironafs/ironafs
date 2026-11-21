@@ -345,9 +345,12 @@ authoritative.
      it asks for becomes a specification item.
    - **Converged parts are split off.** A part is converged when each
      required seat's last conclusive verdict covered the part's files at a
-     pinned sha and no finding in them is open. It is split off from that
-     sha as a change of its own, with its own class, review record and
-     merge (step 8); the rest continues.
+     pinned sha and no finding in them is open. It is split off from the
+     latest sha that every required seat's verdict covers for those files
+     (a verdict covers a later sha only if every change to the files since
+     was a fix verified at its finding seat's pin), as a change of its own,
+     with its own class, merge (step 8) and review record, which carries
+     the part's findings and their dispositions; the rest continues.
 8. **Merge** when the class's checks are met, no confirmed correctness or
    contract finding is open (one closed by the refutation seat as a
    specification item, or by a ruling that it does not hold, is closed; a
