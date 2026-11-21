@@ -53,8 +53,9 @@ pub trait EntropySource: Send + Sync {
 /// The production [`Rng`]: the cryptographic random source, over an
 /// [`EntropySource`] injected when the client is composed.
 ///
-/// It is built only from an [`EntropySource`], never from another [`Rng`],
-/// so a seeded generator cannot take its place:
+/// It is built only from an [`EntropySource`]. A type that implements
+/// [`Rng`] alone, as a seeded generator does, cannot be passed to
+/// [`CryptoRng::start`]:
 ///
 /// ```compile_fail,E0277
 /// use ironafs_crypto::CryptoRng;
@@ -72,18 +73,25 @@ pub trait EntropySource: Send + Sync {
 ///
 /// let _ = CryptoRng::start(Seeded);
 /// ```
+///
+/// The bound proves no more than that. Any type that implements
+/// [`EntropySource`] satisfies it: the composition chooses the operating
+/// system's provider, and that provider keeps the [`EntropySource::fill`]
+/// contract.
 pub struct CryptoRng {
     source: Box<dyn EntropySource>,
 }
 
 impl CryptoRng {
-    /// Proves that `source` supplies bytes and returns the [`Rng`] over it.
+    /// Checks that `source` is available and returns the [`Rng`] over it.
     ///
-    /// It draws one probe from `source` and discards it. The process calls
-    /// this before it announces that it has started, so a source that is
-    /// missing, filtered or failing refuses the start. A source that blocks
-    /// until it is ready blocks this call for as long; the caller bounds
-    /// that wait.
+    /// It draws one non-empty probe from `source` and discards it. The
+    /// probe is an availability check for a trusted provider: it shows
+    /// that the provider reports a successful fill, not that the bytes are
+    /// random. The process calls this before it announces that it has
+    /// started, so a source that is missing, filtered or failing refuses
+    /// the start. A source that blocks until it is ready blocks this call
+    /// for as long; the caller bounds that wait.
     ///
     /// ```
     /// use ironafs_crypto::{CryptoRng, EntropyError, EntropySource};
@@ -103,8 +111,8 @@ impl CryptoRng {
     ///
     /// # Errors
     ///
-    /// Returns the source's [`EntropyError`], unchanged, if the probe
-    /// fails.
+    /// Returns the source's [`EntropyError`], unchanged, code included, if
+    /// the probe fails.
     pub fn start(source: impl EntropySource + 'static) -> Result<Self, EntropyError> {
         let mut probe = [0_u8; STARTUP_PROBE_LEN];
         source.fill(&mut probe)?;
@@ -121,6 +129,8 @@ impl Rng for CryptoRng {
     /// # Errors
     ///
     /// Returns an [`RngError`] if the source fails. Nothing else is tried.
+    /// The source's [`EntropyError`] and its code are not carried: only
+    /// [`CryptoRng::start`] returns them.
     fn fill(&self, bytes: &mut [u8]) -> Result<(), RngError> {
         if bytes.is_empty() {
             return Ok(());
@@ -137,9 +147,13 @@ impl fmt::Debug for CryptoRng {
 
 /// Why the random source could not supply bytes.
 ///
-/// The codes are the operating system's own: an `errno` value on Linux and
-/// macOS, the status `SecRandomCopyBytes` returned, or an `NTSTATUS` as a
-/// signed 32-bit integer on Windows. They reach the report unchanged.
+/// The codes are those of the operating system's selected source (ADR 0005,
+/// sheets 8 to 10): the `errno` value from the `getrandom` system call on
+/// Linux, the non-zero status `SecRandomCopyBytes` returned on macOS, and
+/// the `NTSTATUS` from `BCryptGenRandom` as a signed 32-bit integer on
+/// Windows. [`CryptoRng::start`] returns the provider's error unchanged, so
+/// the code reaches the startup report; a later failed fill returns an
+/// [`RngError`], which carries no code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum EntropyError {

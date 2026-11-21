@@ -35,9 +35,13 @@ fn entropy_error_messages_name_the_failure_and_code() {
 
 /// A source that succeeds for its first `good_calls` calls, writing
 /// `GOOD`, and then fails with `error` after writing `PARTIAL` over the
-/// first half of the buffer.
+/// first half of the buffer. It records how many calls it had, how many
+/// bytes they asked for in all, and how many failures wrote part of the
+/// buffer first.
 struct Scripted {
     calls: AtomicUsize,
+    requested: AtomicUsize,
+    partial_writes: AtomicUsize,
     good_calls: usize,
     error: EntropyError,
 }
@@ -49,6 +53,8 @@ impl Scripted {
     fn new(good_calls: usize, error: EntropyError) -> Arc<Self> {
         Arc::new(Self {
             calls: AtomicUsize::new(0),
+            requested: AtomicUsize::new(0),
+            partial_writes: AtomicUsize::new(0),
             good_calls,
             error,
         })
@@ -56,6 +62,14 @@ impl Scripted {
 
     fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
+    }
+
+    fn requested(&self) -> usize {
+        self.requested.load(Ordering::SeqCst)
+    }
+
+    fn partial_writes(&self) -> usize {
+        self.partial_writes.load(Ordering::SeqCst)
     }
 }
 
@@ -65,12 +79,16 @@ struct Shared(Arc<Scripted>);
 impl EntropySource for Shared {
     fn fill(&self, bytes: &mut [u8]) -> Result<(), EntropyError> {
         let call = self.0.calls.fetch_add(1, Ordering::SeqCst);
+        self.0.requested.fetch_add(bytes.len(), Ordering::SeqCst);
         if call < self.0.good_calls {
             bytes.fill(GOOD);
             Ok(())
         } else {
             let half = bytes.len() / 2;
-            bytes[..half].fill(PARTIAL);
+            if half > 0 {
+                bytes[..half].fill(PARTIAL);
+                self.0.partial_writes.fetch_add(1, Ordering::SeqCst);
+            }
             Err(self.0.error)
         }
     }
@@ -82,10 +100,13 @@ fn started(source: &Arc<Scripted>) -> CryptoRng {
 }
 
 #[test]
-fn start_probes_the_source_once() {
+fn start_probes_the_source_once_with_sixteen_bytes() {
     let source = Scripted::new(usize::MAX, EntropyError::BadCount);
     let _rng = started(&source);
+    // One request of 16 bytes: an empty probe would prove nothing, since
+    // the operating-system adapters make no call for an empty buffer.
     assert_eq!(source.calls(), 1);
+    assert_eq!(source.requested(), 16);
 }
 
 #[test]
@@ -129,7 +150,9 @@ fn fill_reports_failure_after_partial_write() {
     let rng = started(&source);
     let mut bytes = [0_u8; 8];
     assert_eq!(rng.fill(&mut bytes), Err(RngError::new()));
-    assert_eq!(bytes[..4], [PARTIAL; 4]);
+    // The source wrote part of the buffer before it failed. What the
+    // buffer then holds is unspecified (`Rng::fill`), so it is not checked.
+    assert_eq!(source.partial_writes(), 1);
 }
 
 #[test]
