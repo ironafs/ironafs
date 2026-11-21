@@ -6,7 +6,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    DAY, Job, Listing, Run, Step, TIERS, Tier, Verdict, evaluate, parse_manifest, self_test,
+    DAY, Job, Listing, Run, Step, TIERS, Tier, Verdict, could_not_verify, evaluate, parse_manifest,
+    self_test,
 };
 
 const NIGHTLY: Tier = Tier {
@@ -330,7 +331,7 @@ fn freshness_self_test_ends_every_case_as_planted() {
     self_test::run(&mut output).unwrap();
     let output = String::from_utf8(output).unwrap();
     assert!(
-        output.ends_with("freshness --self-test: 16 cases ended as planted\n"),
+        output.ends_with("freshness --self-test: 39 cases ended as planted\n"),
         "{output}"
     );
 }
@@ -342,7 +343,7 @@ fn freshness_self_test_ends_every_case_as_planted() {
 fn scheduled_workflow_violations(workflow: &str, manifest: &[String]) -> Vec<String> {
     let lines: Vec<&str> = workflow
         .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| !line.trim_start().starts_with('#') && !line.trim().is_empty())
         .collect();
     let mut found = Vec::new();
     for banned in [
@@ -357,39 +358,73 @@ fn scheduled_workflow_violations(workflow: &str, manifest: &[String]) -> Vec<Str
             found.push(format!("uses {banned}"));
         }
     }
-    if !lines.contains(&"permissions: {}") {
-        found.push("no empty top-level permissions".to_owned());
-    }
-    let jobs: Vec<&str> = lines
-        .iter()
-        .filter_map(|line| line.strip_prefix("    name: "))
-        .collect();
-    let steps: Vec<&str> = lines
-        .iter()
-        .filter_map(|line| line.strip_prefix("      - name: run "))
-        .collect();
-    let mut expected: Vec<&str> = manifest.iter().map(String::as_str).collect();
-    expected.sort_unstable();
-    for (what, mut names) in [("jobs", jobs), ("run steps", steps)] {
-        names.sort_unstable();
-        if names != expected {
+    // Every `permissions` key, in any form, is either the empty top-level
+    // map or a job's block granting `contents: read` alone.
+    for (index, line) in lines.iter().enumerate() {
+        let Some((indent, value)) = line.split_once("permissions:") else {
+            continue;
+        };
+        let value = value.trim();
+        if indent.is_empty() && value == "{}" {
+            continue;
+        }
+        let granted: Vec<&str> = lines
+            .iter()
+            .skip(index + 1)
+            .take_while(|next| next.len() - next.trim_start().len() > indent.len())
+            .map(|next| next.trim())
+            .collect();
+        if !value.is_empty() || indent != "    " || granted != ["contents: read"] {
             found.push(format!(
-                "{what} {names:?} differ from the manifest {expected:?}"
+                "permissions at line {index} grant {value:?} {granted:?}"
             ));
         }
     }
-    for (index, line) in lines.iter().enumerate() {
-        if *line == "    permissions:" {
-            let granted: Vec<&str> = lines
-                .iter()
-                .skip(index + 1)
-                .take_while(|line| line.starts_with("      ") && !line.starts_with("      -"))
-                .map(|line| line.trim())
-                .collect();
-            if granted != ["contents: read"] {
-                found.push(format!("a job grants {granted:?}"));
+    if !lines.contains(&"permissions: {}") {
+        found.push("no empty top-level permissions".to_owned());
+    }
+    // Every job (a two-space key under `jobs:`) is a manifest id, named as
+    // its key, with its own permissions block and its `run <id>` step.
+    let Some(start) = lines.iter().position(|line| *line == "jobs:") else {
+        found.push("no jobs".to_owned());
+        return found;
+    };
+    let mut keys = Vec::new();
+    let body: Vec<&str> = lines.iter().skip(start + 1).copied().collect();
+    for (index, line) in body.iter().enumerate() {
+        let Some(key) = line
+            .strip_prefix("  ")
+            .and_then(|rest| rest.strip_suffix(':'))
+        else {
+            continue;
+        };
+        if key.starts_with(' ') {
+            continue;
+        }
+        keys.push(key);
+        let block: Vec<&str> = body
+            .iter()
+            .skip(index + 1)
+            .take_while(|next| next.starts_with("    "))
+            .copied()
+            .collect();
+        for required in [
+            format!("    name: {key}"),
+            "    permissions:".to_owned(),
+            format!("      - name: run {key}"),
+        ] {
+            if !block.contains(&required.as_str()) {
+                found.push(format!("job {key} lacks {:?}", required.trim()));
             }
         }
+    }
+    keys.sort_unstable();
+    let mut expected: Vec<&str> = manifest.iter().map(String::as_str).collect();
+    expected.sort_unstable();
+    if keys != expected {
+        found.push(format!(
+            "jobs {keys:?} differ from the manifest {expected:?}"
+        ));
     }
     found
 }
@@ -423,7 +458,11 @@ fn scheduled_workflow_rules_catch_planted_violations() {
                    jobs:\n  build:\n    name: build\n    permissions:\n      contents: read\n      \
                    issues: write\n    steps:\n      - uses: actions/upload-artifact@x\n      \
                    - uses: actions/cache@x\n      - name: run build\n        env:\n          \
-                   TOKEN: ${{ secrets.X }}\n";
+                   TOKEN: ${{ secrets.X }}\n\
+                   \x20 unnamed:\n    runs-on: ubuntu-24.04\n    permissions: write-all\n    \
+                   steps:\n      - name: run unnamed\n\
+                   \x20 flow:\n    name: flow\n    permissions: { contents: write }\n    \
+                   steps:\n      - run: true\n";
     let found = scheduled_workflow_violations(planted, &manifest);
     for expected in [
         "uses concurrency",
@@ -431,13 +470,37 @@ fn scheduled_workflow_rules_catch_planted_violations() {
         "uses upload-artifact",
         "uses actions/cache",
         "no empty top-level permissions",
-        "jobs [\"build\"] differ",
-        "run steps [\"build\"] differ",
-        "a job grants [\"contents: read\", \"issues: write\"]",
+        "permissions at line 0 grant \"\" [\"contents: write\"]",
+        "permissions at line 8 grant \"\" [\"contents: read\", \"issues: write\"]",
+        "permissions at line 19 grant \"write-all\"",
+        "permissions at line 24 grant \"{ contents: write }\"",
+        "job unnamed lacks \"name: unnamed\"",
+        "job unnamed lacks \"permissions:\"",
+        "job flow lacks \"permissions:\"",
+        "job flow lacks \"- name: run flow\"",
+        "jobs [\"build\", \"flow\", \"unnamed\"] differ",
     ] {
         assert!(
             found.iter().any(|line| line.starts_with(expected)),
             "{expected} not in {found:?}"
         );
     }
+}
+
+#[test]
+fn freshness_reports_every_failure_to_verify_as_exit_2() {
+    let unread = could_not_verify(crate::Error::Io {
+        operation: "run cargo metadata",
+        source: std::io::ErrorKind::NotFound.into(),
+    });
+    assert!(
+        matches!(&unread, crate::Error::CouldNotRun { check: "freshness", reason } if reason.starts_with("run cargo metadata")),
+        "{unread:?}"
+    );
+    assert_eq!(unread.exit_code(), 2);
+    let stale = could_not_verify(crate::Error::Rules {
+        check: "freshness",
+        violations: vec!["nightly: stale".to_owned()],
+    });
+    assert_eq!(stale.exit_code(), 1);
 }

@@ -7,6 +7,7 @@
 //! rule 21). `gh` takes its token from `GH_TOKEN` in CI; nothing here reads
 //! or prints it.
 
+use std::io::Read;
 use std::process::{Command, Stdio};
 
 use super::{Job, Listing, Run, Step};
@@ -14,8 +15,18 @@ use super::{Job, Listing, Run, Step};
 #[cfg(test)]
 mod tests;
 
-/// Runs per page: the API's largest page.
-const PAGE: &str = "100";
+/// Items per page: the API's largest page.
+const PAGE: usize = 100;
+
+/// The most pages read of one list: the API's 1,000-result limit for a
+/// filtered search. A list still short after them is refused, not read.
+pub(super) const MAX_PAGES: u64 = 10;
+
+/// The most steps one job may list (GitHub's own limit per job).
+pub(super) const MAX_STEPS: usize = 1_000;
+
+/// The most bytes one page of `gh` output may hold.
+pub(super) const MAX_OUTPUT: u64 = 4 << 20;
 
 /// The total, then one line per run: id, latest attempt, status, event,
 /// branch, workflow file and creation time.
@@ -28,49 +39,124 @@ const JOBS_JQ: &str = ".total_count, (.jobs | to_entries[] | .key as $k | .value
                        | ([\"job\", $k, $j.name, $j.run_attempt] | @tsv), \
                        ($j.steps[]? | [\"step\", $k, .name, (.conclusion // \"\")] | @tsv))";
 
-/// Lists the newest page of scheduled runs of `workflow` on `branch`.
+/// Lists the scheduled runs of `workflow` on `branch`, newest first, page
+/// by page until one holds a run created before `oldest` (every later page
+/// is older still), the list ends, or [`MAX_PAGES`] were read.
 ///
 /// `gh` resolves `{owner}/{repo}` from `GH_REPO` or the checkout's remote.
-pub(super) fn runs(workflow: &str, branch: &str) -> Result<Listing<Run>, String> {
+pub(super) fn runs(workflow: &str, branch: &str, oldest: u64) -> Result<Listing<Run>, String> {
     let file = workflow.rsplit('/').next().unwrap_or(workflow);
-    let text = gh(&[
-        &format!("repos/{{owner}}/{{repo}}/actions/workflows/{file}/runs"),
-        "-f",
-        &format!("branch={branch}"),
-        "-f",
-        "event=schedule",
-        "-f",
-        &format!("per_page={PAGE}"),
-        "--jq",
-        RUNS_JQ,
-    ])?;
-    parse_runs(&text)
+    let mut listing = collect_pages(
+        &mut |page| {
+            let text = gh(&[
+                &format!("repos/{{owner}}/{{repo}}/actions/workflows/{file}/runs"),
+                "-f",
+                &format!("branch={branch}"),
+                "-f",
+                "event=schedule",
+                "-f",
+                &format!("per_page={PAGE}"),
+                "-f",
+                &format!("page={page}"),
+                "--jq",
+                RUNS_JQ,
+            ])?;
+            parse_runs(&text)
+        },
+        &|runs: &[Run]| runs.last().is_some_and(|run| run.created < oldest),
+    )?;
+    // A run created between two page reads shifts the pages by one.
+    let mut seen = Vec::new();
+    listing.items.retain(|run| {
+        let first = !seen.contains(&run.id);
+        seen.push(run.id);
+        first
+    });
+    Ok(listing)
 }
 
-/// Lists the jobs of the first attempt of run `id`.
+/// Lists every job of the first attempt of run `id`.
 pub(super) fn first_attempt_jobs(id: u64) -> Result<Listing<Job>, String> {
-    let text = gh(&[
-        &format!("repos/{{owner}}/{{repo}}/actions/runs/{id}/attempts/1/jobs"),
-        "-f",
-        &format!("per_page={PAGE}"),
-        "--jq",
-        JOBS_JQ,
-    ])?;
-    parse_jobs(&text)
+    collect_pages(
+        &mut |page| {
+            let text = gh(&[
+                &format!("repos/{{owner}}/{{repo}}/actions/runs/{id}/attempts/1/jobs"),
+                "-f",
+                &format!("per_page={PAGE}"),
+                "-f",
+                &format!("page={page}"),
+                "--jq",
+                JOBS_JQ,
+            ])?;
+            parse_jobs(&text)
+        },
+        &|_: &[Job]| false,
+    )
+}
+
+/// Reads pages 1, 2, ... of a list until it holds the first page's total,
+/// a page comes back empty, `enough` says so, or [`MAX_PAGES`] were read.
+/// The total stays the first page's, so a list left short shows it.
+pub(super) fn collect_pages<T>(
+    fetch: &mut dyn FnMut(u64) -> Result<Listing<T>, String>,
+    enough: &dyn Fn(&[T]) -> bool,
+) -> Result<Listing<T>, String> {
+    let mut listing: Option<Listing<T>> = None;
+    for page in 1..=MAX_PAGES {
+        let next = fetch(page)?;
+        let listing = listing.get_or_insert(Listing {
+            total: next.total,
+            items: Vec::new(),
+        });
+        if next.items.is_empty() {
+            break;
+        }
+        listing.items.extend(next.items);
+        let read = u64::try_from(listing.items.len()).unwrap_or(u64::MAX);
+        if read >= listing.total || enough(&listing.items) {
+            break;
+        }
+    }
+    listing.ok_or_else(|| "no page was read".to_owned())
 }
 
 fn gh(arguments: &[&str]) -> Result<String, String> {
-    let output = Command::new("gh")
+    let mut child = Command::new("gh")
         .args(["api", "--method", "GET"])
         .args(arguments)
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .output()
+        .spawn()
         .map_err(|error| format!("cannot run gh: {error}"))?;
-    if !output.status.success() {
-        return Err(format!("gh api failed with {}", output.status));
+    let text = child
+        .stdout
+        .take()
+        .ok_or_else(|| "gh api gave no output pipe".to_owned())
+        .and_then(|stdout| read_capped(stdout, MAX_OUTPUT));
+    // Reaped even when the output was refused; a refused read ends the
+    // pipe, so gh stops on its next write.
+    let status = child
+        .wait()
+        .map_err(|error| format!("cannot wait for gh: {error}"))?;
+    let text = text?;
+    if !status.success() {
+        return Err(format!("gh api failed with {status}"));
     }
-    String::from_utf8(output.stdout).map_err(|_| "gh api printed invalid UTF-8".to_owned())
+    Ok(text)
+}
+
+/// Reads at most `cap` bytes of UTF-8, refusing anything longer.
+pub(super) fn read_capped(reader: impl Read, cap: u64) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(cap.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read gh api's output: {error}"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > cap {
+        return Err(format!("gh api printed more than {cap} bytes"));
+    }
+    String::from_utf8(bytes).map_err(|_| "gh api printed invalid UTF-8".to_owned())
 }
 
 /// Seconds since the Unix epoch of an API time, `YYYY-MM-DDTHH:MM:SSZ`.
@@ -140,9 +226,12 @@ fn number(field: &str, what: &str) -> Result<u64, String> {
 /// Reads [`RUNS_JQ`]'s output.
 pub(super) fn parse_runs(text: &str) -> Result<Listing<Run>, String> {
     let (total, lines) = total_and_lines(text)?;
+    if lines.clone().count() > PAGE {
+        return Err(format!("the API returned more than {PAGE} runs in a page"));
+    }
     let items = lines
         .map(|line| {
-            let fields: Vec<&str> = line.split('\t').collect();
+            let fields: Vec<&str> = line.splitn(8, '\t').collect();
             let &[id, attempt, status, event, branch, path, created] = fields.as_slice() else {
                 return Err(format!("a run line has {} fields, not 7", fields.len()));
             };
@@ -166,9 +255,12 @@ pub(super) fn parse_jobs(text: &str) -> Result<Listing<Job>, String> {
     let (total, lines) = total_and_lines(text)?;
     let mut items: Vec<Job> = Vec::new();
     for line in lines {
-        let fields: Vec<&str> = line.split('\t').collect();
+        let fields: Vec<&str> = line.splitn(5, '\t').collect();
         match *fields.as_slice() {
             ["job", index, name, attempt] => {
+                if items.len() == PAGE {
+                    return Err(format!("the API returned more than {PAGE} jobs in a page"));
+                }
                 if u64::try_from(items.len()).ok() != Some(number(index, "job index")?) {
                     return Err(format!("job index {index} is out of order"));
                 }
@@ -185,6 +277,9 @@ pub(super) fn parse_jobs(text: &str) -> Result<Listing<Job>, String> {
                     .last_mut()
                     .filter(|_| index.checked_add(1) == count)
                     .ok_or_else(|| format!("a step names job {index}, not the job before it"))?;
+                if job.steps.len() == MAX_STEPS {
+                    return Err(format!("job {index} lists more than {MAX_STEPS} steps"));
+                }
                 job.steps.push(Step {
                     name: name.to_owned(),
                     conclusion: conclusion.to_owned(),

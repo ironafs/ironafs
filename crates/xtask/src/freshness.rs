@@ -222,6 +222,22 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     if self_test {
         return self_test::run(output);
     }
+    live(output).map_err(could_not_verify)
+}
+
+/// Keeps exit status 1 for a stale or incomplete tier only: any other error
+/// (the workspace, the clock, the output) means nothing was verified.
+pub(crate) fn could_not_verify(error: Error) -> Error {
+    match error {
+        Error::Rules { .. } | Error::CouldNotRun { .. } => error,
+        other => Error::CouldNotRun {
+            check: CHECK,
+            reason: other.to_string(),
+        },
+    }
+}
+
+fn live(output: &mut impl Write) -> Result<(), Error> {
     let root = metadata::load(None, &[])?.root;
     // The one read of the real clock; everything below takes `now`.
     let now = SystemTime::now()
@@ -240,7 +256,11 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
             .and_then(|text| parse_manifest(&text));
         let verdict = match manifest {
             Err(reason) => Verdict::Unverified(format!("manifest {}: {reason}", path.display())),
-            Ok(manifest) => match github::runs(tier.workflow, DEFAULT_BRANCH) {
+            Ok(manifest) => match github::runs(
+                tier.workflow,
+                DEFAULT_BRANCH,
+                now.saturating_sub(tier.max_age),
+            ) {
                 Err(reason) => Verdict::Unverified(reason),
                 Ok(runs) => evaluate(
                     tier,

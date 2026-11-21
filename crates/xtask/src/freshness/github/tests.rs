@@ -3,7 +3,7 @@
 
 //! Tests for reading `gh api --jq` output and API timestamps.
 
-use super::{parse_jobs, parse_runs, parse_utc};
+use super::{MAX_PAGES, MAX_STEPS, collect_pages, parse_jobs, parse_runs, parse_utc, read_capped};
 use crate::freshness::{Job, Listing, Run, Step};
 
 #[test]
@@ -135,4 +135,138 @@ fn parse_jobs_rejects_malformed_output() {
             "{text:?}"
         );
     }
+}
+
+fn run_line(id: u64) -> String {
+    format!("{id}\t1\tcompleted\tschedule\tmain\tp\t2026-11-21T03:12:45Z\n")
+}
+
+#[test]
+fn parse_runs_rejects_more_than_a_page() {
+    let page: String = (0..100).map(run_line).collect();
+    assert!(parse_runs(&format!("100\n{page}")).is_ok());
+    let over: String = (0..101).map(run_line).collect();
+    assert_eq!(
+        parse_runs(&format!("101\n{over}")),
+        Err("the API returned more than 100 runs in a page".to_owned())
+    );
+}
+
+fn job_line(index: usize) -> String {
+    format!("job\t{index}\tj{index}\t1\n")
+}
+
+fn step_line(index: usize) -> String {
+    format!("step\t0\ts{index}\tsuccess\n")
+}
+
+#[test]
+fn parse_jobs_rejects_more_than_a_page_or_too_many_steps() {
+    let page: String = (0..100).map(job_line).collect();
+    assert!(parse_jobs(&format!("100\n{page}")).is_ok());
+    let over: String = (0..101).map(job_line).collect();
+    assert_eq!(
+        parse_jobs(&format!("101\n{over}")),
+        Err("the API returned more than 100 jobs in a page".to_owned())
+    );
+    let steps: String = (0..=MAX_STEPS).map(step_line).collect();
+    assert_eq!(
+        parse_jobs(&format!("1\njob\t0\tbuild\t1\n{steps}")),
+        Err(format!("job 0 lists more than {MAX_STEPS} steps"))
+    );
+}
+
+#[test]
+fn read_capped_refuses_output_over_the_cap() {
+    let exact = vec![b'a'; 8];
+    assert_eq!(read_capped(exact.as_slice(), 8), Ok("aaaaaaaa".to_owned()));
+    let over = vec![b'a'; 9];
+    assert_eq!(
+        read_capped(over.as_slice(), 8),
+        Err("gh api printed more than 8 bytes".to_owned())
+    );
+    assert_eq!(
+        read_capped(&[0xff_u8][..], 8),
+        Err("gh api printed invalid UTF-8".to_owned())
+    );
+}
+
+fn page_of(total: u64, ids: std::ops::Range<u64>) -> Listing<u64> {
+    Listing {
+        total,
+        items: ids.collect(),
+    }
+}
+
+#[test]
+fn collect_pages_reads_until_the_total() {
+    let mut asked = Vec::new();
+    let listing = collect_pages(
+        &mut |page| {
+            asked.push(page);
+            Ok(match page {
+                1 => page_of(250, 0..100),
+                2 => page_of(250, 100..200),
+                _ => page_of(250, 200..250),
+            })
+        },
+        &|_: &[u64]| false,
+    );
+    assert_eq!(asked, [1, 2, 3]);
+    assert_eq!(listing, Ok(page_of(250, 0..250)));
+}
+
+#[test]
+fn collect_pages_stops_when_the_caller_has_enough() {
+    let mut asked = Vec::new();
+    let listing = collect_pages(
+        &mut |page| {
+            asked.push(page);
+            Ok(page_of(250, (page - 1) * 100..page * 100))
+        },
+        &|items: &[u64]| items.len() >= 100,
+    );
+    assert_eq!(asked, [1]);
+    assert_eq!(listing, Ok(page_of(250, 0..100)));
+}
+
+#[test]
+fn collect_pages_stops_at_the_page_cap_leaving_the_list_short() {
+    let mut asked = 0;
+    let listing = collect_pages(
+        &mut |page| {
+            asked += 1;
+            Ok(page_of(5_000, (page - 1) * 100..page * 100))
+        },
+        &|_: &[u64]| false,
+    )
+    .unwrap();
+    assert_eq!(asked, MAX_PAGES);
+    assert_eq!(listing.total, 5_000);
+    assert_eq!(listing.items.len(), 1_000);
+}
+
+#[test]
+fn collect_pages_stops_on_an_empty_page_and_passes_errors_on() {
+    let mut asked = Vec::new();
+    let listing = collect_pages(
+        &mut |page| {
+            asked.push(page);
+            Ok(if page == 1 {
+                page_of(300, 0..100)
+            } else {
+                page_of(300, 0..0)
+            })
+        },
+        &|_: &[u64]| false,
+    );
+    assert_eq!(asked, [1, 2]);
+    assert_eq!(listing, Ok(page_of(300, 0..100)));
+    assert_eq!(
+        collect_pages(
+            &mut |_| Err::<Listing<u64>, _>("refused".to_owned()),
+            &|_: &[u64]| false
+        ),
+        Err("refused".to_owned())
+    );
 }
