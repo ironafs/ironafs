@@ -44,7 +44,10 @@ fn new_accepts_253_bytes() {
 fn new_refuses_254_bytes_without_final_dot() {
     let input = name_of_length(254);
     assert_eq!(input.len(), 254);
-    assert_eq!(refused(input.as_bytes()), CellNameError::TooLong);
+    assert_eq!(
+        refused(input.as_bytes()),
+        CellNameError::TooLong { offset: 253 }
+    );
 }
 
 #[test]
@@ -58,7 +61,10 @@ fn new_strips_one_final_dot_from_254_bytes() {
 #[test]
 fn new_refuses_255_bytes_ending_in_one_dot() {
     let input = format!("{}.", name_of_length(254));
-    assert_eq!(refused(input.as_bytes()), CellNameError::TooLong);
+    assert_eq!(
+        refused(input.as_bytes()),
+        CellNameError::TooLong { offset: 253 }
+    );
 }
 
 #[test]
@@ -89,14 +95,17 @@ fn new_refuses_underscore() {
 
 #[test]
 fn new_refuses_two_final_dots() {
-    assert_eq!(refused(b"example.org.."), CellNameError::TwoFinalDots);
-    assert_eq!(refused(b".."), CellNameError::TwoFinalDots);
+    assert_eq!(
+        refused(b"example.org.."),
+        CellNameError::TwoFinalDots { offset: 11 }
+    );
+    assert_eq!(refused(b".."), CellNameError::TwoFinalDots { offset: 0 });
 }
 
 #[test]
 fn new_refuses_empty_name() {
-    assert_eq!(refused(b""), CellNameError::Empty);
-    assert_eq!(refused(b"."), CellNameError::Empty);
+    assert_eq!(refused(b""), CellNameError::Empty { offset: 0 });
+    assert_eq!(refused(b"."), CellNameError::Empty { offset: 0 });
 }
 
 #[test]
@@ -186,10 +195,25 @@ fn new_accepts_single_label_and_digits() {
 
 #[test]
 fn new_checks_length_before_labels() {
-    assert_eq!(refused(&[b'_'; 254]), CellNameError::TooLong);
+    assert_eq!(
+        refused(&[b'_'; 254]),
+        CellNameError::TooLong { offset: 253 }
+    );
     assert_eq!(
         refused(&[b'_'; 64]),
         CellNameError::LabelTooLong { offset: 0 }
+    );
+}
+
+#[test]
+fn error_messages_name_whole_name_offsets() {
+    assert_eq!(
+        CellNameError::Empty { offset: 0 }.to_string(),
+        "cell name is empty at byte 0"
+    );
+    assert_eq!(
+        CellNameError::TwoFinalDots { offset: 11 }.to_string(),
+        "cell name ends with two dots at byte 11"
     );
 }
 
@@ -208,7 +232,7 @@ fn error_messages_name_the_offset() {
         "cell name has an underscore at byte 2"
     );
     assert_eq!(
-        CellNameError::TooLong.to_string(),
-        "cell name is longer than 253 bytes"
+        CellNameError::TooLong { offset: 253 }.to_string(),
+        "cell name is longer than 253 bytes: byte 253 is over the limit"
     );
 }

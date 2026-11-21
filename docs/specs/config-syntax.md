@@ -259,7 +259,9 @@ steps in order `[DEC-1]`:
    that differ only in ASCII case or in one final dot construct equal
    names.
 
-Each refusal names the byte offset in the input where it was found. A
+Each refusal names the byte offset in the input where it was found:
+for empty input, 0; for two final dots, the first of them; for a name
+too long, 253, the first byte over the limit. A
 name of one label is a valid cell name; whether a use accepts it is that
 use's rule (§2).
 

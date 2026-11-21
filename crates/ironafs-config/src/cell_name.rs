@@ -65,17 +65,22 @@ impl CellName {
     /// dots, too long, then each label from the first.
     pub fn new(input: &[u8]) -> Result<Self, CellNameError> {
         if input.is_empty() {
-            return Err(CellNameError::Empty);
+            return Err(CellNameError::Empty { offset: 0 });
         }
         if input.ends_with(b"..") {
-            return Err(CellNameError::TwoFinalDots);
+            // The input ends with two dots, so it holds at least two bytes.
+            return Err(CellNameError::TwoFinalDots {
+                offset: input.len() - 2,
+            });
         }
         let body = input.strip_suffix(b".").unwrap_or(input);
         if body.is_empty() {
-            return Err(CellNameError::Empty);
+            return Err(CellNameError::Empty { offset: 0 });
         }
         if body.len() > MAX_NAME_BYTES {
-            return Err(CellNameError::TooLong);
+            return Err(CellNameError::TooLong {
+                offset: MAX_NAME_BYTES,
+            });
         }
         let mut name = String::with_capacity(body.len());
         let mut start = 0;
@@ -138,11 +143,20 @@ fn check_label(label: &[u8], start: usize) -> Result<(), CellNameError> {
 #[non_exhaustive]
 pub enum CellNameError {
     /// Nothing, or only a dot.
-    Empty,
+    Empty {
+        /// Always 0: where the name should start.
+        offset: usize,
+    },
     /// The input ends with two dots.
-    TwoFinalDots,
+    TwoFinalDots {
+        /// Where the first of the two final dots is.
+        offset: usize,
+    },
     /// Longer than 253 bytes after one final dot is removed.
-    TooLong,
+    TooLong {
+        /// Always 253: the first byte over the limit.
+        offset: usize,
+    },
     /// An empty label: a leading dot, or two dots together.
     EmptyLabel {
         /// Where the empty label is.
@@ -181,9 +195,14 @@ pub enum CellNameError {
 impl fmt::Display for CellNameError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::Empty => formatter.write_str("cell name is empty"),
-            Self::TwoFinalDots => formatter.write_str("cell name ends with two dots"),
-            Self::TooLong => write!(formatter, "cell name is longer than {MAX_NAME_BYTES} bytes"),
+            Self::Empty { offset } => write!(formatter, "cell name is empty at byte {offset}"),
+            Self::TwoFinalDots { offset } => {
+                write!(formatter, "cell name ends with two dots at byte {offset}")
+            }
+            Self::TooLong { offset } => write!(
+                formatter,
+                "cell name is longer than {MAX_NAME_BYTES} bytes: byte {offset} is over the limit"
+            ),
             Self::EmptyLabel { offset } => {
                 write!(formatter, "cell name has an empty label at byte {offset}")
             }
