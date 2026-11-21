@@ -6,5 +6,7 @@
 //! Integration tests for `ironafs-cache`, through its public API, where the
 //! standard library is available.
 
+mod fence_model;
+mod fixture;
 mod node_model;
 mod node_table;

@@ -6,34 +6,18 @@
 
 use alloc::vec;
 
-use ironafs_vfs::{ContextId, CredentialGeneration, NodeId};
+use ironafs_vfs::NodeId;
 
 use super::{DYNAMIC_ROOT, Limits, MAX_CONTEXTS, MAX_NODES, NodeError, NodeKind, NodeTable};
-use crate::{CellIndex, ContextKey, FileId, PathKind, Uniquifier, Version, Vnode, VolumeId};
+use crate::identity::fixture::{CELL, context, file};
+use crate::{CellIndex, FileId, PathKind, Uniquifier, Version, Vnode, VolumeId};
 
-const CELL: CellIndex = CellIndex(1);
 const ROOT_CELL: VolumeId = VolumeId(100);
 const MOUNTED: VolumeId = VolumeId(200);
 const BIG: u32 = 1_000;
 
-fn context(id: u64) -> ContextKey {
-    ContextKey {
-        id: ContextId(id),
-        generation: CredentialGeneration(1),
-    }
-}
-
 fn root_of(volume: VolumeId) -> FileId {
     file(volume, 1)
-}
-
-fn file(volume: VolumeId, vnode: u32) -> FileId {
-    FileId {
-        cell: CELL,
-        volume,
-        vnode: Vnode(vnode),
-        uniquifier: Uniquifier(1),
-    }
 }
 
 fn table(nodes: u32) -> NodeTable {

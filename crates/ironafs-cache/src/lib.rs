@@ -7,6 +7,11 @@
 //! It holds:
 //! - the node table ([`NodeTable`]; C11): node ids, their keys and
 //!   aliases, anchor chains, pins and each context's mount-point bindings;
+//! - the fence ([`FenceTable`], [`FenceTuple`]; C16, point 2): each
+//!   context's object and volume break counters and local volume epochs,
+//!   the resume generation, the client-wide suspect epoch source, and the
+//!   one check that compares a recorded tuple with the current one at
+//!   install and at serve;
 //! - the `Disk` interface: [`Disk`], its error and the paths and plans it
 //!   takes (seams and scheduling specification, 5.5).
 //!
@@ -18,11 +23,16 @@
 extern crate alloc;
 
 mod disk;
+mod fence;
 mod identity;
 mod node;
 mod store_path;
 
 pub use disk::{Disk, DiskError, DiskOp, Durability, EntryKind, Plan, PlanStep, ReadRange, Space};
+pub use fence::{
+    ClockWatch, EpochSource, FenceError, FenceLimits, FenceTable, FenceTuple, MAX_FENCE_BYTES,
+    MIN_FENCE_BYTES, PauseGeneration, SLOT_BYTES, Server, Stamp, Suspicion, VolumeEpoch,
+};
 pub use identity::{CellIndex, ContextKey, FileId, PathKind, Uniquifier, Version, Vnode, VolumeId};
 pub use node::{
     DYNAMIC_ROOT, Limits, MAX_CONTEXTS, MAX_MOUNT_DEPTH, MAX_NODES, MountChain, NodeError,

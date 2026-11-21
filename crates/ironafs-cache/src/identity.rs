@@ -12,6 +12,9 @@
 
 use ironafs_vfs::{ContextId, CredentialGeneration};
 
+#[cfg(test)]
+pub(crate) mod fixture;
+
 /// A cell, by its index in the cell table. The index is never reused for
 /// another cell within one daemon instance, so a reload of the
 /// configuration cannot make two cells compare equal.
