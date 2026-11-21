@@ -3,12 +3,13 @@
 
 # 0006: Rx: what an unprotected packet may change
 
-Status: proposed (2026-11-20). Raised in issue #52. Class S. Numbered
-0006 because 0005 is reserved for the `ironafs-os` ADR, in its own pull
-request. It is accepted before the first task of the `ironafs-rx` crate.
-Partly supersedes the parts of ADR 0004 named under "What it supersedes"
-(C30, C31, C32 and O23). Interim, pending the owner's decisions (Q3, Q4:
-open questions 3 and 4).
+Status: accepted (2026-11-21), by the owner, after the review rounds
+recorded below. Raised in issue #52; pull request #102. Class S.
+Numbered 0006 because 0005 is reserved for the `ironafs-os` ADR, in its
+own pull request. It is accepted before the first task of the
+`ironafs-rx` crate. Partly supersedes the parts of ADR 0004 named under
+"What it supersedes" (C30, C31, C32 and O23), 2026-11-21. The owner
+decided questions 3 and 4 with it (see "Decided questions").
 
 ## Context
 
@@ -292,9 +293,9 @@ or intervals does not reopen it.
 firm decision above and in ADR 0004. C-, L-, N- and O-numbered decisions
 are ADR 0004's; "point N" alone is a point of this decision.
 
-Interim, pending the owner's decision (Q4): these points are this ADR's
-own decision (option (b), partial supersession), not amendments written
-into C30, C31 and C32.
+Decided by the owner on 2026-11-21: option (b) of question 4. These
+points are this ADR's own decision (partial supersession), not
+amendments written into C30, C31 and C32.
 
 1. **Wire identity (beside C30).** Every connection the client initiates
    draws its epoch and connection id (its wire identity, distinct from
@@ -403,9 +404,9 @@ nothing in ADR 0004. ADR 0004's
 decision text is not edited: its status lines, and an annotation at each
 superseded decision, point readers here.
 
-Interim, pending the owner's decision (Q4): option (b), partial
-supersession. Interim, pending the owner's decision (Q3): option (a), as
-revised in question 3.
+Decided by the owner on 2026-11-21: option (b) of question 4, partial
+supersession. Decided by the owner on 2026-11-21: option (a) of question
+3, as revised there.
 
 The route is supersession because the README's amendment route needs a
 fired trigger or contradicting evidence, and neither is present. No named
@@ -431,7 +432,8 @@ trigger of C30, C31 or C32 has fired. Point by point:
 
 ### What it supersedes
 
-In ADR 0004, part 1 (interim, pending the owner's decision (Q4)):
+In ADR 0004, part 1 (decided by the owner on 2026-11-21: option (b) of
+question 4):
 
 - **C30:** decision 2, points 1 and 2, add the wire identity rule and the
   ICMP and socket-error rule. C30's points 1 to 4 stand.
@@ -442,7 +444,8 @@ In ADR 0004, part 1 (interim, pending the owner's decision (Q4)):
   5, changes what C32, point 3's "or an error" covers, and adds the hold
   and its exit.
 
-In ADR 0004, part 3 (interim, pending the owner's decision (Q3)):
+In ADR 0004, part 3 (decided by the owner on 2026-11-21: option (a) of
+question 3):
 
 - **O23:** the threat model gains a network attacker at every security
   class, not only against rxkad, for unprotected Rx control packets.
@@ -529,8 +532,8 @@ Each must keep decision 1.
   at every security class, are covered by design once this ADR, with its
   decision 2, lands, and in practice once the Rx crate passes the
   tests below and test 14 shows genuine peer packets match.
-- **Residual** (recorded for O23 under "What it supersedes"; interim,
-  pending the owner's decision (Q3)): an attacker on
+- **Residual** (recorded for O23 under "What it supersedes"; decided by
+  the owner on 2026-11-21: option (a) of question 3): an attacker on
   the path sees the wire identity and can still end calls. That stays a denial of service, bounded by points 5
   and 6, as for any UDP protocol without packet authentication. On a
   store, it leaves a quarantined record for the user's explicit recovery
@@ -766,7 +769,8 @@ has a positive control, so that it fails if the client drops everything:
   replay.
 - **Put the identity generation itself in decision 1.** Not taken here:
   the owner placed it in a working point (decided question 1; now decision
-  2, point 1, interim, pending the owner's decision (Q4)); point 9 makes
+  2, point 1, decided by the owner on 2026-11-21: option (b) of question
+  4); point 9 makes
   decision 1's effect depend on the property instead (option A of the
   owner's decision, 2026-11-20; see "Decided questions").
 
@@ -792,9 +796,9 @@ Decision 2's points carry their own triggers, above.
    2026-11-20).** The generation rule stays in a working point, as the
    owner's decision that raised this ADR placed it: C30, point 5, when
    decided; decision 2, point 1, of this
-   ADR under the interim route of question 4. That move changes only
-   where the working point is written, not option A; the owner confirms it
-   with question 4. Decision 1, point 9, makes ending a call, and every
+   ADR under the route of question 4. That move changes only
+   where the working point is written, not option A; the owner confirmed
+   it with question 4 on 2026-11-21. Decision 1, point 9, makes ending a call, and every
    effect of point 6 (shared callback trust included), conditional on an
    unpredictable wire identity; on any other connection a matching ABORT
    is a counter-only hint. A later amendment of the generation rule cannot
@@ -816,10 +820,8 @@ Decision 2's points carry their own triggers, above.
    normal operation would need a superseding ADR), and dropping them from
    the match entirely.
 
-## Open questions
-
 3. **Q3. Where the on-path residual is recorded (finding DS-5, review
-   round 5).** O23 is
+   round 5): option (a) (owner, 2026-11-21).** O23 is
    Firm; its only network-attacker row is "A network attacker against
    rxkad", and its third column does not state this residual, which
    holds at every class. Options: (a) this ADR partly supersedes O23: it
@@ -836,10 +838,12 @@ Decision 2's points carry their own triggers, above.
    reference. Recommend (a): a reader of the threat model
    finds the residual from O23, and a superseding ADR is the route README
    requires for a Firm change; this ADR is already class S on the
-   strongest row, so it adds no review. Interim, pending the owner's
-   decision (Q3): option (a), applied as written here.
+   strongest row, so it adds no review. Decided by the owner on
+   2026-11-21: option (a), applied as written here. Not taken: option
+   (b).
 4. **Q4. Whether the C30, C31 and C32 changes may go by amendment
-   (findings DS-6 and A-8, review round 5; A-v3, review round 6).** README
+   (findings DS-6 and A-8, review round 5; A-v3, review round 6): option
+   (b) (owner, 2026-11-21).** README
    allows an amendment when "a working decision's trigger fires, or new
    evidence contradicts it"; no named trigger has fired, and the
    point-by-point evidence ("How this ADR relates to ADR 0004") is a gap
@@ -858,8 +862,9 @@ Decision 2's points carry their own triggers, above.
    the same (this ADR is class S on the strongest row), and pairs with
    3(a) as one supersession. It also moves the generation rule from C30,
    point 5, where decided question 1 placed it, to decision 2, point 1,
-   still Working and outside decision 1. Interim, pending the owner's
-   decision (Q4): option (b), applied as written here.
+   still Working and outside decision 1. Decided by the owner on
+   2026-11-21: option (b), applied as written here. Not taken: options
+   (a) and (c).
 
 ## Review
 
@@ -896,7 +901,7 @@ window, the call-0 match, the callback, CHALLENGE and ICMP points).
 - **Round 5**, a fresh strongest-row read of the whole draft: GPT FAIL (1
   blocker, 9 major, 2 minor); DeepSeek FAIL (1 blocker, 5 major,
   8 minor). All fixed, except two route choices, which became open
-  questions 3 and 4 (below).
+  questions 3 and 4 (now decided, below).
 - **Rounds 6 to 9** each verified the previous round's fixes and the text
   that changed. Round 6: GPT FAIL (6 major, 8 minor), DeepSeek FAIL (1 new
   major, 5 new minor; earlier findings partly fixed), and one major from
@@ -922,10 +927,11 @@ window, the call-0 match, the callback, CHALLENGE and ICMP points).
   fixed in the next commit and recorded: the record's round 7 counts,
   the sweep's wording about the dated records, and the description of
   this section; rounds stopped.
+- **Accepted** by the owner on 2026-11-21, with Q3 (a) and Q4 (b).
 
-**Partial supersession of ADR 0004, YYYY-MM-DD (issue #52): C30, C31,
-C32 and O23** (interim, pending the owner's decisions (Q3, Q4)).
-YYYY-MM-DD is the date the owner accepts this ADR.
+**Partial supersession of ADR 0004, 2026-11-21 (issue #52, pull request
+#102): C30, C31, C32 and O23** (decided by the owner on 2026-11-21:
+option (a) of question 3 and option (b) of question 4).
 
 - What it supersedes: as "What it supersedes" states. ADR 0004's
   decision text is not edited. On acceptance, its overview status line
@@ -933,11 +939,12 @@ YYYY-MM-DD is the date the owner accepts this ADR.
   part 3's status lines name their decisions; C30, C31, C32 and O23 each
   gain a one-line annotation pointing here, and O34, point 1, a one-line
   pointer to decision 2, point 5. The ADR index in `docs/adr/README.md`
-  lists 0006 as proposed while this ADR is a draft, and, when the owner
-  accepts it, gives 0006 as "accepted YYYY-MM-DD" and 0004's status as
-  "accepted 2026-11-20; amended 2026-11-20 (#32); partly superseded by
-  0006 (YYYY-MM-DD)". Each supersession status line carries that date.
-  None of these ADR 0004 changes is made while this ADR is proposed.
+  listed 0006 as proposed while this ADR was a draft, and, now that the
+  owner has accepted it, gives 0006 as "accepted 2026-11-21 (#102)" and
+  0004's status as "accepted 2026-11-20; amended 2026-11-20 (#32);
+  partly superseded by 0006 (2026-11-21)". Each supersession status line
+  carries that date. These ADR 0004 changes were made with the
+  acceptance, none while this ADR was proposed.
 - Why superseded, not amended: no named trigger fired and the changes
   fill gaps or follow from decision 1, which the README's amendment route
   does not cover ("How this ADR relates to ADR 0004"; question 4). O23 is

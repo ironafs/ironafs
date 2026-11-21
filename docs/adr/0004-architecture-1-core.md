@@ -3,7 +3,7 @@
 
 # 0004, part 1: Core
 
-Status: accepted (2026-11-20). Part of ADR 0004 ([overview](0004-architecture.md)); raised in issue #20.
+Status: accepted (2026-11-20). Part of ADR 0004 ([overview](0004-architecture.md)); raised in issue #20. Partly superseded by ADR 0006 (C30, C31, C32), 2026-11-21.
 
 ## Context
 
@@ -1312,6 +1312,10 @@ not reach the server.
 callback port differently from the calling port, or one `rx` thread limits
 measured throughput.
 
+(Partly superseded by ADR 0006: its decision 2, points 1 and 2, add how
+each initiated connection's wire identity is drawn and what ICMP and
+socket errors do. Points 1 to 4 below stand.)
+
 1. The client uses one UDP socket per address family, on port 7001 by
    convention `[DES-011]`, for outgoing calls and for the callback service.
 2. One `rx` thread owns the sockets. It never takes a cache lock.
@@ -1336,6 +1340,10 @@ is ever shared across contexts (C18).
 **Working.** Revisit if: a fileserver offers rxgk-protected callbacks to
 clients (then a protected break is authoritative evidence under C24), or
 the test cell shows a callback procedure this table lacks.
+
+(Partly superseded by ADR 0006: its decision 2, point 3, adds what an
+ABORT or BUSY on an incoming call does. The table and points 1 to 4
+below stand.)
 
 Before rxgk, nothing the callback service receives is authenticated. One
 table governs all of it:
@@ -1368,6 +1376,13 @@ data stale is bounded by C32.
 **Working.** Revisit if: M2 measurements against the test cell and through
 NAT show the intervals below serve stale data or cost too many
 revalidations.
+
+(Partly superseded by ADR 0006: its decision 2, point 4, draws the
+keepalive's epoch and connection id as its point 1 says, and point 5
+changes point 3 below: an unprotected ABORT is "an error" only as ADR
+0006, decision 1, point 6, allows; a server is held in bounded
+revalidation while a connection to it fails that decision's point 9; and
+after that hold its promises stay suspended until revalidated.)
 
 1. Callback trust is kept per server, address family and local endpoint
    generation. It is earned only by a reply from that server to the

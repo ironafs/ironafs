@@ -4,7 +4,9 @@
 # 0004: The architecture
 
 Status: accepted (2026-11-20), by the owner, after the review rounds
-recorded below. Raised in issue #20. Amended 2026-11-20 (#32).
+recorded below. Raised in issue #20. Amended 2026-11-20 (#32). Partly
+superseded by [ADR 0006](0006-rx-unprotected-packets.md) (C30, C31, C32
+and O23, as its "What it supersedes" states), 2026-11-21.
 
 ## Context
 
