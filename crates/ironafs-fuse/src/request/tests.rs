@@ -10,12 +10,12 @@ use super::{
     DecodeError, Forget, FrameError, Header, Malformed, Open, Phase, Read, Release, Request, decode,
 };
 use crate::init::{INIT_EXT, InitFlags, InitRequest, NO_EXPORT_SUPPORT};
-use crate::reply::ReplyTo;
+use crate::reply::{InitReply, ReplyTo};
 use crate::{Errno, Opcode};
 
 /// The reply token the decoder gives a request of [`request`]'s unique.
 fn to<S>() -> ReplyTo<S> {
-    ReplyTo::new(7, 0)
+    ReplyTo::new(0, 7, 0)
 }
 
 const READY: Phase = Phase::Negotiated { minor: 46 };
@@ -65,7 +65,7 @@ fn header(opcode: u32) -> Header {
 
 #[track_caller]
 fn decoded(bytes: &[u8], phase: Phase) -> Request<'_> {
-    match decode(bytes, phase) {
+    match decode(bytes, phase, 0) {
         Ok((_, request)) => request,
         Err(error) => panic!("refused: {error:?}"),
     }
@@ -73,7 +73,7 @@ fn decoded(bytes: &[u8], phase: Phase) -> Request<'_> {
 
 #[track_caller]
 fn malformed(bytes: &[u8], phase: Phase) -> Malformed {
-    match decode(bytes, phase) {
+    match decode(bytes, phase, 0) {
         Err(DecodeError::Request(error)) => error.malformed,
         other => panic!("not a request error: {other:?}"),
     }
@@ -85,7 +85,7 @@ fn le(fields: &[&[u8]]) -> Vec<u8> {
 
 #[test]
 fn lookup_golden_vector_decodes() {
-    let (header, request) = decode(&LOOKUP_CELL, READY).unwrap();
+    let (header, request) = decode(&LOOKUP_CELL, READY, 0).unwrap();
     assert_eq!(
         header,
         Header {
@@ -112,7 +112,7 @@ fn values_pass_through_unjudged() {
     bytes[8..16].copy_from_slice(&0u64.to_le_bytes());
     bytes[16..24].copy_from_slice(&0u64.to_le_bytes());
     bytes[24..28].copy_from_slice(&u32::MAX.to_le_bytes());
-    let (header, _) = decode(&bytes, READY).unwrap();
+    let (header, _) = decode(&bytes, READY, 0).unwrap();
     assert_eq!((header.unique, header.nodeid, header.uid), (0, 0, u32::MAX));
 }
 
@@ -169,7 +169,7 @@ fn read_of_4096_at_8192() {
         decoded(&request(15, &read_body(8192, 4096, 0)), READY),
         Request::Read {
             read: expected,
-            reply: ReplyTo::new(7, 4096)
+            reply: ReplyTo::new(0, 7, 4096)
         }
     );
     assert_eq!(
@@ -186,7 +186,7 @@ fn read_of_4096_at_8192() {
                 lock_owner: Some(66),
                 ..expected
             },
-            reply: ReplyTo::new(7, 4096)
+            reply: ReplyTo::new(0, 7, 4096)
         }
     );
 }
@@ -347,8 +347,7 @@ fn init_at_7_23_and_7_46() {
     assert_eq!(
         decoded(&request(26, &body), Phase::AwaitingInit),
         Request::Init {
-            init: InitRequest::seven(23, 4096, InitFlags::from_bits(1)),
-            reply: to(),
+            reply: InitReply::new(0, 7, InitRequest::seven(23, 4096, InitFlags::from_bits(1)))
         }
     );
     let mut body = le(&[
@@ -362,12 +361,15 @@ fn init_at_7_23_and_7_46() {
     assert_eq!(
         decoded(&request(26, &body), Phase::AwaitingInit),
         Request::Init {
-            init: InitRequest::seven(
-                46,
-                4096,
-                InitFlags::from_bits(INIT_EXT.bits() | NO_EXPORT_SUPPORT.bits()),
+            reply: InitReply::new(
+                0,
+                7,
+                InitRequest::seven(
+                    46,
+                    4096,
+                    InitFlags::from_bits(INIT_EXT.bits() | NO_EXPORT_SUPPORT.bits()),
+                ),
             ),
-            reply: to(),
         }
     );
     assert_eq!(
@@ -405,13 +407,13 @@ fn opcodes_not_decoded_and_unknown() {
 #[test]
 fn frame_errors_have_no_reply() {
     assert_eq!(
-        decode(&LOOKUP_CELL[..39], READY).unwrap_err(),
+        decode(&LOOKUP_CELL[..39], READY, 0).unwrap_err(),
         DecodeError::Frame(FrameError::Short { read: 39 })
     );
     let mut longer = LOOKUP_CELL;
     longer[0] = 46;
     assert_eq!(
-        decode(&longer, READY).unwrap_err(),
+        decode(&longer, READY, 0).unwrap_err(),
         DecodeError::Frame(FrameError::LengthMismatch {
             declared: 46,
             read: 45
@@ -419,7 +421,7 @@ fn frame_errors_have_no_reply() {
     );
     longer[0] = 44;
     assert_eq!(
-        decode(&longer, READY).unwrap_err(),
+        decode(&longer, READY, 0).unwrap_err(),
         DecodeError::Frame(FrameError::LengthMismatch {
             declared: 44,
             read: 45
@@ -574,7 +576,7 @@ fn read_ranges_are_capped() {
 
 #[test]
 fn errors_reply_as_the_spec_says() {
-    let reply = |bytes: &[u8], phase| match decode(bytes, phase) {
+    let reply = |bytes: &[u8], phase| match decode(bytes, phase, 0) {
         Err(DecodeError::Request(error)) => {
             assert_eq!(
                 error.header,
@@ -651,18 +653,18 @@ fn open_flags_word_is_checked_from_7_33() {
     let open = le(&[&0u32.to_le_bytes(), &1u32.to_le_bytes()]);
     let zero = le(&[&0u32.to_le_bytes(), &0u32.to_le_bytes()]);
     for opcode in [14, 27] {
-        assert!(decode(&request(opcode, &open), Phase::Negotiated { minor: 32 }).is_ok());
+        assert!(decode(&request(opcode, &open), Phase::Negotiated { minor: 32 }, 0).is_ok());
         assert_eq!(
             malformed(&request(opcode, &open), Phase::Negotiated { minor: 33 }),
             Malformed::UnknownFlags
         );
-        assert!(decode(&request(opcode, &zero), Phase::Negotiated { minor: 33 }).is_ok());
+        assert!(decode(&request(opcode, &zero), Phase::Negotiated { minor: 33 }, 0).is_ok());
     }
 }
 
 #[test]
 fn refused_requests_reply_only_when_owed() {
-    let Err(DecodeError::Request(error)) = decode(&request(3, &[0; 15]), READY) else {
+    let Err(DecodeError::Request(error)) = decode(&request(3, &[0; 15]), READY, 0) else {
         panic!("not refused");
     };
     let reply = error.into_reply().unwrap();
@@ -670,7 +672,7 @@ fn refused_requests_reply_only_when_owed() {
         reply.as_bytes(),
         [16, 0, 0, 0, 0xfb, 0xff, 0xff, 0xff, 7, 0, 0, 0, 0, 0, 0, 0]
     );
-    let Err(DecodeError::Request(error)) = decode(&request(2, &[0; 7]), READY) else {
+    let Err(DecodeError::Request(error)) = decode(&request(2, &[0; 7]), READY, 0) else {
         panic!("not refused");
     };
     assert_eq!(error.into_reply(), None);

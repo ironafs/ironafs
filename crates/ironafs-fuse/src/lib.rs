@@ -5,16 +5,19 @@
 //! protocol, written from the kernel's published interface
 //! (`docs/specs/fuse-codec.md`).
 //!
-//! The codec is pure: [`request::decode`] turns the bytes of one read of
-//! `/dev/fuse` into a typed request, [`init`] negotiates the protocol and
-//! chooses the INIT flags from one reviewed allowlist, [`reply`] builds
-//! the bytes to write back, and [`errno`] maps the contract's errors to
-//! Linux's. It reads no clock and does no I/O. Every request is untrusted
-//! input, so nothing here panics on one.
+//! The codec is pure: a [`session::Session`] decodes the bytes of one read
+//! of `/dev/fuse` into a typed request carrying its one reply token, and
+//! turns each finished [`reply::Reply`] into the bytes to write back;
+//! [`init`] chooses the INIT flags from one reviewed allowlist, and
+//! [`errno`] maps the contract's errors to Linux's. It reads no clock and
+//! does no I/O. Every request is untrusted input, so nothing here panics
+//! on one.
 //!
 //! ```
-//! use ironafs_fuse::init::{InitConfig, InitOutcome, negotiate};
-//! use ironafs_fuse::request::{Phase, Request, decode};
+//! use ironafs_fuse::init::InitConfig;
+//! use ironafs_fuse::reply::InitAnswer;
+//! use ironafs_fuse::request::Request;
+//! use ironafs_fuse::session::Session;
 //!
 //! // An INIT at protocol 7.23: a 40-byte header, then major, minor,
 //! // max_readahead and flags.
@@ -28,14 +31,16 @@
 //!     bytes.extend_from_slice(&field.to_le_bytes());
 //! }
 //!
-//! let (header, request) = decode(&bytes, Phase::AwaitingInit)?;
-//! let Request::Init { init, reply } = request else { panic!("not an init") };
+//! let mut session = Session::new();
+//! let (header, request) = session.decode(&bytes)?;
+//! let Request::Init { reply } = request else { panic!("not an init") };
 //! let config = InitConfig::new(131_072, 131_072, 12, 9, 1)?;
-//! let InitOutcome::Ready(negotiated) = negotiate(&init, &config)? else { panic!("not 7.x") };
+//! let (reply, answer) = reply.answer(&config);
+//! let InitAnswer::Ready(negotiated) = answer else { panic!("not 7.x") };
 //! assert_eq!(negotiated.minor(), 23);
-//! let answer = reply.init(&negotiated);
-//! assert_eq!(answer.as_bytes().len(), 80);
-//! assert_eq!(header.unique, 1);
+//! let written = session.finish(reply)?;
+//! assert_eq!(written.len(), 80);
+//! assert_eq!((header.unique, session.minor()), (1, Some(23)));
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
@@ -44,6 +49,7 @@ pub mod init;
 pub mod opcode;
 pub mod reply;
 pub mod request;
+pub mod session;
 mod wire;
 
 pub use errno::Errno;

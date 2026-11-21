@@ -13,8 +13,8 @@
 
 use ironafs_vfs::{Name, NameError, linux};
 
-use crate::init::{InitDefect, InitRequest, decode_init};
-use crate::reply::{ReplyTo, shape};
+use crate::init::{InitDefect, decode_init};
+use crate::reply::{InitReply, ReplyTo, shape};
 use crate::wire::Reader;
 use crate::{Errno, MAX_DATA, Opcode, errno};
 
@@ -35,6 +35,8 @@ const READ_LOCKOWNER: u32 = 1 << 1;
 const RELEASE_FLUSH: u32 = 1 << 0;
 /// `FUSE_RELEASE_FLOCK_UNLOCK`.
 const RELEASE_FLOCK_UNLOCK: u32 = 1 << 1;
+/// The first minor that defines STATX.
+const STATX_MINOR: u32 = 39;
 /// The first minor whose OPEN body carries `open_flags` in its second
 /// word, which is reserved below it.
 const OPEN_FLAGS_MINOR: u32 = 33;
@@ -59,7 +61,7 @@ pub struct Header {
 
 /// Where the connection is: before INIT is answered, or after.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Phase {
+pub(crate) enum Phase {
     /// Only INIT is accepted.
     AwaitingInit,
     /// INIT settled this minor.
@@ -174,12 +176,11 @@ impl ForgetBatch<'_> {
 /// The three requests that take no reply carry none (5.6, point 1).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Request<'a> {
-    /// INIT: negotiate with [`crate::init::negotiate`].
+    /// INIT: answer with [`InitReply::answer`], which negotiates with the
+    /// offer this request carried.
     Init {
-        /// The kernel's offer, checked.
-        init: InitRequest,
-        /// The reply.
-        reply: ReplyTo<shape::Init>,
+        /// The reply, holding the kernel's checked offer.
+        reply: InitReply,
     },
     /// DESTROY.
     Destroy {
@@ -357,6 +358,10 @@ pub enum Malformed {
     OutOfRange,
     /// A `BATCH_FORGET` count that does not match its body.
     ForgetCount,
+    /// A request id whose earlier request is still owed a reply.
+    DuplicateUnique,
+    /// An opcode the negotiated minor does not define yet.
+    AboveMinor,
 }
 
 impl Malformed {
@@ -373,7 +378,9 @@ impl Malformed {
             | Self::InitFlags
             | Self::NameUnterminated
             | Self::UnknownFlags
-            | Self::ForgetCount => Errno::EIO,
+            | Self::ForgetCount
+            | Self::DuplicateUnique => Errno::EIO,
+            Self::AboveMinor => Errno::EOPNOTSUPP,
         }
     }
 }
@@ -392,6 +399,16 @@ pub struct RequestError {
 }
 
 impl RequestError {
+    /// A refusal for a request whose id is still owed a reply: it gets no
+    /// token, since a reply under that id would answer the earlier request.
+    pub(crate) const fn duplicate(header: Header) -> Self {
+        Self {
+            header,
+            malformed: Malformed::DuplicateUnique,
+            reply: None,
+        }
+    }
+
     /// The error the reply carries, or `None` for a request that takes no
     /// reply.
     #[must_use]
@@ -424,7 +441,11 @@ pub enum DecodeError {
 /// A [`DecodeError::Frame`] if the header cannot be trusted, and a
 /// [`DecodeError::Request`] if the body breaks its layout, its phase or a
 /// cap.
-pub fn decode(bytes: &[u8], phase: Phase) -> Result<(Header, Request<'_>), DecodeError> {
+pub(crate) fn decode(
+    bytes: &[u8],
+    phase: Phase,
+    session: u64,
+) -> Result<(Header, Request<'_>), DecodeError> {
     let (header, extlen, body) = decode_header(bytes)?;
     let opcode = Opcode::from_u32(header.opcode);
     let refuse = |malformed| {
@@ -432,7 +453,7 @@ pub fn decode(bytes: &[u8], phase: Phase) -> Result<(Header, Request<'_>), Decod
         DecodeError::Request(RequestError {
             header,
             malformed,
-            reply: replies.then(|| ReplyTo::new(header.unique, 0)),
+            reply: replies.then(|| ReplyTo::new(session, header.unique, 0)),
         })
     };
     let minor = match (phase, opcode) {
@@ -453,13 +474,18 @@ pub fn decode(bytes: &[u8], phase: Phase) -> Result<(Header, Request<'_>), Decod
             header,
             Request::Unknown {
                 opcode: header.opcode,
-                reply: ReplyTo::new(header.unique, 0),
+                reply: ReplyTo::new(session, header.unique, 0),
             },
         ));
     };
-    decode_body(opcode, body, header.unique, minor)
+    decode_body(opcode, body, session, header.unique, minor)
         .map(|request| (header, request))
         .map_err(refuse)
+}
+
+/// The header of a request whose frame is sound, or `None`.
+pub(crate) fn peek_header(bytes: &[u8]) -> Option<Header> {
+    decode_header(bytes).ok().map(|(header, _, _)| header)
 }
 
 /// The header, its `total_extlen` field and the body.
@@ -516,38 +542,42 @@ fn field<T>(value: Option<T>, body: &[u8], size: usize) -> Result<T, Malformed> 
 fn decode_body(
     opcode: Opcode,
     body: &[u8],
+    session: u64,
     unique: u64,
     minor: u32,
 ) -> Result<Request<'_>, Malformed> {
     Ok(match opcode {
         Opcode::Init => Request::Init {
-            init: decode_init(body).map_err(|defect| match defect {
-                InitDefect::Body => Malformed::InitBody,
-                InitDefect::Flags => Malformed::InitFlags,
-            })?,
-            reply: ReplyTo::new(unique, 0),
+            reply: InitReply::new(
+                session,
+                unique,
+                decode_init(body).map_err(|defect| match defect {
+                    InitDefect::Body => Malformed::InitBody,
+                    InitDefect::Flags => Malformed::InitFlags,
+                })?,
+            ),
         },
         Opcode::Destroy => {
             exact(body, 0)?;
             Request::Destroy {
-                reply: ReplyTo::new(unique, 0),
+                reply: ReplyTo::new(session, unique, 0),
             }
         }
         Opcode::Readlink => {
             exact(body, 0)?;
             Request::Readlink {
-                reply: ReplyTo::new(unique, 0),
+                reply: ReplyTo::new(session, unique, 0),
             }
         }
         Opcode::Statfs => {
             exact(body, 0)?;
             Request::Statfs {
-                reply: ReplyTo::new(unique, 0),
+                reply: ReplyTo::new(session, unique, 0),
             }
         }
         Opcode::Lookup => Request::Lookup {
             name: decode_name(body)?,
-            reply: ReplyTo::new(unique, 0),
+            reply: ReplyTo::new(session, unique, 0),
         },
         Opcode::Forget => {
             let mut reader = exact(body, 8)?;
@@ -560,16 +590,16 @@ fn decode_body(
             let (fh, _) = decode_getattr(body, 16)?;
             Request::Getattr {
                 fh,
-                reply: ReplyTo::new(unique, 0),
+                reply: ReplyTo::new(session, unique, 0),
             }
         }
         Opcode::Open => Request::Open {
             open: decode_open(body, minor)?,
-            reply: ReplyTo::new(unique, 0),
+            reply: ReplyTo::new(session, unique, 0),
         },
         Opcode::Opendir => Request::Opendir {
             open: decode_open(body, minor)?,
-            reply: ReplyTo::new(unique, 0),
+            reply: ReplyTo::new(session, unique, 0),
         },
         Opcode::Read => {
             let read = decode_read(body)?;
@@ -582,20 +612,20 @@ fn decode_body(
             }
             Request::Read {
                 read,
-                reply: ReplyTo::new(unique, read.size),
+                reply: ReplyTo::new(session, unique, read.size),
             }
         }
         Opcode::Readdir => Request::Readdir {
             read: decode_read(body)?,
-            reply: ReplyTo::new(unique, 0),
+            reply: ReplyTo::new(session, unique, 0),
         },
         Opcode::Release => Request::Release {
             release: decode_release(body)?,
-            reply: ReplyTo::new(unique, 0),
+            reply: ReplyTo::new(session, unique, 0),
         },
         Opcode::Releasedir => Request::Releasedir {
             release: decode_release(body)?,
-            reply: ReplyTo::new(unique, 0),
+            reply: ReplyTo::new(session, unique, 0),
         },
         Opcode::Flush => {
             let mut reader = exact(body, 24)?;
@@ -604,23 +634,26 @@ fn decode_body(
             Request::Flush {
                 fh,
                 lock_owner: field(reader.u64(), body, 24)?,
-                reply: ReplyTo::new(unique, 0),
+                reply: ReplyTo::new(session, unique, 0),
             }
         }
         Opcode::Access => {
             let mut reader = exact(body, 8)?;
             Request::Access {
                 mask: field(reader.u32(), body, 8)?,
-                reply: ReplyTo::new(unique, 0),
+                reply: ReplyTo::new(session, unique, 0),
             }
         }
         Opcode::Statx => {
+            if minor < STATX_MINOR {
+                return Err(Malformed::AboveMinor);
+            }
             let (fh, mut reader) = decode_getattr(body, 24)?;
             Request::Statx {
                 fh,
                 flags: field(reader.u32(), body, 24)?,
                 mask: field(reader.u32(), body, 24)?,
-                reply: ReplyTo::new(unique, 0),
+                reply: ReplyTo::new(session, unique, 0),
             }
         }
         Opcode::Interrupt => {
@@ -663,7 +696,7 @@ fn decode_body(
         | Opcode::Tmpfile
         | Opcode::CopyFileRange64 => Request::NotDecoded {
             opcode,
-            reply: ReplyTo::new(unique, 0),
+            reply: ReplyTo::new(session, unique, 0),
         },
     })
 }
@@ -797,6 +830,10 @@ impl core::fmt::Display for Malformed {
             Self::OutOfRange => formatter.write_str("a size or offset over its cap"),
             Self::ForgetCount => {
                 formatter.write_str("a batch forget count that does not match its body")
+            }
+            Self::DuplicateUnique => formatter.write_str("a request id still owed a reply"),
+            Self::AboveMinor => {
+                formatter.write_str("an opcode the negotiated minor does not define")
             }
         }
     }

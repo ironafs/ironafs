@@ -315,7 +315,7 @@ impl Negotiated {
 
 /// The result of an INIT the codec accepts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InitOutcome {
+pub(crate) enum InitOutcome {
     /// The protocol is settled; the reply is the INIT reply.
     Ready(Negotiated),
     /// The kernel offered a newer major: the reply carries only major 7,
@@ -358,7 +358,7 @@ impl core::error::Error for InitRefused {}
 /// # Errors
 ///
 /// [`InitRefused`] for a major older than 7, or a minor below 7.23.
-pub const fn negotiate(
+pub(crate) const fn negotiate(
     request: &InitRequest,
     config: &InitConfig,
 ) -> Result<InitOutcome, InitRefused> {

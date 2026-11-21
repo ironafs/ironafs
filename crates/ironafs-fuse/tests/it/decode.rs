@@ -5,27 +5,23 @@
 //! (fuse-codec.md 10.2): it never panics, and what it accepts it reports
 //! faithfully.
 
-use ironafs_fuse::request::{DecodeError, Header, Phase, Request, decode};
+use ironafs_fuse::init::InitConfig;
+use ironafs_fuse::request::{DecodeError, Header, Request};
+use ironafs_fuse::session::Session;
 use ironafs_test_support::{Property, Source};
-
-fn phase(source: &mut Source) -> Phase {
-    if source.bool() {
-        Phase::AwaitingInit
-    } else {
-        Phase::Negotiated {
-            minor: u32::try_from(source.u64_in(23..=46)).unwrap(),
-        }
-    }
-}
 
 #[test]
 fn decode_never_panics_on_any_bytes() {
     Property::new("decode returns on any bytes")
         .cases(4096)
         .check(
-            |source| (source.bytes(0..=200), phase(source)),
-            |(bytes, phase)| {
-                let _ = decode(bytes, *phase);
+            |source| (source.bytes(0..=200), source.bool()),
+            |(bytes, negotiated)| {
+                let mut session = Session::new();
+                if *negotiated {
+                    let _ = session.decode(bytes);
+                }
+                let _ = session.decode(bytes);
             },
         );
 }
@@ -36,7 +32,8 @@ struct Framed {
     header: Header,
     extlen: u16,
     body: Vec<u8>,
-    phase: Phase,
+    /// The minor the session is at, or 0 before INIT.
+    minor: u32,
 }
 
 impl Framed {
@@ -57,7 +54,7 @@ impl Framed {
             },
             extlen: if source.bool() { 0 } else { source.u16() },
             body: source.bytes(0..=300),
-            phase: phase(source),
+            minor: u32::try_from(source.u64_in(0..=46)).unwrap(),
         }
     }
 
@@ -85,7 +82,23 @@ fn decode_reports_framed_requests_faithfully() {
         .cases(4096)
         .check(Framed::generate, |framed| {
             let bytes = framed.bytes();
-            match decode(&bytes, framed.phase) {
+            let mut session = Session::new();
+            if framed.minor >= 23 {
+                let body = [7u32, framed.minor, 4096, 0].map(u32::to_le_bytes).concat();
+                let init = [
+                    &56u32.to_le_bytes()[..],
+                    &26u32.to_le_bytes(),
+                    &[0; 32],
+                    &body,
+                ]
+                .concat();
+                let Ok((_, Request::Init { reply })) = session.decode(&init) else {
+                    panic!("init refused");
+                };
+                let config = InitConfig::new(4096, 131_072, 12, 9, 1).unwrap();
+                session.finish(reply.answer(&config).0).unwrap();
+            }
+            match session.decode(&bytes) {
                 Ok((header, request)) => {
                     assert_eq!(header, framed.header);
                     if let Request::Lookup { name, reply } = request {

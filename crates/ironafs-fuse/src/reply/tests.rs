@@ -4,9 +4,9 @@
 //! Tests for the replies: byte vectors written by hand from fuse-codec.md
 //! 5.1, points 3 and 5, and the rules of 5.5, points 5 to 11.
 
-use super::{Attr, EncodeError, Kind, ReplyTo, StatFs, Timestamp, shape};
+use super::{Attr, EncodeError, InitAnswer, InitReply, Kind, ReplyTo, StatFs, Timestamp, shape};
 use crate::Errno;
-use crate::init::{InitConfig, InitFlags, InitOutcome, InitRequest, negotiate};
+use crate::init::{InitConfig, InitFlags, InitRequest};
 
 fn le(fields: &[&[u8]]) -> Vec<u8> {
     fields.concat()
@@ -22,7 +22,7 @@ fn head(len: u32, error: i32, unique: u64) -> Vec<u8> {
 }
 
 fn to<S>() -> ReplyTo<S> {
-    ReplyTo::new(7, 0)
+    ReplyTo::new(0, 7, 0)
 }
 
 fn sample_attr() -> Attr {
@@ -71,7 +71,7 @@ fn mode_of_attr_reply(reply: &[u8]) -> u32 {
 #[test]
 fn error_reply_is_negative_and_bare() {
     assert_eq!(
-        ReplyTo::<shape::Entry>::new(0x1122, 0)
+        ReplyTo::<shape::Entry>::new(0, 0x1122, 0)
             .error(Errno::ENOENT)
             .as_bytes(),
         [
@@ -249,19 +249,21 @@ fn opendir_reply_sets_no_cache_flag() {
 
 #[test]
 fn data_reply_carries_the_bytes() {
-    let reply = ReplyTo::<shape::Data>::new(7, 3).data(b"abc").unwrap();
+    let reply = ReplyTo::<shape::Data>::new(0, 7, 3).data(b"abc").unwrap();
     assert_eq!(reply.as_bytes(), le(&[&head(19, 0, 7), b"abc"]));
-    let reply = ReplyTo::<shape::Data>::new(7, 3).data(b"").unwrap();
+    let reply = ReplyTo::<shape::Data>::new(0, 7, 3).data(b"").unwrap();
     assert_eq!(reply.as_bytes(), head(16, 0, 7));
 }
 
 #[test]
 fn data_over_the_request_size_refused() {
-    let refused = ReplyTo::<shape::Data>::new(7, 3).data(b"abcd").unwrap_err();
+    let refused = ReplyTo::<shape::Data>::new(0, 7, 3)
+        .data(b"abcd")
+        .unwrap_err();
     assert_eq!(refused.error, EncodeError::DataTooLong);
     // The reply is still owed, and can be an error.
     assert_eq!(refused.reply.error(Errno::EIO).as_bytes().len(), 16);
-    let full = ReplyTo::<shape::Data>::new(7, 1_048_576).data(&vec![0; 1_048_576]);
+    let full = ReplyTo::<shape::Data>::new(0, 7, 1_048_576).data(&vec![0; 1_048_576]);
     assert_eq!(full.unwrap().as_bytes().len(), 16 + 1_048_576);
 }
 
@@ -320,9 +322,8 @@ fn statfs_reply_layout() {
 fn init_reply_splits_flags() {
     let request = InitRequest::seven(46, 131_072, InitFlags::from_bits(u64::MAX));
     let config = InitConfig::new(65_536, 1_048_576, 12, 9, 1_000_000_000).unwrap();
-    let Ok(InitOutcome::Ready(negotiated)) = negotiate(&request, &config) else {
-        panic!("not negotiated");
-    };
+    let (reply, answer) = InitReply::new(0, 7, request).answer(&config);
+    assert!(matches!(answer, InitAnswer::Ready(_)));
     let mut expected = le(&[
         &head(80, 0, 7),
         &7u32.to_le_bytes(),
@@ -337,13 +338,26 @@ fn init_reply_splits_flags() {
         &(1u32 << 6).to_le_bytes(), // flags2: NO_EXPORT_SUPPORT
     ]);
     expected.resize(80, 0);
-    assert_eq!(to::<shape::Init>().init(&negotiated).as_bytes(), expected);
+    assert_eq!(reply.as_bytes(), expected);
 }
 
 #[test]
-fn init_major_only_reply() {
+fn init_major_only_reply_for_a_newer_major() {
+    let request = crate::init::decode_init(&8u32.to_le_bytes()).unwrap();
+    let config = InitConfig::new(0, 4096, 1, 1, 1).unwrap();
+    let (reply, answer) = InitReply::new(0, 7, request).answer(&config);
+    assert_eq!(answer, InitAnswer::NewInitAwaited);
     assert_eq!(
-        to::<shape::Init>().offer_major().as_bytes(),
+        reply.as_bytes(),
         le(&[&head(20, 0, 7), &7u32.to_le_bytes()])
     );
+}
+
+#[test]
+fn init_refusal_is_eproto() {
+    let request = InitRequest::seven(22, 0, InitFlags::from_bits(0));
+    let config = InitConfig::new(0, 4096, 1, 1, 1).unwrap();
+    let (reply, answer) = InitReply::new(0, 7, request).answer(&config);
+    assert!(matches!(answer, InitAnswer::Refused(_)));
+    assert_eq!(reply.as_bytes(), head(16, -71, 7));
 }

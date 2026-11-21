@@ -5,75 +5,115 @@
 //! points 3 and 5, and 5.5).
 //!
 //! A reply is reachable only through the encoders that keep its rules
-//! (5.5, point 11). [`request::decode`](crate::request::decode) hands the
-//! layer one [`ReplyTo`] for each request that takes a reply, typed by the
-//! reply shapes that request allows ([`shape`]); a request that takes none
-//! comes with none. A `ReplyTo` cannot be built from a request id, copied
-//! or used twice, and its encoders return a [`Reply`], whose bytes the
-//! layer can read and write to the device but not change.
+//! (5.5, point 11). A [`Session`](crate::session::Session) hands the layer
+//! one [`ReplyTo`] for each request that takes a reply, typed by the reply
+//! shapes that request allows ([`shape`]), and an [`InitReply`] for INIT,
+//! which holds the offer it answers; a request that takes none comes with
+//! none. A token cannot be built from a request id, copied or used twice,
+//! and its encoders return a [`Reply`], whose bytes only that session's
+//! [`finish`](crate::session::Session::finish) hands out.
 //!
 //! The compiler keeps those rules. A decoded OPEN's reply can be encoded
-//! once, as an OPEN reply or an error:
+//! once, as an OPEN reply or an error, and written once:
 //!
 //! ```
 //! use ironafs_fuse::Errno;
-//! use ironafs_fuse::request::{Phase, Request, decode};
+//! use ironafs_fuse::request::Request;
+//! use ironafs_fuse::session::Session;
+//! # use ironafs_fuse::init::InitConfig;
 //!
+//! # let mut session = Session::new();
+//! # let init = [&56u32.to_le_bytes()[..], &26u32.to_le_bytes(), &[0; 32],
+//! #     &7u32.to_le_bytes(), &46u32.to_le_bytes(), &[0; 8]].concat();
+//! # let (_, Request::Init { reply }) = session.decode(&init)? else { panic!() };
+//! # session.finish(reply.answer(&InitConfig::new(0, 4096, 1, 1, 1)?).0)?;
 //! let mut bytes = Vec::new();
 //! for field in [48u32, 14] {
 //!     bytes.extend_from_slice(&field.to_le_bytes()); // len, opcode OPEN
 //! }
-//! bytes.extend_from_slice(&[0; 32]); // unique to padding
+//! bytes.extend_from_slice(&5u64.to_le_bytes()); // unique
+//! bytes.extend_from_slice(&[0; 24]); // nodeid to padding
 //! bytes.extend_from_slice(&[0; 8]); // open(2) flags, open_flags
-//! let (_, request) = decode(&bytes, Phase::Negotiated { minor: 46 })?;
+//! let (_, request) = session.decode(&bytes)?;
 //! let Request::Open { reply, .. } = request else { panic!("not open") };
-//! assert_eq!(reply.open(9).as_bytes().len(), 32);
-//! # let (_, request) = decode(&bytes, Phase::Negotiated { minor: 46 })?;
+//! assert_eq!(session.finish(reply.open(9))?.len(), 32);
+//! # let (_, request) = session.decode(&bytes)?;
 //! # let Request::Open { reply, .. } = request else { panic!("not open") };
-//! # let _ = reply.error(Errno::EACCES);
+//! # let _ = session.finish(reply.error(Errno::EACCES))?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! Requests are decoded only through a session:
+//!
+//! ```compile_fail,E0603
+//! use ironafs_fuse::request::decode;
 //! ```
 //!
 //! A reply token cannot be made from a request id:
 //!
 //! ```compile_fail,E0624
 //! use ironafs_fuse::reply::{ReplyTo, shape};
-//! let reply = ReplyTo::<shape::Open>::new(7, 0);
+//! let reply = ReplyTo::<shape::Open>::new(1, 7, 0);
 //! ```
 //!
-//! nor a reply from bytes:
+//! nor a reply from bytes, nor bytes from a reply without the session:
 //!
-//! ```compile_fail,E0423
+//! ```compile_fail,E0451
 //! use ironafs_fuse::reply::Reply;
-//! let reply = Reply(vec![16, 0, 0, 0]);
+//! let reply = Reply { session: 1, unique: 7, negotiated: None, bytes: vec![16, 0, 0, 0] };
+//! ```
+//!
+//! ```compile_fail,E0599
+//! # use ironafs_fuse::request::Request;
+//! # use ironafs_fuse::session::Session;
+//! # let mut session = Session::new();
+//! # let (_, request) = session.decode(&[0u8; 48]).unwrap();
+//! let Request::Open { reply, .. } = request else { panic!("not open") };
+//! let bytes = reply.open(9).as_bytes();
 //! ```
 //!
 //! A READ's token has no OPEN encoder:
 //!
 //! ```compile_fail,E0599
-//! # use ironafs_fuse::request::{Phase, Request, decode};
-//! # let bytes = [0u8; 80];
-//! # let (_, request) = decode(&bytes, Phase::Negotiated { minor: 46 }).unwrap();
+//! # use ironafs_fuse::request::Request;
+//! # use ironafs_fuse::session::Session;
+//! # let mut session = Session::new();
+//! # let (_, request) = session.decode(&[0u8; 80]).unwrap();
 //! let Request::Read { reply, .. } = request else { panic!("not read") };
 //! let wrong = reply.open(9);
 //! ```
 //!
-//! and a token is used once, and cannot be copied:
+//! An INIT is answered from its own offer, in the one shape its major
+//! allows: there is no separate INIT encoder to hand another offer's
+//! result, and no major-only reply to call by choice.
+//!
+//! ```compile_fail,E0599
+//! # use ironafs_fuse::request::Request;
+//! # use ironafs_fuse::session::Session;
+//! # let mut session = Session::new();
+//! # let (_, request) = session.decode(&[0u8; 56]).unwrap();
+//! let Request::Init { reply } = request else { panic!("not init") };
+//! let wrong = reply.offer_major();
+//! ```
+//!
+//! A token is used once, and cannot be copied:
 //!
 //! ```compile_fail,E0382
 //! # use ironafs_fuse::Errno;
-//! # use ironafs_fuse::request::{Phase, Request, decode};
-//! # let bytes = [0u8; 48];
-//! # let (_, request) = decode(&bytes, Phase::Negotiated { minor: 46 }).unwrap();
+//! # use ironafs_fuse::request::Request;
+//! # use ironafs_fuse::session::Session;
+//! # let mut session = Session::new();
+//! # let (_, request) = session.decode(&[0u8; 48]).unwrap();
 //! let Request::Open { reply, .. } = request else { panic!("not open") };
 //! let first = reply.open(9);
 //! let second = reply.error(Errno::EIO);
 //! ```
 //!
 //! ```compile_fail,E0599
-//! # use ironafs_fuse::request::{Phase, Request, decode};
-//! # let bytes = [0u8; 48];
-//! # let (_, request) = decode(&bytes, Phase::Negotiated { minor: 46 }).unwrap();
+//! # use ironafs_fuse::request::Request;
+//! # use ironafs_fuse::session::Session;
+//! # let mut session = Session::new();
+//! # let (_, request) = session.decode(&[0u8; 48]).unwrap();
 //! let Request::Open { reply, .. } = request else { panic!("not open") };
 //! let copy = reply.clone();
 //! ```
@@ -89,7 +129,9 @@ use core::fmt;
 use core::marker::PhantomData;
 
 use crate::Errno;
-use crate::init::{MAJOR, Negotiated};
+use crate::init::{
+    InitConfig, InitOutcome, InitRefused, InitRequest, MAJOR, Negotiated, negotiate,
+};
 use crate::wire::{put_u16, put_u32, put_u64};
 
 #[cfg(test)]
@@ -235,15 +277,39 @@ impl core::fmt::Display for EncodeError {
 
 impl core::error::Error for EncodeError {}
 
-/// The encoded bytes of one reply, ready to write to the device.
+/// One encoded reply. Its bytes reach the device only through
+/// [`Session::finish`](crate::session::Session::finish), which checks that
+/// the reply belongs to that session and to a request still owed one.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Reply(Vec<u8>);
+pub struct Reply {
+    session: u64,
+    unique: u64,
+    /// For a successful INIT reply, what it settled.
+    negotiated: Option<Negotiated>,
+    bytes: Vec<u8>,
+}
 
 impl Reply {
-    /// The reply's bytes, header included.
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
+    pub(crate) const fn session(&self) -> u64 {
+        self.session
+    }
+
+    pub(crate) const fn unique(&self) -> u64 {
+        self.unique
+    }
+
+    pub(crate) const fn negotiated(&self) -> Option<Negotiated> {
+        self.negotiated
+    }
+
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    /// The reply's bytes, for the codec's own tests.
+    #[cfg(test)]
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.bytes
     }
 }
 
@@ -282,9 +348,6 @@ pub mod shape {
     /// payload.
     #[derive(Debug)]
     pub enum Empty {}
-    /// INIT: the negotiated protocol, or the major-only reply.
-    #[derive(Debug)]
-    pub enum Init {}
     /// A request the codec refused, or one the layer does not serve: an
     /// error only.
     #[derive(Debug)]
@@ -295,6 +358,8 @@ pub mod shape {
 /// the decoder makes one, it is neither `Clone` nor `Copy`, and every
 /// encoder consumes it.
 pub struct ReplyTo<S> {
+    /// The session that issued it.
+    session: u64,
     unique: u64,
     /// For [`shape::Data`], the most bytes the request asked for.
     limit: u32,
@@ -302,8 +367,9 @@ pub struct ReplyTo<S> {
 }
 
 impl<S> ReplyTo<S> {
-    pub(crate) const fn new(unique: u64, limit: u32) -> Self {
+    pub(crate) const fn new(session: u64, unique: u64, limit: u32) -> Self {
         Self {
+            session,
             unique,
             limit,
             shape: PhantomData,
@@ -322,7 +388,7 @@ impl<S> ReplyTo<S> {
         // An `Errno` is positive and small, so its negation cannot
         // overflow; the fallback is never taken.
         let negative = errno.get().checked_neg().unwrap_or(-Errno::EIO.get());
-        encode(self.unique, negative, 0, |_| {})
+        encode(self.session, self.unique, negative, 0, |_| {})
     }
 }
 
@@ -331,6 +397,7 @@ impl<S> fmt::Debug for ReplyTo<S> {
         formatter
             .debug_struct("ReplyTo")
             .field("shape", &core::any::type_name::<S>())
+            .field("session", &self.session)
             .field("unique", &self.unique)
             .field("limit", &self.limit)
             .finish()
@@ -339,7 +406,7 @@ impl<S> fmt::Debug for ReplyTo<S> {
 
 impl<S> PartialEq for ReplyTo<S> {
     fn eq(&self, other: &Self) -> bool {
-        self.unique == other.unique && self.limit == other.limit
+        self.session == other.session && self.unique == other.unique && self.limit == other.limit
     }
 }
 
@@ -359,7 +426,13 @@ pub struct Refused<S> {
 /// filled in after the payload. Every payload is a fixed size or at most
 /// [`MAX_DATA`](crate::MAX_DATA), so the length fits a `u32`; were it not to, the reply
 /// would carry `len` zero, which the kernel refuses rather than misreads.
-fn encode(unique: u64, error: i32, payload_size: usize, write: impl FnOnce(&mut Vec<u8>)) -> Reply {
+fn encode(
+    session: u64,
+    unique: u64,
+    error: i32,
+    payload_size: usize,
+    write: impl FnOnce(&mut Vec<u8>),
+) -> Reply {
     let mut out = Vec::with_capacity(HEADER_SIZE.saturating_add(payload_size));
     put_u32(&mut out, 0);
     put_u32(&mut out, error.cast_unsigned());
@@ -369,7 +442,12 @@ fn encode(unique: u64, error: i32, payload_size: usize, write: impl FnOnce(&mut 
     if let Some(field) = out.first_chunk_mut::<4>() {
         *field = len.to_le_bytes();
     }
-    Reply(out)
+    Reply {
+        session,
+        unique,
+        negotiated: None,
+        bytes: out,
+    }
 }
 
 fn put_time(out: &mut Vec<u8>, time: Timestamp) {
@@ -409,7 +487,7 @@ impl ReplyTo<shape::Entry> {
     /// timeouts zero.
     #[must_use]
     pub fn entry(self, node: u64, generation: u64, attr: &Attr) -> Reply {
-        encode(self.unique, 0, 128, |out| {
+        encode(self.session, self.unique, 0, 128, |out| {
             put_u64(out, node);
             put_u64(out, generation);
             put_u64(out, 0); // entry_valid
@@ -425,7 +503,7 @@ impl ReplyTo<shape::Attr> {
     /// GETATTR's reply, with the timeout zero.
     #[must_use]
     pub fn attr(self, attr: &Attr) -> Reply {
-        encode(self.unique, 0, 104, |out| {
+        encode(self.session, self.unique, 0, 104, |out| {
             put_u64(out, 0); // attr_valid
             put_u32(out, 0); // attr_valid_nsec
             put_u32(out, 0); // dummy
@@ -444,7 +522,7 @@ impl ReplyTo<shape::Statx> {
             Some(_) => STATX_BASIC_STATS | STATX_BTIME,
             None => STATX_BASIC_STATS,
         };
-        encode(self.unique, 0, STATX_OUT_SIZE, |out| {
+        encode(self.session, self.unique, 0, STATX_OUT_SIZE, |out| {
             put_u64(out, 0); // attr_valid
             put_u32(out, 0); // attr_valid_nsec
             put_u32(out, 0); // flags
@@ -479,8 +557,8 @@ fn put_sx_time(out: &mut Vec<u8>, time: Timestamp) {
     put_u32(out, 0);
 }
 
-fn open_reply(unique: u64, fh: u64, open_flags: u32) -> Reply {
-    encode(unique, 0, 16, |out| {
+fn open_reply(session: u64, unique: u64, fh: u64, open_flags: u32) -> Reply {
+    encode(session, unique, 0, 16, |out| {
         put_u64(out, fh);
         put_u32(out, open_flags);
         put_u32(out, 0); // padding, or backing_id from 7.40
@@ -491,7 +569,7 @@ impl ReplyTo<shape::Open> {
     /// OPEN's reply: the handle, with direct I/O and no other open flag.
     #[must_use]
     pub fn open(self, fh: u64) -> Reply {
-        open_reply(self.unique, fh, FOPEN_DIRECT_IO)
+        open_reply(self.session, self.unique, fh, FOPEN_DIRECT_IO)
     }
 }
 
@@ -500,7 +578,7 @@ impl ReplyTo<shape::Opendir> {
     /// not cached.
     #[must_use]
     pub fn opendir(self, fh: u64) -> Reply {
-        open_reply(self.unique, fh, 0)
+        open_reply(self.session, self.unique, fh, 0)
     }
 }
 
@@ -518,7 +596,7 @@ impl ReplyTo<shape::Data> {
                 reply: self,
             });
         }
-        Ok(encode(self.unique, 0, bytes.len(), |out| {
+        Ok(encode(self.session, self.unique, 0, bytes.len(), |out| {
             out.extend_from_slice(bytes);
         }))
     }
@@ -538,7 +616,7 @@ impl ReplyTo<shape::Readlink> {
                 reply: self,
             });
         }
-        Ok(encode(self.unique, 0, target.len(), |out| {
+        Ok(encode(self.session, self.unique, 0, target.len(), |out| {
             out.extend_from_slice(target);
         }))
     }
@@ -548,7 +626,7 @@ impl ReplyTo<shape::Statfs> {
     /// STATFS's reply, with `namelen` 255.
     #[must_use]
     pub fn statfs(self, value: &StatFs) -> Reply {
-        encode(self.unique, 0, 80, |out| {
+        encode(self.session, self.unique, 0, 80, |out| {
             put_u64(out, value.blocks);
             put_u64(out, value.bfree);
             put_u64(out, value.bavail);
@@ -567,38 +645,82 @@ impl ReplyTo<shape::Empty> {
     /// A success reply with no payload.
     #[must_use]
     pub fn ok(self) -> Reply {
-        encode(self.unique, 0, 0, |_| {})
+        encode(self.session, self.unique, 0, 0, |_| {})
     }
 }
 
-impl ReplyTo<shape::Init> {
-    /// INIT's reply for a settled protocol (5.5, point 5): its flags are
-    /// those [`crate::init::select_flags`] chose, low half in `flags` and
-    /// high half in `flags2`.
-    #[must_use]
-    pub fn init(self, negotiated: &Negotiated) -> Reply {
-        encode(self.unique, 0, INIT_OUT_SIZE, |out| {
-            let start = out.len();
-            put_u32(out, MAJOR);
-            put_u32(out, negotiated.minor());
-            put_u32(out, negotiated.max_readahead);
-            put_u32(out, negotiated.flags().low());
-            put_u16(out, negotiated.max_background);
-            put_u16(out, negotiated.congestion_threshold);
-            put_u32(out, negotiated.max_write);
-            put_u32(out, negotiated.time_gran);
-            put_u16(out, 0); // max_pages: FUSE_MAX_PAGES is not selected
-            put_u16(out, 0); // map_alignment
-            put_u32(out, negotiated.flags().high());
-            // max_stack_depth, request_timeout and the unused words.
-            out.resize(start.saturating_add(INIT_OUT_SIZE), 0);
-        })
+/// The reply to INIT: it holds the offer its request carried, and answers
+/// it in the one shape the received major allows (fuse-codec.md 5.3,
+/// point 1; 5.5, point 11).
+#[derive(Debug, PartialEq, Eq)]
+pub struct InitReply {
+    session: u64,
+    unique: u64,
+    request: InitRequest,
+}
+
+/// What an INIT reply did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InitAnswer {
+    /// The protocol is settled; once the reply is finished, the session
+    /// decodes at this minor.
+    Ready(Negotiated),
+    /// The kernel offered a newer major: the reply carried major 7 alone,
+    /// and the kernel sends a new INIT.
+    NewInitAwaited,
+    /// The offer was refused with `EPROTO`; the layer ends the connection.
+    Refused(InitRefused),
+}
+
+impl InitReply {
+    pub(crate) const fn new(session: u64, unique: u64, request: InitRequest) -> Self {
+        Self {
+            session,
+            unique,
+            request,
+        }
     }
 
-    /// INIT's reply to a kernel with a newer major: only major 7, after
-    /// which the kernel sends a new INIT (fuse-codec.md 5.3, point 1).
+    /// The kernel's checked offer.
     #[must_use]
-    pub fn offer_major(self) -> Reply {
-        encode(self.unique, 0, 4, |out| put_u32(out, MAJOR))
+    pub const fn request(&self) -> &InitRequest {
+        &self.request
+    }
+
+    /// Negotiates with this request's offer and the layer's choices, and
+    /// encodes the one reply that result allows: the INIT reply, the
+    /// major-only reply, or `EPROTO`.
+    #[must_use]
+    pub fn answer(self, config: &InitConfig) -> (Reply, InitAnswer) {
+        match negotiate(&self.request, config) {
+            Ok(InitOutcome::Ready(negotiated)) => {
+                let mut reply = encode(self.session, self.unique, 0, INIT_OUT_SIZE, |out| {
+                    let start = out.len();
+                    put_u32(out, MAJOR);
+                    put_u32(out, negotiated.minor());
+                    put_u32(out, negotiated.max_readahead);
+                    put_u32(out, negotiated.flags().low());
+                    put_u16(out, negotiated.max_background);
+                    put_u16(out, negotiated.congestion_threshold);
+                    put_u32(out, negotiated.max_write);
+                    put_u32(out, negotiated.time_gran);
+                    put_u16(out, 0); // max_pages: FUSE_MAX_PAGES is not selected
+                    put_u16(out, 0); // map_alignment
+                    put_u32(out, negotiated.flags().high());
+                    // max_stack_depth, request_timeout and the unused words.
+                    out.resize(start.saturating_add(INIT_OUT_SIZE), 0);
+                });
+                reply.negotiated = Some(negotiated);
+                (reply, InitAnswer::Ready(negotiated))
+            }
+            Ok(InitOutcome::OfferMajor) => (
+                encode(self.session, self.unique, 0, 4, |out| put_u32(out, MAJOR)),
+                InitAnswer::NewInitAwaited,
+            ),
+            Err(refused) => (
+                ReplyTo::<shape::ErrorOnly>::new(self.session, self.unique, 0).error(Errno::EPROTO),
+                InitAnswer::Refused(refused),
+            ),
+        }
     }
 }
