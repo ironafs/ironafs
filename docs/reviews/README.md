@@ -46,6 +46,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-64-corpora](2026-11-21-m2a-64-corpora.md) | Issue #64: rules for published conformance corpora in `docs/specs/README.md` |
 | [2026-11-21-m2a-56-directory-format](2026-11-21-m2a-56-directory-format.md) | Issue #56: the AFS directory format, the version from documents only |
 | [2026-11-21-m2a-71-seams](2026-11-21-m2a-71-seams.md) | Issue #71: the `Rpc` and `Disk` seams and the scheduling model |
+| [2026-11-21-adr-0006-review](2026-11-21-adr-0006-review.md) | Issue #52: ADR 0006, what an unprotected Rx packet may change |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
