@@ -16,9 +16,24 @@ pub(super) enum Task {
     CheckDeps { self_test: bool },
     CheckGrants { self_test: bool },
     CheckPure { self_test: bool },
+    Inventory(InventoryMode),
     InstallHook { force: bool },
     UninstallHook,
     Trailers(TrailerMode),
+}
+
+/// What `cargo xtask inventory` does.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum InventoryMode {
+    /// Runs the tests and checks the inventory against the run and against
+    /// the base revision's inventory (by default, the merge base with
+    /// `origin/main`).
+    Check {
+        base: Option<String>,
+    },
+    SelfTest,
+    /// Adds a line for each new test the host's run lists.
+    Update,
 }
 
 /// Selects the trailer rules and where to read the message.
@@ -35,6 +50,7 @@ pub(super) enum UsageError {
     MissingHookSubcommand,
     MissingTrailerMode,
     MissingCommitMessagePath,
+    MissingBaseRevision,
     UnknownCommand(OsString),
     UnknownHookSubcommand(OsString),
     UnknownTrailerMode(OsString),
@@ -48,6 +64,7 @@ impl fmt::Display for UsageError {
             Self::MissingHookSubcommand => write!(formatter, "missing hooks subcommand"),
             Self::MissingTrailerMode => write!(formatter, "missing trailers mode"),
             Self::MissingCommitMessagePath => write!(formatter, "missing commit message file path"),
+            Self::MissingBaseRevision => write!(formatter, "missing base revision after --base"),
             Self::UnknownCommand(command) => {
                 write!(formatter, "unknown command {}", command.display())
             }
@@ -63,7 +80,7 @@ impl fmt::Display for UsageError {
         }?;
         write!(
             formatter,
-            "\nusage: cargo xtask check | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
+            "\nusage: cargo xtask check | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | inventory [--base <rev> | --self-test | update] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
         )
     }
 }
@@ -86,6 +103,7 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
         Some("check-pure") => Task::CheckPure {
             self_test: parse_self_test(&mut arguments)?,
         },
+        Some("inventory") => Task::Inventory(parse_inventory(&mut arguments)?),
         Some("hooks") => parse_hooks(&mut arguments)?,
         Some("trailers") => Task::Trailers(parse_trailers(&mut arguments)?),
         _ => return Err(UsageError::UnknownCommand(command)),
@@ -101,6 +119,25 @@ fn parse_self_test(arguments: &mut impl Iterator<Item = OsString>) -> Result<boo
         Some(argument) if argument == OsStr::new("--self-test") => Ok(true),
         Some(argument) => Err(UsageError::UnexpectedArgument(argument)),
         None => Ok(false),
+    }
+}
+
+fn parse_inventory(
+    arguments: &mut impl Iterator<Item = OsString>,
+) -> Result<InventoryMode, UsageError> {
+    let Some(argument) = arguments.next() else {
+        return Ok(InventoryMode::Check { base: None });
+    };
+    match argument.to_str() {
+        Some("--self-test") => Ok(InventoryMode::SelfTest),
+        Some("update") => Ok(InventoryMode::Update),
+        Some("--base") => {
+            let base = arguments.next().ok_or(UsageError::MissingBaseRevision)?;
+            base.into_string()
+                .map(|base| InventoryMode::Check { base: Some(base) })
+                .map_err(UsageError::UnexpectedArgument)
+        }
+        _ => Err(UsageError::UnexpectedArgument(argument)),
     }
 }
 
