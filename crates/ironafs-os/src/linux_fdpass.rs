@@ -95,6 +95,11 @@ const _: () = assert!(
         && core::mem::offset_of!(Control, descriptors) == cmsg_len(0)
 );
 
+// The same values as the C headers' macros give, which the ABI check
+// proves for `abi`'s constants on each target.
+const _: () =
+    assert!(ONE == abi::CMSG_LEN_ONE && TWO == abi::CMSG_LEN_TWO && SPACE == abi::CMSG_SPACE_ONE);
+
 /// The C facts the receive's checks compare with.
 const RULES: Rules = Rules {
     level: SOL_SOCKET,

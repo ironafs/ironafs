@@ -19,7 +19,9 @@
 //!   `repr(C)` lays them out for the target's data model;
 //! - each field's type, by a `_Generic` selection with no default, so a
 //!   field of the wrong type with the right size and offset fails;
-//! - each constant's value;
+//! - each constant's value, against its C name, or against the C
+//!   expression sites.json maps it to (`expressions`), for a value a macro
+//!   gives, such as `CMSG_LEN(sizeof(int))`;
 //! - each type alias's size, alignment and sign: an alias names a C
 //!   typedef whose spelling differs between C libraries at one size
 //!   (`rlim_t`), and a member of that type is checked against the typedef;
@@ -640,6 +642,7 @@ pub(crate) fn c_source(
     row: &str,
     defines: &[String],
     headers: &[String],
+    expressions: &[(String, String)],
     declarations: &Declarations,
     model: DataModel,
 ) -> Result<String, String> {
@@ -707,8 +710,23 @@ pub(crate) fn c_source(
             );
         }
     }
+    for (name, _) in expressions {
+        if !declarations
+            .constants
+            .iter()
+            .any(|(constant, _)| constant == name)
+        {
+            return Err(format!(
+                "sites.json maps `{name}` to a C expression, but the declarations hold no such \
+                 constant"
+            ));
+        }
+    }
     for (name, value) in &declarations.constants {
-        assert(format!("{name} == {value}"), name.clone());
+        match expressions.iter().find(|(constant, _)| constant == name) {
+            Some((_, expression)) => assert(format!("({expression}) == {value}"), name.clone()),
+            None => assert(format!("{name} == {value}"), name.clone()),
+        }
     }
     for function in &declarations.functions {
         let returns = match &function.returns {
@@ -952,7 +970,14 @@ fn check_target(
             ));
             continue;
         }
-        let source = match c_source(&row.id, &code.defines, &code.headers, &found, model) {
+        let source = match c_source(
+            &row.id,
+            &code.defines,
+            &code.headers,
+            &code.expressions,
+            &found,
+            model,
+        ) {
             Ok(source) => source,
             Err(error) => {
                 violations.push(format!("{}: {error}", row.id));
