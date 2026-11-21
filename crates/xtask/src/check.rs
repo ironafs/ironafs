@@ -11,6 +11,18 @@ use crate::Error;
 #[cfg(test)]
 mod tests;
 
+/// The test run's arguments to cargo. `check-retries` reads them, so the
+/// run passes `--retries 0` whatever the environment says.
+pub(crate) const NEXTEST_RUN: &[&str] = &[
+    "nextest",
+    "run",
+    "--workspace",
+    "--retries",
+    "0",
+    "--no-tests",
+    "fail",
+];
+
 /// Runs the local checks, printing a skip for each absent optional tool.
 ///
 /// # Errors
@@ -28,15 +40,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         "cargo clippy --all-targets --workspace",
     )?;
     run_command(
-        Command::new("cargo").args([
-            "nextest",
-            "run",
-            "--workspace",
-            "--retries",
-            "0",
-            "--no-tests",
-            "fail",
-        ]),
+        Command::new("cargo").args(NEXTEST_RUN),
         "cargo nextest run --workspace --retries 0 --no-tests fail",
     )?;
     run_command(
@@ -47,6 +51,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         crate::deps::run(self_test, output)?;
         crate::grants::run(self_test, output)?;
         crate::pure::run(self_test, output)?;
+        crate::retries::run(self_test, output)?;
     }
 
     check_reuse_result(
