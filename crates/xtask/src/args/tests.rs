@@ -5,7 +5,7 @@
 
 use std::ffi::OsString;
 
-use super::{Task, TrailerMode, UsageError, parse};
+use super::{CellCommand, Task, TrailerMode, UsageError, parse};
 
 #[test]
 fn parse_rejects_unknown_command() {
@@ -142,4 +142,37 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
     }
+}
+
+#[test]
+fn parse_cell_pin() {
+    assert_eq!(
+        parse(["cell", "pin"].into_iter().map(OsString::from)),
+        Ok(Task::Cell(CellCommand::Pin))
+    );
+}
+
+#[test]
+fn parse_cell_unknown_subcommand_reports_usage() {
+    for (args, error) in [
+        (&["cell"][..], UsageError::MissingCellSubcommand),
+        (
+            &["cell", "start"][..],
+            UsageError::UnknownCellSubcommand("start".into()),
+        ),
+        (
+            &["cell", "pin", "extra"][..],
+            UsageError::UnexpectedArgument("extra".into()),
+        ),
+    ] {
+        assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
+    }
+}
+
+#[test]
+fn usage_names_the_cell_command() {
+    let usage = UsageError::MissingCellSubcommand.to_string();
+
+    assert_eq!(usage.lines().next(), Some("missing cell subcommand"));
+    assert!(usage.ends_with(" | cell pin"));
 }
