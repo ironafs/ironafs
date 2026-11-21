@@ -29,5 +29,13 @@ name = "ironafs-time"
 version = "0.0.0"
 
 [[package]]
+name = "ironafs-vfs"
+version = "0.0.0"
+dependencies = [
+ "ironafs-test-support",
+ "ironafs-time",
+]
+
+[[package]]
 name = "xtask"
 version = "0.0.0"

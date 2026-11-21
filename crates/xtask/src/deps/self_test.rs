@@ -150,6 +150,35 @@ fn clean_sources(fixture: &mut Fixture) {
         "src/lib.rs",
         Some("extern crate std;\nuse std::net::UdpSocket;\n"),
     );
+    for allowed in ["ironafsd", "ironafs-sim", "ironafs-test-support"] {
+        fixture.file(
+            allowed,
+            "src/lib.rs",
+            Some("use ironafs_vfs::Mint;\npub fn mint() -> Mint { Mint::new() }\n"),
+        );
+    }
+    fixture.file(
+        "ironafs-fuse",
+        "src/lib.rs",
+        Some(
+            "// The core's Mint makes capabilities.\n\
+             pub const NOTE: &str = \"Mint\";\npub struct Minted;\n",
+        ),
+    );
+}
+
+/// The file a planted mint case writes, in a layer crate.
+const MINT_CRATE: &str = "ironafs-fuse";
+const MINT_PLANTED: &str = "crates/ironafs-fuse/src/planted.rs";
+
+fn plant_mint(fixture: &mut Fixture, source: &str) {
+    fixture.file(MINT_CRATE, "src/planted.rs", Some(source));
+}
+
+/// Whether the violation is the mint's name at `line` of `in_file`.
+fn is_mint(violation: &Violation, in_file: &str, line: usize) -> bool {
+    matches!(violation, Violation::NamesMint { file, line: at }
+        if file == Path::new(in_file) && *at == line)
 }
 
 /// The file a planted source case writes, in `ironafs-client`.
@@ -1062,6 +1091,69 @@ const CASES: &[Case] = &[
             );
         },
         expect: &[|found| is_without_lints(found, "ironafs-net")],
+    },
+    Case {
+        name: "a layer imports the capability mint",
+        plant: |fixture| plant_mint(fixture, "use ironafs_vfs::Mint;\n"),
+        expect: &[|found| is_mint(found, MINT_PLANTED, 1)],
+    },
+    Case {
+        name: "a layer imports the capability mint under another name",
+        plant: |fixture| plant_mint(fixture, "\nuse ironafs_vfs::Mint as Maker;\n"),
+        expect: &[|found| is_mint(found, MINT_PLANTED, 2)],
+    },
+    Case {
+        name: "a layer names the capability mint after a glob import",
+        plant: |fixture| {
+            plant_mint(
+                fixture,
+                "use ironafs_vfs::*;\nfn f() { let _ = Mint::new(); }\n",
+            );
+        },
+        expect: &[|found| is_mint(found, MINT_PLANTED, 2)],
+    },
+    Case {
+        name: "a layer names the capability mint by its path",
+        plant: |fixture| plant_mint(fixture, "fn f() { let _ = ironafs_vfs::Mint::new(); }\n"),
+        expect: &[|found| is_mint(found, MINT_PLANTED, 1)],
+    },
+    Case {
+        name: "a layer names the capability mint as a raw identifier",
+        plant: |fixture| plant_mint(fixture, "use ironafs_vfs::r#Mint;\n"),
+        expect: &[|found| is_mint(found, MINT_PLANTED, 1)],
+    },
+    Case {
+        name: "a layer's integration test names the capability mint",
+        plant: |fixture| {
+            fixture.file(
+                MINT_CRATE,
+                "tests/it/main.rs",
+                Some("use ironafs_vfs::Mint;\n"),
+            );
+        },
+        expect: &[|found| is_mint(found, "crates/ironafs-fuse/tests/it/main.rs", 1)],
+    },
+    Case {
+        name: "a driver names the capability mint",
+        plant: |fixture| {
+            fixture.file(
+                "ironafs-net",
+                "src/lib.rs",
+                Some("fn f() { let _ = ironafs_vfs::Mint::new(); }\n"),
+            );
+        },
+        expect: &[|found| is_mint(found, "crates/ironafs-net/src/lib.rs", 1)],
+    },
+    Case {
+        name: "a pure crate other than the contract names the capability mint",
+        plant: |fixture| {
+            fixture.file(
+                "ironafs-cache",
+                "src/lib.rs",
+                Some("use ironafs_vfs::Mint;\n"),
+            );
+        },
+        expect: &[|found| is_mint(found, "crates/ironafs-cache/src/lib.rs", 1)],
     },
 ];
 
