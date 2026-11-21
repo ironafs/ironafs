@@ -182,7 +182,7 @@ Every specification ends with a Sources section. The rules come from
      kernel's AF_RXRPC or kafs while `AGENTS.md` bars their source
      ("nothing generated from their files"): no person or model reads
      their source to write a specification or code. ADR 0001's similarity
-     audit, run outside the repository, is separate and follows ADR 0001.
+     audit is separate and follows ADR 0001.
      A protocol fact that no other admissible source answers stays
      MISSING until observation settles it.
    - A wire fact is never taken from interface-definition files or
