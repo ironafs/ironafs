@@ -216,11 +216,17 @@ that does not apply stays, with one line saying why.
    time: each directory with `openat` and `O_NOFOLLOW | O_DIRECTORY`
    relative to the previous descriptor, checking each directory's owner
    and mode on its descriptor, `/` included, before it opens the next
-   component. The file itself is opened with `openat` and `O_NOFOLLOW |
-   O_NONBLOCK | O_NOCTTY | O_CLOEXEC` relative to its directory's
-   descriptor; `fstat` on that descriptor must show a regular file with
-   the owner and mode below before any byte is read, and the bytes are
-   then read from that same descriptor. The source is `trusted` only when
+   component. Before the file is opened, `fstatat` with
+   `AT_SYMLINK_NOFOLLOW`, relative to its directory's descriptor, must
+   show a regular file; any other type (a device, a FIFO, a socket, a
+   symbolic link) is untrusted without being opened, so no open can block
+   on it or fail on it first `[OWN]`. The directory has passed the checks,
+   so only root can replace the entry between that call and the open
+   (8, point 1's residual). The file is then opened with `openat` and
+   `O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC` relative to the same
+   descriptor; `fstat` on the opened descriptor must again show a regular
+   file, with the owner and mode below, before any byte is read, and the
+   bytes are then read from that same descriptor. The source is `trusted` only when
    every component is owned by uid 0 and writable by no other user or
    group, and the file is a regular file; a symbolic link anywhere on the
    path (including one that makes an `openat` fail with `ELOOP` or
@@ -282,9 +288,10 @@ that does not apply stays, with one line saying why.
    | F (`ironafs.toml`, the drop-in directory, each drop-in) | contributes nothing (`ironafs.toml` or the drop-in directory) | local refusal | local refusal | local refusal | used |
    | P (the policy directory, each policy file) | the whole policy is absent (the policy directory): unmanaged if `managed_before` is false, unreadable if it is true (O19, point 5) | the policy is unreadable | the policy is incompatible | the policy is incompatible (Q12) | used, if every policy file is valid |
 
-   Across the policy files the worst state decides: untrusted or
-   malformed (the policy is incompatible), then unreadable, then valid
-   `[OWN]`.
+   Across the policy files, and the policy directory or a directory
+   above it when the walk or listing fails there, the worst state
+   decides: untrusted or malformed (the policy is incompatible), then
+   unreadable, then valid `[OWN]`.
 
    A local refusal keeps the last good local configuration, or stops the
    start if there is none (section 7). An unreadable policy uses the last
@@ -634,7 +641,8 @@ it refuses. A value of another syntax type is a type error (section 7).
    refusal, the rest of every trusted F source that parsed is still
    scanned for security keys, and the cells each unknown value covers are
    carried in the `LocalRefusal` as refusal rules (5.2.7, point 2), each
-   a security key with its scope: a per-cell value refuses its cell, a
+   a security key with its scope and the source and position of its
+   value: a per-cell value refuses its cell, a
    machine-wide value every cell, in both cases unless a policy value
    covers that cell for that key (5.2.7, point 1) `[OWN]`. Validating F
    reads no policy, so that exception is applied by `merge` (5.8, point
@@ -732,14 +740,18 @@ These are names and shapes only. What each part decides is its own.
    clock.
 2. **The envelope and the policy state** (part (c)): part (c) takes the
    policy's sources as the caller found them: either "absent" (5.1, point
-   7) or the list of its sources in the order of 5.1, point 2, each
-   `Unreadable`, `Untrusted` (a trust failure, which may come before any
-   byte is read) or its `PolicyKeys`; together with `managed_before`
+   7), or a list of outcomes, each `Unreadable`, `Untrusted` (a trust
+   failure, which may come before any byte is read) or, for a file, its
+   `PolicyKeys`. An outcome is for a policy file, in the order of 5.1,
+   point 2, or for the policy directory or a directory above it, when the
+   walk or the listing fails there before any file is known; that outcome
+   comes first, followed by any file outcomes already obtained `[OWN]`; together with `managed_before`
    (5.1, point 7) and whether a last good policy exists (part (f)). It
    returns the policy state of O19, point 4, as a typed value
    `PolicyState { Unmanaged, Valid(PolicyLayer), Unreadable,
-   Incompatible(reason) }`, the worst source state deciding (5.1, point
-   7). An absent policy with `managed_before` true is unreadable, never
+   Incompatible(reason) }`, the worst outcome, of a directory or a file,
+   deciding (5.1, point 7), so an untrusted directory makes the policy
+   incompatible, never unreadable. An absent policy with `managed_before` true is unreadable, never
    unmanaged (O19, point 5: "A policy that merely disappears is treated as
    unreadable"). The policy state is computed independently of F: a local
    refusal never changes it, and a policy state never refuses F `[OWN]`.
@@ -761,8 +773,10 @@ These are names and shapes only. What each part decides is its own.
    point 7, consumes it; it never enters `merge`.
 4. **Merging:** `merge(LocalLayer, RefusalRules, PolicyInput, Running) ->
    Effective`, where `RefusalRules` are the refusal rules part (e) keeps in
-   force (point 5; empty when the local configuration was accepted), to
-   which `merge` applies 5.2.7, point 1's exception for a cell a policy
+   force (point 5; empty when the local configuration was accepted), each
+   with the source and position of the value that raised it, kept with
+   the rule while part (e) keeps it, so the refusal's reason names them
+   (5.9, point 4) `[OWN]`, and to which `merge` applies 5.2.7, point 1's exception for a cell a policy
    value covers; `Running` holds the active values of the restart keys and their
    origins (from the running daemon, or empty at start, when the pending
    value becomes active), and
@@ -908,11 +922,12 @@ in `crates/ironafs-config/tests/it/`.
 4. **Layers:** the same key in two F sources refused, naming both; a P
    value locks the key; untrusted F and P sources refused (one case per
    part of the test, and a symbolic link as the file and as a directory
-   on the path; a file that is not a regular file, such as a FIFO, refused
-   without blocking and without reading); each cell of 5.1, point 7's
+   on the path; a file that is not a regular file, such as a FIFO or a
+   device, refused as untrusted without being opened); each cell of 5.1, point 7's
    table, for F and for P, with `managed_before` true and false; a missing
    `/etc/ironafs` gives absent for F and P; an empty policy directory is
-   absent; a listed file gone at its open is unreadable; policy files in
+   absent; a listed file gone at its open is unreadable; an untrusted
+   policy directory gives incompatible and an unlistable one unreadable; policy files in
    two different failing states give the worst; an entry not named
    `*.toml`, or starting with `.`, is not read; F's sources taken in the
    order of 5.1, point 2, whatever the listing order; a refused reload
@@ -934,8 +949,9 @@ in `crates/ironafs-config/tests/it/`.
 8. **Property:** any F document of keys valid in F, with valid values,
    each key once, and no two cell tables constructing one cell name,
    validates (a security key's value may refuse cells, never the file),
-   and merging is deterministic: the same sources and the same `Running`
-   give the same effective configuration and origins.
+   and merging is deterministic: the same `LocalLayer`, `RefusalRules`,
+   `PolicyInput` and `Running` give the same effective configuration,
+   origins and refused cells.
 9. **No partial use:** a refusal returns no layer (the types make a
    partial `LocalLayer` impossible to build).
 
@@ -1054,7 +1070,8 @@ reviewer wrote it.
    - Fix: across policy files the worst state decides; a file listed but
      gone at its open is unreadable, and only a missing or empty policy
      directory (or a missing directory above it) is absent; part (c)'s
-     input is the list of per-source states plus `managed_before`.
+     input is the list of outcomes, for the policy directory when the walk
+     or listing fails there and for each file, plus `managed_before`.
    - In: 5.1, point 7; 5.8, points 1 and 2.
 2. "The walk pins each opened component, and listing uses a checked
    directory descriptor. The text still permits opening listed files
@@ -1065,9 +1082,12 @@ reviewer wrote it.
 3. "The final open requires only `O_NOFOLLOW`. The walk does not require
    a regular file or prevent blocking before it can check the
    descriptor."
-   - Fix: the file is opened with `O_NOFOLLOW | O_NONBLOCK | O_NOCTTY |
-     O_CLOEXEC`, then `fstat` must show a regular file, else the source is
-     untrusted, before any byte is read.
+   - Fix: `fstatat` with `AT_SYMLINK_NOFOLLOW` on the checked directory's
+     descriptor must show a regular file before the open, so a special
+     file is untrusted without being opened; the file is then opened with
+     `O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC`, and `fstat` must
+     again show a regular file, else the source is untrusted, before any
+     byte is read.
    - In: 5.1, point 3, and its test in 10, point 4.
 4. "The configured-cell rule excludes an implicit parent created solely by
    ignored policy content. The validation section still checks every cell

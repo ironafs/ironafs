@@ -403,3 +403,22 @@ of it is reviewed yet: a scoped re-review of the fix diff comes next.
 
 Section 13.1 now lists each blocker's fix and where it is. The four stay
 open until a scoped re-review of the fix diff passes.
+
+### Scoped round
+
+The fix commit `a58d61d` was verified on `91744f2..a58d61d`:
+
+- DeepSeek (`deepseek-flash`): PASS on F1 to F10, with one new minor.
+- GLM (`glm-5.3`, high): PASS on F7; the refutation stands.
+- GPT (`gpt-6.2-sol`, xhigh), on the four blockers of 13.1: FAIL. Blockers 1 and 3 are still partly open, and the fix introduced two majors.
+
+This round fixes only what those five findings name. It is the last round
+before the stop rule.
+
+| Finding | Seat, severity | Disposition | origin | kind |
+|---|---|---|---|---|
+| Blocker 1: part (c) takes only absence or per-file outcomes, so a failure of the policy directory's walk, trust or listing, before any file is known, cannot be expressed, and an untrusted directory could be read as unreadable | GPT, blocker | FIXED: 5.8, point 2: part (c)'s outcomes may be for the policy directory, or a directory above it, when the walk or listing fails there. That outcome comes first, followed by any file outcomes already obtained. The worst outcome decides, so an untrusted directory makes the policy incompatible. 5.1, point 7's precedence names the directory; test in 10, point 4 | pre-existing (blocker 1) | contract |
+| Blocker 3: an ordinary open of a special file can block or fail before `fstat` classifies it | GPT, blocker | FIXED, with a different method: 5.1, point 3: `fstatat` with `AT_SYMLINK_NOFOLLOW` on the checked directory's descriptor must show a regular file before the open, so a special file is untrusted without being opened; `fstat` on the opened descriptor checks the type, owner and mode again before any read. Pushback on the suggested fix (a metadata-only descriptor reopened without its pathname): on Linux that reopen goes through `/proc/self/fd`, a new dependency on procfs. It is not needed here, because the directory has passed the trust checks, so only root can swap the entry between the two calls, which is 8, point 1's residual | pre-existing (blocker 3) | correctness |
+| `RefusalRules` kept across reloads omit the value's source, which 5.9, point 4, requires a cell refusal to name | GPT, major | FIXED: 5.5, point 4, and 5.8, point 4: each rule carries the source and position of the value that raised it, kept with the rule while part (e) keeps it | introduced by the second-family fix (F4) | contract |
+| The determinism property names only sources and `Running`, though `merge` now also takes `RefusalRules` | GPT, major | FIXED: 10, point 8: the same `LocalLayer`, `RefusalRules`, `PolicyInput` and `Running` give the same effective configuration, origins and refused cells; the separate test that a refusal survives a later parse error stays | introduced by the second-family fix (F4) | consistency between parts |
+| The same as above: test 8's determinism clause omits `RefusalRules` | DeepSeek, minor | FIXED, by the same change | introduced by the second-family fix (F4) | consistency between parts |
