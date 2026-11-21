@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Properties of the parser: any bytes give a document or a positioned
-//! error within the input, an accepted document keeps every cap, and a
-//! generated document written in the subset parses back to itself.
+//! error within the input, an accepted document keeps the caps a document
+//! can show, a file near the definitions cap is accepted exactly when it is
+//! within it, and a generated document written in the subset parses back
+//! to itself.
 
+use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use ironafs_config::{
@@ -81,11 +84,18 @@ fn fragments(source: &mut Source) -> Vec<u8> {
     bytes
 }
 
-/// Checks every cap of the specification's section 5.2 on an accepted
-/// document.
+/// Checks the caps of the specification's section 5.2 that an accepted
+/// document can show: depth, key, string and array lengths, and the
+/// definitions, counting each implicit table once as a proper prefix of an
+/// explicit table's path. The file and line caps are not visible in a
+/// document; the cap tests check them on the input.
 fn within_caps(document: &Document) -> Result<(), String> {
     let mut definitions = 0;
+    let mut tables: BTreeSet<&[String]> = BTreeSet::new();
     for table in document.tables() {
+        for length in 1..=table.path().len() {
+            tables.insert(&table.path()[..length]);
+        }
         if table.path().len() > MAX_DEPTH {
             return Err(format!("table too deep: {:?}", table.path()));
         }
@@ -96,8 +106,8 @@ fn within_caps(document: &Document) -> Result<(), String> {
         {
             return Err(format!("segment too long: {:?}", table.path()));
         }
-        definitions += 1;
     }
+    definitions += tables.len();
     for (_, entry) in document.entries() {
         definitions += 1;
         if entry.key().is_empty() || entry.key().len() > MAX_KEY_BYTES {
@@ -404,6 +414,46 @@ fn parse_generated_document_reads_back_its_model() {
                     return Err(format!("entries {found:?}, expected {want:?}"));
                 }
                 Ok(())
+            },
+        );
+}
+
+/// A file of `keys` key/value pairs, then one header `depth` segments deep
+/// whose every prefix is a new table.
+fn keys_then_header(keys: usize, depth: usize) -> String {
+    let mut text = String::new();
+    for index in 0..keys {
+        writeln!(text, "k{index} = 1").unwrap();
+    }
+    let segments: Vec<String> = (0..depth).map(|index| format!("s{index}")).collect();
+    writeln!(text, "[{}]", segments.join(".")).unwrap();
+    text
+}
+
+#[test]
+fn parse_near_definitions_cap_counts_every_implicit_table() {
+    Property::new("parse: a deep header at the definitions cap")
+        .cases(64)
+        .check(
+            |source| {
+                let depth = source.usize_in(1..=MAX_DEPTH);
+                let keys = source.usize_in(MAX_DEFINITIONS - MAX_DEPTH - 2..=MAX_DEFINITIONS);
+                (keys, depth)
+            },
+            |&(keys, depth)| {
+                let within = keys + depth <= MAX_DEFINITIONS;
+                match parse(keys_then_header(keys, depth).as_bytes()) {
+                    Ok(document) if within => within_caps(&document),
+                    Ok(_) => Err(format!("accepted {} definitions", keys + depth)),
+                    Err(error) if !within => {
+                        if error.kind() == ironafs_config::SyntaxErrorKind::TooManyDefinitions {
+                            Ok(())
+                        } else {
+                            Err(format!("refused for another reason: {error}"))
+                        }
+                    }
+                    Err(error) => Err(format!("refused within the cap: {error}")),
+                }
             },
         );
 }
