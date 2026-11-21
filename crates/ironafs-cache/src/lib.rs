@@ -31,8 +31,7 @@ mod store_path;
 pub use disk::{Disk, DiskError, DiskOp, Durability, EntryKind, Plan, PlanStep, ReadRange, Space};
 pub use fence::{
     ClockWatch, EpochSource, FenceError, FenceLimits, FenceTable, FenceTuple, MAX_FENCE_BYTES,
-    MIN_FENCE_BYTES, OBJECT_RECORD_BYTES, PauseGeneration, ServerValues, Stamp, Suspicion,
-    VOLUME_RECORD_BYTES, VolumeEpoch,
+    MIN_FENCE_BYTES, PauseGeneration, SLOT_BYTES, Server, Stamp, Suspicion, VolumeEpoch,
 };
 pub use identity::{CellIndex, ContextKey, FileId, PathKind, Uniquifier, Version, Vnode, VolumeId};
 pub use node::{

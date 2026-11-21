@@ -42,8 +42,7 @@
 mod table;
 
 pub use table::{
-    FenceError, FenceLimits, FenceTable, MAX_FENCE_BYTES, MIN_FENCE_BYTES, OBJECT_RECORD_BYTES,
-    VOLUME_RECORD_BYTES,
+    FenceError, FenceLimits, FenceTable, MAX_FENCE_BYTES, MIN_FENCE_BYTES, SLOT_BYTES,
 };
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -128,8 +127,9 @@ impl Default for EpochSource {
     }
 }
 
-/// A socket's pause generation, read by the caller from Rx's driver with a
-/// sequentially consistent load (Rx specification, 5.12, point 5). The
+/// A socket's pause generation, as the [`FenceTable`] loads it from Rx's
+/// driver, sequentially consistent, after its clock comparison (Rx
+/// specification, 5.12, point 5; callback specification, 5.6, point 2). The
 /// driver starts it at 0 and only raises it, so a value is never seen again
 /// on that socket while the daemon runs; a socket bound again is a new
 /// server key (the local endpoint generation is part of the key), not a
@@ -144,15 +144,16 @@ pub struct PauseGeneration(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VolumeEpoch(pub u64);
 
-/// The current values of a fence tuple shared by every object of one
-/// server key: read from the callback state record and the driver when a
-/// tuple is recorded or checked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ServerValues {
+/// What a fence tuple takes from one server key: its suspect epoch, read
+/// from the callback state record, and the driver's pause generation of
+/// the key's family's socket, which the [`FenceTable`] itself loads at the
+/// right point of a recording or a check, never a value sampled earlier.
+#[derive(Clone, Copy, Debug)]
+pub struct Server<'a> {
     /// The server key's suspect epoch.
     pub suspect_epoch: Stamp,
-    /// The pause generation of the key's family's socket.
-    pub pause: PauseGeneration,
+    /// The driver's pause generation of the key's family's socket.
+    pub pause: &'a AtomicU64,
 }
 
 /// The C37 clocks' detector of suspends and jumps (the keepalive

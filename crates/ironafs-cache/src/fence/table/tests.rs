@@ -3,13 +3,11 @@
 
 use alloc::rc::Rc;
 use core::cell::Cell;
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::{
-    FenceError, FenceLimits, FenceTable, MAX_FENCE_BYTES, MIN_FENCE_BYTES, OBJECT_RECORD_BYTES,
-    VOLUME_RECORD_BYTES,
-};
+use super::{FenceError, FenceLimits, FenceTable, MAX_FENCE_BYTES, MIN_FENCE_BYTES, SLOT_BYTES};
 use crate::fence::{
-    ClockWatch, FenceTuple, PauseGeneration, ServerValues, Stamp, Suspicion, VolumeEpoch,
+    ClockWatch, FenceTuple, PauseGeneration, Server, Stamp, Suspicion, VolumeEpoch,
 };
 use crate::identity::fixture::{CELL, context, file};
 use crate::{FileId, VolumeId};
@@ -24,9 +22,15 @@ impl ClockWatch for Watch {
     }
 }
 
-const SERVER: ServerValues = ServerValues {
+/// A pause generation no test raises.
+static IDLE: AtomicU64 = AtomicU64::new(0);
+
+/// A pause generation of 1.
+static PAUSED: AtomicU64 = AtomicU64::new(1);
+
+const SERVER: Server<'static> = Server {
     suspect_epoch: Stamp(1),
-    pause: PauseGeneration(0),
+    pause: &IDLE,
 };
 
 const ROOMY: usize = 64 * MIN_FENCE_BYTES;
@@ -164,7 +168,7 @@ fn check_after_eviction_fails_object() {
 
 #[test]
 fn eviction_takes_the_oldest_value_and_never_a_record_in_use() {
-    let (mut table, _) = table(MIN_FENCE_BYTES + OBJECT_RECORD_BYTES);
+    let (mut table, _) = table(3 * SLOT_BYTES);
     let old = record(&mut table, 1, file(V1, 1));
     let young = record(&mut table, 1, file(V1, 2));
     // A break gives file 1 a newer value than file 2's.
@@ -189,14 +193,28 @@ fn eviction_takes_the_oldest_value_and_never_a_record_in_use() {
 fn records_stay_within_the_byte_budget() {
     let budget = 3 * MIN_FENCE_BYTES;
     let (mut table, _) = table(budget);
+    // What the table reserved at the start is what it holds throughout.
+    let reserved = table.bytes();
+    let capacities = (
+        table.records.capacity(),
+        table.objects.capacity(),
+        table.volumes.capacity(),
+    );
+    assert_eq!(table.capacity(), budget / SLOT_BYTES);
     for ctx in 1..=4 {
         for volume in 1..=4 {
             for vnode in 1..=4 {
                 record(&mut table, ctx, file(VolumeId(volume), vnode));
                 assert!(table.bytes() <= budget);
+                assert_eq!(table.bytes(), reserved);
+                assert!(table.objects() + table.volumes() <= table.capacity());
                 assert_eq!(
-                    table.bytes(),
-                    table.objects() * OBJECT_RECORD_BYTES + table.volumes() * VOLUME_RECORD_BYTES
+                    (
+                        table.records.capacity(),
+                        table.objects.capacity(),
+                        table.volumes.capacity()
+                    ),
+                    capacities
                 );
             }
         }
@@ -303,12 +321,12 @@ fn record_refuses_when_the_resume_generation_is_exhausted() {
 fn check_compares_the_server_values() {
     let (mut table, _) = table(ROOMY);
     let ticket = record(&mut table, 1, file(V1, 1));
-    let advanced = ServerValues {
+    let advanced = Server {
         suspect_epoch: Stamp(2),
         ..SERVER
     };
-    let paused = ServerValues {
-        pause: PauseGeneration(1),
+    let paused = Server {
+        pause: &PAUSED,
         ..SERVER
     };
     assert_eq!(
@@ -487,4 +505,70 @@ fn new_rejects_limits_out_of_range() {
         let watch = Watch(Rc::new(Cell::new(0)));
         assert!(FenceTable::new(FenceLimits { bytes }, watch).is_ok());
     }
+}
+
+#[test]
+fn adoption_is_refused_once_an_epoch_copy_was_evicted() {
+    // The context's copy of epoch 10 is evicted while its evidence record
+    // lives on; a fetch then records no epoch, the evidence record is
+    // reclaimed, and the fetch's own reply writes a new epoch.
+    let (mut table, _) = table(MIN_FENCE_BYTES);
+    table
+        .set_volume_epoch(context(1), CELL, V1, VolumeEpoch(10))
+        .unwrap();
+    record_bare(&mut table, 1, file(V2, 1));
+    assert!(!table.holds_volume(context(1), CELL, V1));
+    let mut ticket = record_bare(&mut table, 1, file(V1, 1));
+    assert_eq!(ticket.volume_epoch, None);
+    table
+        .set_volume_epoch(context(1), CELL, V1, VolumeEpoch(11))
+        .unwrap();
+    assert!(!table.adopt_volume_epoch(context(1), file(V1, 1), &mut ticket));
+    assert!(!check(&mut table, 1, file(V1, 1), &ticket).is_clear());
+}
+
+/// A clock watch whose read races the driver: while armed, the pause
+/// generation rises during the clock comparison, which finds no move.
+struct Racing {
+    pause: Rc<AtomicU64>,
+    armed: Rc<Cell<bool>>,
+}
+
+impl ClockWatch for Racing {
+    fn moved(&mut self) -> bool {
+        if self.armed.get() {
+            self.pause.fetch_add(1, Ordering::SeqCst);
+        }
+        false
+    }
+}
+
+#[test]
+fn record_and_check_load_the_pause_generation_after_the_clocks() {
+    let pause = Rc::new(AtomicU64::new(0));
+    let armed = Rc::new(Cell::new(false));
+    let watch = Racing {
+        pause: Rc::clone(&pause),
+        armed: Rc::clone(&armed),
+    };
+    let mut table = FenceTable::new(FenceLimits { bytes: ROOMY }, watch).unwrap();
+    let server = Server {
+        suspect_epoch: Stamp(1),
+        pause: &pause,
+    };
+    table
+        .set_volume_epoch(context(1), CELL, V1, VolumeEpoch(10))
+        .unwrap();
+    let steady = table.record(context(1), file(V1, 1), server).unwrap();
+    assert_eq!(steady.pause, PauseGeneration(0));
+    // The driver raises the pause generation while the check compares the
+    // clocks: the check sees the raise.
+    armed.set(true);
+    assert_eq!(
+        table.check(context(1), file(V1, 1), server, &steady),
+        only(|s| s.pause = true)
+    );
+    // And a recording made during a raise records the raised value.
+    let raced = table.record(context(1), file(V1, 2), server).unwrap();
+    assert_eq!(raced.pause, PauseGeneration(2));
 }

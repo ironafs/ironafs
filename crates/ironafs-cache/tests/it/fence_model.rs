@@ -10,23 +10,27 @@
 //! volume, the eviction of its object or volume record, an advance of its
 //! server, a pause of its server's socket, and a suspend or clock jump. It
 //! keeps each context's local volume epoch as last written, and forgets it
-//! when the volume record is evicted. After every operation it reads which
-//! records the table still holds, so an eviction is an event like any
-//! other. Every check must report exactly what the model expects: a reply
+//! when the volume record is evicted. It decides evictions itself: it
+//! mirrors the table's sequence of counter values and its rule (when full,
+//! the smallest value goes, never a record the operation uses), predicts
+//! every value a tuple records, and after every operation asserts that the
+//! table holds exactly the records it expects, no more and no fewer. Every
+//! check must report exactly what the model expects: a reply
 //! recorded before any change of its object, volume, server, socket,
 //! clocks or epoch is refused after it (ADR 0004, C16, point 2; C25,
 //! point 3), and nothing else fails a fence. An adoption must succeed
-//! exactly when the tuple has no epoch, its volume record is unchanged
-//! since, and an epoch has been written.
+//! exactly when no epoch copy has ever been evicted, the tuple has no
+//! epoch, its volume record is unchanged since, and an epoch has been
+//! written.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ironafs_cache::{
     ClockWatch, EpochSource, FenceLimits, FenceTable, FenceTuple, FileId, MIN_FENCE_BYTES,
-    OBJECT_RECORD_BYTES, PauseGeneration, ServerValues, Stamp, Suspicion, VOLUME_RECORD_BYTES,
-    VolumeEpoch, VolumeId,
+    SLOT_BYTES, Server, Stamp, Suspicion, VolumeEpoch, VolumeId,
 };
 use ironafs_test_support::{Exhaustive, Property, Source};
 
@@ -149,6 +153,19 @@ fn op(source: &mut Source, domain: Domain) -> Op {
     }
 }
 
+/// What a tuple takes from the server of `volume`.
+fn server<'a>(
+    suspect: &[Stamp; SERVERS],
+    pause: &'a [AtomicU64; SERVERS],
+    volume: VolumeId,
+) -> Server<'a> {
+    let index = server_of(volume);
+    Server {
+        suspect_epoch: suspect[index],
+        pause: &pause[index],
+    }
+}
+
 fn server_of(volume: VolumeId) -> usize {
     usize::try_from(volume.0).unwrap() % SERVERS
 }
@@ -161,6 +178,65 @@ struct Ticket {
     file: FileId,
     tuple: FenceTuple,
     changed: Suspicion,
+}
+
+/// A record, as the model names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Key {
+    Object(u64, FileId),
+    Volume(u64, VolumeId),
+}
+
+/// The model's own store: which records exist and their values, decided
+/// without asking the table.
+struct Store {
+    capacity: usize,
+    next: u64,
+    values: BTreeMap<Key, u64>,
+}
+
+impl Store {
+    /// Evicts the smallest values, other than `keep`, until `needed` more
+    /// fit; returns what it evicted.
+    fn make_room(&mut self, needed: usize, keep: &[Key]) -> Vec<Key> {
+        let mut evicted = Vec::new();
+        while self.values.len() + needed > self.capacity {
+            let Some(victim) = self
+                .values
+                .iter()
+                .filter(|(key, _)| !keep.contains(key))
+                .min_by_key(|(_, value)| **value)
+                .map(|(key, _)| *key)
+            else {
+                break;
+            };
+            self.values.remove(&victim);
+            evicted.push(victim);
+        }
+        evicted
+    }
+
+    /// Gives `key` the next value, made or raised.
+    fn stamp(&mut self, key: Key) -> u64 {
+        let value = self.next;
+        self.next += 1;
+        self.values.insert(key, value);
+        value
+    }
+
+    /// Raises every record of `key`'s file or volume, in context order,
+    /// as the table's indexes order them.
+    fn raise_all(&mut self, matches: impl Fn(&Key) -> bool) {
+        let keys: Vec<Key> = self
+            .values
+            .keys()
+            .copied()
+            .filter(|key| matches(key))
+            .collect();
+        for key in keys {
+            self.stamp(key);
+        }
+    }
 }
 
 /// What a run exercised.
@@ -182,8 +258,11 @@ struct World {
     moves: Rc<Cell<u32>>,
     epochs: EpochSource,
     suspect: [Stamp; SERVERS],
-    pause: [u64; SERVERS],
+    pause: [AtomicU64; SERVERS],
     jumped: bool,
+    store: Store,
+    /// Whether the model has evicted a volume record with an epoch copy.
+    copy_lost: bool,
     tickets: Vec<Ticket>,
     /// Each context's local volume epoch, as last written.
     written: BTreeMap<(u64, VolumeId), VolumeEpoch>,
@@ -204,20 +283,18 @@ impl World {
             moves,
             epochs,
             suspect,
-            pause: [0; SERVERS],
+            pause: [AtomicU64::new(0), AtomicU64::new(0)],
             jumped: false,
+            store: Store {
+                capacity: bytes / SLOT_BYTES,
+                next: 1,
+                values: BTreeMap::new(),
+            },
+            copy_lost: false,
             tickets: Vec::new(),
             written: BTreeMap::new(),
             last_epoch: 0,
         })
-    }
-
-    fn server(&self, volume: VolumeId) -> ServerValues {
-        let server = server_of(volume);
-        ServerValues {
-            suspect_epoch: self.suspect[server],
-            pause: PauseGeneration(self.pause[server]),
-        }
     }
 
     fn mark(&mut self, applies: impl Fn(&Ticket) -> bool, change: impl Fn(&mut Suspicion)) {
@@ -236,24 +313,53 @@ impl World {
         }
     }
 
-    /// Reads which records the table still holds: an eviction changes the
-    /// tuples recorded under the record, and forgets the context's epoch.
-    fn evictions_observed(&mut self, coverage: &mut Coverage) {
-        let table = &self.table;
-        for ticket in &mut self.tickets {
-            if !ticket.changed.object && !table.holds_object(context(ticket.context), ticket.file) {
-                ticket.changed.object = true;
-                coverage.evictions += 1;
-            }
-            if !ticket.changed.volume
-                && !table.holds_volume(context(ticket.context), CELL, ticket.file.volume)
-            {
-                ticket.changed.volume = true;
-                coverage.evictions += 1;
+    /// Applies the model's own evictions: each changes the tuples recorded
+    /// under the record, and an evicted volume record forgets its epoch.
+    fn evicted(&mut self, keys: Vec<Key>, coverage: &mut Coverage) {
+        for key in keys {
+            coverage.evictions += 1;
+            match key {
+                Key::Object(ctx, target) => self.mark(
+                    |ticket| ticket.context == ctx && ticket.file == target,
+                    |changed| changed.object = true,
+                ),
+                Key::Volume(ctx, volume) => {
+                    self.mark(
+                        |ticket| ticket.context == ctx && ticket.file.volume == volume,
+                        |changed| changed.volume = true,
+                    );
+                    self.copy_lost |= self.written.remove(&(ctx, volume)).is_some();
+                }
             }
         }
-        self.written
-            .retain(|&(ctx, volume), _| table.holds_volume(context(ctx), CELL, volume));
+    }
+
+    /// Asserts that the table holds exactly the model's records.
+    fn holds_what_the_model_holds(&self) -> Result<(), String> {
+        let (mut objects, mut volumes) = (0, 0);
+        for key in self.store.values.keys() {
+            let held = match *key {
+                Key::Object(ctx, target) => {
+                    objects += 1;
+                    self.table.holds_object(context(ctx), target)
+                }
+                Key::Volume(ctx, volume) => {
+                    volumes += 1;
+                    self.table.holds_volume(context(ctx), CELL, volume)
+                }
+            };
+            if !held {
+                return Err(format!("the table lost {key:?}"));
+            }
+        }
+        if (self.table.objects(), self.table.volumes()) != (objects, volumes) {
+            return Err(format!(
+                "the table holds {} objects and {} volumes, the model {objects} and {volumes}",
+                self.table.objects(),
+                self.table.volumes()
+            ));
+        }
+        Ok(())
     }
 
     fn epoch(&self, ctx: u64, volume: VolumeId) -> Option<VolumeEpoch> {
@@ -273,17 +379,35 @@ impl World {
             } => {
                 self.clocks_observed();
                 let target = file(volume, vnode);
+                let object_key = Key::Object(ctx, target);
+                let volume_key = Key::Volume(ctx, target.volume);
+                let keep: Vec<Key> = [object_key, volume_key]
+                    .into_iter()
+                    .filter(|key| self.store.values.contains_key(key))
+                    .collect();
+                let evicted = self.store.make_room(2 - keep.len(), &keep);
+                self.evicted(evicted, coverage);
+                let object_value = match self.store.values.get(&object_key) {
+                    Some(&value) => value,
+                    None => self.store.stamp(object_key),
+                };
+                let volume_value = match self.store.values.get(&volume_key) {
+                    Some(&value) => value,
+                    None => self.store.stamp(volume_key),
+                };
                 let tuple = self
                     .table
-                    .record(context(ctx), target, self.server(target.volume))
+                    .record(
+                        context(ctx),
+                        target,
+                        server(&self.suspect, &self.pause, target.volume),
+                    )
                     .map_err(|error| format!("record refused: {error}"))?;
-                // A record evicts only other records, so a context's epoch
-                // is still known if its volume record was kept.
-                if self.table.holds_volume(context(ctx), CELL, target.volume)
-                    && tuple.volume_epoch != self.epoch(ctx, target.volume)
+                if (tuple.object.get(), tuple.volume.get()) != (object_value, volume_value)
+                    || tuple.volume_epoch != self.epoch(ctx, target.volume)
                 {
                     return Err(format!(
-                        "recorded {tuple:?}, epoch written {:?}",
+                        "recorded {tuple:?}, expected values {object_value} and {volume_value}, epoch {:?}",
                         self.epoch(ctx, target.volume)
                     ));
                 }
@@ -297,6 +421,8 @@ impl World {
             Op::BreakFile { volume, vnode } => {
                 let target = file(volume, vnode);
                 self.table.break_file(&target);
+                self.store
+                    .raise_all(|key| matches!(*key, Key::Object(_, held) if held == target));
                 self.mark(
                     |ticket| ticket.file == target,
                     |changed| changed.object = true,
@@ -304,6 +430,9 @@ impl World {
             }
             Op::BreakVolume { volume } => {
                 self.table.break_volume(CELL, VolumeId(volume));
+                self.store.raise_all(
+                    |key| matches!(*key, Key::Volume(_, held) if held == VolumeId(volume)),
+                );
                 self.mark(
                     |ticket| ticket.file.volume == VolumeId(volume),
                     |changed| changed.volume = true,
@@ -317,7 +446,7 @@ impl World {
                 );
             }
             Op::Pause { server } => {
-                self.pause[server] += 1;
+                self.pause[server].fetch_add(1, Ordering::SeqCst);
                 self.mark(
                     |ticket| server_of(ticket.file.volume) == server,
                     |changed| changed.pause = true,
@@ -333,6 +462,12 @@ impl World {
             } => {
                 self.last_epoch += 1;
                 let epoch = VolumeEpoch(self.last_epoch);
+                let key = Key::Volume(ctx, VolumeId(volume));
+                if !self.store.values.contains_key(&key) {
+                    let evicted = self.store.make_room(1, &[]);
+                    self.evicted(evicted, coverage);
+                    self.store.stamp(key);
+                }
                 self.table
                     .set_volume_epoch(context(ctx), CELL, VolumeId(volume), epoch)
                     .map_err(|error| format!("epoch refused: {error}"))?;
@@ -345,7 +480,8 @@ impl World {
                 let index = pick % self.tickets.len();
                 let ticket = &self.tickets[index];
                 let written = self.epoch(ticket.context, ticket.file.volume);
-                let want = ticket.tuple.volume_epoch.is_none()
+                let want = !self.copy_lost
+                    && ticket.tuple.volume_epoch.is_none()
                     && !ticket.changed.volume
                     && written.is_some();
                 let mut tuple = ticket.tuple;
@@ -375,7 +511,7 @@ impl World {
                 let got = self.table.check(
                     context(ticket.context),
                     ticket.file,
-                    self.server(ticket.file.volume),
+                    server(&self.suspect, &self.pause, ticket.file.volume),
                     &ticket.tuple,
                 );
                 let recorded = ticket.tuple.volume_epoch;
@@ -403,13 +539,15 @@ fn run(case: &Case, coverage: &mut Coverage) -> Result<(), String> {
         world
             .apply(op, coverage)
             .map_err(|error| format!("step {step} {op:?}: {error}"))?;
-        world.evictions_observed(coverage);
+        world
+            .holds_what_the_model_holds()
+            .map_err(|error| format!("step {step} {op:?}: {error}"))?;
         coverage.ran[op.index()] += 1;
-        let charged = world.table.objects() * OBJECT_RECORD_BYTES
-            + world.table.volumes() * VOLUME_RECORD_BYTES;
-        if charged != world.table.bytes() || charged > case.bytes {
+        if world.table.bytes() > case.bytes
+            || world.table.objects() + world.table.volumes() > world.table.capacity()
+        {
             return Err(format!(
-                "step {step}: records charge {charged}, table says {}, budget {}",
+                "step {step}: {} bytes for a budget of {}",
                 world.table.bytes(),
                 case.bytes
             ));
@@ -472,7 +610,7 @@ fn fence_refuses_every_reply_recorded_before_a_change_under_eviction() {
         .cases(512)
         .check(
             |source| Case {
-                bytes: MIN_FENCE_BYTES + source.usize_in(0..=3) * OBJECT_RECORD_BYTES,
+                bytes: (2 + source.usize_in(0..=3)) * SLOT_BYTES,
                 ops: source.vec_of(0..=48, |source| op(source, DOMAIN)),
             },
             |case| run(case, &mut coverage),
@@ -483,19 +621,20 @@ fn fence_refuses_every_reply_recorded_before_a_change_under_eviction() {
 #[test]
 fn fence_matches_its_reference_model_on_every_short_sequence() {
     // Every sequence of four operations over two contexts, two volumes on
-    // two servers, one vnode and four picks, in a table with room for two
-    // object records and one volume record, so that recordings evict; the
-    // sweep prints how many it ran and the bound.
+    // two servers, one vnode and three picks (four operations leave at most
+    // three tuples to pick; the random runs pick among more), in a table
+    // with room for three records, so that recordings evict; the sweep
+    // prints how many it ran and the bound.
     let small = Domain {
         contexts: 2,
         volumes: 2,
         vnodes: 1,
-        picks: 3,
+        picks: 2,
     };
     let mut coverage = Coverage::default();
     Exhaustive::new("fence, every four-operation sequence", 500_000).check(
         |source| Case {
-            bytes: MIN_FENCE_BYTES + OBJECT_RECORD_BYTES,
+            bytes: 3 * SLOT_BYTES,
             ops: (0..4).map(|_| op(source, small)).collect(),
         },
         |case| run(case, &mut coverage),
