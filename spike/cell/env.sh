@@ -19,6 +19,7 @@ IP_FUSE=172.30.47.31
 IP_SEEDER=172.30.47.32
 IP_FUSE_NOAUTH=172.30.47.33
 IP_FUSE_ANON=172.30.47.34
+IP_FUSE_DIAG=172.30.47.35
 
 # debian:trixie, pinned by digest (plan R4, read 2026-11-21).
 IMAGE_INDEX=9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
@@ -67,4 +68,4 @@ arm64 krb5-kdc 43329914d5743bb4a9ebb7e427a05e813c4515a59d18feaa7299e14aa10f2b2c
 # The synthetic file the seeding routes write and the anonymous reads check.
 # Each route writes its own file in root.cell's root directory.
 SEED_TEXT='ironafs test cell'
-SEED_ROUTES=(afsio fuse-token noauth-fuse)
+SEED_ROUTES=(afsio noauth-afsio fuse-token noauth-fuse)

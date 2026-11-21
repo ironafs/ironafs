@@ -13,6 +13,7 @@ set -uo pipefail
 . /spike/env.sh
 
 SRV=/etc/openafs/server
+DOCS=/usr/local/share/spike-docs
 APT_SIG_BAD='NO_PUBKEY|EXPKEYSIG|BADSIG|is not signed|GPG error'
 APT_BAD="$APT_SIG_BAD|^W:|^E:|^Err:"
 
@@ -74,6 +75,14 @@ write_cell_config() {
     printf '%s\n' "$CELL" >"$dir/ThisCell"
     printf '>%s #synthetic test cell\n%s #db\n' "$CELL" "$IP_DB" >"$dir/CellServDB"
   done
+}
+
+# Manual pages and docs, as plain text, from the packages (ADR 0001: package
+# documentation only).
+find_page() { find "$DOCS" /usr/share/man -name "$1" 2>/dev/null | head -n 1; }
+man_text() { # <file>: strip roff markup
+  zcat -f "$1" | sed -e '/^\.\\"/d' -e 's/^\.[A-Za-z]* *//' -e 's/\\f[BIRP]//g' -e 's/\\-/-/g' |
+    grep -v '^$'
 }
 
 find_in_package() { # find_in_package <package> <basename>
@@ -192,6 +201,15 @@ cmd_install() {
     die "a kernel module package was installed"
   fi
   say "no openafs-modules package installed"
+  # Package documentation (ADR 0001 allows manual pages and package docs):
+  # extracted from the verified .deb files, since the image's dpkg
+  # configuration may exclude /usr/share/man and /usr/share/doc.
+  mkdir -p "$DOCS"
+  for file in /var/cache/apt/archives/openafs-*.deb; do
+    dpkg-deb --fsys-tarfile "$file" |
+      tar -x -C "$DOCS" --wildcards './usr/share/man/*' './usr/share/doc/*' 2>/dev/null
+  done
+  say "package docs kept: $(find "$DOCS" -type f | wc -l) files"
   rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
   rm -f /etc/apt/sources.list.d/cell.sources
 }
@@ -361,15 +379,18 @@ cmd_rxdebug() { # <ip>
   rxdebug "$1" 7000 -version | grep 'AFS version'
 }
 
-# --- Seeding (round 2) ------------------------------------------------------
+# --- Seeding (rounds 2 and 3) -----------------------------------------------
 #
-# Three routes, each writing its own file in root.cell's root directory:
-#   afsio        kinit with the admin keytab, aklog, afsio write;
-#   fuse-token   afsd.fuse mount, kinit, aklog, write through the mount,
-#                fs setacl system:anyuser rl;
-#   noauth-fuse  bos setauth off on both fileservers (-localauth, from the db
-#                container), an unauthenticated afsd.fuse writes and sets the
-#                ACL, bos setauth on again.
+# Four routes, each writing its own file in root.cell's root directory:
+#   afsio         kinit with the admin keytab, aklog, afsio write -realm;
+#   noauth-afsio  (round 3) afsio write with no credentials while NoAuth is
+#                 on (the fileservers then treat every caller as an
+#                 administrator);
+#   fuse-token    afsd.fuse mount, kinit, aklog, write through the mount,
+#                 fs setacl system:anyuser rl;
+#   noauth-fuse   bos setauth off on both fileservers (-localauth, from the
+#                 db container), an unauthenticated afsd.fuse writes and
+#                 sets the ACL, bos setauth on again.
 # run.sh releases root.cell after each route, then reads every file from
 # containers that hold no keytab, no ticket and no token.
 
@@ -412,28 +433,42 @@ cmd_afsio_help() {
   afsio write -help 2>&1 | head -n 20
   afsio read -help 2>&1 | head -n 20
   # The packaged manual page, as text (package documentation).
-  page=$(find /usr/share/man -name 'afsio.1*' 2>/dev/null | head -n 1)
+  page=$(find_page 'afsio.1*')
   if [[ -n $page ]]; then
-    say "--- $page (roff stripped) ---"
-    zcat -f "$page" | sed -e '/^\.\\"/d' -e 's/^\.[A-Za-z]* *//' -e 's/\\f[BIRP]//g' -e 's/\\-/-/g' |
-      grep -v '^$' | head -n 120
+    say "--- ${page#"$DOCS"} (roff stripped) ---"
+    man_text "$page" | head -n 120
   else
-    say "no afsio manual page in the image"
+    say "no afsio manual page in the packages"
   fi
 }
 
-# afsio write <route>: needs a Kerberos ticket (kinit-admin first). The
+# afsio-write <route> <auth|anon>. auth: with the Kerberos ticket from
+# kinit-admin (-realm). anon: no credentials at all, for the NoAuth window,
+# where the fileservers treat every caller as an administrator. Round 2:
+# afsio write with -realm died with SIGSEGV on all four runners, so each
+# attempt prints its exit status (and signal) and tries -clear as well. The
 # dotted (read-write) path first, then the plain one; read back what landed.
 cmd_afsio_write() {
-  local route=$1 path back
+  local route=$1 how=${2:-auth} path back rc extra out
+  local -a auth=()
+  if [[ $how == auth ]]; then
+    auth=(-realm "$REALM")
+  else
+    assert_no_credentials
+  fi
   for path in "$(seed_file ".$CELL" "$route")" "$(seed_file "$CELL" "$route")"; do
-    if printf '%s\n' "$SEED_TEXT" | timeout 120 afsio write -file "$path" -cell "$CELL" -realm "$REALM"; then
-      back=$(timeout 60 afsio read -file "$path" -cell "$CELL" -realm "$REALM") || return 1
+    for extra in "" -clear; do
+      out=$(printf '%s\n' "$SEED_TEXT" |
+        timeout 120 afsio write -file "$path" -cell "$CELL" "${auth[@]}" ${extra:+"$extra"} -verbose 2>&1)
+      rc=$?
+      printf '%s\n' "$out" | tail -n 8
+      say "afsio write ${extra:-(default)} ($how) to $path: exit $rc$( ((rc > 128)) && echo " (signal $((rc - 128)))")"
+      ((rc == 0)) || continue
+      back=$(timeout 60 afsio read -file "$path" -cell "$CELL" "${auth[@]}" ${extra:+"$extra"}) || return 1
       [[ $back == "$SEED_TEXT" ]] || die "afsio read-back differs"
       say "afsio: wrote $path and read it back"
       return 0
-    fi
-    say "afsio: write to $path failed"
+    done
   done
   return 1
 }
@@ -465,35 +500,139 @@ cmd_fuse_prepare() {
   command -v afsd.fuse || die "afsd.fuse is not installed"
 }
 
-cmd_fuse_run() { # [with-mountpoint]
-  if [[ ${1:-} == with-mountpoint ]]; then
-    exec afsd.fuse -dynroot -fakestat /afs >/var/log/afsd.fuse.log 2>&1
-  fi
-  exec afsd.fuse -dynroot -fakestat >/var/log/afsd.fuse.log 2>&1
+# Round 2: the mount appeared, then every access gave "Transport endpoint is
+# not connected", with an empty log. The round-2 form let FUSE fork into the
+# background, which drops stdout and stderr, so the reason was lost. Round 3
+# runs it in the foreground (FUSE's -f and -d; afsd's -verbose), keeps its
+# output and exit status, and varies one thing at a time. afsd's -debug
+# trace is not used: its detail could carry internal names into the log,
+# which is later read by a model (ADR 0001).
+fuse_variant_args() { # <variant>: sets FUSE_ARGS
+  case $1 in
+    bg) FUSE_ARGS=(-dynroot -fakestat /afs) ;;                 # round 2's form
+    fg) FUSE_ARGS=(-dynroot -fakestat -f /afs) ;;              # foreground
+    fg-debug) FUSE_ARGS=(-dynroot -fakestat -d /afs) ;;        # FUSE debug (implies -f)
+    fg-verbose) FUSE_ARGS=(-dynroot -fakestat -verbose -f /afs) ;;
+    fg-nosettime) FUSE_ARGS=(-dynroot -fakestat -nosettime -f /afs) ;;
+    fg-bare) FUSE_ARGS=(-f /afs) ;;                            # no afsd options
+    fg-single) FUSE_ARGS=(-dynroot -fakestat -f -s /afs) ;;    # FUSE single-threaded
+    *) return 1 ;;
+  esac
+}
+FUSE_VARIANTS=(bg fg fg-debug fg-verbose fg-nosettime fg-bare fg-single)
+
+# No procps in the image (round 2's pgrep check always said NOT running).
+afsd_pids() {
+  local p
+  for p in /proc/[0-9]*; do
+    [[ $(cat "$p/comm" 2>/dev/null) == afsd.fuse ]] && printf '%s\n' "${p#/proc/}"
+  done
+}
+afsd_alive() { [[ -n $(afsd_pids) ]]; }
+
+fuse_unmount() {
+  local pid
+  for pid in $(afsd_pids); do kill "$pid" 2>/dev/null; done
+  sleep 1
+  for pid in $(afsd_pids); do kill -9 "$pid" 2>/dev/null; done
+  grep -q ' /afs fuse' /proc/mounts && umount -l /afs 2>/dev/null
+  mkdir -p /afs
 }
 
 fuse_mounted() { grep -Eq '^[^ ]+ /afs fuse' /proc/mounts; }
 
+# Serving: mounted, a process alive, and the root answers a stat.
+fuse_serving() { fuse_mounted && afsd_alive && timeout 5 stat /afs >/dev/null 2>&1; }
+
 fuse_log_tail() {
-  say "--- afsd.fuse: $(pgrep -x afsd.fuse >/dev/null && echo running || echo NOT running); log tail ---"
-  tail -n 20 /var/log/afsd.fuse.log 2>/dev/null
+  say "--- afsd.fuse: $(afsd_alive && echo "running (pid $(afsd_pids | tr '\n' ' '))" || echo NOT running); log tail ---"
+  tail -n 30 /var/log/afsd.fuse.log 2>/dev/null
+}
+
+# fuse-run <variant>: in the foreground of a detached `docker exec`; the
+# output and the exit status go to the log.
+cmd_fuse_run() {
+  local rc
+  fuse_variant_args "${1:-fg}" || die "unknown variant ${1:-}"
+  say "afsd.fuse ${FUSE_ARGS[*]}" >/var/log/afsd.fuse.log
+  afsd.fuse "${FUSE_ARGS[@]}" >>/var/log/afsd.fuse.log 2>&1
+  rc=$?
+  say "afsd.fuse exit status $rc$( ((rc > 128)) && echo " (signal $((rc - 128)))")" >>/var/log/afsd.fuse.log
 }
 
 cmd_fuse_wait() {
-  if poll 60 fuse_mounted; then
+  if poll 60 fuse_serving; then
     grep -E ' /afs fuse' /proc/mounts
+    say "afsd.fuse running (pid $(afsd_pids | tr '\n' ' ')), /afs answers stat"
     return 0
   fi
+  grep -E ' /afs fuse' /proc/mounts
   fuse_log_tail
   return 1
 }
 
-# Can the mount be walked at all? The dynroot, then the cell (RO path).
+# fuse-diag: each variant for up to 20 s in this container; probe at 6 s;
+# print its output (head and tail), its exit status and whether it served.
+# The first variant that serves is printed as "fuse-variant-ok: <name>".
+cmd_fuse_diag() {
+  local v pid rc alive mounted served lsout chosen="" log=/tmp/fuse-diag.log
+  say "fuse.conf: $(grep -v '^#' /etc/fuse.conf 2>/dev/null | grep -v '^$' | tr '\n' ' ' || echo absent)"
+  say "fusermount: $(command -v fusermount3 fusermount | tr '\n' ' ')"
+  say "/dev/fuse: $(ls -l /dev/fuse 2>&1)"
+  say "/proc/fs/openafs: $([[ -e /proc/fs/openafs ]] && echo present || echo absent)"
+  say "uid: $(id -u); cacheinfo: $(cat /etc/openafs/cacheinfo)"
+  say "--- afsd.fuse -help (5 s) ---"
+  timeout 5 afsd.fuse -help 2>&1 | head -n 60
+  fuse_unmount
+  for v in "${FUSE_VARIANTS[@]}"; do
+    fuse_variant_args "$v"
+    say "=== variant $v: afsd.fuse ${FUSE_ARGS[*]}"
+    : >"$log"
+    timeout 20 afsd.fuse "${FUSE_ARGS[@]}" >"$log" 2>&1 &
+    pid=$!
+    sleep 6
+    afsd_alive && alive=yes || alive=no
+    fuse_mounted && mounted=yes || mounted=no
+    served=no
+    if lsout=$(timeout 5 ls -la /afs 2>&1); then served=yes; fi
+    say "at 6 s: process alive=$alive mounted=$mounted ls /afs: $(head -n 3 <<<"$lsout" | tr '\n' ' ')"
+    if [[ $served == yes ]]; then
+      say "ls /afs/$CELL: $(timeout 10 ls "/afs/$CELL" 2>&1 | head -n 3 | tr '\n' ' ')"
+      say "fs wscell: $(timeout 10 fs wscell 2>&1 | tr '\n' ' ')"
+      say "fs listacl /afs/.$CELL: $(timeout 10 fs listacl -path "/afs/.$CELL" 2>&1 | tr '\n' ' ')"
+    fi
+    wait "$pid"
+    rc=$?
+    say "exit status $rc$( ((rc == 124)) && echo ' (still running at 20 s, stopped by timeout)')$( ((rc > 128)) && echo " (signal $((rc - 128)))")"
+    say "--- output ($(wc -l <"$log") lines; head 40, tail 15) ---"
+    if (($(wc -l <"$log") > 55)); then
+      head -n 40 "$log"
+      say "[...]"
+      tail -n 15 "$log"
+    else
+      cat "$log"
+    fi
+    if [[ -z $chosen && $served == yes ]]; then chosen=$v; fi
+    fuse_unmount
+  done
+  if [[ -n $chosen ]]; then
+    say "fuse-variant-ok: $chosen"
+    return 0
+  fi
+  say "fuse-variant-ok: none"
+  return 1
+}
+
+# Can the mount be walked at all? The dynroot, then the cell (RO path). And
+# does fs reach afsd.fuse (its pioctl path)? fs results are printed only.
 cmd_fuse_probe() {
   local rc=0
   timeout 30 ls -la /afs || rc=1
   timeout 30 ls -la "/afs/$CELL" || rc=1
   timeout 30 ls -la "/afs/.$CELL" || rc=1
+  say "fs wscell: $(timeout 10 fs wscell 2>&1 | tr '\n' ' ')"
+  say "fs listacl: $(timeout 10 fs listacl -path "/afs/.$CELL" 2>&1 | tr '\n' ' ')"
+  say "fs examine: $(timeout 10 fs examine -path "/afs/.$CELL" 2>&1 | tr '\n' ' ')"
   ((rc)) && fuse_log_tail
   return "$rc"
 }
@@ -523,6 +662,61 @@ cmd_fuse_read_anon() {
   [[ $back == "$SEED_TEXT" ]] || die "anonymous fuse read returned other bytes"
   say "anonymous fuse read of $route: ${#back} bytes, as written"
 }
+
+# --- Diagnostics (round 3) ---------------------------------------------------
+
+# docs: what the packages document about afsd.fuse, its options, ACLs on new
+# volumes and pioctl without a kernel module. Package documentation only.
+cmd_docs() {
+  local f page pat
+  say "dpkg path excludes: $(cat /etc/dpkg/dpkg.cfg.d/* 2>/dev/null | grep -c path-exclude) lines"
+  say "--- dpkg -L openafs-fuse ---"
+  dpkg -L openafs-fuse 2>/dev/null | grep -v '/$' | head -n 40
+  say "--- extracted docs: names matching afsd, fuse, vos_create, fs_setacl, README ---"
+  find "$DOCS" -type f | grep -Ei 'afsd|fuse|vos_create|fs_setacl|fs_listacl|README|NEWS' | sed "s|^$DOCS||" | head -n 40
+  for pat in 'afsd.fuse*' 'afsd.8*'; do
+    page=$(find_page "$pat")
+    [[ -n $page ]] || { say "no page $pat"; continue; }
+    say "--- ${page#"$DOCS"}: synopsis and the options this spike uses ---"
+    man_text "$page" | sed -n '1,25p'
+    man_text "$page" | grep -n -A4 -E '^-(dynroot|fakestat|nosettime|settime|verbose|debug|mountdir|cachedir|blocks|files|stat|daemons|nomount)\b' | head -n 90
+    man_text "$page" | grep -n -i -B1 -A3 -E 'fuse|user.?space|without a kernel|pioctl' | head -n 40
+  done
+  for f in $(find "$DOCS" -type f -path '*doc/openafs-*' | grep -Ei 'README|NEWS|changelog\.Debian' | head -n 8); do
+    say "--- ${f#"$DOCS"}: lines on fuse, afsd.fuse, pioctl, ACLs ---"
+    zcat -f "$f" | grep -n -i -B1 -A3 -E 'fuse|pioctl|system:anyuser|default acl' | head -n 40
+  done
+  page=$(find_page 'vos_create.1*')
+  if [[ -n $page ]]; then
+    say "--- ${page#"$DOCS"}: what it says about the new volume's ACL ---"
+    man_text "$page" | grep -n -i -B2 -A4 -E 'acl|access control|system:' | head -n 40
+  else
+    say "no vos_create page"
+  fi
+  page=$(find_page 'fs_setacl.1*')
+  [[ -n $page ]] && { say "--- ${page#"$DOCS"}: privilege ---"; man_text "$page" | grep -n -i -A6 'PRIVILEGE REQUIRED' | head -n 12; }
+  return 0
+}
+
+# Server side: the volume as the VLDB and the fileserver see it.
+cmd_server_view() {
+  timeout 60 vos examine root.cell -localauth 2>&1 | head -n 30
+  timeout 60 vos listvol "$IP_FS1" a -localauth 2>&1 | head -n 12
+}
+
+# anon-probe: an anonymous afsio read of a file that does not exist, in
+# root.cell's root, before any seeding. Its error tells whether anonymous
+# may look up names there (the ACL a new volume gets). Always exits 0; the
+# last line is "probe: exit N".
+cmd_anon_probe() {
+  local rc out
+  assert_no_credentials
+  out=$(timeout 60 afsio read -file "/afs/$CELL/no-such-file" -cell "$CELL" -verbose 2>&1)
+  rc=$?
+  printf '%s\n' "$out" | head -n 15
+  say "probe: exit $rc$( ((rc > 128)) && echo " (signal $((rc - 128)))")"
+}
+
 
 # setauth <ip> on|off (db container, -localauth).
 cmd_setauth() {
@@ -569,6 +763,10 @@ case $sub in
   afsio-read-anon) cmd_afsio_read_anon "$@" ;;
   fuse-prepare) cmd_fuse_prepare ;;
   fuse-run) cmd_fuse_run "$@" ;;
+  fuse-diag) cmd_fuse_diag ;;
+  docs) cmd_docs ;;
+  server-view) cmd_server_view ;;
+  anon-probe) cmd_anon_probe ;;
   fuse-wait) cmd_fuse_wait ;;
   fuse-probe) cmd_fuse_probe ;;
   fuse-write) cmd_fuse_write "$@" ;;
