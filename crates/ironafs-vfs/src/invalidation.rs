@@ -5,13 +5,14 @@
 //! N47, point 3).
 //!
 //! Events are coalesced per node, not queued one by one (C17, point 1): a
-//! node's slot per binding holds the union of its pending [`Effects`] and
-//! a [`Revision`]. A layer applies an event's purge and then acknowledges
-//! the revision it applied ([`Ack`]), which clears only effects up to that
-//! revision (C17, points 2 and 6), or reports a purge that failed
-//! ([`PurgeFailed`]). When a binding's pending events reach
-//! their byte bound it gets one [`Overflow`] instead, which gates and
-//! purges every node it holds.
+//! node's slot per binding holds the union of its pending [`Effects`],
+//! each with the [`Revision`] at which it was last merged. A layer applies
+//! an event's purge and then acknowledges the revision it applied
+//! ([`Ack`]), which clears only effects merged at or below that revision
+//! (C17, points 2 and 6), or reports a purge that failed
+//! ([`PurgeFailed`]). When a binding's pending events reach their byte
+//! bound it gets one [`Overflow`] instead, which gates and purges every
+//! node it holds.
 //!
 //! The slots, their revisions, the gating of replies and the byte bound
 //! are the core's; this module holds the values that cross the contract
@@ -27,7 +28,11 @@ mod tests;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub u64);
 
-/// A slot's revision: raised by every event merged into it (C17, point 6).
+/// A binding's event counter (C17, point 6; the contract specification,
+/// 5.10, point 1). Each binding has one sequence, from 1: every merge into
+/// any of its slots, and every overflow, takes the next revision, so
+/// revisions are compared only within one binding. A delivery carries the
+/// revision of its slot's latest merge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Revision(pub u64);
 
