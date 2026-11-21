@@ -338,3 +338,18 @@ fn counterexample_display_warns_when_time_ran_out() {
         "{report}"
     );
 }
+
+/// Pins the seed each name gives: a change would move the inputs of every
+/// property that does not fix its seed, so it shows here as a reviewed
+/// test change. The empty name's seed is `SplitMix64`'s first output for
+/// seed zero.
+#[test]
+fn seed_from_name_matches_golden_values() {
+    assert_eq!(seed_from_name(""), 0xe220_a839_7b1d_cdaf);
+    assert_eq!(seed_from_name("decode"), 0xa13d_e92d_1f5f_e81d);
+    assert_eq!(
+        seed_from_name("u32 round-trips through big-endian bytes"),
+        0xcc9e_c140_58dc_062a
+    );
+    assert_eq!(seed_from_name("\u{e9}"), 0x7257_7f58_199b_2e2e);
+}

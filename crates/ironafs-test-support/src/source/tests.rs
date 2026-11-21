@@ -528,3 +528,79 @@ fn fresh_strings_are_mostly_ascii() {
     let percent = ascii * 100 / all;
     assert!((70..=80).contains(&percent), "{percent}");
 }
+
+/// The seed of the golden values below.
+const GOLDEN_SEED: u64 = 0x1f2e_3d4c;
+
+/// Pins what each fresh draw gives for one seed. The mapping from seed to
+/// values is a contract, as `SplitMix64`'s output is: a change to it moves
+/// every property's inputs, so it shows here as a reviewed test change.
+#[test]
+fn fresh_choice_matches_golden_values() {
+    let mut generator = SplitMix64::new(GOLDEN_SEED);
+    let maxima = [0, 1, 9, 255, 1000, u64::MAX];
+    let mut choices: Vec<u64> = maxima
+        .iter()
+        .map(|max| super::fresh_choice(&mut generator, *max))
+        .collect();
+    choices.extend((0..16).map(|_| super::fresh_choice(&mut generator, 7)));
+    assert_eq!(
+        choices,
+        [
+            0,
+            1,
+            4,
+            0,
+            779,
+            10_422_107_572_459_976_024,
+            6,
+            3,
+            3,
+            7,
+            1,
+            4,
+            5,
+            4,
+            4,
+            6,
+            3,
+            5,
+            6,
+            5,
+            2,
+            5
+        ]
+    );
+}
+
+#[test]
+fn fresh_draws_match_golden_values() {
+    let mut source = Source::from_seed(GOLDEN_SEED);
+    let ranged: Vec<u64> = (0..6).map(|_| source.u64_in(100..=199)).collect();
+    assert_eq!(ranged, [112, 177, 145, 100, 177, 156]);
+    let weighted: Vec<usize> = (0..8).map(|_| source.weighted(&[5, 1, 2])).collect();
+    assert_eq!(weighted, [0, 0, 0, 2, 1, 0, 1, 0]);
+    let signed: Vec<i64> = (0..3).map(|_| source.i64()).collect();
+    assert_eq!(
+        signed,
+        [
+            4_974_872_153_555_404_541,
+            6_940_958_884_645_644_652,
+            -4_550_755_826_802_599_464
+        ]
+    );
+    let flags: Vec<bool> = (0..6).map(|_| source.bool()).collect();
+    assert_eq!(flags, [true, false, true, false, true, false]);
+    assert_eq!(source.vec_of(0..=6, Source::u8), Vec::<u8>::new());
+    assert_eq!(source.string(16), "\u{f}\u{8}W\u{d18d3}\u{10ffff}\u{6a7d}");
+    assert_eq!(source.ascii_string(8), "+23");
+    assert_eq!(
+        source.bulk_bytes(0..=20),
+        [243, 195, 181, 167, 52, 58, 57, 142, 116, 175, 33, 217, 160]
+    );
+    let lengths: Vec<usize> = (0..8)
+        .map(|_| source.vec_of(0..=6, Source::u8).len())
+        .collect();
+    assert_eq!(lengths, [4, 6, 6, 1, 2, 0, 6, 0]);
+    assert_eq!(source.choices().len(), 104);
+}
