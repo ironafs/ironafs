@@ -49,12 +49,17 @@ critical). It ran read-only, without running the tests, on 2026-11-21
 |---|---|---|---|---|---|---|
 | 1, review | `e6f3ece..13ef79c` | GLM | glm-5.3 | high | FAIL: 2 major, 6 minor | not reported |
 | 2, fix verification | `eee5211..0b0cb6b` | GLM | glm-5.3 | high | PASS: 6 minor | not reported |
+| 3, verification of the round-2 fixes | `0b0cb6b..02da253` | GLM | glm-5.3 | high | PASS: 3 minor | not reported |
 
 `eee5211` merges `main` into the branch without conflicts; the fixes of
 round 1 are `18bc844..0b0cb6b`. Round 2 found all eight round-1
 findings fixed. Its six minor findings were fixed in
-`e524408..02da253` and recorded here under the stop rule, with no further
-round.
+`e524408..02da253`. Round 3 is the same reviewer, resumed in its own
+session, reading that fix delta: the six fixes and what they added
+beyond the findings, namely the rule for unknown commands that run git or
+gh, and allowing fetch destinations under `refs/remotes/` and
+`refs/tags/`. Its three minor findings were fixed in `45c88e6` and
+`7c2f37e` and recorded here under the stop rule, with no further round.
 
 ## Findings
 
@@ -159,6 +164,40 @@ through or wrongly blocked before the fix):
   `--` (`git checkout -B main --` resets `main`; `git checkout -B main --
   <path>` is refused by git).
 
+Round 3 (each fix began with the planted command):
+
+- **Minor, fixed in `45c88e6`** (origin: introduced by fix round 2; kind:
+  correctness). The round-2 fix passed a command's assignments to shells,
+  `eval` and `source`, but not to a gh alias starting with `!`:
+  `GIT_DIR=<main>/.git gh m`, with `m` a shell alias that commits, was
+  checked against the task branch. gh now passes them on, as the shells
+  do.
+- **Minor, fixed in `45c88e6`** (origin: introduced by fix round 2; kind:
+  correctness). `man` and `rg` were on the list of commands that never run
+  their arguments, but `man -P <pager>` and `rg --pre <command>` do
+  (checked: `man -P` runs its pager). Both are now read for those options
+  only: the value of `-P`, `-P<cmd>`, `--pager`, `--pager=`, `--pre` and
+  `--pre=` is checked as a script, and blocks if it expands at run time.
+  The rest of their arguments stay unread, so `rg 'git push origin main'
+  docs` is still allowed.
+- **Minor, kept as a known false positive** (origin: introduced by fix
+  round 2; kind: other). An argument of an unknown command that is a
+  command line naming git or gh is checked as a script, so a data
+  argument that only quotes one (`python3 t.py 'git push origin main'`,
+  `ssh host git …` with a text argument) may be blocked. This blocks in
+  the safe direction. The narrowing GLM offered, reading only arguments
+  that start with `git` or `gh`, would let `watch -n2 'cd /tmp; git push
+  origin main'` through again. The guard's documentation and
+  `CONTRIBUTING.md` (`7c2f37e`) name it; a test pins the behaviour.
+
+Round 3's uncertain items, checked: git refuses the refspec
+`+refs/heads/x:refs/remotes/x/../../heads/main` ("invalid refspec", git
+2.55), so a destination under `refs/remotes/` cannot climb to `main`.
+Bash 5.3 runs `coproc x echo hi` as the command `x`, which the comment in
+the guard states. Not verified: whether `git remote add` or `git remote
+set-branches` can write a fetch refspec whose destination is outside
+`refs/remotes/`; they do not mark the configuration as changed.
+
 GLM also listed what it could not check:
 
 - the tests and the self-test, which it did not run; the evidence below
@@ -182,8 +221,10 @@ proof, and the rules hold whether or not it runs.
   their own languages or files (`python -c`, `make`), or a command given to
   a runner in a word that expands at run time.
 - Git configuration written other than through `git config` (an editor,
-  `echo >> .git/config`) is not seen by the same-call alias and fetch
-  checks.
+  `echo >> .git/config`, possibly `git remote add` or `set-branches`) is
+  not seen by the same-call alias and fetch checks.
+- A data argument that quotes a git or gh command line may be blocked
+  (round 3, kept).
 - Git runs a `!` alias from the work tree's top level; the guard uses the
   resolved directory, which differs only for a relative `cd` in the alias.
 - Not verified by running: whether bash ends `$((…))` earlier than the
@@ -198,8 +239,8 @@ proof, and the rules hold whether or not it runs.
 
 ## Evidence
 
-- On `02da253`'s code, with this record committed on top: `cargo xtask check`, `cargo nextest run --workspace
-  --retries 0 --no-tests fail` (391 tests passed), `cargo clippy
+- On `45c88e6`'s code, with this record committed on top: `cargo xtask check`, `cargo nextest run --workspace
+  --retries 0 --no-tests fail` (392 tests passed), `cargo clippy
   --all-targets --workspace` (no warnings) and `cargo xtask guard
   --self-test` (19 planted commands ended as planted), each exit 0
   (EXECUTED, macOS, 2026-11-21 UTC).
@@ -212,3 +253,7 @@ proof, and the rules hold whether or not it runs.
   that must block did so only as unknown options. After the fixes all 40
   give the right answer; each cycle's tests failed first (EXECUTED,
   macOS, 2026-11-21 UTC).
+- Round 3's planted commands, before `45c88e6`: the gh alias with `GIT_DIR`,
+  five `man -P` and `rg --pre` spellings and `man -P "$PAGER"` were all
+  allowed; all are blocked after. The quoted-data case was blocked before
+  and after; a test pins it (EXECUTED, macOS, 2026-11-21 UTC).
