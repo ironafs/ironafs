@@ -277,13 +277,15 @@ the message, because every item is a whole number of units
      buffer the caller supplies and wipes; the entry point that returns
      a buffer of the encoder's own does not build for such a message.
      The caller's buffer either has no allocation, and the encoder
-     requests its whole size once before writing, or already has room
-     for the whole message and is written in place; an allocated buffer
-     that is too small is refused with `AllocationFailed`. The encoder
-     never grows, moves or frees the buffer's allocation, so no copy of
-     the message is left in a block the caller cannot reach (5.5, point
-     3). The rule is the same for every message, secret-bearing or not,
-     so a buffer that once held a secret is safe to pass for any other;
+     requests its whole size once before writing and leaves that
+     allocation with the caller, or already has room for the whole
+     message and is written in place; an allocated buffer that is too
+     small is refused with `AllocationFailed`. The encoder never grows,
+     moves or frees an allocation the caller's buffer holds, so no byte
+     of the message the encoder writes into it is left in a block the
+     caller cannot reach (5.5, point 3). The rule is the same for every
+     message, secret-bearing or not, so a buffer that once held a secret
+     is safe to pass for any other;
    - **secrecy is one flag per type, and on encode it is structural.**
      Every encodable type and every message type declares, in one
      place, whether a value of it can hold a secret field at any depth.
@@ -299,8 +301,10 @@ the message, because every item is a whole number of units
      component, the refusal by the entry point that returns the
      encoder's own buffer, and the decoder's redaction of errors
      (section 7, point 2) all read the type's one flag, so they cannot
-     disagree. The generator sets each leaf's own flag from the cap
-     table's Secret column (5.2, point 5). So every message that can
+     disagree. The generator sets each type's own flag from the rows of
+     its cap table marked in the Secret column, capped or not, and
+     combines it with its components' flags (5.2, point 5, "Which type's
+     flag a marked row sets"). So every message that can
      hold a secret, directly, through a generic caller or as a
      component of another message, is refused at build time by the
      entry point that returns the encoder's own buffer;
@@ -309,7 +313,10 @@ the message, because every item is a whole number of units
      the memory budget and the secrecy all come from the type, so a type
      is never decoded under another message's caps, budget or secrecy.
      The test entry point may lower the type's memory budget for one
-     decode, never raise it (5.2, point 9.2);
+     decode, never raise it (5.2, point 9.2). This binds each call of an
+     entry point, and only that call: a decoder that calls an entry
+     point again starts a separate decode, under the type it names
+     (5.2, point 9.2, "One decode, one ledger");
    - redaction covers the whole decoded value, not only the secret
      field, for the same reason: misframing can put a key's bytes in any
      field. The generated type of a secret-bearing message, every
@@ -318,29 +325,36 @@ the message, because every item is a whole number of units
      a `Debug` that prints the type and field names only, never a value,
      a length or a count, and no `Display`. The raw value is reached only
      through an explicitly named method of the wrapper, so printing it
-     takes a deliberate call that review sees. An error from a
-     secret-bearing message carries no offset or length (section 7,
-     point 2);
+     takes a deliberate call that review sees. An error that an entry
+     point returns from a secret-bearing message carries no offset or
+     length (section 7, point 2);
    - **limits, written down as rule 8 requires.** The crate cannot zero
      memory without `unsafe` (rule 5). So these are not zeroed: the words
      the decoder reads into registers and stack temporaries during a
      decode; the lengths of borrowed slices and the element counts of
      arrays, which are length and count words from the input, each
      already checked against its cap; and which declared value a closed
-     enumeration or boolean holds. The encoder's own zeroing of the
-     output buffer is best effort (5.5, point 3); the caller's wipe is
-     what holds. The compiler checks secrecy only as far as the types
-     carry it, and these rest on the generator, its tests and review: a
-     leaf's own flag comes from the cap table, and nothing checks it,
-     since the primitive writes take bytes and integers, which do not
-     say whether they are secret, and that includes bytes a value
-     reveals from a borrowed secret and writes as its own field; code
-     that encodes a value apart and copies its bytes into a message by
-     hand is not stopped by the types; and structure is checked on
-     encode only: on decode the entry point reads the message type's
-     flag, and that the type of a secret-bearing message borrows every
-     field from the input, as the first item of this point requires, is
-     the generator's to carry and test. Review sees all three.
+     enumeration or boolean holds. On encode, the byte arrays the encoder
+     forms from an integer or hyper before it writes them, in registers
+     and stack temporaries, are not zeroed either. The encoder's own
+     zeroing of the output buffer is best effort (5.5, point 3); the
+     caller's wipe is what holds, and it reaches only the bytes written
+     into the caller's allocation. The compiler checks secrecy only as
+     far as the types carry it, and these rest on the generator, its
+     tests and review: a type's own flag comes from its rows marked in
+     the cap table (5.2, point 5), and nothing checks it, since the
+     primitive writes take bytes and integers, which do not say whether
+     they are secret, and that includes bytes a value reveals from a
+     borrowed secret and writes as its own field; code that encodes a
+     value apart and copies its bytes into a message by hand is not
+     stopped by the types; structure is checked on encode only: on
+     decode the entry point reads the message type's flag, and that the
+     type of a secret-bearing message borrows every field from the
+     input, as the first item of this point requires, is the
+     generator's to carry and test; and a handwritten decoder that
+     starts a separate decode of bytes it holds (5.2, point 9.2, "One
+     decode, one ledger") decodes them under that other type's secrecy,
+     which may copy them, and nothing stops it. Review sees all four.
 
 ### 5.2 Caps
 
@@ -380,21 +394,39 @@ the message, because every item is a whole number of units
    |---|---|
    | Cap name | stable, lower case, dotted: `<interface>.<message>.<field path>`, for example `vl.get_entry.reply.name`; the message cap is `<interface>.<message>` |
    | Field | the field the cap applies to, or "message" |
-   | Kind | opaque, string, array or message |
+   | Kind | opaque, string, array or message; for a secret field with no cap (below), its type: integer, unsigned integer, hyper, unsigned hyper, enumeration, boolean, fixed-length opaque or fixed-length array |
    | Declared bound | m, its unit (bytes or elements) and its source, or "none" |
-   | Cap | the value, in bytes |
+   | Cap | the value, in bytes, or "none" for a secret field with no cap |
    | Direction | in (decoded by IronAFS), out (encoded by IronAFS), or both |
    | Memory budget | message rows only: the memory budget in bytes (point 9) |
    | Secret | yes for a secret field (5.1, point 8); otherwise empty |
    | Why | the reason for the value |
 
+   **A secret field with no cap.** A field of fixed width (an integer,
+   hyper, enumeration, boolean, fixed-length opaque or fixed-length
+   array) has no cap, and so no row, unless it is secret. A secret one
+   has a row of its own: its cap name names the field as above, its Kind
+   is its type, its Cap and Declared bound are "none", and its Secret
+   is yes. Such a row sets no cap constant; it records only the flag. A
+   closed enumeration or boolean marked secret is still held as the
+   declared value it names (5.1, point 8, first item and limits).
+
    The generated codec carries each cap as a named constant derived from
    the cap name, and the tests that check it cite the name. A cap name is
    never reused for another field. A message row's cap name, cap and
    memory budget are carried as the descriptor of the message's type.
-   Whether the message is secret-bearing, that is whether any field
-   below it is marked in the Secret column, is carried as the type's one
-   flag (5.1, point 8), not in the descriptor.
+
+   **Which type's flag a marked row sets.** A row marks a field by its
+   path: a component of a structure or an arm of a union. The structure
+   or union whose component or arm it is declares it; a field reached
+   through an array's elements is declared by the element type. A row
+   marked secret sets the own flag of that declaring type, not of the
+   field's type: the field's type stays plain wherever else it is used,
+   so a parent with a secret integer field says so itself. A type's one flag (5.1, point 8) is its own
+   flag or the flag of any of its components, elements and arms. So
+   whether a message is secret-bearing, that is whether any field below
+   it is marked in the Secret column, is carried as its type's flag, not
+   in the descriptor.
 6. **A claimed count must be backed by input.** Before it reserves memory
    for an array of n elements, or enters the loop over them, the decoder
    checks that n × `s_min` of the element type is no more than the bytes
@@ -443,7 +475,30 @@ the message, because every item is a whole number of units
       takes the message's type and no descriptor (5.1, point 8). Its
       budget argument can lower the type's memory budget for one decode
       and never raises it: the ledger's budget is the smaller of the
-      two.
+      two, the effective budget that `BudgetExceeded` reports.
+
+      **One decode, one ledger.** Each call of an entry point creates
+      one decoder, with its own cursor, its own ledger and the secrecy
+      of the type it names. The guarantees of this point, of point 9.3
+      and point 9.5, and the trace of the test hook, cover the requests
+      made through that decoder, and only those. A profile-compliant
+      decoder, generated or handwritten, decodes every component,
+      element and arm through the decoder it is given, so through the
+      one cursor and the one ledger, and under the outer type's secrecy
+      (5.1, point 8). A decoder that instead calls an entry point on
+      bytes it holds starts a separate decode: a fresh ledger with the
+      inner type's budget, the inner type's cap, and the inner type's
+      secrecy. Its requests are outside the outer budget, the outer
+      bounds r × cap and q × cap ÷ 4, and the outer trace; and if the inner
+      type is plain, it may copy bytes of a secret-bearing outer
+      message, which the first item of 5.1, point 8 forbids. The codec
+      does not prevent such a call: the entry points are public
+      functions, and nothing tells them they were called from inside
+      another decode. That a decoder makes no such call rests on the
+      generator, which never emits one, and on review of any
+      handwritten decoder. The entry points do redact what such a
+      decoder returns (section 7, point 2), which is a guarantee about
+      the returned error only.
    3. **The static proof.** The generator also computes, for each type T,
       a heap ratio r(T): an upper bound on the bytes requested for a
       decoded value of T per byte of its encoding. Integers, enumerations,
@@ -711,7 +766,8 @@ not control").
 13. **Nothing partial.** On any error, the decode returns the error and
     no value, not even part of one `[OWN]`. What was decoded before the
     error is dropped. In a secret-bearing message nothing was copied
-    from the input (5.1, point 8), so no copy of a secret is left, within
+    from the input through the decoder (5.1, point 8), so no copy of a
+    secret is left, within
     the limits that point states. The codec keeps no state between calls
     (ADR 0004, C3, point 1), so nothing is left behind.
 
@@ -736,29 +792,41 @@ not control").
      `[X1 §4.10, §4.11, §4.13: CONFIRMED]`;
    - a length or count that does not fit in 32 bits is
      `LengthNotRepresentable`.
-3. **The output cap comes first, and the allocation never moves.**
-   `[OWN]`, from coding standards rules 3 and 8. The rules are the same
-   for every message, secret-bearing or not:
-   1. Before anything else, the encoder overwrites the output buffer's
-      bytes and its spare capacity with zeros, and leaves it empty. It
-      writes the spare capacity only with `push`, up to the capacity it
-      read first, never with a bulk insertion, so the wipe itself never
-      grows, moves or frees the allocation `[R1: CONFIRMED]`.
-   2. It computes the message's encoded size, with checked arithmetic,
-      and returns `MessageTooLarge` if it exceeds the message cap,
-      before it requests or writes any output.
+3. **The wipe comes first, then the output cap, and the allocation
+   never moves.** `[OWN]`, from coding standards rules 3 and 8. These
+   steps run in this order, and are the same for every message,
+   secret-bearing or not. They describe the entry point that writes
+   into the caller's buffer; the entry point that returns a buffer of
+   the encoder's own runs them on a new, empty buffer of its own
+   (point 6):
+   1. First, the encoder overwrites the output buffer's bytes and its
+      spare capacity with zeros, and leaves it empty. It writes the
+      spare capacity only with `push`, up to the capacity it read first,
+      never with a bulk insertion, so the wipe itself never grows, moves
+      or frees the allocation `[R1: CONFIRMED]`. So a message refused by
+      any later step, the cap check included, still leaves a buffer that
+      held earlier bytes empty and zeroed, as best it can (step 6).
+   2. Then it computes the message's encoded size, with checked
+      arithmetic, and returns `MessageTooLarge` if the size exceeds the
+      message cap, or does not fit in 64 bits or in the platform's
+      `usize` (section 6, A10). This check comes after the wipe
+      and before any allocator request and any byte of the message is
+      written.
    3. A buffer with no allocation is then requested once, fallibly, at
       that size (`try_reserve_exact`; `AllocationFailed` on failure). A
       buffer whose allocation already holds that size is written in
-      place, with no request. A buffer with an allocation too small for
-      that size is refused with `AllocationFailed`, and nothing is
-      written.
-   4. The encoder never grows, shrinks, moves or frees an existing
-      allocation. Rust guarantees a capacity of at least the request,
-      not exactly it `[R1: CONFIRMED]`, which is enough: the encoder
-      writes exactly the computed size, only with `push` (5.2, point
-      9.4), so the buffer never grows, and every byte the encoder writes
-      stays in the one allocation the caller holds. Any spare capacity
+      place: the encoder makes the same call, which makes no allocator
+      request when the capacity already suffices `[R1: CONFIRMED]`. A
+      buffer with an allocation too small for that size is refused with
+      `AllocationFailed` before that call, and nothing is written.
+   4. The encoder never grows, shrinks, moves or frees an allocation the
+      caller's buffer already holds, nor the one step 3 requested for a
+      buffer that had none, which stays with the caller's buffer. Rust
+      guarantees a capacity of at least the request, not exactly it
+      `[R1: CONFIRMED]`, which is enough: the encoder writes exactly the
+      computed size, only with `push` (5.2, point 9.4), so the buffer
+      never grows, and every byte the encoder writes into the output
+      stays in the one allocation the caller's buffer holds. Any spare capacity
       holds no message byte, and the length of the written output, not
       the capacity, is what the caller sends. The bytes left to write
       are one count, shared by the encoders of the message and of every
@@ -777,7 +845,10 @@ not control").
       released, and the crate cannot write any other way (rule 5). The
       wipe that holds is the caller's. Since the allocation never moves,
       the caller's wiper (rule 8), applied after use, on error, before
-      reuse and on drop, reaches every copy the encoder wrote.
+      reuse and on drop, reaches every byte the encoder wrote into the
+      caller's allocation. It does not reach the temporaries the encoder
+      forms on the way, such as the bytes of an integer before they are
+      pushed (5.1, point 8, limits).
 4. **Types carry the rest.** Where the Rust type makes an invalid value
    unrepresentable (a closed enumeration, a union without a default arm),
    the compiler enforces point 1 and no runtime check is written
@@ -786,12 +857,20 @@ not control").
    (X1 §4 lists none) `[X1 §4: CONFIRMED]`. A protocol's reserved field is
    the protocol specification's, and that specification states its value
    on encode.
-6. **On error,** the encoder returns the error and leaves the output
-   buffer empty, zeroed as best it can (point 3), with its allocation
-   unchanged: the caller's own, or, for a buffer that came with none,
-   whatever point 3, step 3 requested before the error. An unwind out of
-   the encoder leaves the buffer the same way. Its caller sends nothing
-   from that buffer `[OWN]`.
+6. **On error,** the encoder returns the error, and what it leaves
+   depends on the entry point `[OWN]`:
+   - the entry point that writes into the caller's buffer leaves that
+     buffer empty, zeroed as best it can (point 3). A buffer that came
+     with an allocation keeps it, at the same address and capacity. A
+     buffer that came with none has none if the error came before point
+     3, step 3's request, and otherwise keeps the allocation that step
+     requested, which is now the caller's to wipe and free. An unwind
+     out of the encoder leaves the buffer the same way. Its caller sends
+     nothing from that buffer;
+   - the entry point that returns a buffer of the encoder's own zeroes
+     that buffer as best it can and then frees it, so no caller can
+     wipe it. That is why it does not build for a secret-bearing
+     message (5.1, point 8).
 
 ### 5.6 States and ordering
 
@@ -814,7 +893,7 @@ and fallible conversions (coding standards rule 2); none of it saturates.
 | A7 | a length to the 32-bit length word, on encode | any `usize` | `try_from`; failure is `LengthNotRepresentable` |
 | A8 | heap ratios and r × message cap, and reservation counts q and q × message cap ÷ 4, in the generator (5.2, points 9.3 and 9.5) | caps < 2³², slot sizes small | `checked_mul`, `checked_add` and a ceiling division in 64 bits; overflow refuses the definition |
 | A9 | n × element slot size, the requested bytes of a reservation | n already checked under A4 | `checked_mul` in 64 bits; overflow is `BudgetExceeded` |
-| A10 | the encoder's sum of encoded sizes (5.5, point 3) | any value | `checked_add` in 64 bits; overflow is `MessageTooLarge` |
+| A10 | the encoder's sum of encoded sizes, and that size as the platform's `usize` (5.5, point 3) | any value | `checked_add` in 64 bits and `try_from`; overflow or a failed conversion is `MessageTooLarge`, naming the message |
 | A11 | the ledger's running total plus a request (5.2, point 9.2) | total ≤ memory budget, request from A9 | `checked_add` in 64 bits; overflow, or a sum above the budget, is `BudgetExceeded`, before anything is requested |
 | A12 | inline sizes and nesting depth, in the generator and the compile-time assertions (5.2, point 10) | sizes small, depth ≤ 16 | `checked_add` and `checked_mul`; overflow refuses the definition or fails the build |
 
@@ -832,11 +911,12 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    `AllocationFailed`, the length or count word whose reservation
    failed, or the start of an item without one (a fixed-length array or
    opaque, or a value held out of line) whose reservation or boxing
-   failed. From a secret-bearing message it carries no offset (point 2).
+   failed. An error an entry point returns from a secret-bearing message
+   carries no offset (point 2).
 
    | Kind | When | Also carries | Decode | Encode |
    |---|---|---|---|---|
-   | `MessageTooLarge` | the message is longer than its cap; on encode, also a value that writes more or fewer bytes than its computed size, or a write past the buffer's capacity (5.5, point 3) | cap name, cap; the input's length (decode, not from a secret-bearing message) | yes | yes |
+   | `MessageTooLarge` | the message is longer than its cap; on encode, also a computed size that overflows 64 bits or does not fit in the platform's `usize` (section 6, A10), a value that writes more or fewer bytes than its computed size, or a write past the buffer's capacity (5.5, point 3) | cap name, cap; the input's length (decode, not from a secret-bearing message) | yes | yes |
    | `Truncated` | the input ends inside an item | bytes available (not from a secret-bearing message) | yes | no |
    | `LengthOverBound` | a length or count is above the declared bound | field, bound | yes | yes |
    | `CapExceeded` | a length, count or running total is above its cap, or a read or an item passes an enclosing array's limit | cap name, cap | yes | yes |
@@ -845,13 +925,14 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    | `UnknownEnumValue` | a closed enumeration's value is not declared | field | yes | no |
    | `UnknownDiscriminant` | a union's discriminant has no arm and there is no default | field | yes | no |
    | `TrailingBytes` | bytes remain after the message | count (not from a secret-bearing message) | yes | no |
-   | `BudgetExceeded` | a reservation would carry the requested bytes past the message's memory budget (5.2, point 9.2) | message cap name, memory budget | yes | no |
-   | `AllocationFailed` | a fallible reservation failed (5.2, point 9.4; 5.5, point 3); on decode, a buffer to be boxed has a capacity other than its count (5.2, point 9.4); on encode, the caller's output buffer has an allocation too small for the message (5.5, point 3) | none | yes | yes |
+   | `BudgetExceeded` | a reservation would carry the requested bytes past the decode's effective memory budget, or its size overflows (5.2, point 9.2; section 6, A9 and A11) | message cap name; the effective memory budget: the type's, or the lower budget the test entry point was given (5.2, point 9.2) | yes | no |
+   | `AllocationFailed` | a fallible reservation failed (5.2, point 9.4; 5.5, point 3); on decode, a buffer to be boxed, of an element type of nonzero size, has a capacity other than its count, checked when the item is complete and reported at its start (a buffer of a zero-sized element type is boxed whatever capacity it reports, 5.2, point 9.4); on encode, the caller's output buffer has an allocation too small for the message (5.5, point 3) | none | yes | yes |
    | `LengthNotRepresentable` | a length or count does not fit in 32 bits | field | no | yes |
 
 2. **No content in errors.** `[OWN]`, from coding standards rule 8. An
    error carries only its kind, an offset, a field or cap name, and the
-   specification's own constants (a cap, a bound), plus the input's
+   specification's own constants (a cap, a bound, a memory budget), or
+   the lower budget a test decode was given, plus the input's
    length and the bytes available, which come from the buffer's size
    rather than its content. It never carries a value read from the input:
    not a byte, not an invalid boolean, enumeration or discriminant word,
@@ -863,28 +944,44 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    4).
 
    **Redaction happens where the error is made, not where it is
-   reported.** In a secret-bearing message, an offset, the input's length,
-   the bytes available and a trailing count all reflect lengths read from
-   the input, which may be a secret's bytes. So an error from decoding a
-   secret-bearing message is built without them: it carries its kind, the
-   field or cap name, and the specification's constants only, and the
-   fields that would hold the rest do not exist in it. Every reporting
-   boundary, `Display`, `Debug`, a log line, a counter label, a reply
-   over local IPC or a test's failure message, then sees only what the
-   error holds, and no caller needs a redaction rule of its own. An
-   error a secret-bearing message's decoder passes on from a decode of
-   its own was built under that decode's secrecy; the entry points
-   remove its position too, so every error they return from a
-   secret-bearing message is without one. The
-   encoder's errors carry no value from its input either: a length it
-   refuses is named by its field, never printed.
+   reported, and again where it is returned.** In a secret-bearing
+   message, an offset, the input's length, the bytes available and a
+   trailing count all reflect lengths read from the input, which may be
+   a secret's bytes. So:
+   - **where it is made:** every error built through the decoder that a
+     secret-bearing message's decode is given (5.2, point 9.2, "One
+     decode, one ledger") is built without them: it carries its kind,
+     the field or cap name, and the specification's constants only, and
+     the position is absent;
+   - **where it is returned:** the entry points remove the position from
+     every error a secret-bearing message's decode returns, whatever
+     built it. That covers an error that a handwritten decoder passes
+     on from a separate decode it started: such an error was built under
+     that decode's own type, and if that type is plain, it carries an
+     offset and an extent, relative to the bytes the separate decode was
+     given;
+   - **between the two:** while such a forwarded error is still inside
+     the handwritten decoder, before the entry point returns it, it
+     holds that position. A handwritten decoder keeps any positioned
+     error it holds to itself until it returns it: it does not display,
+     log, count or otherwise report it. The codec cannot check that; it
+     rests on review, with the other limits of 5.1, point 8.
+
+   Every reporting boundary outside the decode, `Display`, `Debug`, a
+   log line, a counter label, a reply over local IPC or a test's failure
+   message, then sees only what the returned error holds, and no caller
+   needs a redaction rule of its own. The encoder's errors carry no
+   value from its input either: a length it refuses is named by its
+   field, never printed.
 3. **No panic is reachable** from any input (coding standards rule 1). The
    codec uses no indexing, `unwrap` or `expect` on input-derived values.
 4. **Fail closed.** A decode error means the message is not used. What the
    caller does next (abort the call, count the event, report it) is the
    caller's specification. The codec only reports. An encode error leaves
-   the output buffer empty, with its allocation unchanged (5.5, point 6),
-   so nothing of a refused message can be sent from it.
+   the caller's output buffer empty, keeping an allocation it came with
+   and any the encoder requested for it, or, from the entry point that
+   returns the encoder's own buffer, no buffer at all (5.5, point 6), so
+   nothing of a refused message can be sent from it.
 
 ## 8. Security
 
@@ -895,12 +992,12 @@ integrity, anyone on the network path (ADR 0004, A13). They can try:
 
 | Threat | What stops it |
 |---|---|
-| Exhausting memory with a huge length or count | caps checked before allocation (5.2, points 1 to 3; 5.4, points 3 and 4); counts backed by input (5.2, point 6); enclosing limits checked before a child allocates, and every read bounded by the cursor (5.2, point 7; 5.4, point 5); the memory budget over requested bytes, checked by the ledger before each request and proved by the generator, with fallible reservations that never grow (5.2, point 9); the caller enforces the message cap while buffering (5.2, point 9.6) |
+| Exhausting memory with a huge length or count | caps checked before allocation (5.2, points 1 to 3; 5.4, points 3 and 4); counts backed by input (5.2, point 6); enclosing limits checked before a child allocates, and every read bounded by the cursor (5.2, point 7; 5.4, point 5); the memory budget over requested bytes, checked by the ledger before each request and proved by the generator, with fallible reservations that never grow (5.2, point 9), per decode: a separate decode a handwritten decoder starts has its own ledger and budget, and the generator and review keep decoders from starting one (5.2, point 9.2); the caller enforces the message cap while buffering (5.2, point 9.6) |
 | Exhausting CPU with many tiny elements | byte caps on arrays, not element counts (5.2, point 2); no zero-width array elements (5.1, point 5); the message cap |
 | Exhausting the stack with deep nesting, a long array or a large inline value | no optional data and no recursive types (5.1, points 3 and 4) `[X1 §8: CONFIRMED]`; array elements decoded by a loop (5.1, point 4); limits on inline size and nesting depth, large values held out of line, and `decode_fits_small_stack` (5.2, point 10) |
 | Crashing the daemon | no panics, checked arithmetic (section 6; 7, point 3); the fuzz target (10.4) |
 | Two encodings of one value, used to slip a change past a check or a cache key | strict padding, booleans and enumerations (5.4, points 8 and 9); integrity over the bytes received (5.4, point 12); round-trip property P2 |
-| Leaking a secret through an error, a log or a stray copy | no value read from the input in errors, and no offset or length in errors from a secret-bearing message, removed where the error is made, and again at the entry points (7, point 2); in a secret-bearing message no input byte copied into the decoded value, whatever field misframing puts it in, and no value, length or count of any field of a secret-bearing message shown by `Debug` or `Display`; a secret-bearing message encoded only into the caller's buffer, whose allocation the encoder never grows, moves or frees, even when a value's encoding unwinds, so the caller's wipe reaches every copy; and secrecy carried by one flag per type, which the encoder and the decoder both read, so a type that can hold a secret does not build into a buffer the encoder returns, and a type is decoded only under its own caps, budget and secrecy (5.1, point 8, with its stated limits; 5.5, points 3 and 6) |
+| Leaking a secret through an error, a log or a stray copy | no value read from the input in errors; no offset or length in an error that an entry point returns from a secret-bearing message: the decoder builds its own errors without one, and the entry points remove one from any error a handwritten decoder passes on from a separate decode, which holds its position only inside that decoder, where it must not be reported (7, point 2); in a secret-bearing message no input byte copied into the decoded value through the decoder it is given, whatever field misframing puts it in, and no value, length or count of any field of a secret-bearing message shown by `Debug` or `Display`; a secret-bearing message encoded only into the caller's buffer, whose allocation, whether it came with the buffer or the encoder requested it, the encoder never grows, moves or frees, even when a value's encoding unwinds, so the caller's wipe reaches every byte written into it; and secrecy carried by one flag per type, set from the fields its cap table marks, capped or not, which the encoder and the decoder both read, so a type that can hold a secret does not build into a buffer the encoder returns, and each decode is made under its own type's caps, budget and secrecy (5.1, point 8, with its stated limits, among them a separate decode started inside a decoder and the encoder's temporaries; 5.2, points 5 and 9.2; 5.5, points 3 and 6) |
 | Slipping an invalid discriminant past a default arm | the discriminant is validated as its own type before dispatch (5.4, point 7) |
 | A name with NUL or `/` reaching the operating system | out of this codec's scope by design (5.1, point 6); the consumer checks it `[X1 §8: CONFIRMED]` |
 | An integer used as a size without a check | integers are not converted here (5.1, point 7); the consumer applies rule 2 |
@@ -1093,13 +1190,21 @@ over the test types above.
   check that a definition whose worst case is above its memory budget
   gets the failing assertion, that a definition holding a zero-width
   type out of line is refused (5.2, point 10.2), and that two nested
-  out-of-line values give q = 2 over one unit. A fixed-length array of
-  no elements has r = q = 0 (5.2, points 9.3 and 9.5): a message holding
-  one and a word is proven against a memory budget of 0, and decodes
-  with no request recorded. A buffer to be boxed whose capacity is above
-  its count is refused with `AllocationFailed`; a box keeps the block
-  that was reserved; and a buffer of a zero-sized type is boxed whatever
-  capacity it reports (5.2, point 9.4).
+  out-of-line values give q = 2 over one unit. Three cases of 5.2,
+  point 9 are unit tests of the decoder's private helpers in
+  `src/decode/tests.rs`, not properties over the test types:
+  - a fixed-length array of no elements has r = q = 0 (5.2, points 9.3
+    and 9.5): a type holding one and a word is proven, by the private
+    proof routine, against a message whose memory budget is 0, and
+    decodes with no request recorded
+    (`fixed_array_of_no_elements_has_no_ratio_and_reserves_nothing`);
+  - a buffer to be boxed whose capacity is above its count is refused
+    with `AllocationFailed` (`boxed_refuses_a_buffer_with_excess_capacity`),
+    and a box keeps the block that was reserved
+    (`boxed_keeps_the_reserved_block`);
+  - a buffer of a zero-sized type is boxed whatever capacity it reports
+    (`boxed_takes_a_zero_sized_type_whatever_its_capacity`) (5.2,
+    point 9.4).
 - **P7** Setting any one padding byte of a valid encoding to a non-zero
   value gives `NonZeroPadding` at that byte's offset.
 - **P8** A decode of `sealed` copies nothing from the input: every byte
@@ -1112,55 +1217,95 @@ over the test types above.
   field's value, length or count reaches it, whichever field misframing
   put a key's bytes in. A generator test checks that it emits no
   `Display` for these types.
-- **The encoder's buffer** (5.5, points 3 and 6), for a plain and a
-  secret-bearing message alike: a buffer with no allocation receives
-  the message; a buffer that already has room is written in place, at
-  the same address; an allocated buffer given a message larger than the
-  capacity it actually reports is refused with `AllocationFailed`, and
-  keeps its address and capacity, empty; and every error the encoder
-  raises, `LengthOverBound`, `MessageTooLarge` over the cap,
-  `AllocationFailed` and a value that writes past its size, leaves the
-  buffer empty with its allocation unchanged. A component that writes
-  the message's whole size and then unwinds, caught by its parent,
-  which then writes one word more, gets `MessageTooLarge` naming the
-  message, and the buffer keeps its address and capacity, empty. An
+- **The encoder's buffer** (5.5, points 3 and 6). The contract holds
+  for every message and every error; the suite checks these cases of
+  it directly. Unit tests in `src/encode/tests.rs`, most through the
+  crate's private routine that encodes under a given descriptor, with
+  plain values:
+  - a buffer with no allocation receives the message, and a buffer
+    that already has room is written in place, at the same address
+    (`encode_into_requests_once_and_never_grows`); a message over its
+    cap leaves a buffer with no allocation without one
+    (`encode_over_message_cap_reserves_nothing`);
+  - an allocated buffer given a message larger than the capacity it
+    actually reports is refused with `AllocationFailed`, and keeps its
+    address and capacity, empty, for a plain message and, through the
+    caller's-buffer entry point, a secret-bearing one
+    (`encode_into_never_grows_an_allocated_buffer_for_any_message`);
+  - four selected errors, `LengthOverBound`, `MessageTooLarge` over
+    the cap, `AllocationFailed` and a value that writes past its size,
+    each leave a buffer that came with an allocation empty, at the same
+    address and capacity (`encode_into_empties_the_buffer_on_every_error`);
+  - a secret-bearing message is written through the caller's-buffer
+    entry point in place, and into a buffer with no allocation
+    (`secret_encode_into_writes_in_place_or_into_a_fresh_buffer`);
+  - a write past the buffer's capacity is refused whatever the count of
+    bytes left says, takes nothing from that count, and leaves the
+    address and capacity unchanged
+    (`a_write_past_the_capacity_is_refused_whatever_the_count`);
+  - the zeroing step of the wipe leaves the address and capacity
+    unchanged and zeroes every byte up to the capacity
+    (`zero_to_capacity_overwrites_contents_and_spare_capacity`).
+
+  Integration tests in `tests/it/unwind.rs`, with plain fixtures,
+  through the caller's-buffer entry point: a component that writes the
+  message's whole size and then unwinds, caught by its parent, which
+  then writes one word more, gets `MessageTooLarge` naming the message,
+  and the buffer keeps its address and capacity, empty
+  (`a_caught_unwind_leaves_the_count_of_what_the_component_wrote`); an
   unwind out of the encoder reaches the caller and leaves the buffer
-  empty at the same address and capacity. A write past the buffer's
-  capacity is refused whatever the count of bytes left says, takes
-  nothing from that count, and leaves the address and capacity
-  unchanged. The wipe leaves the address and capacity unchanged and
-  zeroes every byte up to the capacity.
-- **Secrecy on encode** (5.1, point 8) is checked by examples that must
-  fail to build, each beside a passing example with the same fixtures
-  that differs from it in one line, so the failure has one cause; the
-  stable toolchain does not enforce the error code a failing example
-  names. The pairs are: a type that declares itself plain and writes a
-  secret component, against one that takes its flag from what it
-  holds; a type that writes a component with its own encoder, against
-  one that writes it with the component's; a secret-bearing message
-  passed through a generic caller to the entry point that returns the
-  encoder's own buffer, against a plain one; and a descriptor with a
-  secrecy field, against one without. Beside them, compile-time
-  assertions check that a holder of a holder of a secret is secret
-  while a holder of a holder of a plain value is not, and that a
-  generic caller reads the same flag through a type's encoding and
-  through its message; and a test checks that a type taking its flag
-  from what it holds encodes a plain value either way and a secret one
-  only into the caller's buffer.
+  empty at the same address and capacity
+  (`an_unwind_out_of_the_encoder_leaves_the_buffer_wiped_in_place`).
+  Not exercised directly: an error after the request for a buffer that
+  came with no allocation, the other error kinds, an unwind in a
+  secret-bearing message, and the freeing of the owned-output entry
+  point's buffer on error.
+- **Secrecy on encode** (5.1, point 8) is checked by doctests that
+  must fail to build, each beside a passing doctest with the same
+  fixtures that differs from it in one line, so the failure has one
+  cause; the stable toolchain does not enforce the error code a failing
+  example names. The pairs are: a type that declares itself plain and
+  writes a secret component, against one that takes its flag from what
+  it holds (on `Encoder::put`); a type that writes a component with its
+  own encoder, against one that writes it with the component's (on
+  `Encode::encode`); a secret-bearing message passed through a generic
+  caller to the entry point that returns the encoder's own buffer,
+  against a plain one (on `encode`); and a descriptor with a secrecy
+  field, against one without (on `Message`). Beside them, in
+  `src/encode/tests.rs`, compile-time assertions check that a holder of
+  a holder of a secret is secret while a holder of a holder of a plain
+  value is not, and that a generic caller reads the same flag through a
+  type's encoding and through its message; and the unit test
+  `a_holder_of_a_secret_encodes_only_into_the_callers_buffer` encodes a
+  holder of a holder of a secret through the caller's-buffer entry
+  point and a holder of a plain value through the owned-output one.
+  That a secret holder does not build through the owned-output entry
+  point is the generic-caller doctest's to show. The fixture `Key`
+  there is a type whose own field, a word, is secret, and which declares
+  the flag itself, as 5.2, point 5 has it; a generator test checks that
+  a cap-table row marking a fixed-width field secret sets the flag of
+  the type that declares the field.
 - **The decode entry points** (5.1, point 8; 5.2, point 9.2) take the
-  message's type only. The cap is the type's: an input one word over
-  it gets `MessageTooLarge` naming the type's message. The budget is
-  the type's: a decode that needs more is refused with
-  `BudgetExceeded` before the request is made. The traced entry point
+  message's type only; integration tests in `tests/it/entry.rs`. The
+  cap is the type's: an input one word over it gets `MessageTooLarge`
+  naming the type's message. The budget is the type's: a decode that
+  needs 8 bytes of a type whose budget is 7 is refused with
+  `BudgetExceeded`, and a traced decode with a lowered budget is
+  refused before the hook records the request. The traced entry point
   never raises it: budgets of 2⁶⁴ − 1, 8, 7 and 0, against a type
   budget of 7, all give `BudgetExceeded` for a decode that needs 8
   bytes. The secrecy is the type's: the same bytes and decoder under a
   plain and a secret-bearing type give errors of the same kind, and
   the secret-bearing type's `Truncated`, `MessageTooLarge` and
-  `TrailingBytes` carry no offset or length, through both entry points,
-  and an error that a secret-bearing type's decoder passes on from a
-  decode of its own, which carries a position, is returned without it,
-  through both entry points.
+  `TrailingBytes` carry no offset or length, through both entry points.
+  A last fixture tests the return boundary only: a handwritten
+  secret-bearing decoder that starts a separate plain decode of its own
+  bytes, which section 5.2, point 9.2 rules out for a compliant
+  decoder, and declares r = q = 0 although the separate decode
+  reserves; the test checks only that the positioned error it passes
+  on is returned without its position, through both entry points, and
+  not the budget, the trace or the decoder's handling of that error
+  before it returns it (section 7, point 2).
 - **`decode_fits_small_stack`** decodes the largest valid inputs of
   `deep` (192 bytes), `wide` (its TRUE arm, 244 bytes) and every other
   test type, each within its message cap, on a thread started with a
@@ -1275,7 +1420,7 @@ This specification's own choices:
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
 | X1 | SPECIFICATION | RFC 4506, "XDR: External Data Representation Standard", May 2006, register of editions row E1 ([README](README.md)), <https://www.rfc-editor.org/rfc/rfc4506>. Also claim record row `[ADR-007]` ([claim record](../reviews/2026-11-20-adr-0004-claims.md)). RFC 4506 §2 states it makes no technical change to RFC 1832, which it obsoletes. | 3, 4, 5.1, 5.2, 5.4, 5.5, 8, 10 |
-| R1 | DOCUMENTATION | The Rust standard library documentation for `Vec`, Rust 1.100.0, register of editions row E2 ([README](README.md)), <https://doc.rust-lang.org/1.100.0/std/vec/struct.Vec.html>: the "Guarantees" section (a reservation gives at least the requested capacity and the allocator may give more; `push` never reallocates while the capacity suffices; bulk insertion may reallocate), `Vec::capacity` (a zero-sized element type reports a capacity of `usize::MAX`), `Vec::try_reserve_exact` (no speculative over-allocation; capacity not guaranteed minimal) and `Vec::into_boxed_slice` (excess capacity is discarded before the conversion); and, on <https://doc.rust-lang.org/1.100.0/std/boxed/struct.Box.html>, the conversion of a `Vec<T>` into a `Box<[T; N]>` (in place when the capacity equals N, a reallocation otherwise). Facts about allocation only, never wire facts. | 5.2, 5.5 |
+| R1 | DOCUMENTATION | The Rust standard library documentation for `Vec`, Rust 1.100.0, register of editions row E2 ([README](README.md)), <https://doc.rust-lang.org/1.100.0/std/vec/struct.Vec.html>: the "Guarantees" section (a reservation gives at least the requested capacity and the allocator may give more; `push` never reallocates while the capacity suffices; bulk insertion may reallocate), `Vec::capacity` (a zero-sized element type reports a capacity of `usize::MAX`), `Vec::try_reserve_exact` (no speculative over-allocation; capacity not guaranteed minimal; does nothing when the capacity already suffices) and `Vec::into_boxed_slice` (excess capacity is discarded before the conversion); and, on <https://doc.rust-lang.org/1.100.0/std/boxed/struct.Box.html>, the conversion of a `Vec<T>` into a `Box<[T; N]>` (in place when the capacity equals N, a reallocation otherwise). Facts about allocation only, never wire facts. | 5.2, 5.5 |
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C3, C4, C6 ([part 1](../adr/0004-architecture-1-core.md)); O47 ([part 3](../adr/0004-architecture-3-operations.md)); N31 ([part 4](../adr/0004-architecture-4-negotiation.md)); A12, A13 | 1, 2, 8, 9, 11 |
 | D2 | DECISION | [ADR 0001](../adr/0001-licence-and-dont-copy.md), "Don't copy" and "Test tools and test data" | 10, 12 |
 | D3 | DECISION | [Coding standards](../coding-standards.md), rules 1 to 5, 8, 9, 15 and 20 | 5.1, 5.2, 6, 7, 10 |
