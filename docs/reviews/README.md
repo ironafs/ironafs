@@ -44,6 +44,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-68-crypto-part1](2026-11-21-m2a-68-crypto-part1.md) | Issue #68, part one: `ironafs-crypto`, the random source interface and the production `Rng` |
 | [2026-11-21-m2a-47-cell-part1](2026-11-21-m2a-47-cell-part1.md) | Issue #47, first part: `cargo xtask cell`'s pinned definition, engine runner, teardown and verified install |
 | [2026-11-21-m2a-64-corpora](2026-11-21-m2a-64-corpora.md) | Issue #64: rules for published conformance corpora in `docs/specs/README.md` |
+| [2026-11-21-m2a-56-directory-format](2026-11-21-m2a-56-directory-format.md) | Issue #56: the AFS directory format, the version from documents only |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
