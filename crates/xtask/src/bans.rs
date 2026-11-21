@@ -25,6 +25,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::Error;
+use crate::fixture::write_file;
 use crate::metadata;
 use crate::pure::{CLEARED_ENVIRONMENT, first_error};
 
@@ -179,9 +180,9 @@ pub(crate) fn check(
         ("rust-toolchain.toml", toolchain_toml),
     ];
     for (name, text) in files {
-        write(&dir.join(name), text)?;
+        write_file(&dir.join(name), text)?;
     }
-    write(&dir.join("src").join("lib.rs"), &planted_source())?;
+    write_file(&dir.join("src").join("lib.rs"), &planted_source())?;
     let mut command = Command::new("cargo");
     // Rustup picks the toolchain from the directory cargo runs in.
     command
@@ -208,13 +209,6 @@ pub(crate) fn check(
         violations.push(Violation::Clippy(first_error(&output.stderr)));
     }
     Ok(violations)
-}
-
-fn write(path: &Path, text: &str) -> Result<(), Error> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(Error::path_io("create fixture directory", parent))?;
-    }
-    fs::write(path, text).map_err(Error::path_io("write fixture file", path))
 }
 
 /// Checks this repository's bans, or with `self_test` proves on planted
