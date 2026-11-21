@@ -3,8 +3,9 @@
 
 //! `fuzz --self-test`: proves that the step's judgement, the one the real
 //! replay uses, fails whenever it cannot show that every seed ran clean (a
-//! manifest with no target, a target with no seed, a successful exit that
-//! ran nothing or skipped a seed, a failed exit) and that a failure's
+//! manifest with no target or a target name it cannot read, a target
+//! with no seed, a successful exit that ran nothing or skipped a seed, a
+//! failed exit) and that a failure's
 //! report holds the target and digest but none of the reproducer's bytes;
 //! and that the repository's own manifest names targets that each have a
 //! tracked seed.
@@ -70,6 +71,11 @@ const CASES: &[Case] = &[
         name: "a manifest with no fuzz target",
         result: || plan("[package]\nname = \"ironafs-fuzz\"\n").map(|_| ()),
         expect: |found| *found == Violation::NoTargets,
+    },
+    Case {
+        name: "a manifest with an unreadable target name among readable ones",
+        result: || plan("[[bin]]\nname = \"one_a\"\n\n[[bin]]\nname = two_b\n").map(|_| ()),
+        expect: |found| *found == Violation::UnreadableTarget { line: 5 },
     },
     Case {
         name: "a target with no tracked seed",

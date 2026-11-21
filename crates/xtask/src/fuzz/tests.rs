@@ -24,10 +24,72 @@ fn seeds() -> Vec<PathBuf> {
 fn targets_reads_each_bin_name_in_order() {
     let manifest = "[package]\nname = \"ironafs-fuzz\"\n\n[[bin]]\nname = \"one_a\"\npath = \"x.rs\"\n\n\
                     [dependencies]\nname = \"not-a-target\"\n\n[[bin]]\n  name   =   \"two_b\"\n";
-    assert_eq!(targets(manifest), ["one_a", "two_b"]);
+    assert_eq!(
+        targets(manifest),
+        Ok(vec!["one_a".to_owned(), "two_b".to_owned()])
+    );
     assert_eq!(
         targets("[package]\nname = \"ironafs-fuzz\"\n"),
-        [] as [String; 0]
+        Ok(Vec::new())
+    );
+}
+
+#[test]
+fn targets_reads_trailing_comments_and_single_quoted_names() {
+    let manifest = "[[bin]] # the first\nname = \"one_a\"  # Rx header decode\n\n\
+                    [[bin]]\nname = 'two_b'\n\n[[bin]]\nname='three_c'# tight\n";
+    assert_eq!(
+        targets(manifest),
+        Ok(vec![
+            "one_a".to_owned(),
+            "two_b".to_owned(),
+            "three_c".to_owned()
+        ])
+    );
+}
+
+#[test]
+fn targets_refuses_a_name_it_cannot_read_among_readable_ones() {
+    for (line, name) in [
+        (6, "name = ironafs-rx_header"),
+        (6, "name = \"rx_header\" trailing"),
+        (6, "name = \"rx\\\"header\""),
+        (6, "name = \"rx_header"),
+        (6, "name = \"\""),
+        (6, "name = \"\"\"rx_header\"\"\""),
+        (6, "\"name\" = \"rx_header\""),
+    ] {
+        let manifest = format!("[[bin]]\nname = \"one_a\"\npath = \"a.rs\"\n\n[[bin]]\n{name}\n");
+        assert_eq!(
+            targets(&manifest),
+            Err(Violation::UnreadableTarget { line }),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn targets_refuses_a_bin_table_without_a_name_or_bins_in_another_form() {
+    let unnamed = "[[bin]]\nname = \"one_a\"\n\n[[bin]]\npath = \"b.rs\"\n\n[dependencies]\n";
+    assert_eq!(
+        targets(unnamed),
+        Err(Violation::UnreadableTarget { line: 4 })
+    );
+    assert_eq!(
+        targets("[[bin]]\nname = \"one_a\"\n[[bin]]\n"),
+        Err(Violation::UnreadableTarget { line: 3 })
+    );
+    assert_eq!(
+        targets("[package]\nname = \"x\"\nbin = [{ name = \"one_a\" }]\n"),
+        Err(Violation::UnreadableTarget { line: 3 })
+    );
+    assert_eq!(
+        targets("[[ bin ]]\nname = \"one_a\"\n"),
+        Err(Violation::UnreadableTarget { line: 1 })
+    );
+    assert_eq!(
+        targets("[[bin]]\nname = \"one_a\"\nname = \"two_b\"\n"),
+        Err(Violation::UnreadableTarget { line: 3 })
     );
 }
 

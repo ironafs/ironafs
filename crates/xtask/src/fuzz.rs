@@ -37,6 +37,9 @@ const SEEDS: &str = "seeds";
 pub(crate) enum Violation {
     /// The manifest names no fuzz target.
     NoTargets,
+    /// A line of the manifest that declares a target, or a `[[bin]]` table,
+    /// whose name this reader cannot read: refused, never skipped.
+    UnreadableTarget { line: usize },
     /// A target has no tracked seed.
     NoSeeds { target: String },
     /// The engine exited successfully but did not report running a seed.
@@ -55,6 +58,12 @@ impl fmt::Display for Violation {
             Self::NoTargets => write!(
                 formatter,
                 "{FUZZ_DIR}/{MANIFEST} names no fuzz target, so nothing was replayed"
+            ),
+            Self::UnreadableTarget { line } => write!(
+                formatter,
+                "{FUZZ_DIR}/{MANIFEST}:{line}: a fuzz target whose name this check cannot read, \
+                 so it would not be replayed: declare each target as a [[bin]] table with one \
+                 line name = \"<crate>_<subject>\""
             ),
             Self::NoSeeds { target } => write!(
                 formatter,
@@ -82,29 +91,92 @@ impl fmt::Display for Violation {
 
 /// The names of the fuzz targets a hand-written fuzz manifest declares:
 /// the `name` of each `[[bin]]` table, in order.
-pub(crate) fn targets(manifest: &str) -> Vec<String> {
+///
+/// It reads `name = "…"` or `name = '…'`, with an optional trailing
+/// comment, and refuses every other way of declaring a target: a name it
+/// cannot read, a `[[bin]]` table without exactly one name, a `bin` key,
+/// or a spaced `[[ bin ]]` header. A target it skipped would never be
+/// replayed while the step still reported green.
+///
+/// # Errors
+///
+/// Returns the first line it refuses.
+pub(crate) fn targets(manifest: &str) -> Result<Vec<String>, Violation> {
     let mut names = Vec::new();
-    let mut in_bin = false;
-    for line in manifest.lines().map(str::trim) {
-        if line.starts_with('[') {
-            in_bin = line == "[[bin]]";
-        } else if in_bin
-            && let Some(value) = line.strip_prefix("name")
-            && let Some(value) = value.trim_start().strip_prefix('=')
-            && let Some(name) = value
-                .trim()
-                .strip_prefix('"')
-                .and_then(|value| value.strip_suffix('"'))
-        {
-            names.push(name.to_owned());
+    // The current `[[bin]]` table: its header's line, and its name if read.
+    let mut bin: Option<(usize, Option<String>)> = None;
+    for (line, text) in (1..).zip(manifest.lines()) {
+        let text = text.trim();
+        if text.is_empty() || text.starts_with('#') {
+            continue;
         }
+        let refused = Violation::UnreadableTarget { line };
+        if text.starts_with('[') {
+            close_bin(bin.take(), &mut names)?;
+            let header = text.split('#').next().unwrap_or_default().trim();
+            let bare: String = header.chars().filter(|c| !c.is_whitespace()).collect();
+            if header == "[[bin]]" {
+                bin = Some((line, None));
+            } else if bare == "[[bin]]" || bare == "[bin]" {
+                return Err(refused);
+            }
+            continue;
+        }
+        let key = text.split('=').next().unwrap_or_default().trim();
+        let unquoted = key.trim_matches(|c| c == '"' || c == '\'');
+        if unquoted == "bin" {
+            return Err(refused);
+        }
+        let Some((_, name)) = &mut bin else {
+            continue;
+        };
+        if unquoted != "name" {
+            continue;
+        }
+        if key != "name" || name.is_some() {
+            return Err(refused);
+        }
+        let value = text
+            .split_once('=')
+            .map_or("", |(_, value)| value.trim_start());
+        *name = Some(quoted_name(value).ok_or(refused)?.to_owned());
     }
-    names
+    close_bin(bin, &mut names)?;
+    Ok(names)
+}
+
+/// Records the name of a finished `[[bin]]` table, or refuses a table
+/// that had none.
+fn close_bin(
+    bin: Option<(usize, Option<String>)>,
+    names: &mut Vec<String>,
+) -> Result<(), Violation> {
+    match bin {
+        Some((_, Some(name))) => {
+            names.push(name);
+            Ok(())
+        }
+        Some((line, None)) => Err(Violation::UnreadableTarget { line }),
+        None => Ok(()),
+    }
+}
+
+/// A non-empty name in a basic string without escapes or a literal string,
+/// followed by nothing but an optional comment.
+fn quoted_name(value: &str) -> Option<&str> {
+    let quote = value.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let rest = value.get(1..)?;
+    let end = rest.find(quote)?;
+    let name = rest.get(..end)?;
+    let after = rest.get(end + 1..)?.trim_start();
+    let clean =
+        !name.is_empty() && !name.contains('\\') && (after.is_empty() || after.starts_with('#'));
+    clean.then_some(name)
 }
 
 /// The targets to replay, or why there are none.
 pub(crate) fn plan(manifest: &str) -> Result<Vec<String>, Violation> {
-    let targets = targets(manifest);
+    let targets = targets(manifest)?;
     if targets.is_empty() {
         Err(Violation::NoTargets)
     } else {
