@@ -267,3 +267,63 @@ fn run_zero_time_limit_reports_the_first_failure_unshrunk() {
     assert!(failure.shrink_timed_out());
     assert!(*failure.value() >= 1000);
 }
+
+#[test]
+fn regression_passes_when_the_pinned_input_passes() {
+    let seen = Cell::new(None);
+    Property::new("pinned pass").regression(
+        &[1, 7],
+        |source| source.option_of(Source::u8),
+        |value| seen.set(Some(*value)),
+    );
+    assert_eq!(seen.get(), Some(Some(7)));
+}
+
+#[test]
+fn regression_error_panics_with_its_report() {
+    let report = check_report(|| {
+        Property::new("pinned error").regression(&[200], Source::u8, |value| {
+            if *value < 100 {
+                Ok(())
+            } else {
+                Err(format!("{value} is too big"))
+            }
+        });
+    });
+    assert_eq!(
+        report,
+        "regression of property `pinned error` failed on choices [200]\n\
+         input: 200\n\
+         failure: 200 is too big"
+    );
+}
+
+#[test]
+fn regression_test_panic_propagates_its_payload() {
+    let payload = panic::catch_unwind(AssertUnwindSafe(|| {
+        Property::new("pinned panic").regression(&[200], Source::u8, |value| {
+            assert!(*value < 100, "{value} is too big");
+        });
+    }))
+    .unwrap_err();
+    assert_eq!(
+        payload.downcast_ref::<String>().map(String::as_str),
+        Some("200 is too big")
+    );
+}
+
+/// Two ranged draws, for the property that draws stay in their ranges.
+pub(crate) fn ranged_pair(source: &mut Source) -> (u64, i64) {
+    (source.u64_in(10..=20), source.i64_in(-20..=-10))
+}
+
+/// Both draws of [`ranged_pair`] lie in their ranges.
+pub(crate) fn pair_within_ranges(pair: &(u64, i64)) {
+    assert!((10..=20).contains(&pair.0), "{pair:?}");
+    assert!((-20..=-10).contains(&pair.1), "{pair:?}");
+}
+
+#[test]
+fn ranged_draws_stay_in_their_ranges() {
+    Property::new("ranged draws stay in their ranges").check(ranged_pair, pair_within_ranges);
+}

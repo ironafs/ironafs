@@ -11,7 +11,9 @@
 //! with the seed, so that `IRONAFS_TEST_SEED=<seed>` replays the same run
 //! (coding standards rule 15: random inputs come from a seed printed on
 //! failure). A test killed by the runner while shrinking has still printed
-//! its seed.
+//! its seed. The report also prints a regression test that replays the
+//! minimal input, to paste into the crate's `tests/it/regressions.rs`
+//! ([`Property::regression`]).
 //!
 //! The seed is fixed unless asked otherwise: without `IRONAFS_TEST_SEED` or
 //! [`Property::seed`], it is derived from the property's name, so every run
@@ -199,6 +201,77 @@ impl Property {
             self.rerun_loudly(&counterexample.choices, &mut generate, &mut test);
         }
         panic!("{}", counterexample.report(describe));
+    }
+
+    /// Runs the test once on the input that `choices` give, such as a
+    /// counterexample's minimal choices, and fails as [`Property::check`]
+    /// does if it fails. This is how a failure is kept as a regression.
+    ///
+    /// Regressions are Rust tests in the owning crate's
+    /// `tests/it/regressions.rs`, one `#[test]` each, which the failure
+    /// report prints ready to paste. They are source files with the
+    /// licence header like any other, tracked and run by every test run;
+    /// the runner never writes regression data files of its own. To be
+    /// callable from there, a property's generator and test are named
+    /// functions, not closures.
+    ///
+    /// Choices keep their meaning when the way fresh runs draw them
+    /// changes (the boundary odds, the string tiers, the weights), so a
+    /// pinned regression stays valid; a change to what a choice means,
+    /// which the golden tests catch, is the one thing that moves it.
+    ///
+    /// ```
+    /// use ironafs_test_support::{Property, Source};
+    ///
+    /// fn generate(source: &mut Source) -> Vec<u8> {
+    ///     source.vec_of(0..=8, Source::u8)
+    /// }
+    ///
+    /// fn test(bytes: &Vec<u8>) {
+    ///     assert!(bytes.len() <= 8);
+    /// }
+    ///
+    /// Property::new("a vector stays within its length cap").check(generate, test);
+    /// // Pinned from an earlier failure: one element, 255.
+    /// Property::new("a vector stays within its length cap").regression(&[1, 255], generate, test);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics with a report naming the property, the choices and the input
+    /// if `test` returns an error, and propagates its panic (printed as
+    /// any other panic, then followed by the same report on standard error)
+    /// if it panics. A panic in `generate` is propagated unchanged.
+    #[expect(
+        clippy::panic,
+        reason = "a failed regression must fail the calling test (rule 15)"
+    )]
+    pub fn regression<T: fmt::Debug, V: Verdict>(
+        &self,
+        choices: &[u64],
+        generate: impl FnOnce(&mut Source) -> T,
+        test: impl FnOnce(&T) -> V,
+    ) {
+        let value = generate(&mut Source::from_choices(choices.to_vec()));
+        let report = |message: &str| {
+            format!(
+                "regression of property `{}` failed on choices {choices:?}\n\
+                 input: {value:?}\n\
+                 failure: {message}",
+                self.name
+            )
+        };
+        match panic::catch_unwind(AssertUnwindSafe(|| test(&value))) {
+            Ok(verdict) => {
+                if let Some(message) = verdict.failure() {
+                    panic!("{}", report(&message));
+                }
+            }
+            Err(payload) => {
+                eprintln!("{}", report("the panic above"));
+                panic::resume_unwind(payload);
+            }
+        }
     }
 
     /// The run's seed: `IRONAFS_TEST_SEED`'s, else the one fixed in code,
@@ -475,7 +548,13 @@ impl<T> Counterexample<T> {
              {location}\
              minimal choices: {:?}\n\
              shrunk in {} runs{budget}\n\
-             replay with {SEED_VARIABLE}={}",
+             replay with {SEED_VARIABLE}={}\n\
+             pin it with a regression test in tests/it/regressions.rs, \
+             calling this property's generator and test:\n\
+             #[test]\n\
+             fn {}() {{\n    \
+             Property::new({:?}).regression(&{:?}, generate, test);\n\
+             }}",
             self.name,
             u64::from(self.case) + 1,
             self.cases,
@@ -485,6 +564,9 @@ impl<T> Counterexample<T> {
             self.choices,
             self.shrink_runs,
             SeedText(self.seed),
+            regression_test_name(&self.name),
+            self.name,
+            self.choices,
         )
     }
 }
@@ -502,6 +584,25 @@ impl fmt::Display for SeedText {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{:#018x}", self.0)
     }
+}
+
+/// The name of the regression test the report prints: the property's
+/// name in lowercase ASCII letters and digits joined by underscores, which
+/// a Rust function name can hold.
+fn regression_test_name(name: &str) -> String {
+    let words: Vec<String> = name
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let starts_with_letter = words
+        .first()
+        .and_then(|word| word.chars().next())
+        .is_some_and(|character| character.is_ascii_alphabetic());
+    let prefix = if starts_with_letter { "" } else { "property_" };
+    let joined = words.join("_");
+    let separator = if joined.is_empty() { "" } else { "_" };
+    format!("{prefix}{joined}{separator}holds_on_pinned_input")
 }
 
 /// Reads a seed written in decimal or as `0x`-prefixed hexadecimal,

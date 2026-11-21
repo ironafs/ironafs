@@ -9,7 +9,8 @@ use std::panic;
 use std::time::Duration;
 
 use super::{
-    Counterexample, Property, Verdict, parse_seed, resolve_seed, seed_from_name, seed_text,
+    Counterexample, Property, Verdict, parse_seed, regression_test_name, resolve_seed,
+    seed_from_name, seed_text,
 };
 use crate::Source;
 
@@ -208,7 +209,13 @@ fn counterexample_display_names_seed_and_replay() {
          panicked at: src/decode.rs:12:5\n\
          minimal choices: [1, 100]\n\
          shrunk in 57 runs\n\
-         replay with IRONAFS_TEST_SEED=0x0000000000001234"
+         replay with IRONAFS_TEST_SEED=0x0000000000001234\n\
+         pin it with a regression test in tests/it/regressions.rs, \
+         calling this property's generator and test:\n\
+         #[test]\n\
+         fn decode_rejects_truncated_input_holds_on_pinned_input() {\n    \
+         Property::new(\"decode rejects truncated input\").regression(&[1, 100], generate, test);\n\
+         }"
     );
 }
 
@@ -352,4 +359,38 @@ fn seed_from_name_matches_golden_values() {
         0xcc9e_c140_58dc_062a
     );
     assert_eq!(seed_from_name("\u{e9}"), 0x7257_7f58_199b_2e2e);
+}
+
+#[test]
+fn regression_test_name_is_a_rust_identifier_from_the_name() {
+    assert_eq!(
+        regression_test_name("decode rejects truncated input"),
+        "decode_rejects_truncated_input_holds_on_pinned_input"
+    );
+    assert_eq!(
+        regression_test_name("u32 round-trips -- BE"),
+        "u32_round_trips_be_holds_on_pinned_input"
+    );
+    assert_eq!(
+        regression_test_name("1st case"),
+        "property_1st_case_holds_on_pinned_input"
+    );
+    assert_eq!(
+        regression_test_name("\u{e9}!"),
+        "property_holds_on_pinned_input"
+    );
+}
+
+#[test]
+fn counterexample_report_escapes_the_name_in_the_regression() {
+    let report = Counterexample {
+        name: "says \"hi\"".to_owned(),
+        ..sample(false)
+    }
+    .to_string();
+    assert!(
+        report
+            .contains("Property::new(\"says \\\"hi\\\"\").regression(&[1, 100], generate, test);"),
+        "{report}"
+    );
 }

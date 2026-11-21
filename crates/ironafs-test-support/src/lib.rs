@@ -10,7 +10,11 @@
 //! the run. A failing input is shrunk through the choices its draws
 //! recorded, so generators need no shrinking code of their own, and
 //! shrinking always stops within its run budget and time limit. The seed is
-//! printed when the first case fails, before shrinking starts.
+//! printed when the first case fails, before shrinking starts. The report
+//! also prints a `#[test]` that replays the minimal input through
+//! [`Property::regression`]; failures are kept as such Rust tests in the
+//! owning crate's `tests/it/regressions.rs`, never as data files the
+//! runner writes.
 //!
 //! A [`Source`] can also read its choices from a byte string
 //! ([`Source::from_bytes`]), so a fuzz target drives the same generators
