@@ -330,8 +330,8 @@ fn build_script_crate(dir: &Path, name: &str, toolchain_toml: &str) -> Result<()
     Ok(())
 }
 
-/// Proves a build script that sets `CLIPPY_CONF_DIR` is refused, and one
-/// that sets another variable is not.
+/// Proves a build script that sets `CLIPPY_CONF_DIR`, in any case, is
+/// refused, and one that sets another variable is not.
 fn build_scripts(
     dir: &Path,
     toolchain_toml: &str,
@@ -345,16 +345,29 @@ fn build_scripts(
         return Err(failure(clean, &found));
     }
     report(format!("passed: {clean}"))?;
-    let case = "a build script that sets CLIPPY_CONF_DIR for its compiler";
-    let case_dir = dir.join("planted");
-    build_script_crate(&case_dir, CONF_DIR, toolchain_toml)?;
-    let found = check_build_scripts(&case_dir, &case_dir.join("target"))?;
-    let refused = |found: &Found| matches!(&found.violation, Violation::BuildOverride { name, .. } if name == CONF_DIR);
-    if found.is_empty() || !found.iter().all(refused) {
-        return Err(failure(case, &found));
-    }
-    for violation in &found {
-        report(format!("caught: {case}: {violation}"))?;
+    // Windows reads environment names without regard to case.
+    for (case, name, place) in [
+        (
+            "a build script that sets CLIPPY_CONF_DIR for its compiler",
+            CONF_DIR,
+            "planted",
+        ),
+        (
+            "a build script that sets Clippy_Conf_Dir for its compiler",
+            "Clippy_Conf_Dir",
+            "planted-case",
+        ),
+    ] {
+        let case_dir = dir.join(place);
+        build_script_crate(&case_dir, name, toolchain_toml)?;
+        let found = check_build_scripts(&case_dir, &case_dir.join("target"))?;
+        let refused = |found: &Found| matches!(&found.violation, Violation::BuildOverride { name: set, .. } if set == name);
+        if found.is_empty() || !found.iter().all(refused) {
+            return Err(failure(case, &found));
+        }
+        for violation in &found {
+            report(format!("caught: {case}: {violation}"))?;
+        }
     }
     Ok(())
 }

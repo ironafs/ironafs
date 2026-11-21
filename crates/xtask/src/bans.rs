@@ -443,53 +443,119 @@ pub(crate) fn root_config(file: &Path) -> bool {
 /// clippy runs with: where its lookup starts (`CARGO_MANIFEST_DIR`), the
 /// directory it reads in place of that lookup (`CLIPPY_CONF_DIR`), or its
 /// lint arguments (`CLIPPY_ARGS`) and any other variable of its own.
+///
+/// Names are compared without regard to case on every host. Windows reads
+/// environment names so, and the reports read may come from a build for
+/// another host or target than the one this check runs on; refusing
+/// `clippy_conf_dir` on a host that would not read it costs nothing.
 fn clippy_reads(name: &str) -> bool {
+    let name = name.to_uppercase();
     name == "CARGO_MANIFEST_DIR" || name.contains("CLIPPY")
+}
+
+/// What a build script reported, as cargo's `build-script-executed`
+/// `message` gives it: its package and the name of each variable it sets
+/// for its crate's compiler. A report missing either, or with a variable
+/// that is not a `[name, value]` pair of strings, is refused with why.
+fn script_report(message: &json::Value) -> Result<(&str, Vec<&str>), String> {
+    let package = message
+        .get("package_id")
+        .and_then(json::Value::as_str)
+        .ok_or("cargo reported a build script's output with no package")?;
+    let pairs = message
+        .get("env")
+        .and_then(json::Value::as_array)
+        .ok_or_else(|| format!("cargo reported {package}'s build script with no env list"))?;
+    let names = pairs
+        .iter()
+        .map(|pair| match pair.as_array() {
+            Some([name, value]) => name.as_str().filter(|_| value.as_str().is_some()),
+            _ => None,
+        })
+        .collect::<Option<Vec<&str>>>()
+        .ok_or_else(|| {
+            format!("cargo reported {package}'s build script with a variable that is not a name and value")
+        })?;
+    Ok((package, names))
+}
+
+/// The package whose build script cargo's `compiler-artifact` `message`
+/// says it compiled, if it is one; `Err` if it names no package.
+fn script_built(message: &json::Value) -> Result<Option<&str>, String> {
+    let kinds = message
+        .get("target")
+        .and_then(|target| target.get("kind"))
+        .and_then(json::Value::as_array)
+        .unwrap_or_default();
+    if !kinds
+        .iter()
+        .any(|kind| kind.as_str() == Some("custom-build"))
+    {
+        return Ok(None);
+    }
+    message
+        .get("package_id")
+        .and_then(json::Value::as_str)
+        .map(Some)
+        .ok_or_else(|| "cargo reported a build script compiled for no package".to_owned())
 }
 
 /// Each variable clippy reads that a build script sets for its crate's
 /// compiler, from cargo's JSON `messages`. Cargo applies a build script's
 /// `rustc-env` after the variables `cargo xtask check` removes, so they
 /// are read from what the build scripts reported.
+///
+/// The messages are read closed: a line that is not JSON, a report that
+/// is not whole, a build script compiled with no report of its run, or no
+/// single `build-finished` record saying the build succeeded, is refused,
+/// so a pass means every build script's report was read.
 pub(crate) fn build_overrides(messages: &str) -> Vec<Violation> {
     let mut found = Vec::new();
-    for line in messages.lines() {
+    let mut built = Vec::new();
+    let mut reported = Vec::new();
+    let mut finished = Vec::new();
+    for line in messages.lines().filter(|line| !line.trim().is_empty()) {
         let Ok(message) = json::parse(line) else {
-            // Read closed: a build script's report that does not parse is
-            // refused, not skipped.
-            if line.contains("build-script-executed") {
-                found.push(Violation::Unbuilt(
-                    "cargo reported a build script's output in a message check-bans cannot \
-                     parse"
-                        .to_owned(),
-                ));
-            }
+            found.push(Violation::Unbuilt(
+                "cargo printed a line check-bans cannot parse as a message".to_owned(),
+            ));
             continue;
         };
-        if message.get("reason").and_then(json::Value::as_str) != Some("build-script-executed") {
-            continue;
-        }
-        let package = message
-            .get("package_id")
-            .and_then(json::Value::as_str)
-            .unwrap_or("a package");
-        let pairs = message
-            .get("env")
-            .and_then(json::Value::as_array)
-            .unwrap_or_default();
-        for pair in pairs {
-            if let Some(name) = pair
-                .as_array()
-                .and_then(<[json::Value]>::first)
-                .and_then(json::Value::as_str)
-                && clippy_reads(name)
-            {
-                found.push(Violation::BuildOverride {
-                    package: package.to_owned(),
-                    name: name.to_owned(),
-                });
+        let read = match message.get("reason").and_then(json::Value::as_str) {
+            Some("build-finished") => {
+                finished.push(message.get("success") == Some(&json::Value::Bool(true)));
+                Ok(())
             }
+            Some("compiler-artifact") => {
+                script_built(&message).map(|package| built.extend(package.map(str::to_owned)))
+            }
+            Some("build-script-executed") => script_report(&message).map(|(package, names)| {
+                reported.push(package.to_owned());
+                found.extend(
+                    names
+                        .into_iter()
+                        .filter(|name| clippy_reads(name))
+                        .map(|name| Violation::BuildOverride {
+                            package: package.to_owned(),
+                            name: name.to_owned(),
+                        }),
+                );
+            }),
+            _ => Ok(()),
+        };
+        if let Err(error) = read {
+            found.push(Violation::Unbuilt(error));
         }
+    }
+    for package in built.iter().filter(|package| !reported.contains(package)) {
+        found.push(Violation::Unbuilt(format!(
+            "cargo compiled {package}'s build script but reported no output from it"
+        )));
+    }
+    if finished != [true] {
+        found.push(Violation::Unbuilt(
+            "cargo did not report one build-finished record saying the build succeeded".to_owned(),
+        ));
     }
     found
 }

@@ -414,11 +414,23 @@ fn executed(package: &str, env: &str) -> String {
     )
 }
 
+/// Cargo's last message after a build that succeeded.
+const FINISHED: &str = "{\"reason\":\"build-finished\",\"success\":true}\n";
+
+/// A compiler-artifact message for `package`'s build script.
+fn script_built(package: &str) -> String {
+    format!(
+        "{{\"reason\":\"compiler-artifact\",\"package_id\":\"{package}\",\
+         \"target\":{{\"kind\":[\"custom-build\"],\"name\":\"build-script-build\"}},\
+         \"fresh\":true}}"
+    )
+}
+
 #[test]
 fn build_overrides_reports_a_variable_clippy_reads() {
     for name in ["CLIPPY_CONF_DIR", "CLIPPY_ARGS", "CARGO_MANIFEST_DIR"] {
         let messages = format!(
-            "{}\n{}\n",
+            "{}\n{}\n{FINISHED}",
             executed("p#0.0.0", "[]"),
             executed(
                 "q#0.0.0",
@@ -437,13 +449,104 @@ fn build_overrides_reports_a_variable_clippy_reads() {
 }
 
 #[test]
+fn build_overrides_reports_a_variable_clippy_reads_in_any_case() {
+    // Windows reads environment names without regard to case.
+    for name in ["clippy_conf_dir", "Clippy_Conf_Dir", "cargo_manifest_dir"] {
+        let messages = format!(
+            "{}\n{FINISHED}",
+            executed("q#0.0.0", &format!("[[\"{name}\",\"/x\"]]"))
+        );
+        assert_eq!(
+            build_overrides(&messages),
+            [Violation::BuildOverride {
+                package: "q#0.0.0".to_owned(),
+                name: name.to_owned()
+            }],
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn build_overrides_ignores_other_variables_and_messages() {
     let messages = format!(
-        "{}\n{{\"reason\":\"compiler-artifact\",\"env\":[[\"CLIPPY_ARGS\",\"x\"]]}}\n\
-         not json\n",
+        "{}\n{}\n{{\"reason\":\"compiler-artifact\",\"env\":[[\"CLIPPY_ARGS\",\"x\"]]}}\n\n\
+         {FINISHED}",
+        script_built("p#0.0.0"),
         executed("p#0.0.0", "[[\"OTHER\",\"1\"]]")
     );
     assert_eq!(build_overrides(&messages), []);
+}
+
+#[test]
+fn build_overrides_refuses_a_report_it_cannot_read_whole() {
+    for (case, messages) in [
+        (
+            "no env",
+            "{\"reason\":\"build-script-executed\",\"package_id\":\"q#0.0.0\"}\n".to_owned(),
+        ),
+        ("env not an array", executed("q#0.0.0", "{}")),
+        (
+            "a pair not an array",
+            executed("q#0.0.0", "[\"CLIPPY_ARGS\"]"),
+        ),
+        ("a pair of one", executed("q#0.0.0", "[[\"CLIPPY_ARGS\"]]")),
+        (
+            "a pair of three",
+            executed("q#0.0.0", "[[\"A\",\"1\",\"2\"]]"),
+        ),
+        ("a name not a string", executed("q#0.0.0", "[[1,\"x\"]]")),
+        ("a value not a string", executed("q#0.0.0", "[[\"A\",1]]")),
+        (
+            "no package",
+            "{\"reason\":\"build-script-executed\",\"env\":[]}\n".to_owned(),
+        ),
+        ("a line that is not json", "not json".to_owned()),
+    ] {
+        let messages = format!("{messages}\n{FINISHED}");
+        let found = build_overrides(&messages);
+        assert!(
+            matches!(found.as_slice(), [Violation::Unbuilt(_)]),
+            "{case}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn build_overrides_needs_cargo_to_say_the_build_finished() {
+    for (case, end) in [
+        ("no record", ""),
+        (
+            "a failed build",
+            "{\"reason\":\"build-finished\",\"success\":false}\n",
+        ),
+        (
+            "success not a bool",
+            "{\"reason\":\"build-finished\",\"success\":\"true\"}\n",
+        ),
+    ] {
+        let messages = format!("{}\n{end}", executed("p#0.0.0", "[]"));
+        let found = build_overrides(&messages);
+        assert!(
+            matches!(found.as_slice(), [Violation::Unbuilt(_)]),
+            "{case}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn build_overrides_needs_a_report_from_every_build_script_built() {
+    let messages = format!(
+        "{}\n{}\n{}\n{FINISHED}",
+        script_built("p#0.0.0"),
+        script_built("q#0.0.0"),
+        executed("p#0.0.0", "[]")
+    );
+    let found = build_overrides(&messages);
+    assert!(
+        matches!(found.as_slice(), [Violation::Unbuilt(error)] if error.contains("q#0.0.0")),
+        "{found:?}"
+    );
 }
 
 #[test]
@@ -476,14 +579,15 @@ fn read_and_build_violations_say_what_failed() {
 
 #[test]
 fn build_overrides_refuses_a_build_script_message_it_cannot_parse() {
-    let messages = "{\"reason\":\"build-script-executed\",\"env\":[[\"CLIPPY_ARGS\"\n";
+    let messages =
+        format!("{{\"reason\":\"build-script-executed\",\"env\":[[\"CLIPPY_ARGS\"\n{FINISHED}");
     assert!(
         matches!(
-            build_overrides(messages).as_slice(),
+            build_overrides(&messages).as_slice(),
             [Violation::Unbuilt(_)]
         ),
         "{:?}",
-        build_overrides(messages)
+        build_overrides(&messages)
     );
 }
 
