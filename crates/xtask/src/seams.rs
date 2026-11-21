@@ -8,32 +8,43 @@
 //! - **`pure_crate_calls_no_seam`.** A pure crate holds formats, decisions
 //!   and plans, and calls no seam and holds no seam value. In each pure
 //!   crate's library source, a seam trait's name (`Clock`, `Rng`, `Rpc`,
-//!   `Disk`) appears only where its home crate defines it (`trait Name`)
-//!   and where its home crate's library root re-exports it (`pub use`),
-//!   and a seam trait's body provides no method. Without the name no pure
-//!   code can take, bound, implement or rename a seam, so none can call
-//!   one; without a provided method the trait itself calls nothing.
+//!   `Disk`) appears only where its home crate defines it (`trait Name`),
+//!   where its home crate's library root re-exports it (`pub use`), and as
+//!   an enum variant: declared in an `enum` body, or reached through an
+//!   enum that declares it (in the same crate or a seam's home crate), or
+//!   through `Self::` in a file that declares it. A `use` or `extern crate`
+//!   item that names a seam's home crate and renames (`as`) or globs (`*`)
+//!   is refused, since it could bring a seam in under another name; and a
+//!   seam trait's body provides no method.
 //! - **`deadline_built_from_a_fresh_sample`.** Every source of every crate
-//!   but `ironafs-time` builds a `Deadline` only inside its one named
-//!   sampling function, by a direct call whose `now` is that function's own
-//!   fresh `Clock::sample`, bound by
-//!   `let now = clock.sample().map_err(DeadlineError::Clock)?;` and never
-//!   reassigned. The function holds no closure, no nested function, and no
-//!   constructor inside a macro call. Every call of it passes, as its
-//!   `from` argument, a request's recorded `.arrival` or a reply's
-//!   `first_sent` unwrapped with `.as_ref()`. An allowance of
-//!   `clippy::disallowed_methods` sits on no module, `impl` or trait of a
-//!   crate that names a constructor, and on no other function that does.
+//!   builds a `Deadline` only inside its one named sampling function; in
+//!   `ironafs-time` the constructors' names appear only where they are
+//!   defined. Inside the sampling function: one fresh sample, bound by
+//!   `let now = clock.sample().map_err(DeadlineError::Clock)?;` from a
+//!   parameter; each constructor called directly, after that binding, as
+//!   `Deadline::boot_after(&now, from, ...)`, with `from` the function's
+//!   own parameter; and the two names appear nowhere else in the body (no
+//!   parameter, pattern, shadowing, use or assignment of either). The
+//!   function holds no closure, no nested function, and no constructor
+//!   inside a macro call. Every call of it passes, as its `from`, a
+//!   request's recorded `.arrival` or a reply's `first_sent` unwrapped with
+//!   `.as_ref()`. An allowance of `clippy::disallowed_methods` sits on no
+//!   module, `impl` or trait of a crate that names a constructor, and on no
+//!   other function that does.
 //!
-//! `#[cfg(test)]` items, test modules their parent gates (coding standards
-//! rule 15) and `tests/` directories are left out. Both checks read source
-//! as written and expand no macro; the second trusts that only the ingress
-//! writes a request's `arrival` and only the call owner a reply's
-//! `first_sent` (5.3, point 2, "Limits"): review covers both, and the
-//! self-test records them as passes.
+//! Both checks refuse a `#[path]` attribute anywhere, so every module's
+//! file is where the walk reads it and none passes as test code under
+//! another name. `#[cfg(test)]` items, test modules their parent gates
+//! (coding standards rule 15) and `tests/` directories are left out. Both
+//! checks read source as written and expand no macro; the second trusts
+//! that only the ingress writes a request's `arrival` and only the call
+//! owner a reply's `first_sent` (5.3, point 2, "Limits"): review covers
+//! both, and the self-test records them as passes. Clippy's ban on the two
+//! constructors (`check-bans`) is the second net.
 
 mod self_test;
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -101,6 +112,9 @@ pub(crate) enum Violation {
         line: usize,
         name: &'static str,
     },
+    /// A renamed or glob import of a seam's home crate in a pure crate,
+    /// which could bring a seam in under another name.
+    HomeImport { file: PathBuf, line: usize },
     /// A seam trait that provides a method.
     ProvidedMethod {
         file: PathBuf,
@@ -139,6 +153,12 @@ pub(crate) enum Violation {
     NoFrom { file: PathBuf, line: usize },
     /// A call whose `from` is not a recorded arrival or `first_sent`.
     BadFrom { file: PathBuf, line: usize },
+    /// A constructor whose `from` is not the sampling function's `from`
+    /// parameter.
+    NotFromParameter { file: PathBuf, line: usize },
+    /// A `#[path]` attribute, which can bring in a file the walk does not
+    /// read as what it is.
+    PathAttribute { file: PathBuf, line: usize },
     /// An allowance of the constructors' lint where it may not sit.
     Allowance {
         file: PathBuf,
@@ -156,6 +176,10 @@ pub(crate) enum Violation {
 }
 
 impl fmt::Display for Violation {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one message per violation, in the enum's order"
+    )]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let at = |formatter: &mut fmt::Formatter<'_>, file: &Path, line: &usize| {
             write!(formatter, "{}:{line}: ", file.display())
@@ -167,6 +191,13 @@ impl fmt::Display for Violation {
                     formatter,
                     "a pure crate names the seam {name}: pure crates call no seam and hold no \
                      seam value (seams spec 5.2, point 5)"
+                )
+            }
+            Self::HomeImport { file, line } => {
+                at(formatter, file, line)?;
+                formatter.write_str(
+                    "a pure crate renames or glob-imports a seam's home crate, which could name \
+                     a seam out of this check's sight",
                 )
             }
             Self::ProvidedMethod { file, line, name } => {
@@ -228,6 +259,20 @@ impl fmt::Display for Violation {
                      reply's `first_sent.as_ref()`",
                 )
             }
+            Self::NotFromParameter { file, line } => {
+                at(formatter, file, line)?;
+                formatter.write_str(
+                    "a deadline constructor's `from` must be the sampling function's own `from` \
+                     parameter",
+                )
+            }
+            Self::PathAttribute { file, line } => {
+                at(formatter, file, line)?;
+                formatter.write_str(
+                    "a `#[path]` attribute: a module's file must be where the walk reads it, so \
+                     no file escapes these checks or passes as test code",
+                )
+            }
             Self::Allowance { file, line, on } => {
                 at(formatter, file, line)?;
                 write!(
@@ -284,8 +329,33 @@ pub(crate) fn check(files: &[SourceFile], sampling: &[Sampling]) -> Vec<Violatio
     if files.is_empty() {
         violations.push(Violation::NothingScanned);
     }
+    for file in files {
+        for index in 0..file.tokens.len() {
+            if attribute_end(&file.tokens, index).is_some() {
+                let open = if is_punct(&file.tokens, index + 1, '!') {
+                    index + 2
+                } else {
+                    index + 1
+                };
+                if is_ident(&file.tokens, open + 1, "path") {
+                    violations.push(Violation::PathAttribute {
+                        file: file.path.clone(),
+                        line: line(&file.tokens, index),
+                    });
+                }
+            }
+        }
+    }
     for file in files.iter().filter(|file| file.pure) {
-        pure_crate_calls_no_seam(file, &mut violations);
+        let variants: BTreeSet<(String, String)> = files
+            .iter()
+            .filter(|other| {
+                other.krate == file.krate || SEAMS.iter().any(|(_, home)| *home == other.krate)
+            })
+            .flat_map(|other| declared_variants(&other.tokens))
+            .map(|(enumeration, variant, _)| (enumeration, variant))
+            .collect();
+        pure_crate_calls_no_seam(file, &variants, &mut violations);
     }
     deadline_built_from_a_fresh_sample(files, sampling, &mut violations);
     violations
@@ -429,8 +499,37 @@ fn seam(tokens: &[Token], index: usize) -> Option<(&'static str, &'static str)> 
     SEAMS.iter().copied().find(|(name, _)| *name == word)
 }
 
-fn pure_crate_calls_no_seam(file: &SourceFile, violations: &mut Vec<Violation>) {
+/// The crate names of the seams' home crates, as source writes them.
+fn home_crate_idents() -> impl Iterator<Item = String> {
+    SEAMS.iter().map(|(_, home)| home.replace('-', "_"))
+}
+
+fn pure_crate_calls_no_seam(
+    file: &SourceFile,
+    variants: &BTreeSet<(String, String)>,
+    violations: &mut Vec<Violation>,
+) {
     let tokens = &file.tokens;
+    // A `use` or `extern crate` item that names a home crate and renames
+    // or globs: the only ways to name a seam without writing its name.
+    let homes: Vec<String> = home_crate_idents().collect();
+    for index in 0..tokens.len() {
+        if !(is_ident(tokens, index, "use") || is_ident(tokens, index, "extern")) {
+            continue;
+        }
+        let end = item_end(tokens, index);
+        let names_home = (index..end).any(|at| {
+            ident(tokens.get(at)).is_some_and(|word| homes.iter().any(|home| home == word))
+        });
+        let renames =
+            (index..end).any(|at| is_ident(tokens, at, "as") || is_punct(tokens, at, '*'));
+        if names_home && renames {
+            violations.push(Violation::HomeImport {
+                file: file.path.clone(),
+                line: line(tokens, index),
+            });
+        }
+    }
     // The token ranges of `pub use ... ;` items of a home crate's root.
     let mut reexport = vec![false; tokens.len()];
     if file.lib_root {
@@ -447,14 +546,24 @@ fn pure_crate_calls_no_seam(file: &SourceFile, violations: &mut Vec<Violation>) 
             }
         }
     }
-    let variants = enum_variant_names(tokens);
+    let declared: Vec<(String, String, usize)> = declared_variants(tokens);
     for index in 0..tokens.len() {
         let Some((name, home)) = seam(tokens, index) else {
             continue;
         };
-        if variants.get(index).copied().unwrap_or(false) || after_type_path(tokens, index) {
-            // An enum variant with a seam's name, such as
-            // `DeadlineError::Clock`, is not the seam.
+        // An enum variant with a seam's name, such as
+        // `DeadlineError::Clock`, is not the seam: its declaration, a path
+        // through an enum that declares it (in this crate or a seam's home
+        // crate), or `Self::` in a file that declares it.
+        let declaration = declared.iter().any(|(_, _, at)| *at == index);
+        let through_enum = variant_path_owner(tokens, index).is_some_and(|owner| {
+            if owner == "Self" {
+                declared.iter().any(|(_, variant, _)| variant == name)
+            } else {
+                variants.contains(&(owner.to_owned(), name.to_owned()))
+            }
+        });
+        if declaration || through_enum {
             continue;
         }
         let at_home = file.krate == home;
@@ -474,15 +583,18 @@ fn pure_crate_calls_no_seam(file: &SourceFile, violations: &mut Vec<Violation>) 
     }
 }
 
-/// Marks each identifier that declares a variant directly in an `enum`
-/// body: the first identifier of the body and each after a comma at the
-/// body's own depth.
-fn enum_variant_names(tokens: &[Token]) -> Vec<bool> {
-    let mut variants = vec![false; tokens.len()];
+/// The variants declared directly in each `enum` body, as `(enum,
+/// variant, index of the variant's name)`: the first identifier of the
+/// body and each after a comma at the body's own depth.
+fn declared_variants(tokens: &[Token]) -> Vec<(String, String, usize)> {
+    let mut declared = Vec::new();
     for index in 0..tokens.len() {
         if !is_ident(tokens, index, "enum") {
             continue;
         }
+        let Some(enumeration) = ident(tokens.get(index + 1)) else {
+            continue;
+        };
         let Some(open) = (index..tokens.len()).find(|at| is_punct(tokens, *at, '{')) else {
             continue;
         };
@@ -500,10 +612,8 @@ fn enum_variant_names(tokens: &[Token]) -> Vec<bool> {
                     continue;
                 }
                 Some(TokenKind::Punct(',')) => expecting = true,
-                Some(TokenKind::Ident(_)) if expecting => {
-                    if let Some(flag) = variants.get_mut(at) {
-                        *flag = true;
-                    }
+                Some(TokenKind::Ident(variant)) if expecting => {
+                    declared.push((enumeration.to_owned(), variant.clone(), at));
                     expecting = false;
                 }
                 _ => {}
@@ -511,18 +621,15 @@ fn enum_variant_names(tokens: &[Token]) -> Vec<bool> {
             at += 1;
         }
     }
-    variants
+    declared
 }
 
-/// Whether the identifier at `index` follows `Type::`, a path through a
-/// type (an enum's variant or an associated item), never a module path,
-/// whose segments are lowercase.
-fn after_type_path(tokens: &[Token], index: usize) -> bool {
-    index >= 2
-        && matches!(kind(tokens, index - 1), Some(TokenKind::PathSep))
-        && ident(tokens.get(index - 2))
-            .and_then(|word| word.chars().next())
-            .is_some_and(char::is_uppercase)
+/// The segment before `::` ahead of the identifier at `index`, if any.
+fn variant_path_owner(tokens: &[Token], index: usize) -> Option<&str> {
+    if index < 2 || !matches!(kind(tokens, index - 1), Some(TokenKind::PathSep)) {
+        return None;
+    }
+    ident(tokens.get(index - 2))
 }
 
 /// Reports a provided method in the body of the seam trait named at
@@ -791,10 +898,7 @@ fn deadline_built_from_a_fresh_sample(
     sampling: &[Sampling],
     violations: &mut Vec<Violation>,
 ) {
-    let files: Vec<&SourceFile> = files
-        .iter()
-        .filter(|file| file.krate != TIME_CRATE)
-        .collect();
+    let files: Vec<&SourceFile> = files.iter().collect();
     // Every sampling function's definitions, and the index of its `from`.
     let mut from_index: Vec<(&Sampling, Option<usize>)> = Vec::new();
     for listed in sampling {
@@ -852,8 +956,13 @@ fn deadline_built_from_a_fresh_sample(
             });
         for index in 0..tokens.len() {
             // Constructors outside the sampling function.
+            // In `ironafs-time` a constructor's name may appear only where
+            // it is defined.
+            let definition =
+                file.krate == TIME_CRATE && index > 0 && is_ident(tokens, index - 1, "fn");
             if let Some(name) = ident(tokens.get(index))
                 .and_then(|word| CONSTRUCTORS.iter().copied().find(|c| *c == word))
+                && !definition
                 && !bodies
                     .iter()
                     .any(|(open, close)| *open < index && index < *close)
@@ -992,26 +1101,16 @@ fn check_sampling_body(
         });
         None
     };
-    if let (Some(now), Some((_, bound_at))) = (now, bindings.first()) {
-        for index in open + 1..close {
-            if !is_ident(tokens, index, now) || index == bound_at + 1 {
-                continue;
-            }
-            let shadowed = index > 0
-                && (is_ident(tokens, index - 1, "let") || is_ident(tokens, index - 1, "mut"));
-            let assigned = is_punct(tokens, index + 1, '=') && !is_punct(tokens, index + 2, '=');
-            let compound = matches!(
-                punct(tokens.get(index + 1)),
-                Some('+' | '-' | '*' | '/' | '%' | '^' | '&' | '|' | '<' | '>')
-            ) && is_punct(tokens, index + 2, '=');
-            if shadowed || assigned || compound {
-                violations.push(Violation::Reassigned {
-                    file: shown(),
-                    line: line(tokens, index),
-                });
-            }
-        }
+    let bound_at = bindings.first().map(|(_, at)| *at);
+    if let Some(now) = now
+        && params.contains(&now)
+    {
+        violations.push(Violation::Reassigned {
+            file: shown(),
+            line: line(tokens, open),
+        });
     }
+    names_only_in_constructor_arguments(file, found.body, now, bound_at, violations);
     for index in open + 1..close {
         let Some(name) = ident(tokens.get(index)) else {
             continue;
@@ -1038,15 +1137,66 @@ fn check_sampling_body(
             });
             continue;
         }
+        // `now` is the fresh binding, used after it is bound.
         let fresh = now.is_some_and(|now| {
             is_punct(tokens, index + 2, '&')
                 && is_ident(tokens, index + 3, now)
                 && is_punct(tokens, index + 4, ',')
+                && bound_at.is_some_and(|at| at < index)
         });
         if !fresh {
             violations.push(Violation::NowNotFresh {
                 file: shown(),
                 line: at_line,
+            });
+        }
+        let from = is_ident(tokens, index + 5, "from") && is_punct(tokens, index + 6, ',');
+        if !from {
+            violations.push(Violation::NotFromParameter {
+                file: shown(),
+                line: at_line,
+            });
+        }
+    }
+}
+
+/// Reports every appearance, in a sampling function's body, of the fresh
+/// binding's name or of `from` outside the constructor arguments they
+/// fill: another binding, a use or an assignment. So the constructor's
+/// arguments can only be the fresh sample, after it is bound, and the
+/// parameter.
+fn names_only_in_constructor_arguments(
+    file: &SourceFile,
+    (open, close): (usize, usize),
+    now: Option<&str>,
+    bound_at: Option<usize>,
+    violations: &mut Vec<Violation>,
+) {
+    let tokens = &file.tokens;
+    // The constructor arguments the fresh binding and `from` may fill:
+    // `CONSTRUCTOR ( & now , from ,`, by position.
+    let in_constructor = |index: usize, offset: usize| {
+        index >= offset
+            && ident(tokens.get(index - offset)).is_some_and(|word| CONSTRUCTORS.contains(&word))
+    };
+    // Every other appearance of either name in the body is another
+    // binding, a use or an assignment: refused, so the constructor's
+    // arguments can only be the fresh sample and the parameter.
+    for index in open + 1..close {
+        if let Some(now) = now
+            && is_ident(tokens, index, now)
+            && Some(index) != bound_at.map(|at| at + 1)
+            && !(in_constructor(index, 3) && is_punct(tokens, index - 1, '&'))
+        {
+            violations.push(Violation::Reassigned {
+                file: file.path.clone(),
+                line: line(tokens, index),
+            });
+        }
+        if is_ident(tokens, index, "from") && !in_constructor(index, 5) {
+            violations.push(Violation::NotFromParameter {
+                file: file.path.clone(),
+                line: line(tokens, index),
             });
         }
     }
@@ -1130,9 +1280,19 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         workspace.members.len(),
         SAMPLING
             .iter()
-            .map(|listed| listed.path)
+            .map(|listed| {
+                let present = workspace
+                    .members
+                    .iter()
+                    .any(|member| member.name == listed.krate);
+                if present {
+                    listed.path.to_owned()
+                } else {
+                    format!("{}, its crate not in the workspace yet", listed.path)
+                }
+            })
             .collect::<Vec<_>>()
-            .join(", "),
+            .join("; "),
     )
     .map_err(Error::io("report check-seams"))
 }

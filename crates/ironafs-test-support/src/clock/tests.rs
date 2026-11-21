@@ -260,9 +260,25 @@ fn regress_below_the_origin_moves_nothing() {
     assert_reads(&clock, 10, 5, wall(100, 0));
 }
 
+/// A boot deadline `after` from a fresh sample: these tests stand in for a
+/// sampling function, so the constructor's ban is expected here.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the seeded clock's tests build deadlines from a fresh sample, as a sampling function does"
+)]
 fn boot_deadline(clock: &SeededClock, after: Duration) -> Deadline {
     let now = sample(clock);
     Deadline::boot_after(&now, &now, after).unwrap()
+}
+
+/// An awake deadline `after` from a fresh sample, as `boot_deadline`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the seeded clock's tests build deadlines from a fresh sample, as a sampling function does"
+)]
+fn awake_deadline(clock: &SeededClock, after: Duration) -> Deadline {
+    let now = sample(clock);
+    Deadline::awake_after(&now, &now, after).unwrap()
 }
 
 #[test]
@@ -277,8 +293,7 @@ fn wait_advances_to_the_deadline_and_reports_it_passed() {
 #[test]
 fn wait_on_an_awake_deadline_advances_by_the_awake_time_left() {
     let clock = at(10, 5, 100);
-    let now = sample(&clock);
-    let deadline = Deadline::awake_after(&now, &now, Duration::from_nanos(7)).unwrap();
+    let deadline = awake_deadline(&clock, Duration::from_nanos(7));
     let outcome = clock.wait(&Flag::default(), &deadline, &Flag::default());
     assert_eq!(outcome, Waited::DeadlinePassed);
     assert_reads(&clock, 17, 12, wall(100, 7));
@@ -332,9 +347,8 @@ fn wait_on_a_latched_deadline_fails_after_the_fault_clears() {
 #[test]
 fn wait_after_a_regression_fails_boot_deadlines_and_not_awake_ones() {
     let clock = at(5_000_000_000, 5_000_000_000, 100);
-    let now = sample(&clock);
-    let boot = Deadline::boot_after(&now, &now, Duration::from_secs(3)).unwrap();
-    let awake = Deadline::awake_after(&now, &now, Duration::from_secs(3)).unwrap();
+    let boot = boot_deadline(&clock, Duration::from_secs(3));
+    let awake = awake_deadline(&clock, Duration::from_secs(3));
     clock
         .regress(ClockKind::Boot, Duration::from_secs(1))
         .unwrap();
@@ -352,8 +366,7 @@ fn wait_after_a_regression_fails_boot_deadlines_and_not_awake_ones() {
 fn wait_whose_advance_overflows_fails_and_moves_nothing() {
     // The awake deadline is 5 ns away, but the boot clock has room for 2.
     let clock = at(u64::MAX - 2, 0, 100);
-    let now = sample(&clock);
-    let deadline = Deadline::awake_after(&now, &now, Duration::from_nanos(5)).unwrap();
+    let deadline = awake_deadline(&clock, Duration::from_nanos(5));
     assert_eq!(
         clock.wait(&Flag::default(), &deadline, &Flag::default()),
         Waited::ClockFailed

@@ -27,7 +27,15 @@ doc-valid-idents = ["IronAFS", "OpenAFS", "AuriStor", "FSKit", "macOS", ".."]
 # Kept elsewhere: the core's waits with a timeout, sleeps and threads
 # (check-deps on ironafs-client), and everything the standard library
 # offers, in the pure crates (check-pure).
+#
+# The two Deadline constructors are banned too, as the seams
+# specification's second net (5.3, point 2): a deadline is built only in a
+# crate's one named sampling function, which carries the one allowance, and
+# `cargo xtask check-seams` checks where. ironafs-time's own clippy.toml is
+# this file without those two bans.
 disallowed-methods = [
+  { path = "ironafs_time::Deadline::boot_after", reason = "seams spec 5.3, point 2: a deadline is built only in a crate's one named sampling function, from its fresh Clock::sample (cargo xtask check-seams)" },
+  { path = "ironafs_time::Deadline::awake_after", reason = "seams spec 5.3, point 2: a deadline is built only in a crate's one named sampling function, from its fresh Clock::sample (cargo xtask check-seams)" },
   { path = "std::time::Instant::now", reason = "coding standards rule 7: read time through the Clock interface of ironafs-time" },
   { path = "std::time::Instant::elapsed", reason = "coding standards rule 7: elapsed reads the system clock; read time through the Clock interface of ironafs-time" },
   { path = "std::time::SystemTime::now", reason = "coding standards rule 7: read wall time through the Clock interface of ironafs-time" },

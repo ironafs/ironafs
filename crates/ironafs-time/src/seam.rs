@@ -79,18 +79,25 @@ mod tests;
 ///         })
 ///     }
 ///     fn wait(&self, signal: &dyn Watch, deadline: &Deadline, cancel: &dyn Watch) -> Waited {
-///         // Time never moves, so a wait ends at once: by the order of
-///         // outcomes, or as passed if the deadline is at the origin.
+///         // The outcomes in their order. Undecided, a wait goes on
+///         // waiting; time never moves here, so a deadline still ahead never
+///         // passes, and this wait blocks for ever.
+///         let origin_passed = deadline
+///             .boot_at()
+///             .is_some_and(|at| at.has_passed(BootInstant::from_nanos(0)))
+///             || deadline
+///                 .awake_at()
+///                 .is_some_and(|at| at.has_passed(AwakeInstant::from_nanos(0)));
 ///         if cancel.is_set() {
 ///             Waited::Cancelled
-///         } else if deadline.boot_at().is_some_and(|at| at.has_passed(BootInstant::from_nanos(0)))
-///             || deadline.awake_at().is_some_and(|at| at.has_passed(AwakeInstant::from_nanos(0)))
-///         {
+///         } else if origin_passed {
 ///             Waited::DeadlinePassed
 ///         } else if signal.is_set() {
 ///             Waited::Signalled
 ///         } else {
-///             Waited::DeadlinePassed
+///             loop {
+///                 std::thread::park();
+///             }
 ///         }
 ///     }
 /// }

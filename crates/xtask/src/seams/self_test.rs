@@ -114,7 +114,12 @@ const CASES: &[Case] = &[
                 "ClockKind::Boot => { let kept = now; Deadline::boot_after(&kept, from, d) }",
             ))
         },
-        expect: |found| matches!(found, Violation::NowNotFresh { .. }),
+        expect: |found| {
+            matches!(
+                found,
+                Violation::NowNotFresh { .. } | Violation::Reassigned { .. }
+            )
+        },
     },
     Case {
         name: "a `now` passed in, with no fresh sample",
@@ -229,6 +234,100 @@ const CASES: &[Case] = &[
             ))
         },
         expect: |found| matches!(found, Violation::Hides { .. }),
+    },
+    Case {
+        name: "a parameter named `now`, used before the fresh sample",
+        files: || {
+            core(
+                &CONTROL
+                    .replace("    kind: ClockKind,\n", "    kind: ClockKind,\n    now: &Stamp,\n")
+                    .replace(
+                        "    let now = clock.sample().map_err(DeadlineError::Clock)?;\n    match kind {\n        ClockKind::Boot => Deadline::boot_after(&now, from, d),",
+                        "    let early = Deadline::boot_after(&now, from, d);\n    let now = clock.sample().map_err(DeadlineError::Clock)?;\n    match kind {\n        ClockKind::Boot => early,",
+                    )
+                    .replace("ClockKind::Boot, &request.arrival", "ClockKind::Boot, &kept, &request.arrival")
+                    .replace("ClockKind::Boot, reply.first_sent", "ClockKind::Boot, &kept, reply.first_sent"),
+            )
+        },
+        expect: |found| {
+            matches!(
+                found,
+                Violation::Reassigned { .. } | Violation::NowNotFresh { .. }
+            )
+        },
+    },
+    Case {
+        name: "a pattern binding that shadows the fresh sample",
+        files: || {
+            core(&with_body(
+                "ClockKind::Boot => { if let Some(now) = kept { return Deadline::boot_after(&now, from, d); } Deadline::boot_after(&now, from, d) }",
+            ))
+        },
+        expect: |found| matches!(found, Violation::Reassigned { .. }),
+    },
+    Case {
+        name: "a constructor whose `from` is another parameter",
+        files: || {
+            core(&with_body(
+                "ClockKind::Boot => Deadline::boot_after(&now, forged, d),",
+            ))
+        },
+        expect: |found| matches!(found, Violation::NotFromParameter { .. }),
+    },
+    Case {
+        name: "a helper in `ironafs-time` that builds a deadline",
+        files: || {
+            source_file(
+                "ironafs-time",
+                "src/wait.rs",
+                true,
+                false,
+                "impl Deadline {\n    pub fn boot_after(now: &Stamp, from: &Stamp, d: Duration) -> Result<Self, DeadlineError> { build() }\n}\npub fn deadline(now: &Stamp, from: &Stamp, d: Duration) -> Result<Deadline, DeadlineError> { Deadline::boot_after(now, from, d) }\n",
+            )
+            .map_or_else(|_| Vec::new(), |file| vec![file])
+        },
+        expect: |found| matches!(found, Violation::Outside { .. }),
+    },
+    Case {
+        name: "a `#[path]` module, out of the walk's sight",
+        files: || {
+            core(&format!(
+                "{CONTROL}\n#[path = \"../elsewhere.rs\"]\nmod elsewhere;\n"
+            ))
+        },
+        expect: |found| matches!(found, Violation::PathAttribute { .. }),
+    },
+    Case {
+        name: "a seam through an uppercase alias of its home crate",
+        files: || {
+            with_pure(pure(
+                "ironafs-rx",
+                "src/endpoint.rs",
+                "use ironafs_time as Time;\npub fn tick(clock: &dyn Time::Clock) -> u64 { 0 }\n",
+            ))
+        },
+        expect: |found| {
+            matches!(
+                found,
+                Violation::SeamInPure { name: "Clock", .. } | Violation::HomeImport { .. }
+            )
+        },
+    },
+    Case {
+        name: "a seam through a glob re-export behind an uppercase module",
+        files: || {
+            with_pure(pure(
+                "ironafs-cache",
+                "src/plan.rs",
+                "mod Time { pub use ironafs_time::*; }\npub fn plan(rng: &dyn Time::Rng) {}\n",
+            ))
+        },
+        expect: |found| {
+            matches!(
+                found,
+                Violation::SeamInPure { name: "Rng", .. } | Violation::HomeImport { .. }
+            )
+        },
     },
     Case {
         name: "a `from` that is a fresh sample",
@@ -426,8 +525,10 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     for case in CASES {
         let files = (case.files)();
         let found = check(&files, SAMPLING);
-        match found.first() {
-            Some(first) if !files.is_empty() && found.iter().all(case.expect) => {
+        // The planted violation must be among those found; the stricter
+        // rules may report the same plant from another side too.
+        match found.iter().find(|found| (case.expect)(found)) {
+            Some(first) if !files.is_empty() => {
                 report(format!("caught: {}: {first}", case.name))?;
             }
             _ => return Err(failure(case.name, &found)),

@@ -57,7 +57,16 @@ fn deadline_check_refuses_a_kept_now() {
     );
     let found = check(&[core_file(&source)], SAMPLING);
     assert!(
-        matches!(found.as_slice(), [Violation::NowNotFresh { .. }]),
+        found
+            .iter()
+            .any(|found| matches!(found, Violation::NowNotFresh { .. })),
+        "{found:?}"
+    );
+    assert!(
+        found.iter().all(|found| matches!(
+            found,
+            Violation::NowNotFresh { .. } | Violation::Reassigned { .. }
+        )),
         "{found:?}"
     );
 }
@@ -141,4 +150,151 @@ fn self_test_catches_every_planted_case() {
     self_test::run(&mut output).unwrap();
     let report = String::from_utf8(output).unwrap();
     assert!(report.contains("check-seams --self-test:"), "{report}");
+}
+
+#[test]
+fn pure_check_refuses_a_seam_through_an_uppercase_crate_alias() {
+    let files = [pure_file(
+        "ironafs-rx",
+        "src/endpoint.rs",
+        "use ironafs_time as Time;\npub fn tick(clock: &dyn Time::Clock) -> u64 { 0 }\n",
+    )];
+    let found = check(&files, SAMPLING);
+    assert!(
+        found
+            .iter()
+            .any(|found| matches!(found, Violation::SeamInPure { name: "Clock", .. })),
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|found| matches!(found, Violation::HomeImport { .. })),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn pure_check_passes_a_declared_variant_through_its_enum_and_self() {
+    let files = [pure_file(
+        "ironafs-time",
+        "src/wait.rs",
+        "pub enum DeadlineError { Clock(u8), Overflow }\n\
+         pub fn failed() -> DeadlineError { DeadlineError::Clock(0) }\n\
+         impl DeadlineError { fn code(&self) -> u8 { match self { Self::Clock(code) => *code, Self::Overflow => 0 } } }\n",
+    )];
+    assert_eq!(check(&files, SAMPLING), []);
+}
+
+#[test]
+fn pure_check_refuses_a_variant_path_through_an_enum_without_that_variant() {
+    let files = [pure_file(
+        "ironafs-rx",
+        "src/endpoint.rs",
+        "pub enum Time { Other }\npub fn tick(clock: &dyn Time::Clock) {}\n",
+    )];
+    let found = check(&files, SAMPLING);
+    assert!(
+        matches!(
+            found.as_slice(),
+            [Violation::SeamInPure { name: "Clock", .. }]
+        ),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn deadline_check_refuses_a_parameter_named_now() {
+    let source = CONTROL
+        .replace(
+            "pub fn deadline_after(clock: &dyn Clock, from",
+            "pub fn deadline_after(clock: &dyn Clock, now: &Stamp, from",
+        )
+        .replace(
+            "    let now = clock.sample().map_err(DeadlineError::Clock)?;\n    Deadline::boot_after(&now, from, d)",
+            "    let built = Deadline::boot_after(&now, from, d);\n    let now = clock.sample().map_err(DeadlineError::Clock)?;\n    built",
+       )
+        .replace("deadline_after(clock, &request.arrival, d)", "deadline_after(clock, &kept, &request.arrival, d)");
+    let found = check(&[core_file(&source)], SAMPLING);
+    // The constructor runs before the fresh sample is bound.
+    assert!(
+        found
+            .iter()
+            .any(|found| matches!(found, Violation::NowNotFresh { .. })),
+        "{found:?}"
+    );
+    assert!(
+        found.iter().all(|found| matches!(
+            found,
+            Violation::Reassigned { .. } | Violation::NowNotFresh { .. }
+        )),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn deadline_check_refuses_a_shadowing_pattern_binding() {
+    let source = CONTROL.replace(
+        "    Deadline::boot_after(&now, from, d)",
+        "    if let Some(now) = kept { return Deadline::boot_after(&now, from, d); }\n    Deadline::boot_after(&now, from, d)",
+    );
+    let found = check(&[core_file(&source)], SAMPLING);
+    assert!(
+        matches!(found.as_slice(), [Violation::Reassigned { .. }, ..]),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn deadline_check_refuses_a_from_other_than_the_parameter() {
+    let source = CONTROL
+        .replace(
+            "from: &Stamp, d: Duration)",
+            "from: &Stamp, d: Duration, forged: &Stamp)",
+        )
+        .replace(
+            "Deadline::boot_after(&now, from, d)",
+            "Deadline::boot_after(&now, forged, d)",
+        )
+        .replace(
+            "&request.arrival, d)",
+            "&request.arrival, d, &request.arrival)",
+        );
+    let found = check(&[core_file(&source)], SAMPLING);
+    assert!(
+        matches!(found.as_slice(), [Violation::NotFromParameter { .. }]),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn deadline_check_covers_ironafs_time_outside_the_two_definitions() {
+    let definitions = "impl Deadline {\n    pub fn boot_after(now: &Stamp, from: &Stamp, d: Duration) -> Result<Self, DeadlineError> { todo() }\n    pub fn awake_after(now: &Stamp, from: &Stamp, d: Duration) -> Result<Self, DeadlineError> { todo() }\n}\n";
+    let time =
+        |source: &str| source_file("ironafs-time", "src/wait.rs", true, false, source).unwrap();
+    assert_eq!(check(&[time(definitions)], SAMPLING), []);
+    let helper = format!(
+        "{definitions}pub fn deadline(now: &Stamp, from: &Stamp, d: Duration) -> Result<Deadline, DeadlineError> {{ Deadline::boot_after(now, from, d) }}\n"
+    );
+    let found = check(&[time(&helper)], SAMPLING);
+    assert!(
+        matches!(
+            found.as_slice(),
+            [Violation::Outside {
+                name: "boot_after",
+                ..
+            }]
+        ),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn seams_check_refuses_a_path_attribute() {
+    let source = format!("{CONTROL}\n#[path = \"../elsewhere.rs\"]\nmod elsewhere;\n");
+    let found = check(&[core_file(&source)], SAMPLING);
+    assert!(
+        matches!(found.as_slice(), [Violation::PathAttribute { .. }]),
+        "{found:?}"
+    );
 }
