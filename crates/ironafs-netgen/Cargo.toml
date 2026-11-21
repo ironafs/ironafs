@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# A pure crate with no dependencies (ADR 0004, C4, point 1): the network
+# generation, its consumers' hooks, and the Linux monitor's decoder and
+# state machine, which a driver feeds (docs/specs/network-generation.md).
+[package]
+name = "ironafs-netgen"
+description = "IronAFS's network generation: the counter, its consumers' hooks, and the route-netlink monitor's decoder and state machine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

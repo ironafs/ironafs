@@ -58,6 +58,8 @@ pub(crate) const CRATES: &[(&str, Kind)] = &[
     ("ironafs-events", Kind::Pure),
     ("ironafs-crypto", Kind::Pure),
     ("ironafs-time", Kind::Pure),
+    // The network generation (docs/specs/network-generation.md).
+    ("ironafs-netgen", Kind::Pure),
     ("ironafs-client", Kind::Composition),
     ("ironafs-net", Kind::Driver),
     ("ironafs-gss", Kind::Driver),
@@ -106,15 +108,18 @@ const LAYER_MAY_USE: &[&str] = &[
 ];
 
 /// The crates with no dependencies at all (ADR 0004, C4, point 1, and O1,
-/// point 1).
-const NO_DEPENDENCIES: &[&str] = &["ironafs-time", "ironafs-events"];
+/// point 1; for `ironafs-netgen`, docs/specs/network-generation.md).
+const NO_DEPENDENCIES: &[&str] = &["ironafs-time", "ironafs-events", "ironafs-netgen"];
 
 /// The workspace crates each driver depends on directly. A layer may use
 /// `ironafs-os`, so what `ironafs-os` reaches, a layer reaches too.
 const DRIVER_MAY_USE: &[(&str, &[&str])] = &[
     // ADR 0005, point 1.4: no dependencies, in any dependency table.
     ("ironafs-os", &[]),
-    ("ironafs-net", &["ironafs-rx", "ironafs-time", "ironafs-os"]),
+    (
+        "ironafs-net",
+        &["ironafs-rx", "ironafs-time", "ironafs-os", "ironafs-netgen"],
+    ),
     ("ironafs-gss", &["ironafs-time", "ironafs-os"]),
 ];
 
@@ -140,6 +145,7 @@ const THIRD_PARTY: ThirdPartyLists = &[
     ("ironafs-events", &[]),
     ("ironafs-crypto", &[]),
     ("ironafs-time", &[]),
+    ("ironafs-netgen", &[]),
     ("ironafs-client", &[]),
     ("ironafs-net", &[]),
     ("ironafs-gss", &[]),
