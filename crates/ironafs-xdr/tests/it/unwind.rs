@@ -13,6 +13,8 @@ use ironafs_xdr::{
     Classified, Encode, Encoder, Error, ErrorKind, Message, MessageType, encode_into,
 };
 
+use crate::support::heap::{boxed, with_capacity};
+
 /// Room for any test buffer's capacity and more.
 const ROOMY: Message = Message {
     name: "test.unwind",
@@ -22,7 +24,7 @@ const ROOMY: Message = Message {
 
 /// Unwinds without a panic message, so the test's output stays clean.
 fn unwind() -> ! {
-    resume_unwind(Box::new("a component's encode unwinds"))
+    resume_unwind(boxed("a component's encode unwinds"))
 }
 
 /// Writes its words, then unwinds.
@@ -90,7 +92,7 @@ impl Encode for Lone {
 
 /// A buffer with an allocation, and as many whole words as fill it.
 fn full_buffer() -> (Vec<u8>, usize) {
-    let out: Vec<u8> = Vec::with_capacity(8);
+    let out: Vec<u8> = with_capacity(8);
     let words = out.capacity() / 4;
     (out, words)
 }
@@ -101,7 +103,7 @@ fn a_caught_unwind_leaves_the_count_of_what_the_component_wrote() {
     // only the count can refuse the parent's word: a count the component
     // had copied would still hold the word it wrote, and let the parent's
     // through.
-    let mut out: Vec<u8> = Vec::with_capacity(16);
+    let mut out: Vec<u8> = with_capacity(16);
     assert!(out.capacity() >= 8, "room for two words");
     let before = (out.as_ptr(), out.capacity());
     let error = encode_into(&Catcher(Bomb(1)), &mut out).unwrap_err();

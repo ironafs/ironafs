@@ -12,6 +12,7 @@ use ironafs_xdr::{
     decode, encode,
 };
 
+use crate::support::heap::{Append, Gather, Owned};
 use crate::support::{self, hex, sealed_bytes, size, traced};
 use crate::types::{
     BLOB, Blob, DEEP, Deep, ENTRY, EVERY, Entry, Every, FIVE, Five, INTS, Ints, LABEL, Label,
@@ -66,7 +67,7 @@ fn mutate(mut bytes: Vec<u8>, mutation: &Mutation) -> Vec<u8> {
             }
         }
         Mutation::Prefix(length) => bytes.truncate(*length),
-        Mutation::Append(extra) => bytes.extend(extra),
+        Mutation::Append(extra) => bytes.append_all(extra),
         Mutation::Random(random) => return random.clone(),
     }
     bytes
@@ -281,7 +282,7 @@ fn encoder_refuses_what_decoder_rejects() {
     };
     let refused = encode(&over_bound).unwrap_err();
     let mut bytes = hex("00000021");
-    bytes.extend([0; 36]);
+    bytes.append_all([0; 36]);
     let rejected = decode::<Note>(&bytes).unwrap_err();
     assert_eq!(
         named(&refused),
@@ -301,7 +302,7 @@ fn encoder_refuses_what_decoder_rejects() {
     assert_eq!(named(&refused), named(&rejected));
 
     // names: labels of 4 and 8 bytes, 20 bytes over the cap of 16.
-    let over = Names(vec![Label(b"abcd".to_vec()), Label(b"abcdefgh".to_vec())]);
+    let over = Names(vec![Label(b"abcd".owned()), Label(b"abcdefgh".owned())]);
     let refused = encode(&over).unwrap_err();
     let bytes = hex("00000002 00000004 61626364 00000008 61626364 65666768");
     let rejected = decode::<Names>(&bytes).unwrap_err();
@@ -319,7 +320,7 @@ fn padding_is_checked<T: Tested>(message: &Message, valid: &[u8], padding: &[usi
     assert_eq!(*message, T::MESSAGE, "the row is the type's own");
     assert!(decode::<T>(valid).is_ok());
     for &index in padding {
-        let mut input = valid.to_vec();
+        let mut input = valid.owned();
         assert_eq!(input[index], 0);
         input[index] = 1;
         let error = decode::<T>(&input).unwrap_err();
@@ -333,7 +334,7 @@ fn padding_is_checked<T: Tested>(message: &Message, valid: &[u8], padding: &[usi
 fn string_padding(offset: usize, length: usize, padding: &mut Vec<usize>) -> usize {
     let data_end = offset + 4 + length;
     let end = offset + 4 + length.next_multiple_of(4);
-    padding.extend(data_end..end);
+    padding.append_all(data_end..end);
     end
 }
 
@@ -344,7 +345,7 @@ fn non_zero_padding_is_rejected_at_its_offset() {
     Property::new("blob: padding is checked").check(support::blob, |blob| {
         let bytes = encode(blob).unwrap();
         let data_end = 4 + blob.0.len();
-        let padding: Vec<usize> = (data_end..bytes.len()).collect();
+        let padding: Vec<usize> = (data_end..bytes.len()).gather();
         padding_is_checked::<Blob>(&BLOB, &bytes, &padding);
     });
     Property::new("five: padding is checked").check(support::five, |five| {

@@ -10,6 +10,8 @@ use ironafs_xdr::{
     array_reservations, decode, decode_traced, proven,
 };
 
+use crate::support::heap::Owned;
+
 const WORDS: Cap = Cap {
     name: "test.tight.words",
     bound: None,
@@ -129,7 +131,7 @@ fn decode_takes_the_secrecy_from_the_type() {
     let sealed = decode::<Sealed>(&THREE).unwrap_err();
     assert_eq!(sealed.kind(), ErrorKind::MessageTooLarge);
     assert_eq!((sealed.offset(), sealed.extent()), (None, None));
-    let mut trailing = TWO[..8].to_vec();
+    let mut trailing = TWO[..8].owned();
     trailing[3] = 0;
     let sealed = decode::<Sealed>(&trailing).unwrap_err();
     assert_eq!(sealed.kind(), ErrorKind::TrailingBytes);

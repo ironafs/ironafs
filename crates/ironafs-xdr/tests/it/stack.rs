@@ -11,6 +11,7 @@ use std::thread;
 use ironafs_xdr::limits::SMALL_STACK;
 use ironafs_xdr::{BorrowedBytes, BorrowedWord, Decode, Encode, Message, MessageType, decode};
 
+use crate::support::heap::{Gather, Owned, boxed};
 use crate::support::{deep_from, encoded, sealed_bytes};
 use crate::types::{
     BLOB, Blob, DEEP, Deep16, ENTRY, EVERY, Entry, Every, FIVE, FLAG, Five, Flag, INTS, Ints,
@@ -40,7 +41,7 @@ where
 fn bytes(n: usize) -> Vec<u8> {
     (1..=n)
         .map(|byte| u8::try_from(byte % 251).unwrap())
-        .collect()
+        .gather()
 }
 
 fn label(n: usize) -> Label {
@@ -70,7 +71,7 @@ fn decode_fits_small_stack() {
         unsigned_hyper: u64::MAX,
         flag: true,
         shade: Shade::Vivid,
-        big: Box::new(std::array::from_fn(|index| {
+        big: boxed(std::array::from_fn(|index| {
             u8::try_from(index % 251).unwrap()
         })),
         var: bytes(8),
@@ -91,7 +92,7 @@ fn decode_fits_small_stack() {
     fits(&TAGS, &Tags(vec![label(4), label(0), label(0)]), 20);
     fits(&PAIR, &Pair([label(8), label(8)]), 24);
     fits(&SOLOS, &Solos(vec![Solo; 4]), 20);
-    fits(&INTS, &Ints((0..16).collect()), 68);
+    fits(&INTS, &Ints((0..16).gather()), 68);
     fits(&BLOB, &Blob(bytes(16)), 20);
     fits(&FIVE, &Five(*b"abcde"), 8);
     fits(&LABEL, &label(8), 12);
@@ -118,9 +119,9 @@ fn sealed_decode_fits_small_stack() {
         .spawn(move || {
             let decoded = decode::<Sealed<'_>>(&bytes).unwrap();
             (
-                decoded.key.reveal().to_vec(),
+                decoded.key.reveal().owned(),
                 decoded.serial.reveal_u32(),
-                decoded.tag.reveal().to_vec(),
+                decoded.tag.reveal().owned(),
                 sealed_bytes(&decoded),
             )
         })

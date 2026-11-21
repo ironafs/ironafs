@@ -3,7 +3,6 @@
 
 #![cfg(test)]
 #![expect(
-    clippy::disallowed_methods,
     clippy::disallowed_macros,
     reason = "the tests build inputs and expectations outside the codec's ledger"
 )]

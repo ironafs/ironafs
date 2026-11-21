@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Helpers shared by the integration tests: hexadecimal input, a traced
-//! decode, and seeded generators for the test types.
+//! decode, seeded generators for the test types, and the tests' heap
+//! requests.
 
 use ironafs_test_support::Source;
 use ironafs_xdr::{Decode, Encode, Error, MessageType, Reservation, decode_traced, encode_into};
 
+use self::heap::{Gather, boxed};
 use crate::types::{
     Blob, Deep, Deep16, Entry, Every, Five, Ints, Label, Names, Note, Pair, Quad, Sealed, Shade,
     Solo, Solos, Tags, Wide,
@@ -27,15 +29,12 @@ pub(crate) fn hex(text: &str) -> Vec<u8> {
             b'a'..=b'f' => byte - b'a' + 10,
             _ => panic!("not a hexadecimal digit: {:?}", char::from(byte)),
         })
-        .collect();
+        .gather();
     assert!(
         digits.len().is_multiple_of(2),
         "odd count of hexadecimal digits"
     );
-    digits
-        .chunks(2)
-        .map(|pair| pair[0] << 4 | pair[1])
-        .collect()
+    digits.chunks(2).map(|pair| pair[0] << 4 | pair[1]).gather()
 }
 
 /// Decodes `input` as one message of type `T` under the message's own
@@ -251,7 +250,7 @@ pub(crate) fn every(source: &mut Source) -> Every {
         unsigned_hyper: source.u64(),
         flag: source.bool(),
         shade: shade(source),
-        big: Box::new(array(source)),
+        big: boxed(array(source)),
         var: source.bytes(0..=8),
         name: label(source),
         fixed: [source.u32(), source.u32()],
@@ -351,5 +350,81 @@ pub(crate) mod size {
             + 4
             + every.list.iter().map(label).sum::<usize>()
             + entry(&every.what)
+    }
+}
+
+/// The tests' heap requests, made outside the codec's ledger.
+///
+/// The crate's `clippy.toml` bans the calls that allocate, for the codec's
+/// sake, under the same lint as the clock bans of coding standards rule 7.
+/// An exception for the tests' allocations wider than this module would
+/// silence those bans too, so every call the allocation bans name is made
+/// here, and the tests call these instead.
+pub(crate) mod heap {
+    #![expect(
+        clippy::disallowed_methods,
+        reason = "the tests build inputs and expectations outside the codec's ledger"
+    )]
+
+    use std::fmt::Display;
+
+    /// An owned copy, in place of `to_vec` and `to_owned`.
+    pub(crate) trait Owned {
+        type Owned;
+
+        fn owned(&self) -> Self::Owned;
+    }
+
+    impl<T: Clone> Owned for [T] {
+        type Owned = Vec<T>;
+
+        fn owned(&self) -> Vec<T> {
+            self.to_vec()
+        }
+    }
+
+    impl Owned for str {
+        type Owned = String;
+
+        fn owned(&self) -> String {
+            self.to_owned()
+        }
+    }
+
+    /// `collect`, under another name.
+    pub(crate) trait Gather: Iterator + Sized {
+        fn gather<B: FromIterator<Self::Item>>(self) -> B {
+            self.collect()
+        }
+    }
+
+    impl<I: Iterator> Gather for I {}
+
+    /// `to_string`, under another name.
+    pub(crate) trait Text: Display {
+        fn text(&self) -> String {
+            self.to_string()
+        }
+    }
+
+    impl<T: Display + ?Sized> Text for T {}
+
+    /// `extend`, under another name.
+    pub(crate) trait Append<E>: Extend<E> {
+        fn append_all(&mut self, items: impl IntoIterator<Item = E>) {
+            self.extend(items);
+        }
+    }
+
+    impl<E, C: Extend<E>> Append<E> for C {}
+
+    /// `Box::new`.
+    pub(crate) fn boxed<T>(value: T) -> Box<T> {
+        Box::new(value)
+    }
+
+    /// `Vec::with_capacity`.
+    pub(crate) fn with_capacity<T>(capacity: usize) -> Vec<T> {
+        Vec::with_capacity(capacity)
     }
 }

@@ -13,6 +13,7 @@ use ironafs_xdr::{
     Classified, Decode, Decoder, Encode, Encoder, Error, Message, MessageType, decode,
 };
 
+use crate::support::heap::Owned;
 use crate::support::{encoded, hex};
 use crate::types::{
     BLOB, Blob, ENTRY, Entry, FIVE, FLAG, Five, Flag, INTS, Ints, LABEL, Label, NOTE, Note, PAIR,
@@ -141,7 +142,7 @@ fn golden_g7_variable_opaque() {
 fn golden_g8_label() {
     both_ways(
         &LABEL,
-        &Label(b"files".to_vec()),
+        &Label(b"files".owned()),
         "00000005 66696c65 73000000",
     );
 }
@@ -157,7 +158,7 @@ fn golden_g9_unsigned_int_array() {
 fn golden_g10_pair() {
     both_ways(
         &PAIR,
-        &Pair([Label(b"a".to_vec()), Label(vec![])]),
+        &Pair([Label(b"a".owned()), Label(vec![])]),
         "00000001 61000000 00000000",
     );
 }
@@ -169,7 +170,7 @@ fn golden_g11_entry() {
     both_ways(&ENTRY, &Entry::Plain, "00000000");
     both_ways(
         &ENTRY,
-        &Entry::Linked(b"x".to_vec()),
+        &Entry::Linked(b"x".owned()),
         "00000001 00000001 78000000",
     );
     both_ways(
@@ -187,9 +188,9 @@ fn golden_g11_entry() {
 #[test]
 fn golden_g12_note() {
     let note = Note {
-        title: b"readme".to_vec(),
-        what: Entry::Linked(b"docs".to_vec()),
-        owner: b"root".to_vec(),
+        title: b"readme".owned(),
+        what: Entry::Linked(b"docs".owned()),
+        owner: b"root".owned(),
         body: vec![1, 2, 3, 4, 5],
     };
     let expected = "00000006 72656164 6d650000 00000001 00000004 646f6373 \

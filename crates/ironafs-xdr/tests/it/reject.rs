@@ -24,6 +24,7 @@ use ironafs_xdr::{
     Classified, Decode, Decoder, Error, ErrorKind, Message, MessageType, Reservation,
 };
 
+use crate::support::heap::{Append, Gather, Owned, Text};
 use crate::support::{hex, traced_with_budget};
 use crate::types::{Blob, Entry, Every, Flag, Ints, Label, Names, Note, Pair, Sealed, Shade, Tags};
 
@@ -70,12 +71,12 @@ fn parse(file: &Path) -> Case {
     {
         let (key, value) = line.split_once(' ').unwrap_or((line, ""));
         match key {
-            "type" => case.type_name = value.to_owned(),
-            "breaks" => case.breaks = value.to_owned(),
+            "type" => case.type_name = value.owned(),
+            "breaks" => case.breaks = value.owned(),
             "expect" => {
                 let (kind, name) = value.split_once(' ').unwrap();
-                case.kind = kind.to_owned();
-                case.name = (name != "-").then(|| name.to_owned());
+                case.kind = kind.owned();
+                case.name = (name != "-").then(|| name.owned());
             }
             "offset" => case.offset = optional_number(value),
             "extent" => case.extent = optional_number(value),
@@ -86,9 +87,9 @@ fn parse(file: &Path) -> Case {
                         .split_whitespace()
                         .map(|request| {
                             let (name, bytes) = request.split_once(':').unwrap();
-                            (name.to_owned(), bytes.to_owned())
+                            (name.owned(), bytes.owned())
                         })
-                        .collect();
+                        .gather();
                 }
             }
             "input" => {
@@ -171,7 +172,7 @@ fn fixtures() -> Vec<PathBuf> {
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "txt"))
-        .collect();
+        .gather();
     files.sort();
     files
 }
@@ -210,7 +211,7 @@ fn reject_corpus_fails_with_exact_kind_offset_and_reservations() {
                     name,
                 }
             })
-            .collect();
+            .gather();
         assert_eq!(seen, expected, "{label}");
     }
 }
@@ -221,11 +222,11 @@ fn reject_corpus_fails_with_exact_kind_offset_and_reservations() {
 #[test]
 fn sealed_errors_name_kind_and_field_only() {
     let mut over = hex("00000011");
-    over.extend([0x5a; 20]);
-    over.extend(hex("00000001 00000000"));
+    over.append_all([0x5a; 20]);
+    over.append_all(hex("00000001 00000000"));
     let (error, _) = reject::<Sealed<'_>>(&over, None);
     assert_eq!(
-        error.to_string(),
+        error.text(),
         "length over declared bound: test.sealed.key, limit 16"
     );
     assert_eq!(
@@ -234,7 +235,7 @@ fn sealed_errors_name_kind_and_field_only() {
     );
     let cut = hex("00000000 0000");
     let (error, _) = reject::<Sealed<'_>>(&cut, None);
-    assert_eq!(error.to_string(), "input truncated");
+    assert_eq!(error.text(), "input truncated");
     assert_eq!(
         format!("{error:?}"),
         "Error { kind: Truncated, name: None, limit: None, position: None }"
