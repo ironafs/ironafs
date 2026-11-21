@@ -164,7 +164,8 @@ is broken.
 
 ## 3. The design in short
 
-1. M2a's replies carry five wire time fields (WT1 to WT5): a file's two
+1. M2a's incoming messages (four reply fields and one break) carry
+   five wire time fields (WT1 to WT5): a file's two
    modification times in the file service's status record, a callback
    promise's expiry in a reply and again in a break, and a fileserver's
    own time in the keepalive's reply. M2a converts three of them, the two
@@ -363,7 +364,9 @@ specification's. Each is `[OWN]` under C38 unless it names its source.
    wide each one is.
 9. **Converted at receipt.** Each row is converted when its reply is
    decoded, after the XDR decode and before the reply's values are handed
-   on `[ADR 0004 O40.2: Working]`. The result, a time or a refusal, is
+   on `[ADR 0004 O40.2: Working]`, read as covering every server-sent time; if it
+   covers only clock samples, this point is IronAFS's own choice for the
+   other rows, for the reason of 5.5, G2 `[OWN]`. The result, a time or a refusal, is
    kept per field: a refusal fails what needs that field (5.1.2, the
    "Refusal" column), not the decode, and not the reply's other fields
    (S3, 5.4, point 8). Section 5.5, G2, records the wording this needs
@@ -481,11 +484,12 @@ clocks' wording.
    start whose deadline S4 calls monotonic. **Resolution:** each names
    its clock. Recommended: a call's deadline is the caller's `Deadline`
    with its own clock kind (S7), which for the keepalive is the boot
-   clock; R, the variant memo, the callback tick and the rate buckets'
-   refill are on the boot
+   clock; R, the variant memo and the callback tick are on the boot
    clock, since each measures time that passes for peers while the host
-   sleeps; Rx's idle timeout and retransmission timers are on the awake
-   clock, as C37, point 1, says for round-trip and retransmission
+   sleeps; the callback service's rate buckets refill on the awake clock,
+   since they meter the client's own processing and a suspend should not
+   hand a flood a full burst on resume; Rx's idle timeout and
+   retransmission timers are on the awake clock, as C37, point 1, says for round-trip and retransmission
    timers; the instant given to Rx's machine is a `Stamp`, which carries
    both (S7). Not a wire time field; recorded here because the table's
    "Fed to a deadline?" column depends on it.
@@ -532,7 +536,9 @@ Every value read from a reply is untrusted (coding standards rule 2).
 7. **The promise's deadline.** A span of 0 or less grants no promise
    before anything else. A positive span is cut (S1, section 6, point
    5) and converted from `i64` nanoseconds into the seams
-   specification's `Duration` by a checked conversion. The deadline is
+   specification's `Duration` by a checked conversion; after the cut a
+   positive span is at most 7 200 s, so this conversion cannot fail, and
+   is checked only so that no cast exists. The deadline is
    then built by `Deadline::boot_after(now, first_sent, span)` (S7, 5.3,
    points 1 and 2), where `first_sent` is the `Reply`'s send stamp and
    `now` the caller's fresh `Clock` sample. Every way this can fail
@@ -540,7 +546,8 @@ Every value read from a reply is untrusted (coding standards rule 2).
    reply's other values stand:
    - **`first_sent` is `None`** (the send sample failed; S7, `Reply`):
      no lifetime is counted from it, so no deadline is built;
-   - **the `now` sample fails** (`DeadlineError::Clock`): no deadline;
+   - **the `now` sample fails** (`DeadlineError::Clock`, from the
+     sampling function, S7, 5.3, point 2): no deadline;
      the clock failure itself is S7's episode, which makes callbacks
      suspect (C37, point 5);
    - **`DeadlineError::FromAfterNow`** (the send stamp is newer than
@@ -548,10 +555,10 @@ Every value read from a reply is untrusted (coding standards rule 2).
      S7, 5.3, point 2): no deadline, never retried with another stamp,
      as S7 requires;
    - **`DeadlineError::Overflow`** (the sum cannot be represented): no
-     deadline;
-   - **the span's conversion into `Duration` fails**: no deadline.
-   These are all the errors `boot_after` returns (S7, 5.3, point 1:
-   `Clock`, `FromAfterNow`, `Overflow`). In each case the entry is served
+     deadline.
+   `boot_after` itself returns only `FromAfterNow` and `Overflow`;
+   `Clock` comes from the sampling that supplies `now` (S7, 5.3, point
+   2), so these are every error of the construction. In each case the entry is served
    under bounded revalidation (ADR 0004, C32, point 2), as for any file
    with no promise.
 
@@ -695,8 +702,8 @@ and asserts that every time either converts or is refused, never wraps.
   In the simulator, a status reply with a promise, handled with in turn:
   a `Reply` whose `first_sent` is `None`; a failed `now` sample; a
   scripted boot-clock regression so the send stamp is newer than `now`;
-  a span whose sum with the send instant overflows (a test row with a
-  64-bit span). Each grants no promise, counts `time_refused` with its
+  a send stamp whose boot instant is scripted within 7 200 s of the
+  boot instant's maximum, so the sum overflows. Each grants no promise, counts `time_refused` with its
   reason, leaves the reply's status and data version in place, and
   serves the entry under bounded revalidation; none is retried with
   another stamp.
@@ -743,7 +750,7 @@ This specification's own choices:
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| S1 | DECISION | The callback service specification, `callbacks.md` (#66), draft of 2026-11-21, at the revision on the keepalive branch (commit 0c3b8d7, which adds the lowering count; its section 6 has six points, where the earlier revision at b85db41 has five and numbers the promise lifetime 4 and the tick 5): 5.1.2, 5.1.3 (points 1 and 2), 5.1.4, 5.5, 5.8, section 6 (points 2, 5 and 6), 10.5 (C16) and 13 (Q1, Q9). Its leads K1 to K3 are its own; nothing here takes a wire fact from them | 2, 5, 6, 8, 10 |
+| S1 | DECISION | The callback service specification, `callbacks.md` (#66), draft of 2026-11-21, at the revision on the keepalive branch (commit 0c3b8d7, which adds the lowering count; its section 6 has six points, where the earlier revision at b85db41 has five and numbers the promise lifetime 4 and the tick 5): 5.1.2, 5.1.3 (points 1, 2, 4 and 6), 5.1.4, 5.5, 5.6 (point 9, row I2), 5.8, section 6 (points 2, 5 and 6), 10.5 (C16) and 13 (Q1, Q9). Its leads K1 to K3 are its own; nothing here takes a wire fact from them | 2, 5, 6, 8, 10 |
 | S2 | DECISION | The keepalive and server time specification, `keepalive-and-server-time.md` (#81), draft of 2026-11-21: 5.1, 5.4, 5.5, 5.7, 5.8, 10.5 and 13 | 1, 2, 5, 7, 8, 10 |
 | S3 | DECISION | The VL and FS read specification, `vl-fs-read.md` (#65), draft of 2026-11-21: 5.1.2, 5.1.3 (points 2 to 6), 5.1.4, 5.4 (points 5 and 8), section 6 (A9) and 13 (Q1, Q9) | 2, 5, 7, 8 |
 | S4 | DECISION | The Rx specification, `rx.md` (#55), draft of 2026-11-21: 5.1 (points 1 and 5), 5.4 (point 12), 5.5 (point 4), 5.6 (points 1, 2, 5 and 6), 5.7 (points 1 and 11) and 5.12 (point 6). Every wire fact there is UNVERIFIED, from the community Rx draft, which was not opened for this specification | 5.1, 5.2, 5.5 |
@@ -792,8 +799,11 @@ and the evidence label EXECUTED.
   calls with the server's clock set to known values, including past
   2038-01-19T03:14:07Z where the venue allows it: the server chooses the
   expiry, so its width, epoch and signedness show only through how the
-  value follows the server's clock, and through whether a server past
-  the signed boundary sends a word from 2³¹ or a wrapped one. If the
+  value follows the server's clock, and, past the signed boundary,
+  through what the server does with the promise it granted: whether it
+  still breaks it before its stated end, treats it as already expired,
+  refuses to grant, or sends a saturated value. The word itself cannot
+  tell, since both readings give the same bits (5.3, point 7). If the
   venue cannot be set past 2038, WT3's signedness stays open, and Q2's
   rule applies to it; for WT5, the server's clock set to
   known values (S2's TK1). Blocks: every converter entry, and so every
@@ -834,12 +844,14 @@ and the evidence label EXECUTED.
   Recommendation, a class S question for the callback (#66) and
   keepalive (#81) specifications' revision, with this table's row
   changed in the same pull request: a timestamp expiry is used only with
-  a qualified skew sample younger than `ka.skew.sample_max`, corrected
-  by D plus the sample's uncertainty; without one, the expiry is treated
+  a qualified skew sample younger than `ka.skew.sample_max`, shortened
+  by D plus the sample's uncertainty if the sample shows the server
+  ahead, and never lengthened if it shows it behind (S2, 5.7, point 6);
+  without one, the expiry is treated
   as absent: it grants no promise, or, if that revision prefers, a
   promise of a short fixed lifetime of the client's own choosing that
-  takes nothing from the server's value. In M2a, where no sample can
-  exist, that means a timestamp expiry grants no promise beyond that
+  takes nothing from the server's value. In this version, while S2's
+  gate is closed and no sample can exist, that means a timestamp expiry grants no promise beyond that
   fixed lifetime. Not needed if WT3 is a span.
 - **Q4. Order of the cut and the correction.** 5.5, G3. Recommendation:
   correction first, then the cut, with S2, 5.7, point 6, changed to
