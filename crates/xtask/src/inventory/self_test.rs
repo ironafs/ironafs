@@ -243,6 +243,94 @@ const CASES: &[Case] = &[
         },
     },
     Case {
+        name: "a quarantined test deleted from the source, its marked line kept",
+        base: (
+            Some(
+                "inv-demo tests::alpha\ninv-demo tests::beta\ninv-demo tests::quiet quarantined=#1\ninv-demo tests::vanished quarantined=#1\n",
+            ),
+            None,
+        ),
+        current: (
+            Some(
+                "inv-demo tests::alpha\ninv-demo tests::beta\ninv-demo tests::quiet quarantined=#1\ninv-demo tests::vanished quarantined=#1\n",
+            ),
+            None,
+        ),
+        plant: keep,
+        expect: |outcome| {
+            only(
+                outcome,
+                |found| matches!(found, Violation::QuarantinedNotListed { key, issue: 1 } if named(key, "tests::vanished")),
+            )
+        },
+    },
+    Case {
+        name: "a line tagged for a target no CI job reconciles",
+        base: (Some(CLEAN), None),
+        current: (
+            Some(
+                "inv-demo tests::alpha\ninv-demo tests::beta\ninv-demo tests::mac target=aarch64-apple-darwin\ninv-demo tests::quiet quarantined=#1\n",
+            ),
+            None,
+        ),
+        plant: keep,
+        expect: |outcome| {
+            only(
+                outcome,
+                |found| matches!(found, Violation::Format { reason, .. } if reason.contains("no CI job")),
+            )
+        },
+    },
+    Case {
+        name: "a re-created test removed again, excused only by its earlier record",
+        base: (
+            Some(
+                "inv-demo tests::alpha\ninv-demo tests::beta\ninv-demo tests::old\ninv-demo tests::quiet quarantined=#1\n",
+            ),
+            Some("inv-demo tests::old #1 merged into alpha\n"),
+        ),
+        current: (
+            Some(CLEAN),
+            Some("inv-demo tests::old #1 merged into alpha\n"),
+        ),
+        plant: keep,
+        expect: |outcome| {
+            only(
+                outcome,
+                |found| matches!(found, Violation::UnrecordedRemoval { name, .. } if name == "tests::old"),
+            )
+        },
+    },
+    Case {
+        name: "the same second removal, with its own new record",
+        base: (
+            Some(
+                "inv-demo tests::alpha\ninv-demo tests::beta\ninv-demo tests::old\ninv-demo tests::quiet quarantined=#1\n",
+            ),
+            Some("inv-demo tests::old #1 merged into alpha\n"),
+        ),
+        current: (
+            Some(CLEAN),
+            Some(
+                "inv-demo tests::old #1 merged into alpha\ninv-demo tests::old #2 merged into beta\n",
+            ),
+        ),
+        plant: keep,
+        expect: |outcome| outcome.violations.is_empty() && outcome.removed.len() == 1,
+    },
+    Case {
+        name: "an inventory out of order",
+        base: (Some(CLEAN), None),
+        current: (
+            Some(
+                "inv-demo tests::beta\ninv-demo tests::alpha\ninv-demo tests::quiet quarantined=#1\n",
+            ),
+            None,
+        ),
+        plant: keep,
+        expect: |outcome| only(outcome, |found| matches!(found, Violation::Format { .. })),
+    },
+    Case {
         name: "a listed test that failed",
         base: (Some(CLEAN), None),
         current: (Some(CLEAN), None),

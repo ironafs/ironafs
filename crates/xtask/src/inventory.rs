@@ -28,6 +28,12 @@ pub(crate) const TARGETS: &[&str] = &[
     "x86_64-unknown-linux-gnu",
 ];
 
+/// The targets whose entries a CI job reconciles, the only ones a
+/// `target=` tag may name: a line tagged for a target no job runs would
+/// never be checked. The change that adds a CI job running `cargo xtask
+/// inventory` on another target adds that target here.
+pub(crate) const RECONCILED_TARGETS: &[&str] = &["x86_64-unknown-linux-gnu"];
+
 /// The feature sets a line may name. A line with no `features=` tag
 /// belongs to the first, the one every run of `cargo xtask inventory` uses.
 pub(crate) const FEATURE_SETS: &[&str] = &["default"];
@@ -105,6 +111,10 @@ pub(crate) enum Violation {
     ListedNotRun {
         key: Key,
     },
+    QuarantinedNotListed {
+        key: Key,
+        issue: u64,
+    },
     UnrecordedRemoval {
         binary: String,
         name: String,
@@ -133,11 +143,20 @@ impl fmt::Display for Violation {
                 "tests/inventory/{file}:{line}: a quarantine mark cites its issue, as \
                  `quarantined=#<issue>` (coding standards rule 15)"
             ),
+            Self::Unlisted { key, file } if RECONCILED_TARGETS.contains(&key.target.as_str()) => {
+                write!(
+                    formatter,
+                    "{key}: in the run but not in tests/inventory/{file}.txt; add the line \
+                     `{} {} target={}` (or run `cargo xtask inventory update` on that target)",
+                    key.binary, key.name, key.target
+                )
+            }
             Self::Unlisted { key, file } => write!(
                 formatter,
-                "{key}: in the run but not in tests/inventory/{file}.txt; add the line \
-                 `{} {} target={}` (or run `cargo xtask inventory update` on that target)",
-                key.binary, key.name, key.target
+                "{key}: in the run but not in tests/inventory/{file}.txt; add the untagged \
+                 line `{} {}`, or remove the target tag from its line (run `cargo xtask \
+                 inventory update`)",
+                key.binary, key.name
             ),
             Self::ListedNotRun { key } => write!(
                 formatter,
@@ -158,6 +177,12 @@ impl fmt::Display for Violation {
                 formatter,
                 "{key}: quarantined in the base revision (#{issue}) and dropped from the \
                  inventory; a quarantined test stays listed and marked"
+            ),
+            Self::QuarantinedNotListed { key, issue } => write!(
+                formatter,
+                "{key}: marked quarantined (#{issue}) but no longer listed by nextest, which \
+                 lists ignored and filtered tests; a deleted test's line is removed and \
+                 recorded in tests/inventory/{REMOVED}"
             ),
             Self::QuarantineLifted { key, issue } => write!(
                 formatter,
@@ -282,11 +307,12 @@ fn parse_inventory(crate_name: &str, text: &str, violations: &mut Vec<Violation>
             }
         }
         if let Some(target) = &entry.target
-            && !TARGETS.contains(&target.as_str())
+            && !RECONCILED_TARGETS.contains(&target.as_str())
         {
             format(format!(
-                "unknown target `{target}`; the inventory's targets are {}",
-                TARGETS.join(", ")
+                "target `{target}`: no CI job reconciles it, so a line tagged for it would \
+                 never be checked; a tag may name {}",
+                RECONCILED_TARGETS.join(", ")
             ));
             bad = true;
         }
@@ -358,15 +384,16 @@ fn expand(files: &Files, violations: &mut Vec<Violation>) -> BTreeMap<Key, Mark>
     keys
 }
 
+/// One well-formed line of the removal record: the line, the name it
+/// records and its pull request and reason.
+type Record = (String, (String, String), String);
+
 /// The removal record's lines, each checked as
-/// `<binary id> <test name> #<pull request> <reason>`, and the names they
-/// record.
-fn parse_removed(
-    text: &str,
-    violations: &mut Vec<Violation>,
-) -> (Vec<String>, BTreeMap<(String, String), String>) {
+/// `<binary id> <test name> #<pull request> <reason>`, and the well-formed
+/// ones as records.
+fn parse_removed(text: &str, violations: &mut Vec<Violation>) -> (Vec<String>, Vec<Record>) {
     let mut kept = Vec::new();
-    let mut recorded = BTreeMap::new();
+    let mut recorded = Vec::new();
     for (index, line) in lines(REMOVED, text, violations).into_iter().enumerate() {
         kept.push(line.to_owned());
         let mut fields = line.splitn(4, ' ');
@@ -381,10 +408,11 @@ fn parse_removed(
             violations.push(removed_format(index + 1));
             continue;
         }
-        recorded.insert(
+        recorded.push((
+            line.to_owned(),
             (binary.to_owned(), name.to_owned()),
             format!("{pull} {reason}"),
-        );
+        ));
     }
     (kept, recorded)
 }
@@ -446,17 +474,26 @@ fn compare_run(
             .entry(key.clone())
             .or_insert_with(|| crate_of(&key.binary).to_owned());
     }
-    for (key, package) in in_run {
-        if !keys.contains_key(&key) {
-            outcome
-                .violations
-                .push(Violation::Unlisted { key, file: package });
+    for (key, package) in &in_run {
+        if !keys.contains_key(key) {
+            outcome.violations.push(Violation::Unlisted {
+                key: key.clone(),
+                file: package.clone(),
+            });
         }
     }
     for (key, mark) in keys.iter().filter(|(key, _)| own(key, run)) {
         outcome.compared += 1;
         match (results.get(key), mark) {
             (Some(true), _) => {}
+            // nextest lists ignored and filtered tests too, so a mark
+            // covers only a test that still exists.
+            (None, Some(Some(issue))) if !in_run.contains_key(key) => {
+                outcome.violations.push(Violation::QuarantinedNotListed {
+                    key: key.clone(),
+                    issue: *issue,
+                });
+            }
             (None, Some(issue)) => outcome.skipped.push(match issue {
                 Some(issue) => format!("{key} (quarantined, #{issue})"),
                 None => format!("{key} (quarantined, no issue)"),
@@ -480,12 +517,19 @@ fn compare_base(
     outcome: &mut Outcome,
 ) -> BTreeMap<Key, Mark> {
     let violations = &mut outcome.violations;
-    let (removed_lines, recorded) =
+    let (removed_lines, records) =
         parse_removed(current.removed.as_deref().unwrap_or_default(), violations);
     // The base revision's own format was checked when it landed.
     let mut ignored = Vec::new();
     let base_keys = expand(base, &mut ignored);
     let (base_lines, _) = parse_removed(base.removed.as_deref().unwrap_or_default(), &mut ignored);
+    // Only a line this change adds records a removal it makes: a line the
+    // base already holds recorded an earlier removal of the same name.
+    let recorded: BTreeMap<(String, String), String> = records
+        .into_iter()
+        .filter(|(line, _, _)| !base_lines.contains(line))
+        .map(|(_, name, record)| (name, record))
+        .collect();
     for line in base_lines {
         if !removed_lines.contains(&line) {
             violations.push(Violation::RemovalRecordDeleted { line });
@@ -576,8 +620,10 @@ fn count(
 /// Adds a line for every test of the run that has no entry for the run's
 /// target and feature set, keeping every existing line, and returns each
 /// file that changed with its new text. A test with no line at all gets an
-/// untagged line; one listed for other targets gets one for this target.
-pub(crate) fn update(current: &Files, run: &Run) -> Vec<(String, String)> {
+/// untagged line; one listed for other targets gets one for this target, or,
+/// when no tag may name this target, is returned by name to be untagged by
+/// hand.
+pub(crate) fn update(current: &Files, run: &Run) -> (Vec<(String, String)>, Vec<String>) {
     let mut ignored = Vec::new();
     let keys = expand(current, &mut ignored);
     let mut files: BTreeMap<String, Vec<String>> = current
@@ -586,6 +632,7 @@ pub(crate) fn update(current: &Files, run: &Run) -> Vec<(String, String)> {
         .map(|(name, text)| (name.clone(), text.lines().map(str::to_owned).collect()))
         .collect();
     let mut changed = BTreeSet::new();
+    let mut untag = Vec::new();
     for listed in &run.listed {
         let key = Key {
             binary: listed.binary.clone(),
@@ -601,6 +648,11 @@ pub(crate) fn update(current: &Files, run: &Run) -> Vec<(String, String)> {
             .any(|other| other.binary == key.binary && other.name == key.name);
         let mut line = format!("{} {}", key.binary, key.name);
         if named {
+            if !RECONCILED_TARGETS.contains(&key.target.as_str()) {
+                // No tag may name this target: the line must lose its tag.
+                untag.push(line);
+                continue;
+            }
             line = format!("{line} target={}", key.target);
         }
         if FEATURE_SETS.first() != Some(&key.features.as_str()) {
@@ -612,7 +664,7 @@ pub(crate) fn update(current: &Files, run: &Run) -> Vec<(String, String)> {
             changed.insert(listed.package.clone());
         }
     }
-    changed
+    let written = changed
         .into_iter()
         .filter_map(|name| {
             let mut lines = files.remove(&name)?;
@@ -621,7 +673,8 @@ pub(crate) fn update(current: &Files, run: &Run) -> Vec<(String, String)> {
             lines.push(String::new());
             Some((name, lines.join("\n")))
         })
-        .collect()
+        .collect();
+    (written, untag)
 }
 
 const CHECK: &str = "inventory";
@@ -749,11 +802,20 @@ fn run_mode(mode: InventoryMode, output: &mut impl Write) -> Result<(), Error> {
             let run = source::list(&cargo)?;
             let dir = root.join(DIR);
             let current = source::read_files(&dir)?;
-            let changed = update(&current, &run);
+            let (changed, untag) = update(&current, &run);
             source::write_files(&dir, &changed)?;
             for (name, _) in &changed {
                 writeln!(output, "inventory update: wrote {DIR}/{name}.txt")
                     .map_err(Error::io("report inventory update"))?;
+            }
+            for name in &untag {
+                writeln!(
+                    output,
+                    "inventory update: {name} runs on {} too; remove the target tag from its \
+                     line",
+                    run.target
+                )
+                .map_err(Error::io("report inventory update"))?;
             }
             writeln!(
                 output,

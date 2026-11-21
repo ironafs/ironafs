@@ -64,7 +64,10 @@ xtask inventory::tests::inventory_check_fails_on_malformed_lines
 xtask inventory::tests::inventory_check_fails_on_malformed_removal_record
 xtask inventory::tests::inventory_check_fails_on_narrowed_target_against_main
 xtask inventory::tests::inventory_check_fails_on_quarantine_without_issue
+xtask inventory::tests::inventory_check_fails_on_quarantined_test_not_listed
+xtask inventory::tests::inventory_check_fails_on_removal_excused_by_an_old_record
 xtask inventory::tests::inventory_check_fails_on_removed_test
+xtask inventory::tests::inventory_check_fails_on_target_tag_no_job_reconciles
 xtask inventory::tests::inventory_check_fails_on_unlisted_test
 xtask inventory::tests::inventory_check_fails_on_unrecorded_removal_against_main
 xtask inventory::tests::inventory_check_ignores_entries_for_other_targets
@@ -74,6 +77,7 @@ xtask inventory::tests::inventory_check_without_base_inventory_checks_the_run
 xtask inventory::tests::inventory_exits_2_when_it_could_not_run_and_1_on_violations
 xtask inventory::tests::inventory_verdict_refuses_a_run_that_compared_nothing
 xtask inventory::tests::update_adds_new_tests_and_keeps_every_line
+xtask inventory::tests::update_names_a_test_tagged_for_another_target_instead_of_tagging_it
 xtask inventory::tests::update_writes_a_file_for_a_new_crate_and_nothing_when_complete
 xtask json::tests::parse_decodes_escapes_and_surrogate_pairs
 xtask json::tests::parse_reads_nested_objects_arrays_and_scalars

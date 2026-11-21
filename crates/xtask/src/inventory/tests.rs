@@ -123,10 +123,14 @@ fn inventory_check_fails_on_unrecorded_removal_against_main() {
 
 #[test]
 fn inventory_check_fails_on_narrowed_target_against_main() {
-    // Narrowing a line to another target removes it from this one.
+    // Narrowing a line to one target removes it from the others.
     let base = files("demo a\ndemo b\ndemo c\n", None);
-    let current = files("demo a\ndemo b\ndemo c target=aarch64-apple-darwin\n", None);
-    let outcome = reconcile(&current, Some(&base), &ordinary_run());
+    let current = files(
+        "demo a\ndemo b\ndemo c target=x86_64-unknown-linux-gnu\n",
+        None,
+    );
+    let all = [("demo", "a"), ("demo", "b"), ("demo", "c")];
+    let outcome = reconcile(&current, Some(&base), &run(&all, &all));
 
     assert_only(
         &outcome,
@@ -298,8 +302,14 @@ fn inventory_check_compares_nothing_on_an_empty_run() {
 
 #[test]
 fn inventory_check_ignores_entries_for_other_targets() {
-    let current = files("demo a\ndemo b\ndemo m target=aarch64-apple-darwin\n", None);
-    let outcome = reconcile(&current, Some(&current), &ordinary_run());
+    // A run on the development Mac leaves the Linux-only line to CI.
+    let current = files(
+        "demo a\ndemo b\ndemo m target=x86_64-unknown-linux-gnu\n",
+        None,
+    );
+    let mut mac = ordinary_run();
+    mac.target = "aarch64-apple-darwin".to_owned();
+    let outcome = reconcile(&current, Some(&current), &mac);
 
     assert_eq!(violations(&outcome), [] as [String; 0]);
     assert_eq!(outcome.compared, 2);
@@ -321,7 +331,7 @@ fn inventory_check_fails_on_malformed_lines() {
             "unknown target",
         ),
         (
-            "demo a\ndemo b\ndemo c target=aarch64-apple-darwin target=aarch64-apple-darwin\n",
+            "demo a\ndemo b\ndemo c target=x86_64-unknown-linux-gnu target=x86_64-unknown-linux-gnu\n",
             "repeated tag",
         ),
         ("demo a\ndemo b\nother c\n", "other crate"),
@@ -355,36 +365,40 @@ fn inventory_check_without_base_inventory_checks_the_run() {
 
 #[test]
 fn update_adds_new_tests_and_keeps_every_line() {
-    let current = files(
-        "demo a quarantined=#7\ndemo gone\ndemo z target=aarch64-apple-darwin\n",
-        None,
-    );
-    let listed = run(
-        &[
-            ("demo", "a"),
-            ("demo", "b"),
-            ("demo", "z"),
-            ("demo::test/it", "c"),
-        ],
-        &[],
-    );
+    let current = files("demo a quarantined=#7\ndemo gone\n", None);
+    let listed = run(&[("demo", "a"), ("demo", "b"), ("demo::test/it", "c")], &[]);
 
+    let (changed, untag) = update(&current, &listed);
     assert_eq!(
-        update(&current, &listed),
+        changed,
         [(
             "demo".to_owned(),
-            "demo a quarantined=#7\ndemo b\ndemo gone\n\
-             demo z target=aarch64-apple-darwin\ndemo z target=x86_64-unknown-linux-gnu\n\
-             demo::test/it c\n"
-                .to_owned()
+            "demo a quarantined=#7\ndemo b\ndemo gone\ndemo::test/it c\n".to_owned()
         )]
     );
+    assert_eq!(untag, [] as [String; 0]);
+}
+
+#[test]
+fn update_names_a_test_tagged_for_another_target_instead_of_tagging_it() {
+    // On the Mac, a test whose only line is tagged for Linux also runs here:
+    // its line must lose the tag, which no CI job could check for the Mac.
+    let current = files(
+        "demo a\ndemo b\ndemo z target=x86_64-unknown-linux-gnu\n",
+        None,
+    );
+    let mut mac = run(&[("demo", "a"), ("demo", "b"), ("demo", "z")], &[]);
+    mac.target = "aarch64-apple-darwin".to_owned();
+
+    let (changed, untag) = update(&current, &mac);
+    assert_eq!(changed, []);
+    assert_eq!(untag, ["demo z"]);
 }
 
 #[test]
 fn update_writes_a_file_for_a_new_crate_and_nothing_when_complete() {
     let current = files("demo a\ndemo b\n", None);
-    assert_eq!(update(&current, &ordinary_run()), []);
+    assert_eq!(update(&current, &ordinary_run()).0, []);
 
     let mut listed = ordinary_run();
     listed.listed.push(Listed {
@@ -393,7 +407,7 @@ fn update_writes_a_file_for_a_new_crate_and_nothing_when_complete() {
         name: "t".to_owned(),
     });
     assert_eq!(
-        update(&current, &listed),
+        update(&current, &listed).0,
         [("fresh".to_owned(), "fresh t\n".to_owned())]
     );
 }
@@ -445,4 +459,51 @@ fn inventory_verdict_refuses_a_run_that_compared_nothing() {
         ..Outcome::default()
     };
     assert!(matches!(super::verdict(&found), Err(Error::Rules { .. })));
+}
+
+#[test]
+fn inventory_check_fails_on_quarantined_test_not_listed() {
+    // The test's source is deleted; its marked line stays. nextest lists
+    // ignored and filtered tests, so a quarantined test is still listed.
+    let current = files("demo a\ndemo b\ndemo gone quarantined=#7\n", None);
+    let outcome = reconcile(&current, Some(&current), &ordinary_run());
+
+    assert_only(
+        &outcome,
+        |found| matches!(found, Violation::QuarantinedNotListed { key, issue: 7 } if key.name == "gone"),
+    );
+}
+
+#[test]
+fn inventory_check_fails_on_target_tag_no_job_reconciles() {
+    for target in ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu"] {
+        let current = files(&format!("demo a\ndemo b\ndemo m target={target}\n"), None);
+        let outcome = reconcile(&current, Some(&current), &ordinary_run());
+        assert_only(
+            &outcome,
+            |found| matches!(found, Violation::Format { reason, .. } if reason.contains("no CI job")),
+        );
+    }
+}
+
+#[test]
+fn inventory_check_fails_on_removal_excused_by_an_old_record() {
+    // `c` was removed once, recorded, re-created, and is now removed again.
+    let old = "demo c #9 merged into b\n";
+    let base = files("demo a\ndemo b\ndemo c\n", Some(old));
+    let current = files("demo a\ndemo b\n", Some(old));
+    let outcome = reconcile(&current, Some(&base), &ordinary_run());
+
+    assert_only(
+        &outcome,
+        |found| matches!(found, Violation::UnrecordedRemoval { name, .. } if name == "c"),
+    );
+
+    let again = files(
+        "demo a\ndemo b\n",
+        Some("demo c #9 merged into b\ndemo c #12 gone again\n"),
+    );
+    let outcome = reconcile(&again, Some(&base), &ordinary_run());
+    assert_eq!(violations(&outcome), [] as [String; 0]);
+    assert_eq!(outcome.removed, ["demo c (#12 gone again)"]);
 }
