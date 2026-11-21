@@ -396,7 +396,8 @@ caps only on what it keeps `[OWN]`:
 | `inc.record_max` | 256 bytes | one evidence record, all fields | the fields of 5.1.2 at their widths sum to 233 bytes; a compile-time size assertion |
 | `inc.records.per_context_max` | 1 024 records | the records one credential context holds | a context reads few volumes at once; each record is charged to the context's metadata budget (C27, point 4) |
 | `inc.records.total_max` | 65 536 records | the records the daemon holds beyond each context's floor | bounds that part of the table at 16 MiB whatever the number of contexts |
-| `inc.records.floor_per_context` | 32 records | the records each live credential context may always hold, outside `inc.records.total_max` | C27, point 4's floor: no other context's use can take them, so every context can always record its first 32 volumes. The floor is charged to the context's metadata budget; the table's whole size is `inc.record_max` × (`inc.records.total_max` + `inc.records.floor_per_context` × the number of live contexts), and the number of live contexts is bounded by the credential context table (C40) |
+| `inc.records.floor_per_context` | 32 records | the records a context with a floor may always hold, outside `inc.records.total_max` | C27, point 4's floor: no other context's use can take them, so a context with a floor can always record its first 32 volumes. The floor is charged to the context's metadata budget |
+| `inc.records.floors_max` | 1 024 floors | how many contexts hold a floor at once | bounds the floors at 32 768 records (8 MiB), whatever the number of contexts, so the whole table is at most `inc.record_max` × (`inc.records.total_max` + `inc.records.floors_max` × `inc.records.floor_per_context`) = 24 MiB (A3). A floor is granted to a context when it first needs a record, in that order, and returned when its generation retires (point 4); while all floors are taken, a further context has no floor and takes every record from the shared part (point 3) |
 | `inc.records.idle_reclaim_after` | 600 s | how long a context's records must go unused before another context may reclaim its unpinned records above its floor | C27, point 4: idle contexts are evicted first |
 
 Eviction and the full table `[OWN]`:
@@ -405,25 +406,30 @@ Eviction and the full table `[OWN]`:
    of each holder (the contract specification for handles and
    snapshots, the journal specification for records) raises and lowers
    `holders`. Pinned records count against the caps like any other.
-2. **The floor.** A context's first `inc.records.floor_per_context`
-   records are its floor: they do not count against
-   `inc.records.total_max`, and nothing but the context's own activity
-   evicts them. A context's records beyond its floor are its **shared
-   part**, which does count.
-3. **Making room,** when a new record is needed, in this order:
-   1. if the context holds fewer records than its floor, the record is
-      made in its floor;
-   2. otherwise, if the context is at `inc.records.per_context_max`, its
-      own least recently used **unpinned** record is evicted;
-   3. otherwise, if the shared part is at `inc.records.total_max`: the
-      context's own least recently used unpinned record in its shared
-      part is evicted; if it has none, the least recently used unpinned
-      shared-part record of the context idle longest is reclaimed,
-      provided that context has used none of its records for
-      `inc.records.idle_reclaim_after`; if none qualifies, the context's
-      own least recently used unpinned floor record is evicted;
-   4. if no record can be evicted, the outcome is **unrecorded** (point
-      5).
+2. **The floor.** A context that holds a floor (`inc.records.floors_max`)
+   keeps its first `inc.records.floor_per_context` records in it: they
+   do not count against `inc.records.total_max`, and nothing but the
+   context's own activity evicts them. A context's other records are its
+   **shared part**, which does count. A context without a floor has only
+   a shared part.
+3. **Making room,** when a new record is needed, by the first branch
+   that applies:
+   1. the context holds a floor with a free slot: the record is made in
+      its floor;
+   2. the context is at `inc.records.per_context_max`: its own least
+      recently used **unpinned** record is evicted, and the new record
+      takes its slot (in the floor or the shared part, wherever the
+      evicted one was); with no unpinned record, branch 5;
+   3. the shared part is below `inc.records.total_max`: the record is
+      made in the shared part;
+   4. the shared part is at `inc.records.total_max`: the first of these
+      that exists is evicted, and the new record takes its slot: the
+      context's own least recently used unpinned shared-part record; the
+      least recently used unpinned shared-part record of the context idle
+      longest, provided that context has used none of its records for
+      `inc.records.idle_reclaim_after` (a reclaim); the context's own
+      least recently used unpinned floor record. With none, branch 5;
+   5. the outcome is **unrecorded** (point 5).
 4. **What eviction and reclaim do.** Evicting or reclaiming a record
    abandons its `epoch`: no later record of that context holds that value
    (N38, point 8's counter never repeats), so no chunk cached under it is
@@ -437,14 +443,15 @@ Eviction and the full table `[OWN]`:
    the idle context what evicting its chunks would: a refetch when it
    comes back. It never reaches a pinned record or a floor record of
    another context. The records of a retired context generation are
-   removed when the generation retires: no later observation can carry
-   that key. Its handles and snapshots end with the generation; its
+   removed when the generation retires, and its floor is returned: no
+   later observation can carry that key. Its handles and snapshots end with the generation; its
    journal records are detached from it first (C18, point 9), and from
    then on their recorded incarnation is treated as 5.8, point 3, treats
    a record from an earlier run: unconfirmed, and kept quarantined.
-5. **Unrecorded.** A context reaches it only when every record it holds
-   is pinned (it holds a holder on each volume it has a record for) and
-   no idle context's shared-part record can be reclaimed. The
+5. **Unrecorded.** A context reaches it only when the shared part is
+   full or it is at its own cap, every record it holds is pinned (it
+   holds a holder on each volume it has a record for), and no idle
+   context's shared-part record can be reclaimed. The
    observation's values are compared with nothing, a fresh `epoch` is
    taken from the counter for that one request and held only by it, and
    nothing the request fetches is cached, as C20, point 1, treats
@@ -454,9 +461,14 @@ Eviction and the full table `[OWN]`:
    point 10), because a holder needs a record to pin. **Bound:** the
    state ends as soon as the context releases one holder, or another
    context's shared-part records go idle for
-   `inc.records.idle_reclaim_after`; a context holding holders on fewer
-   than `inc.records.floor_per_context` volumes never reaches it. The
-   cost falls on that context alone.
+   `inc.records.idle_reclaim_after`; a context with a floor that holds
+   holders on fewer than `inc.records.floor_per_context` volumes never
+   reaches it. The cost falls on that context alone. **Residual:** an
+   active context is never reclaimed, so other contexts that keep using
+   their records can hold the shared part full indefinitely; a context
+   is then limited to its floor, and a context without a floor (more
+   than `inc.records.floors_max` contexts in use) can be left with no
+   record at all, reading uncached and refused busy for holders.
 6. **Holders.** `holders` is a `u32`. Adding a holder that would overflow
    it is refused with the retryable busy error, and the count is never
    wrapped (section 6, A2). Each holder's own owner bounds how many
@@ -537,9 +549,10 @@ Not applicable: nothing is encoded or sent.
    - **ambiguous:** an incarnation change in the observing context
      (point 3), then the record's evidence values, their provenance and
      `last_outcome` are replaced from the observation, with the new
-     `epoch`. Its `holders` and `last_used` are kept: the holders are
-     still held, and the record stays pinned while they are, so the
-     replacement never makes a held volume evictable (5.2, point 1);
+     `epoch`, and `last_used` is updated as for any use. Its `holders`
+     is kept: the holders are still held, and the record stays pinned
+     while they are, so the replacement never makes a held volume
+     evictable (5.2, point 1);
    - **unrecorded:** 5.2, point 5.
 2. **Triggers of ambiguity,** each the observing context's own
    observation. Each is C25, point 3's ambiguity for that context
@@ -551,7 +564,7 @@ Not applicable: nothing is encoded or sent.
    | T2 | the serving server or partition differs: a move, a restore to a new site, a switch of replica site, including C33, point 7's refresh after "moved" or "offline" | a move; a replica switch is `[OWN]`, from 5.1.1's reason 3 |
    | T3 | the serving site carries a release flag (5.4, point 4) | a release |
    | T4 | the volume's type differs | `[OWN]`: a type change can only be a new volume under the id |
-   | T5 | not a trigger: a volume with no record (never seen, evicted, or after a restart) takes the outcome "new" or "unrecorded" (5.4, point 2), and nothing cached under an earlier epoch is reachable (5.2, point 3; 5.8) | a restart of the client, and `[OWN]` for an evicted record |
+   | T5 | not a trigger: a volume with no record (never seen, evicted, or after a restart) takes the outcome "new" or "unrecorded" (5.4, point 2), and nothing cached under an earlier epoch is reachable (5.2, point 4; 5.8) | a restart of the client, and `[OWN]` for an evicted record |
    | T6 | not used: a restart is the "new" outcome of 5.8, point 2 | — |
    | T7 | verify by refetch returned bytes that differ from the cached chunk under the same file id and data version (point 6) | `[OWN]`: the only observation that shows a repeated data version with other bytes, C25, point 1's assumption made visible |
    | T8 | verify by refetch returned a data version lower than the chunk's (point 6) | `[OWN]`: under a wide suspicion a lower version is read as the volume's, not only the file's (point 6's reason) |
@@ -795,7 +808,7 @@ are fetched again before they are served (5.6, points 6 and 12).
 |---|---|---|---|
 | A1 | the next local volume epoch (5.6, points 1 and 3) | N38, point 8's `u64` counter | `checked_add`; at overflow the counter is exhausted and the observation fails with the generic failure ([vl-fs-read.md](vl-fs-read.md), section 13, Q11), the volume is unusable in that context, and an event is emitted; the counter never wraps, so no epoch repeats. At one new epoch per microsecond it lasts over 500 000 years |
 | A2 | record counts against the caps, and the `holders` count (5.2) | `u32` counters | `checked_add` and `checked_sub`. A record count cannot exceed its cap, because a record is made only after the cap check. A `holders` add that would overflow refuses the new holder with the retryable busy error (5.2, point 6); a subtract below zero is a fault in IronAFS, counted and reported, and leaves the count at zero, never wrapped |
-| A3 | the table's bytes, `inc.record_max × (inc.records.total_max + inc.records.floor_per_context × live contexts)` (5.2) | constants, and the live-context count, bounded by the credential context table (C40) | a compile-time assertion that `inc.record_max × inc.records.total_max` fits in `usize` and equals 16 MiB; the floors add 8 KiB per live context, checked with `checked_mul` and `checked_add` against the context table's cap when that cap is fixed |
+| A3 | the table's bytes, `inc.record_max × (inc.records.total_max + inc.records.floors_max × inc.records.floor_per_context)` (5.2) | constants | a compile-time assertion that the product fits in `usize` and equals 24 MiB (16 MiB shared, 8 MiB floors); a floor is granted only while fewer than `inc.records.floors_max` are held, a count checked with `checked_add` |
 | A4 | comparing bytes in verify by refetch (5.6, point 6) | two chunks, each at most `fs.fetch.chunk_max` | the data versions are compared first (a lower one is T8); under an equal data version, equal lengths are checked first: a different length is T7; then a constant-memory comparison with no arithmetic on untrusted values |
 
 `[OWN]` for every row.
@@ -840,7 +853,7 @@ the user's own key (N5, point 2).
 | Using one context's observation to move another's state | 5.6, points 4 and 5: weak input only marks suspect; every epoch change is the context's own observation |
 | Forged callback resets, breaks naming a volume, or overloads, to force refetches | each wide suspicion costs at most one refetch per cached chunk, on its next use. How often suspicion can be renewed is the callback specification's: a server's suspect epoch moves at most once per `cb.advance_interval` (its 5.6, point 7), but a break naming a volume from a source that is a known server raises that volume's break counter at once, within that server's rate bucket (its 5.6, points 8 and 9, row B1). So a forger who keeps renewing it can make every read of that volume a refetch: the cache gives no bandwidth saving for that data while it lasts, and at most doubles the bytes read (a refetch per use instead of a fetch per use); integrity is unaffected |
 | A forged abort to retire a volume's handles or journal records | 5.6, point 7; ADR 0006, decision 1, point 5 |
-| Filling the record table | each context's floor is outside the shared cap and evicted only by its own activity; a context at the shared cap evicts its own unpinned records first, and reclaims only unpinned shared-part records of a context idle for `inc.records.idle_reclaim_after`, never a pinned or floor record (5.2, point 3). A context reaches "unrecorded" only when every record it holds is pinned, so another context can make it reach that state only by keeping its own records active and pinned, and even then the victim keeps its floor (5.2, point 5) |
+| Filling the record table | each context's floor is outside the shared cap and evicted only by its own activity; a context at the shared cap evicts its own unpinned records first, and reclaims only unpinned shared-part records of a context idle for `inc.records.idle_reclaim_after`, never a pinned or floor record (5.2, point 3). Another context needs only to keep its own records active (used within `inc.records.idle_reclaim_after`), not pinned, to hold the shared part full; the fairness bound is the floor: a victim with a floor keeps 32 records, and reaches "unrecorded" only when all its records are pinned. A context without a floor, past `inc.records.floors_max` contexts, can be starved entirely: the residual of 5.2, point 5 |
 | A restore made while the client was down, with equal data versions | no clean chunk survives a restart (5.8) |
 | A restore in place during a run, inside a window that only aborts show | not detected: section 13, Q3 records it and its remedy |
 | A restore hidden by a server reset that raised every data version it touched | read as ordinary changes: new bytes are served, but handles and journal records are not invalidated on the reset alone (5.6, point 12); section 13, Q10 |
@@ -855,13 +868,13 @@ the user's own key (N5, point 2).
 | C25, point 2 | 5.4; 5.6, point 1 | AC2, AC3 |
 | C25, point 3 | 5.6, points 2, 3 and 12 (the server reset, with its departure in Q10) | AC3 to AC6, AC8, AC9, AC16 |
 | C25, point 4 | 5.6, point 8 (the cache applies it) | AC11 |
-| C25, point 5 | 5.6, point 3, step 3 (the event and its scope) | AC4 (the event names only the observing context) |
+| C25, point 5 | 5.6, point 3, step 4 (the event and its scope) | AC4 (the event names only the observing context) |
 | C25, point 6 | 5.6, point 10 (vl-fs-read.md, 5.4, point 11) | vl-fs-read.md's acceptance cases |
 | C26, point 3 | 5.8, point 6 (the callback specification) | the callback specification's restart case |
 | C26, point 4 | 5.7; 5.8 | AC1 |
 | C28, point 3 | 5.8, point 3 | AC17 |
 | C24, points 2 to 6 | 5.6, points 4 to 6 and 12 | AC7, AC8, AC10 |
-| C16, point 1 | 5.6, point 3, steps 1 and 2 | AC9 |
+| C16, point 1 | 5.6, point 3, steps 1 to 3, before step 4 | AC9 |
 | C20, point 1 | 5.4, point 1 | AC13 |
 | N38, point 8 | 5.6, points 1 and 3; 5.8, point 2; A1 | AC1, AC3; the counter's own tests (S5) |
 | O13, point 1 | 5.6, point 11 | AC14 |
@@ -978,7 +991,7 @@ able to restore a volume from a dump it holds:
   Result: no record is made; both reads fetch.
 - **AC14. Showing the evidence.** `afs cache show` for F as A shows A's
   record (5.6, point 11); as user B, it shows only B's.
-- **AC15. Table full of other contexts.** The shared part is at
+- **AC15. Table full of other contexts.** Floors are free. The shared part is at
   `inc.records.total_max`, all of it other contexts' records in active
   use; a new context C observes volumes. Result: C's first
   `inc.records.floor_per_context` volumes get "new" records in its
@@ -993,7 +1006,13 @@ able to restore a volume from a dump it holds:
   `inc.records.idle_reclaim_after`. Result: C's next record reclaims
   D's least recently used unpinned shared-part record; D's floor and
   pinned records are untouched; D's next observation of that volume is
-  "new".
+  "new". Variant 3: the shared part has room and C holds a full floor
+  below `inc.records.per_context_max`. Result: C's next record is made
+  in the shared part, and nothing is evicted. Variant 4: all
+  `inc.records.floors_max` floors are held; a further context E observes
+  a volume. Result: E's record is made in the shared part if it has
+  room; otherwise E reclaims only as 5.2, point 3, branch 4, allows, and
+  is "unrecorded" if nothing qualifies.
 - **AC16. Reset with a lower version.** A caches F at data version v;
   the server restores an older dump in which F has version v − 1, and
   sends a callback reset; A reads F. Result: wide suspicion; the refetch
