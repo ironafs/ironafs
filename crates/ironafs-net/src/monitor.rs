@@ -345,7 +345,7 @@ fn snapshots(shared: &Shared) -> Result<(), Stopped> {
             renew(shared)?;
             continue;
         }
-        let next = loop {
+        let (next, barrier) = loop {
             let received = request.receive(&mut buffer);
             let mut state = shared.lock();
             let monitor = &mut state.monitor;
@@ -361,21 +361,22 @@ fn snapshots(shared: &Shared) -> Result<(), Stopped> {
             }
             let next = monitor.request();
             if next != Some(asked) {
-                break next;
+                break (next, monitor.barrier().is_some());
             }
         };
-        if !follows(asked, next) {
+        if !follows(asked, next, barrier) {
             renew(shared)?;
         }
     }
 }
 
 /// Whether `next` is what a dump that ended in order asks for after
-/// `asked`: the address dump after the link dump, nothing (the barrier)
-/// after that.
-fn follows(asked: Request, next: Option<Request>) -> bool {
+/// `asked`: the address dump after the link dump, and after that no dump
+/// but the barrier. No dump and no barrier means it was abandoned (a loss
+/// that awaits a fresh subscription), so its socket is made again.
+fn follows(asked: Request, next: Option<Request>, barrier: bool) -> bool {
     match next {
-        None => !asked.is_links(),
+        None => !asked.is_links() && barrier,
         Some(next) => asked.is_links() && !next.is_links(),
     }
 }
