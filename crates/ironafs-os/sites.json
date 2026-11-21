@@ -532,10 +532,76 @@
       "blocks": "one per call (three); one that adopts the descriptor (`OwnedFd::from_raw_fd`)",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved"
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented"
+      },
+      "code": {
+        "module": "linux_udp6",
+        "headers": [
+          "errno.h",
+          "sys/socket.h",
+          "netinet/in.h"
+        ],
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "socket",
+                "safe": false
+              },
+              {
+                "name": "setsockopt",
+                "safe": false
+              },
+              {
+                "name": "bind",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "abi::socket",
+            "arguments": [
+              "domain",
+              "kind",
+              "protocol"
+            ]
+          },
+          {
+            "kind": "adopt",
+            "operation": "OwnedFd::from_raw_fd",
+            "arguments": [
+              "descriptor"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::setsockopt",
+            "arguments": [
+              "descriptor",
+              "level",
+              "option",
+              "value",
+              "length"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::bind",
+            "arguments": [
+              "descriptor",
+              "address",
+              "length"
+            ]
+          }
+        ],
+        "impls": 0
       }
     },
     {
