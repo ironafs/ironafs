@@ -363,3 +363,84 @@ fn c_source_defines_a_row_s_feature_macros_before_any_include() {
     let define = source.find("#define _GNU_SOURCE 1\n").expect(&source);
     assert!(define < source.find("#include").unwrap(), "{source}");
 }
+
+#[test]
+fn c_source_asserts_an_array_member_by_its_element_type_and_count() {
+    let found = read(
+        "use core::ffi::{c_char, c_ushort};\n\
+         #[repr(C)]\nstruct in6_addr { s6_addr32: [u32; 4] }\n\
+         #[repr(C)]\nstruct sockaddr { sa_family: c_ushort, sa_data: [c_char; 14] }\n\
+         #[repr(C)]\nstruct holder { family: c_ushort, address: in6_addr }\n",
+    );
+    let source = c_source("row", &[], &[], &found, DataModel::Lp64).unwrap();
+    for line in [
+        "_Static_assert(sizeof(struct in6_addr) == 16, \"row: sizeof(struct in6_addr)\");",
+        "_Static_assert(_Alignof(struct in6_addr) == 4, \"row: _Alignof(struct in6_addr)\");",
+        "_Static_assert(_Generic(&((struct in6_addr *)0)->s6_addr32, uint32_t (*)[4]: 1), \"row: type of in6_addr.s6_addr32\");",
+        "_Static_assert(sizeof(struct sockaddr) == 16, \"row: sizeof(struct sockaddr)\");",
+        "_Static_assert(offsetof(struct sockaddr, sa_data) == 2, \"row: offsetof(struct sockaddr, sa_data)\");",
+        "_Static_assert(_Generic(&((struct sockaddr *)0)->sa_data, char (*)[14]: 1), \"row: type of sockaddr.sa_data\");",
+        "_Static_assert(offsetof(struct holder, address) == 4, \"row: offsetof(struct holder, address)\");",
+        "_Static_assert(sizeof(struct holder) == 20, \"row: sizeof(struct holder)\");",
+    ] {
+        assert!(
+            source.lines().any(|found| found == line),
+            "{line}\n{source}"
+        );
+    }
+}
+
+#[test]
+fn c_source_binds_an_opaque_tail_only_by_the_struct_s_size_and_alignment() {
+    let found = read(
+        "use core::ffi::{c_int, c_ulong};\n\
+         #[repr(C)]\nstruct statvfs { f_bsize: c_ulong, f_namemax: c_ulong, _opaque_tail: [c_int; 6] }\n",
+    );
+    let source = c_source("row", &[], &[], &found, DataModel::Lp64).unwrap();
+    assert!(
+        source.lines().any(|line| line
+            == "_Static_assert(sizeof(struct statvfs) == 40, \"row: sizeof(struct statvfs)\");"),
+        "{source}"
+    );
+    assert!(
+        source.contains("offsetof(struct statvfs, f_namemax) == 8"),
+        "{source}"
+    );
+    assert!(!source.contains("_opaque_tail"), "{source}");
+}
+
+#[test]
+fn c_source_refuses_an_opaque_field_that_is_not_the_last_or_not_an_array() {
+    for (source, error) in [
+        (
+            "use core::ffi::c_int;\n#[repr(C)]\nstruct s { _opaque: [c_int; 2], a: c_int }\n",
+            "struct s: an opaque field (`_opaque`) is the last field, an array",
+        ),
+        (
+            "use core::ffi::c_int;\n#[repr(C)]\nstruct s { a: c_int, _opaque: c_int }\n",
+            "struct s: an opaque field (`_opaque`) is the last field, an array",
+        ),
+    ] {
+        assert_eq!(
+            c_source("row", &[], &[], &read(source), DataModel::Lp64).unwrap_err(),
+            error
+        );
+    }
+}
+
+#[test]
+fn c_source_refuses_an_array_parameter_and_a_zero_length_array() {
+    let parameter = read(
+        "use core::ffi::c_int;\n\
+         unsafe extern \"C\" { fn f(a: [c_int; 2]) -> c_int; }\n",
+    );
+    assert_eq!(
+        c_source("row", &[], &[], &parameter, DataModel::Lp64).unwrap_err(),
+        "an array is a struct member only, never a parameter or return type"
+    );
+    let empty = read("use core::ffi::c_int;\n#[repr(C)]\nstruct s { a: c_int, b: [c_int; 0] }\n");
+    assert_eq!(
+        c_source("row", &[], &[], &empty, DataModel::Lp64).unwrap_err(),
+        "an array of no elements, which C11 does not allow"
+    );
+}

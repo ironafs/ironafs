@@ -17,6 +17,11 @@
 //!   `link_name`), a `packed` struct, a renaming import, and a C type name
 //!   not imported from `core::ffi`.
 //!
+//! On Linux a second fixture, `struct sockaddr` from `<sys/socket.h>`
+//! (whose `sa_data` is `char[14]` in glibc and musl, while macOS adds a
+//! length byte), must compile, and with its array's count changed must
+//! fail at the array's assertion.
+//!
 //! The fixture's headers are Unix headers. On a Windows host, which has no
 //! row with a foreign item yet, the self-test says so and passes; the
 //! first Windows row brings a Windows fixture.
@@ -49,6 +54,18 @@ const FIXTURE: &str = "use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};\
                        \x20   fn close(fd: c_int) -> c_int;\n\
                        \x20   fn strlen(s: *const c_char) -> usize;\n\
                        }\n";
+
+/// The Linux fixture of an array member, its header, and its plant.
+const ARRAY_FIXTURE: &str = "use core::ffi::{c_char, c_ushort};\n\
+                             #[repr(C)]\n\
+                             struct sockaddr {\n    sa_family: c_ushort,\n    sa_data: [c_char; 14],\n}\n";
+const ARRAY_HEADERS: &[&str] = &["sys/socket.h"];
+const ARRAY_PLANT: (&str, &str, &str, &str) = (
+    "an array member's count changed",
+    "[c_char; 14]",
+    "[c_char; 15]",
+    "->sa_data, char (*)[15]: 1",
+);
 
 /// Mismatches the C compiler must refuse: the case, the text it replaces,
 /// and the assertion's label the compiler's error must carry.
@@ -166,15 +183,34 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
             ),
         );
     }
-    match stage(FIXTURE, &dir.join("clean.c"))? {
+    match stage(FIXTURE, HEADERS, &dir.join("clean.c"))? {
         Stage::Compiled => report(output, "passed: the fixture".to_owned())?,
         Stage::Reader(error) | Stage::Generator(error) | Stage::Compiler(error, _) => {
             return Err(failure("the fixture", error));
         }
     }
-    for (index, (name, from, to, label)) in COMPILER.iter().enumerate() {
-        let planted = plant(name, from, to)?;
-        match stage(&planted, &dir.join(format!("compiler-{index}.c")))? {
+    let mut compiler: Vec<(&'static str, String, &[&str], &str)> = Vec::new();
+    for (name, from, to, label) in COMPILER {
+        compiler.push((name, plant(FIXTURE, name, from, to)?, HEADERS, label));
+    }
+    if cfg!(target_os = "linux") {
+        match stage(ARRAY_FIXTURE, ARRAY_HEADERS, &dir.join("array.c"))? {
+            Stage::Compiled => report(output, "passed: the array fixture".to_owned())?,
+            Stage::Reader(error) | Stage::Generator(error) | Stage::Compiler(error, _) => {
+                return Err(failure("the array fixture", error));
+            }
+        }
+        let (name, from, to, label) = ARRAY_PLANT;
+        compiler.push((
+            name,
+            plant(ARRAY_FIXTURE, name, from, to)?,
+            ARRAY_HEADERS,
+            label,
+        ));
+    }
+    let planted_count = compiler.len();
+    for (index, (name, planted, headers, label)) in compiler.into_iter().enumerate() {
+        match stage(&planted, headers, &dir.join(format!("compiler-{index}.c")))? {
             Stage::Compiler(error, at) if at.contains(label) => {
                 report(output, format!("caught by the C compiler: {name}: {error}"))?;
             }
@@ -196,8 +232,8 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         }
     }
     for (name, from, to, phrase) in READER {
-        let planted = plant(name, from, to)?;
-        match stage(&planted, &dir.join("reader.c"))? {
+        let planted = plant(FIXTURE, name, from, to)?;
+        match stage(&planted, HEADERS, &dir.join("reader.c"))? {
             Stage::Reader(error) | Stage::Generator(error) if error.contains(phrase) => {
                 report(output, format!("caught by the reader: {name}: {error}"))?;
             }
@@ -215,15 +251,15 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         format!(
             "check-abi --self-test: the fixture compiled; {} planted mismatches failed to compile \
              at their assertions and {} declarations were refused by the reader",
-            COMPILER.len(),
+            planted_count,
             READER.len()
         ),
     )
 }
 
-fn plant(name: &'static str, from: &str, to: &str) -> Result<String, Error> {
-    if FIXTURE.contains(from) {
-        Ok(FIXTURE.replacen(from, to, 1))
+fn plant(fixture: &str, name: &'static str, from: &str, to: &str) -> Result<String, Error> {
+    if fixture.contains(from) {
+        Ok(fixture.replacen(from, to, 1))
     } else {
         Err(failure(
             name,
@@ -233,7 +269,7 @@ fn plant(name: &'static str, from: &str, to: &str) -> Result<String, Error> {
 }
 
 /// Reads, generates and compiles one fixture, and says where it stopped.
-fn stage(source: &str, file: &Path) -> Result<Stage, Error> {
+fn stage(source: &str, headers: &[&str], file: &Path) -> Result<Stage, Error> {
     let tokens = tokens_with_strings(source).map_err(|error| Error::SelfTest {
         check: CHECK,
         case: "reading the fixture",
@@ -243,7 +279,7 @@ fn stage(source: &str, file: &Path) -> Result<Stage, Error> {
     if let Err(error) = declarations(&tokens, "C", &mut found) {
         return Ok(Stage::Reader(error));
     }
-    let headers: Vec<String> = HEADERS.iter().map(|header| (*header).to_owned()).collect();
+    let headers: Vec<String> = headers.iter().map(|header| (*header).to_owned()).collect();
     let c = match c_source("self-test", &[], &headers, &found, DataModel::Lp64) {
         Ok(c) => c,
         Err(error) => return Ok(Stage::Generator(error)),

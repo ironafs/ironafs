@@ -18,7 +18,13 @@
 //! - the size and alignment of each struct, and each field's offset, as
 //!   `repr(C)` lays them out for the target's data model;
 //! - each field's type, by a `_Generic` selection with no default, so a
-//!   field of the wrong type with the right size and offset fails;
+//!   field of the wrong type with the right size and offset fails; an
+//!   array member (`[T; N]`) by its address, `T (*)[N]`, so its element
+//!   type and count are both checked. A struct's last field may be an
+//!   opaque array (its name starts `_opaque`): space a C library fills
+//!   with fields that are never read and whose names differ between
+//!   libraries or releases (`struct statvfs`'s spares), bound only by the
+//!   struct's size and alignment;
 //! - each constant's value;
 //! - each type alias's size, alignment and sign: an alias names a C
 //!   typedef whose spelling differs between C libraries at one size
@@ -56,13 +62,21 @@ mod tests;
 
 const CHECK: &str = "check-abi";
 
-/// A type as a declaration writes it: a name (its path's last segment) or
-/// a raw pointer.
+/// A type as a declaration writes it: a name (its path's last segment), a
+/// raw pointer, or an array (a struct member only, as `[T; N]`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CType {
     Named(String),
     Pointer { constant: bool, to: Box<CType> },
+    Array { of: Box<CType>, count: usize },
 }
+
+/// The prefix of an opaque field's name: the last field of a struct, an
+/// array, standing for space a C library fills with fields this crate
+/// never reads and names differently between libraries or releases
+/// (`struct statvfs`'s spare fields). Only the struct's size and alignment
+/// bind it, so the named fields before it keep their offsets and types.
+const OPAQUE: &str = "_opaque";
 
 /// A `#[repr(C)]` struct and its fields in order.
 #[derive(Debug, PartialEq, Eq)]
@@ -269,6 +283,27 @@ fn skip_visibility(tokens: &[Token], mut at: usize) -> usize {
 
 /// Reads a type starting at `at`; returns it and the index after it.
 fn read_type(tokens: &[Token], at: usize) -> Option<(CType, usize)> {
+    if punct(tokens.get(at)) == Some('[') {
+        let (of, next) = read_type(tokens, at + 1)?;
+        if punct(tokens.get(next)) != Some(';') {
+            return None;
+        }
+        let digits = ident(tokens.get(next + 1))?;
+        if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let count = digits.parse().ok()?;
+        if punct(tokens.get(next + 2)) != Some(']') {
+            return None;
+        }
+        return Some((
+            CType::Array {
+                of: Box::new(of),
+                count,
+            },
+            next + 3,
+        ));
+    }
     if punct(tokens.get(at)) == Some('*') {
         let constant = match ident(tokens.get(at + 1))? {
             "const" => true,
@@ -497,6 +532,7 @@ fn c_name(found: &CType, declarations: &Declarations, model: DataModel) -> Resul
             Resolved::Struct(name) => Ok(format!("struct {name}")),
             Resolved::Alias(name, _) => Ok(name.to_owned()),
         },
+        CType::Array { .. } => Err(ARRAY_PLACE.to_owned()),
         CType::Pointer { constant, to } => {
             let base = c_name(to, declarations, model)?;
             Ok(if *constant {
@@ -506,6 +542,31 @@ fn c_name(found: &CType, declarations: &Declarations, model: DataModel) -> Resul
             })
         }
     }
+}
+
+/// Where an array may stand.
+const ARRAY_PLACE: &str = "an array is a struct member only, never a parameter or return type";
+
+/// The C type of a pointer to a struct member: `T (*)[N]` for an array,
+/// so `_Generic` on the member's address checks the element type and the
+/// count; for any other member its own type, compared without `&`.
+fn member_check(
+    item: &str,
+    field: &str,
+    found: &CType,
+    declarations: &Declarations,
+    model: DataModel,
+) -> Result<String, String> {
+    if let CType::Array { of, count } = found {
+        let element = c_name(of, declarations, model)?;
+        return Ok(format!(
+            "_Generic(&((struct {item} *)0)->{field}, {element} (*)[{count}]: 1)"
+        ));
+    }
+    let spelled = c_name(found, declarations, model)?;
+    Ok(format!(
+        "_Generic(((struct {item} *)0)->{field}, {spelled}: 1)"
+    ))
 }
 
 /// What a type's name refers to.
@@ -584,6 +645,16 @@ fn layout(
 ) -> Result<(usize, usize), String> {
     match found {
         CType::Pointer { .. } => Ok((8, 8)),
+        CType::Array { of, count } => {
+            if *count == 0 {
+                return Err("an array of no elements, which C11 does not allow".to_owned());
+            }
+            let (size, align) = layout(of, declarations, model, depth)?;
+            let total = size
+                .checked_mul(*count)
+                .ok_or_else(|| "an array larger than memory".to_owned())?;
+            Ok((total, align))
+        }
         CType::Named(name) => match resolve(name, declarations)? {
             Resolved::Scalar("c_void") => Err("`c_void` has no size".to_owned()),
             Resolved::Scalar(name) => scalar(name, model)
@@ -695,14 +766,22 @@ pub(crate) fn c_source(
             format!("_Alignof(struct {name}) == {align}"),
             format!("_Alignof(struct {name})"),
         );
-        for ((field, field_type), offset) in item.fields.iter().zip(offsets) {
+        let last = item.fields.len().saturating_sub(1);
+        for (index, ((field, field_type), offset)) in item.fields.iter().zip(offsets).enumerate() {
+            if field.starts_with(OPAQUE) {
+                if index != last || !matches!(field_type, CType::Array { .. }) {
+                    return Err(format!(
+                        "struct {name}: an opaque field (`{field}`) is the last field, an array"
+                    ));
+                }
+                continue;
+            }
             assert(
                 format!("offsetof(struct {name}, {field}) == {offset}"),
                 format!("offsetof(struct {name}, {field})"),
             );
-            let spelled = c_name(field_type, declarations, model)?;
             assert(
-                format!("_Generic(((struct {name} *)0)->{field}, {spelled}: 1)"),
+                member_check(name, field, field_type, declarations, model)?,
                 format!("type of {name}.{field}"),
             );
         }

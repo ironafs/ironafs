@@ -493,7 +493,9 @@ fn row_problems(row: &Row) -> Vec<String> {
 /// approves: every declared function and every block's callee is named in
 /// the row's foreign-item or block column; a block with no `#[link]` is
 /// linked from the C library or libSystem, and a `#[link]` names the
-/// library the row does; the `safe fn` declarations are those the declared
+/// library the row does (an `OwnedFd::from_raw_fd` adoption is named by a
+/// row that says its descriptor is "adopted as an `OwnedFd`", as point 6.3
+/// spells it); the `safe fn` declarations are those the declared
 /// column allows; a row whose block column says "one" holds one site in
 /// `unsafe`; and the copy's open flag is the ADR's (an open owner
 /// decision). The prose of other block counts is bound by review.
@@ -527,8 +529,15 @@ fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
             ));
         }
     }
+    // A row may name its adoption only as what it adopts: row 23's
+    // "each descriptor adopted as an `OwnedFd`", which point 6.3 spells
+    // `OwnedFd::from_raw_fd`.
+    let adopts_owned_fd = foreign.contains("adopted as an `OwnedFd`");
     for block in &code.blocks {
-        if !approved(block.callee()) {
+        let named_adoption = block.kind == BlockKind::Adopt
+            && block.operation == "OwnedFd::from_raw_fd"
+            && adopts_owned_fd;
+        if !named_adoption && !approved(block.callee()) {
             found.push(format!(
                 "{id}: a block calls `{}`, which the ADR's row does not name (point 7.1)",
                 block.operation
