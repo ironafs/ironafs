@@ -39,7 +39,7 @@ fn child(args: &[&str], stdin: &str) -> (Exit, String, String) {
 fn run_streams_the_trace_and_passes() {
     let (exit, out, err) = child(&["run", "sample", "1"], "");
     assert_eq!(exit, Exit::Passed, "{err}");
-    assert!(out.starts_with("ironafs-sim trace 2\n"));
+    assert!(out.starts_with("ironafs-sim trace 3\n"));
     assert!(out.ends_with(" sched end ok\n"));
 }
 

@@ -6,7 +6,7 @@
 use super::Replay;
 use crate::sched::Failure;
 
-const TRACE: &str = "ironafs-sim trace 2\n\
+const TRACE: &str = "ironafs-sim trace 3\n\
                      d0 sched decide [t0,t1] pick=1 drawn draws=1 at=0\n\
                      d0 t1 op a x\n\
                      d1 sched decide [t0] pick=0 drawn draws=2 at=10\n";

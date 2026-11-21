@@ -1,4 +1,4 @@
-ironafs-sim trace 2
+ironafs-sim trace 3
 d0 sched run sample seed=3 incarnation=0 plants=-
 d0 sched spawn t0 reader
 d0 sched spawn t1 reader
