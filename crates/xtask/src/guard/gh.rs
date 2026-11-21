@@ -91,6 +91,10 @@ const UNCHECKED_ENDPOINTS: &[&str] = &[
     "issues", "pulls", "comments", "merges", "merge", "git", "contents", "releases",
 ];
 
+const DYNAMIC_OPTION: &str = "write gh options literally, as --body \"$TEXT\" rather than --body=\"$TEXT\", so the guard can tell which option it is and check the disclosure line";
+
+const SQUASH_FIX: &str = "gh pr merge lands a change on main only as a squash merge: use --squash, without --merge or --rebase (the land-change skill, section 4)";
+
 const MERGE_FIX: &str = "gh pr merge needs --match-head-commit <approved head> and --body-file <approved message file> (the land-change skill, section 4)";
 
 /// Parsed `gh` arguments. A value is `None` when it expands at run time.
@@ -98,6 +102,9 @@ struct Flags {
     values: Vec<(&'static str, Option<String>)>,
     switches: Vec<String>,
     positionals: Vec<Word>,
+    /// Whether an option's own name expands at run time, as in
+    /// `--body="$TEXT"`: the guard cannot tell which option it is.
+    dynamic_option: bool,
 }
 
 impl Flags {
@@ -106,13 +113,20 @@ impl Flags {
             values: Vec::new(),
             switches: Vec::new(),
             positionals: Vec::new(),
+            dynamic_option: false,
         };
         let mut index = 0;
         let mut options_done = false;
         while let Some(word) = args.get(index) {
             index += 1;
-            let text = match word.literal() {
-                Some(text) if !options_done && text.len() > 1 && text.starts_with('-') => text,
+            let text = match word {
+                Word::Dynamic(prefix) if !options_done && prefix.starts_with('-') => {
+                    flags.dynamic_option = true;
+                    continue;
+                }
+                Word::Literal(text) if !options_done && text.len() > 1 && text.starts_with('-') => {
+                    text.as_str()
+                }
                 _ => {
                     flags.positionals.push(word.clone());
                     continue;
@@ -193,7 +207,11 @@ impl<R: Repo> Guard<'_, R> {
             "issue" | "pr" => self.issue_or_pr(command, rest, stdin, scope),
             "release" => self.release(rest, stdin, scope),
             "api" => self.api(rest),
-            _ if command.starts_with('-') || COMMANDS.contains(&command) => (),
+            "--version" | "--help" | "-h" => (),
+            _ if command.starts_with('-') => self.block(format!(
+                "gh option {command} before the command: put options after the gh command (gh issue create -R o/r), so the guard can read which command runs"
+            )),
+            _ if COMMANDS.contains(&command) => (),
             _ => match self.repo.gh_alias(command) {
                 Ok(Some(expansion)) => {
                     if let Some(script) = expansion.strip_prefix('!') {
@@ -220,7 +238,17 @@ impl<R: Repo> Guard<'_, R> {
             self.block("write the gh subcommand literally so the guard can read it");
             return;
         };
-        let flags = Flags::parse(args, ISSUE_AND_PR_FLAGS);
+        // `gh pr review --comment` is a switch; elsewhere it takes the text.
+        let table: Vec<(Option<char>, &'static str)> = ISSUE_AND_PR_FLAGS
+            .iter()
+            .copied()
+            .filter(|(_, long)| subcommand != "review" || *long != "comment")
+            .collect();
+        let flags = Flags::parse(args, &table);
+        if flags.dynamic_option {
+            self.block(DYNAMIC_OPTION);
+            return;
+        }
         let what = format!("gh {group} {subcommand}");
         if flags.has(&["web", "w"]) {
             // The text is written in the browser, by a person.
@@ -239,7 +267,22 @@ impl<R: Repo> Guard<'_, R> {
                 let text = self.published_text(&flags, "body", "body-file", stdin, scope);
                 self.require_disclosure(text, &what, true);
             }
+            "close" | "reopen" => {
+                let text = match flags.value("comment") {
+                    None => Text::Absent,
+                    Some(None) => Text::Unknown,
+                    Some(Some(text)) => Text::Known(text.clone()),
+                };
+                self.require_disclosure(text, &what, true);
+            }
             "merge" if group == "pr" && !flags.has(&["disable-auto"]) => {
+                let squash = flags.has(&["squash", "s"])
+                    && !flags.has(&["merge", "rebase"])
+                    && flags.value("milestone").is_none()
+                    && flags.value("reviewer").is_none();
+                if !squash {
+                    self.block(SQUASH_FIX);
+                }
                 let pinned = matches!(flags.value("match-head-commit"), Some(Some(head)) if !head.is_empty());
                 let message_file = matches!(flags.value("body-file"), Some(Some(file)) if !file.is_empty() && file != "-");
                 if !pinned || !message_file || flags.value("body").is_some() {
@@ -256,6 +299,10 @@ impl<R: Repo> Guard<'_, R> {
         };
         if matches!(subcommand.literal(), Some("create" | "edit")) {
             let flags = Flags::parse(args, RELEASE_FLAGS);
+            if flags.dynamic_option {
+                self.block(DYNAMIC_OPTION);
+                return;
+            }
             let text = self.published_text(&flags, "notes", "notes-file", stdin, scope);
             self.require_disclosure(text, "gh release notes", true);
         }
@@ -263,6 +310,10 @@ impl<R: Repo> Guard<'_, R> {
 
     fn api(&mut self, rest: &[Word]) {
         let flags = Flags::parse(rest, API_FLAGS);
+        if flags.dynamic_option {
+            self.block(DYNAMIC_OPTION);
+            return;
+        }
         let sends = ["raw-field", "field", "input"]
             .iter()
             .any(|name| flags.value(name).is_some());

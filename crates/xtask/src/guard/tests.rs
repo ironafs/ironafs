@@ -464,6 +464,14 @@ fn guard_requires_the_disclosure_line_on_published_text() {
         "gh issue create --title t --body 'Written by Claude Code (claude-opus-5-5).'",
         "gh issue comment 3 --body \"$TEXT\"",
         "gh issue comment 3 --body-file - < plain.md",
+        "gh issue close 3 --comment 'Done in abc123.'",
+        "gh pr close 5 -c 'A substantive closing judgement.'",
+        "gh issue reopen 5 --comment 'Reopening: the fix is wrong.'",
+        "gh pr reopen 5 --comment=\"$TEXT\"",
+        "gh pr review 3 --comment -b 'Looks fine.'",
+        "gh pr review 3 -c --body 'Looks fine.'",
+        "gh issue edit 3 --body=\"$TEXT\"",
+        "gh release edit v1 --notes=\"$TEXT\"",
     ] {
         blocked(command, NEEDS_DISCLOSURE);
     }
@@ -485,7 +493,12 @@ fn guard_accepts_a_well_formed_disclosure_line() {
         "gh issue comment 3 --body 'Drafted with codex:gpt-6.2-sol, edited by A.'".to_owned(),
         "gh pr review 3 --approve".to_owned(),
         "gh pr edit 3 --title 'New title' --add-label bug".to_owned(),
-        "gh issue close 3 --comment 'Done in abc123.'".to_owned(),
+        "gh issue close 3".to_owned(),
+        "gh pr close 3 --delete-branch".to_owned(),
+        format!("gh issue close 3 --comment '{DISCLOSED}'"),
+        format!("gh pr reopen 3 -c '{DISCLOSED}'"),
+        "gh pr ready 3".to_owned(),
+        "gh --version".to_owned(),
         "gh pr create --web".to_owned(),
         "gh release create v1 --generate-notes".to_owned(),
     ] {
@@ -505,6 +518,17 @@ fn guard_requires_a_pinned_head_and_message_file_for_gh_pr_merge() {
     ] {
         blocked(command, "--match-head-commit");
     }
+    for command in [
+        "gh pr merge 85 --merge --match-head-commit abc123 --body-file msg.txt",
+        "gh pr merge 85 --rebase --match-head-commit abc123 --body-file msg.txt",
+        "gh pr merge 85 --match-head-commit abc123 --body-file msg.txt",
+        "gh pr merge 85 -s -r --match-head-commit abc123 --body-file msg.txt",
+    ] {
+        blocked(command, "--squash");
+    }
+    allowed("gh pr merge 85 -s --match-head-commit abc123 --body-file msg.txt");
+    blocked("gh -R o/r issue create --title t --body 'x'", "gh option");
+    blocked("gh --repo o/r pr merge 5", "gh option");
 }
 
 #[test]
@@ -523,6 +547,10 @@ fn guard_blocks_gh_api_writes_it_cannot_check() {
         blocked(command, "gh api");
     }
     allowed("gh api -X PATCH repos/o/r -f description=x");
+    blocked(
+        "gh api --method=\"$M\" repos/o/r/pulls/1/merge",
+        "literally",
+    );
 }
 
 #[test]
