@@ -134,3 +134,19 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
         assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
     }
 }
+
+#[test]
+fn parse_accepts_freshness_with_and_without_self_test() {
+    assert_eq!(
+        parse(["freshness"].into_iter().map(OsString::from)),
+        Ok(Task::Freshness { self_test: false })
+    );
+    assert_eq!(
+        parse(["freshness", "--self-test"].into_iter().map(OsString::from)),
+        Ok(Task::Freshness { self_test: true })
+    );
+    assert_eq!(
+        parse(["freshness", "nightly"].into_iter().map(OsString::from)),
+        Err(UsageError::UnexpectedArgument("nightly".into()))
+    );
+}
