@@ -103,6 +103,15 @@ fn parse_reads_a_row_s_c_expressions_and_refuses_any_outside_their_alphabet() {
         )]
     );
     for refused in [
+        "{\"X\": \"1) || (0\"}",
+        "{\"X\": \"1) | (0\"}",
+        "{\"X\": \"(1\"}",
+        "{\"X\": \"1)\"}",
+        "{\"X\": \")1(\"}",
+        "{\"X\": \"1 || 0\"}",
+        "{\"X\": \"1 < 2\"}",
+        "{\"X\": \"1 > 2\"}",
+        "{\"X\": \"1 <<< 2\"}",
         "{\"X\": \"1 /* 2 */\"}",
         "{\"X\": \"1, 2\"}",
         "{\"X\": \"1; int y\"}",
@@ -313,6 +322,7 @@ fn adopting(module: &str) -> Code {
         headers: Vec::new(),
         defines: Vec::new(),
         expressions: Vec::new(),
+        opaque: Vec::new(),
         structs: Vec::new(),
         constants: Vec::new(),
         stand_in: None,

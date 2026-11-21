@@ -97,6 +97,10 @@ pub(crate) struct Code {
     /// with a C name: (constant, expression), for macros such as
     /// `CMSG_LEN(sizeof(int))`.
     pub(crate) expressions: Vec<(String, String)>,
+    /// The struct fields the ABI check binds by their struct's size alone
+    /// (`opaque`, optional): `struct.field`, each a trailing array of
+    /// integers the C libraries name differently (`statvfs`'s spares).
+    pub(crate) opaque: Vec<String>,
     pub(crate) extern_blocks: Vec<ExternBlock>,
     pub(crate) blocks: Vec<Block>,
     pub(crate) impls: usize,
@@ -323,6 +327,7 @@ fn parse_code(code: &Value) -> Result<Code, String> {
         headers: strings("headers")?,
         defines: defines(code)?,
         expressions: expressions(code)?,
+        opaque: opaque(code)?,
         extern_blocks,
         blocks,
         impls,
@@ -355,10 +360,8 @@ fn defines(code: &Value) -> Result<Vec<String>, String> {
 
 /// The C expressions a row's ABI check compares constants with
 /// (`expressions`, optional): an object from a constant's name to an
-/// expression of names, numbers, spaces, parentheses and the operators
-/// `*`, `+`, `-`, `|`, `<<` and `>>` (a group mask is an or of shifted
-/// bits), since each is written into the C file: no quote, `#`, `;`, `/`
-/// or line break, so no expression can end the assertion it stands in.
+/// expression `well_formed` accepts (a group mask is an or of shifted
+/// bits), since each is written into the C file.
 fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
     let Some(expressions) = code.get("expressions") else {
         return Ok(Vec::new());
@@ -374,21 +377,89 @@ fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
             let expression = value.as_str().unwrap_or_default();
-            let expression_ok = !expression.trim().is_empty()
-                && expression
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"_ ()*+-|<>".contains(&byte));
+            let expression_ok = well_formed(expression);
             if name_ok && expression_ok {
                 Ok((name.clone(), expression.to_owned()))
             } else {
                 Err(format!(
                     "`expressions` maps {name:?} to {value:?}: a constant's name must map to an \
-                     expression of names, numbers, spaces, parentheses, `*`, `+`, `-`, `|`, `<` \
-                     and `>`"
+                     expression of names, numbers, spaces, balanced parentheses and the \
+                     operators `*`, `+`, `-`, `|`, `<<` and `>>`"
                 ))
             }
         })
         .collect()
+}
+
+/// The row's opaque fields (`opaque`, optional): `struct.field` names.
+fn opaque(code: &Value) -> Result<Vec<String>, String> {
+    let Some(opaque) = code.get("opaque") else {
+        return Ok(Vec::new());
+    };
+    let Value::Array(items) = opaque else {
+        return Err("`opaque` is not a list".to_owned());
+    };
+    items
+        .iter()
+        .map(|item| {
+            let name = item.as_str().unwrap_or_default();
+            let parts: Vec<&str> = name.split('.').collect();
+            let ok = parts.len() == 2
+                && parts.iter().all(|part| {
+                    !part.is_empty()
+                        && part
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                });
+            if ok {
+                Ok(name.to_owned())
+            } else {
+                Err(format!(
+                    "`opaque` holds {item:?}, not a `struct.field` name"
+                ))
+            }
+        })
+        .collect()
+}
+
+/// Whether `expression` may stand in the ABI check's `(<expression>) ==
+/// <value>`: names, numbers and spaces; parentheses that balance and never
+/// close more than they opened, so the expression cannot leave its own
+/// parentheses; and the operators `*`, `+`, `-`, `|`, `<<` and `>>` only
+/// (no `||`, no comparison). No quote, `#`, `;`, `/`, comma or line break
+/// can appear, so nothing can end the assertion it stands in.
+fn well_formed(expression: &str) -> bool {
+    if expression.trim().is_empty() {
+        return false;
+    }
+    let bytes = expression.as_bytes();
+    let mut depth = 0_usize;
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
+        match byte {
+            b'(' => depth += 1,
+            b')' => match depth.checked_sub(1) {
+                Some(less) => depth = less,
+                None => return false,
+            },
+            b'|' if bytes.get(at + 1) == Some(&b'|') => return false,
+            b'<' | b'>' => {
+                let pair = bytes.get(at + 1) == Some(&byte);
+                let third = bytes
+                    .get(at + 2)
+                    .is_some_and(|next| *next == b'<' || *next == b'>');
+                if !pair || third {
+                    return false;
+                }
+                at += 1;
+            }
+            b'*' | b'+' | b'-' | b'|' | b' ' | b'_' => {}
+            other if other.is_ascii_alphanumeric() => {}
+            _ => return false,
+        }
+        at += 1;
+    }
+    depth == 0
 }
 
 /// The feature macros a row may ask the ABI check to define.

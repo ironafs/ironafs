@@ -21,10 +21,12 @@
 //!   field of the wrong type with the right size and offset fails; an
 //!   array member (`[T; N]`) by its address, `T (*)[N]`, so its element
 //!   type and count are both checked. A struct's last field may be an
-//!   opaque array (its name starts `_opaque`): space a C library fills
-//!   with fields that are never read and whose names differ between
+//!   opaque array of integers (its name starts `_opaque`, it is private,
+//!   and its row names it in sites.json's `opaque`): space a C library
+//!   fills with fields that are never read and whose names differ between
 //!   libraries or releases (`struct statvfs`'s spares), bound only by the
-//!   struct's size and alignment;
+//!   struct's size and alignment; a struct of opaque fields alone is
+//!   refused;
 //! - each constant's value, against its C name, or against the C
 //!   expression sites.json maps it to (`expressions`), for a value a macro
 //!   gives, such as `CMSG_LEN(sizeof(int))`;
@@ -109,6 +111,9 @@ pub(crate) struct Declarations {
     /// The names the declaration files import from `core::ffi`: only these
     /// spell C's types (a `c_int` from anywhere else is not C's `int`).
     pub(crate) ffi_names: Vec<String>,
+    /// The opaque fields the row names (`struct.field`, sites.json's
+    /// `opaque`): the only fields that may be opaque.
+    pub(crate) opaque: Vec<String>,
 }
 
 /// The sizes of C's integer types on the target.
@@ -153,6 +158,12 @@ pub(crate) fn declarations(
         match ident(Some(token)).filter(|_| !token.raw) {
             Some("struct") => {
                 repr_c_only(tokens, at).map_err(|error| format!("line {line}: {error}"))?;
+                if public_opaque(tokens, at) {
+                    return Err(format!(
+                        "line {line}: an opaque field is private, so no code outside its \
+                         struct's module reads it"
+                    ));
+                }
                 let (item, next) = read_struct(tokens, at)
                     .ok_or_else(|| format!("line {line}: a struct that cannot be read"))?;
                 found.structs.push(item);
@@ -276,6 +287,19 @@ fn repr_c_only(tokens: &[Token], at: usize) -> Result<(), String> {
     } else {
         Err("a struct in a declaration file is #[repr(C)]".to_owned())
     }
+}
+
+/// Whether the struct at `at` gives an opaque field a visibility.
+fn public_opaque(tokens: &[Token], at: usize) -> bool {
+    let Some(close) = matching(tokens, at + 2, '{', '}') else {
+        return false;
+    };
+    let body = tokens.get(at + 3..close).unwrap_or_default();
+    body.iter().enumerate().any(|(index, token)| {
+        ident(Some(token)) == Some("pub")
+            && ident(body.get(skip_visibility(body, index)))
+                .is_some_and(|name| name.starts_with(OPAQUE))
+    })
 }
 
 /// Skips a visibility (`pub`, `pub(...)`) at `at`.
@@ -754,11 +778,29 @@ fn struct_assertions(
         ),
     ];
     let last = item.fields.len().saturating_sub(1);
+    if item
+        .fields
+        .iter()
+        .all(|(field, _)| field.starts_with(OPAQUE))
+        && !item.fields.is_empty()
+    {
+        return Err(format!(
+            "struct {name}: every member is opaque, so no member would be checked"
+        ));
+    }
     for (index, ((field, field_type), offset)) in item.fields.iter().zip(offsets).enumerate() {
         if field.starts_with(OPAQUE) {
-            if index != last || !matches!(field_type, CType::Array { .. }) {
+            let named = format!("{name}.{field}");
+            if !declarations.opaque.contains(&named) {
                 return Err(format!(
-                    "struct {name}: an opaque field (`{field}`) is the last field, an array"
+                    "struct {name}: `{field}` is opaque, but its row does not name it in \
+                     sites.json's `opaque`"
+                ));
+            }
+            if index != last || !integer_array(field_type, declarations) {
+                return Err(format!(
+                    "struct {name}: an opaque field (`{field}`) is the last field, an array of \
+                     integers"
                 ));
             }
             continue;
@@ -773,6 +815,17 @@ fn struct_assertions(
         ));
     }
     Ok(found)
+}
+
+/// Whether `found` is an array of integers (a scalar other than `void`).
+fn integer_array(found: &CType, declarations: &Declarations) -> bool {
+    let CType::Array { of, .. } = found else {
+        return false;
+    };
+    let CType::Named(element) = of.as_ref() else {
+        return false;
+    };
+    matches!(resolve(element, declarations), Ok(Resolved::Scalar(name)) if name != "c_void" && name != "core::ffi::c_void")
 }
 
 /// The C11 file of assertions for one row.
@@ -827,6 +880,18 @@ pub(crate) fn c_source(
             Some(true) => assert(format!("({name})-1 > 0"), format!("{name} is unsigned")),
             Some(false) => assert(format!("({name})-1 < 0"), format!("{name} is signed")),
             None => {}
+        }
+    }
+    for named in &declarations.opaque {
+        let held = declarations.structs.iter().any(|item| {
+            item.fields
+                .iter()
+                .any(|(field, _)| format!("{}.{field}", item.name) == *named)
+        });
+        if !held {
+            return Err(format!(
+                "sites.json names the opaque field `{named}`, which the declarations do not hold"
+            ));
         }
     }
     for item in &declarations.structs {
@@ -1223,10 +1288,11 @@ fn prove_row(
     };
     let model = DataModel::of(target);
     let failed = |problem: String| Ok(Some(Err(format!("{}: {problem}", row.id))));
-    let found = match row_declarations(crate_dir, &code.module, read, abi_of(model))? {
+    let mut found = match row_declarations(crate_dir, &code.module, read, abi_of(model))? {
         Ok(found) => found,
         Err(error) => return failed(error),
     };
+    found.opaque.clone_from(&code.opaque);
     let missing = missing_facts(&code.structs, &code.constants, &found);
     if !missing.is_empty() {
         return failed(format!(
