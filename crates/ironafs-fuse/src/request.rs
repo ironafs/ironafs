@@ -578,3 +578,64 @@ fn decode_release(body: &[u8]) -> Result<Release, Malformed> {
         lock_owner,
     })
 }
+
+impl core::fmt::Display for FrameError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Short { read } => write!(formatter, "{read} bytes, fewer than a request header"),
+            Self::LengthMismatch { declared, read } => {
+                write!(
+                    formatter,
+                    "the header says {declared} bytes, {read} were read"
+                )
+            }
+        }
+    }
+}
+
+impl core::fmt::Display for Malformed {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::BeforeInit => formatter.write_str("a request before init"),
+            Self::InitAgain => formatter.write_str("a second init"),
+            Self::Extensions => {
+                formatter.write_str("request extensions, which were not negotiated")
+            }
+            Self::BodyLength { expected, found } => {
+                write!(formatter, "a body of {found} bytes where {expected} belong")
+            }
+            Self::InitBody => formatter.write_str("an init body too short for its fields"),
+            Self::NameUnterminated => formatter.write_str("a name not ended by its one nul"),
+            Self::Name(error) => write!(formatter, "not a name: {error}"),
+            Self::UnknownFlags => formatter.write_str("an undefined bit in a flags field"),
+            Self::OutOfRange => formatter.write_str("a size or offset over its cap"),
+            Self::ForgetCount => {
+                formatter.write_str("a batch forget count that does not match its body")
+            }
+        }
+    }
+}
+
+impl core::fmt::Display for RequestError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "fuse request {} (opcode {}): {}",
+            self.header.unique, self.header.opcode, self.malformed
+        )
+    }
+}
+
+impl core::fmt::Display for DecodeError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Frame(error) => write!(formatter, "untrusted fuse frame: {error}"),
+            Self::Request(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl core::error::Error for FrameError {}
+impl core::error::Error for Malformed {}
+impl core::error::Error for RequestError {}
+impl core::error::Error for DecodeError {}
