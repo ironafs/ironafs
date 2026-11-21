@@ -500,9 +500,51 @@ impl<R: Repo> Guard<'_, R> {
             }
             "popd" => scope.cwd = None,
             "git" => self.git(args, stdin, scope, env, depth),
-            "gh" => self.gh(args, stdin, scope, depth),
+            "gh" => self.gh(args, stdin, scope, env, depth),
+            "man" | "rg" => self.command_option(base, args, scope, env, depth),
             _ if NOT_RUNNERS.contains(&base) => (),
             _ => self.runner(args, stdin, scope, env, depth),
+        }
+    }
+
+    /// `man -P <pager>` and `rg --pre <command>` run a command given as an
+    /// option's value; the rest of their arguments are text, not read.
+    fn command_option(
+        &mut self,
+        name: &str,
+        args: &[Word],
+        scope: &mut Scope,
+        env: &[(String, Option<String>)],
+        depth: usize,
+    ) {
+        let (short, long) = if name == "man" {
+            (Some("-P"), "--pager")
+        } else {
+            (None, "--pre")
+        };
+        let mut index = 0;
+        while let Some(word) = args.get(index) {
+            index += 1;
+            let value = match word.literal() {
+                Some("--") => return,
+                Some(text) if Some(text) == short || text == long => {
+                    index += 1;
+                    Some(args.get(index - 1).and_then(Word::literal))
+                }
+                Some(text) => text
+                    .strip_prefix(&format!("{long}="))
+                    .or_else(|| short.and_then(|short| text.strip_prefix(short)))
+                    .map(Some),
+                None if word_is_option(word) => Some(None),
+                None => None,
+            };
+            match value {
+                Some(Some(script)) => self.child_script(script, scope, env, depth),
+                Some(None) => self.block(format!(
+                    "write the options of {name} literally so the guard can read the command it runs"
+                )),
+                None => (),
+            }
         }
     }
 
@@ -512,6 +554,11 @@ impl<R: Repo> Guard<'_, R> {
     /// the assignments just before it, and an earlier argument that is a
     /// command line naming git or gh is checked as a script. Commands in
     /// [`NOT_RUNNERS`] are not read.
+    ///
+    /// The guard cannot tell a command line from text that quotes one, so a
+    /// data argument such as `python3 t.py 'git push origin main'` is
+    /// checked as a script and may be blocked: a known false positive, in
+    /// the safe direction.
     fn runner(
         &mut self,
         args: &[Word],
@@ -716,8 +763,8 @@ impl<R: Repo> Guard<'_, R> {
 /// Commands that print, search or describe their arguments and never run
 /// them, so `echo git push origin main` is not read as a push.
 const NOT_RUNNERS: &[&str] = &[
-    ":", "[", "apropos", "echo", "egrep", "false", "fgrep", "grep", "help", "info", "man",
-    "printf", "rg", "test", "true", "type", "whatis", "whereis", "which",
+    ":", "[", "apropos", "echo", "egrep", "false", "fgrep", "grep", "help", "info", "printf",
+    "test", "true", "type", "whatis", "whereis", "which",
 ];
 
 /// Whether a word names the `git` or `gh` program, by any path.

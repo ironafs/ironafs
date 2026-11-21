@@ -192,7 +192,14 @@ impl Flags {
 }
 
 impl<R: Repo> Guard<'_, R> {
-    pub(super) fn gh(&mut self, args: &[Word], stdin: &Stdin, scope: &mut Scope, depth: usize) {
+    pub(super) fn gh(
+        &mut self,
+        args: &[Word],
+        stdin: &Stdin,
+        scope: &mut Scope,
+        env: &[(String, Option<String>)],
+        depth: usize,
+    ) {
         if self.too_deep(depth) {
             return;
         }
@@ -223,12 +230,12 @@ impl<R: Repo> Guard<'_, R> {
             _ => match self.repo.gh_alias(command) {
                 Ok(Some(expansion)) => {
                     if let Some(script) = expansion.strip_prefix('!') {
-                        let env = scope.env.clone();
-                        self.child_script(script, scope, &env, depth);
+                        // gh runs a shell alias with the command's environment.
+                        self.child_script(script, scope, env, depth);
                     } else if let Some(words) = self.alias_words(&expansion) {
                         let expanded: Vec<Word> =
                             words.into_iter().chain(rest.iter().cloned()).collect();
-                        self.gh(&expanded, stdin, scope, depth + 1);
+                        self.gh(&expanded, stdin, scope, env, depth + 1);
                     }
                 }
                 Ok(None) => (),

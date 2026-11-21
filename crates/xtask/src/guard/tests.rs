@@ -528,6 +528,19 @@ fn guard_reads_through_commands_that_run_git_or_gh() {
         blocked(command, TO_MAIN);
     }
     blocked("unbuffer gh pr merge 5 --squash", "--match-head-commit");
+    for command in [
+        "man -P 'git push origin main' git",
+        "man -Pgit\\ push\\ origin\\ main git",
+        "man --pager='git push origin main' git",
+        "rg --pre 'git push origin main' x docs",
+        "rg --pre='git push origin main' x docs",
+    ] {
+        blocked(command, TO_MAIN);
+    }
+    blocked("man -P \"$PAGER\" git", "literally");
+    // A data argument that quotes a git command line is read as a script:
+    // a known false positive, in the safe direction.
+    blocked("python3 t.py 'git push origin main'", TO_MAIN);
     blocked(
         "watch GIT_DIR=/repo/main/.git git commit -m 'x' -m 'Assisted-by: none'",
         ON_MAIN,
@@ -774,6 +787,16 @@ fn guard_expands_gh_aliases() {
     blocked_with(&repo, "gh m", "--match-head-commit");
     blocked_with(&repo, "gh sh", TO_MAIN);
     allowed_with(&repo, "gh copilot explain x");
+}
+
+#[test]
+fn guard_passes_a_command_s_assignments_to_a_gh_shell_alias() {
+    let repo = Fake {
+        gh_aliases: vec![("m", "!git commit -m 'x' -m 'Assisted-by: none'")],
+        ..Fake::default()
+    };
+    blocked_with(&repo, "GIT_DIR=/repo/main/.git gh m", ON_MAIN);
+    allowed_with(&repo, "gh m");
 }
 
 fn hook_input(tool: &str, command: &str) -> String {
