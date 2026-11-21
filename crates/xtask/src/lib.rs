@@ -5,7 +5,13 @@
 
 mod args;
 mod check;
+mod deps;
+mod fixture;
+mod grants;
 mod hooks;
+mod json;
+mod metadata;
+mod rust_source;
 mod trailers;
 
 use std::ffi::OsString;
@@ -33,6 +39,17 @@ enum Error {
         source: io::Error,
     },
     Trailer(trailers::Violation),
+    /// A rule check found violations, each written out.
+    Rules {
+        check: &'static str,
+        violations: Vec<String>,
+    },
+    /// A self-test case did not end as planted.
+    SelfTest {
+        check: &'static str,
+        case: &'static str,
+        found: Vec<String>,
+    },
 }
 
 impl Error {
@@ -99,6 +116,22 @@ impl fmt::Display for Error {
                 write!(formatter, "{operation} at {}: {source}", path.display())
             }
             Self::Trailer(violation) => write!(formatter, "{violation}"),
+            Self::Rules { check, violations } => {
+                write!(formatter, "{check} found {} violations:", violations.len())?;
+                violations
+                    .iter()
+                    .try_for_each(|violation| write!(formatter, "\n  {violation}"))
+            }
+            Self::SelfTest { check, case, found } => {
+                write!(
+                    formatter,
+                    "{check} --self-test: case \"{case}\" did not end as planted; found {}:",
+                    found.len()
+                )?;
+                found
+                    .iter()
+                    .try_for_each(|violation| write!(formatter, "\n  {violation}"))
+            }
         }
     }
 }
@@ -109,6 +142,8 @@ fn run_task(
 ) -> Result<(), Error> {
     match args::parse(arguments).map_err(Error::Usage)? {
         args::Task::Check => check::run(output),
+        args::Task::CheckDeps { self_test } => deps::run(self_test, output),
+        args::Task::CheckGrants { self_test } => grants::run(self_test, output),
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
         args::Task::Trailers(mode) => trailers::run(mode, output),
