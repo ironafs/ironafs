@@ -35,7 +35,11 @@
         "blocks": [
           {
             "kind": "call",
-            "operation": "clock_gettime"
+            "operation": "abi::clock_gettime",
+            "arguments": [
+              "id",
+              "out"
+            ]
           }
         ],
         "impls": 0
@@ -158,7 +162,16 @@
         "blocks": [
           {
             "kind": "call",
-            "operation": "syscall"
+            "operation": "abi::syscall",
+            "arguments": [
+              "number",
+              "address",
+              "length",
+              "flags",
+              "unused3",
+              "unused4",
+              "unused5"
+            ]
           }
         ],
         "impls": 0
@@ -475,7 +488,11 @@
         "blocks": [
           {
             "kind": "write",
-            "operation": "write_volatile"
+            "operation": "core::ptr::write_volatile",
+            "arguments": [
+              "byte",
+              "0"
+            ]
           }
         ],
         "impls": 0

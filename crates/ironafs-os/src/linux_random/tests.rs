@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Tests of `linux-random` against the running kernel (ADR 0005, sheet 8:
-//! buffers of 0, 1, 256, 257 and 4096 bytes). The fill loop's handling of
+//! Tests of `linux-random` (ADR 0005, sheet 8: buffers of 0, 1, 256, 257
+//! and 4096 bytes), against the running kernel, and under Miri against
+//! the system call's stand-in. The fill loop's handling of
 //! short counts, `EINTR`, `ENOSYS`, zero and over-long counts is
 //! `random`'s, with a stand-in; the classification of the call's errno is
 //! tested here.
@@ -10,14 +11,10 @@
 use std::io;
 
 use super::abi::{EINTR, ENOSYS, EPERM};
-use super::{classify, fill_random, getrandom};
+use super::{arguments, classify, fill_random, getrandom};
 use crate::random::{Piece, RandomError};
 
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "a real system call: Miri checks the Rust around it through the stand-in tests"
-)]
 fn fill_random_fills_buffers_of_each_size_the_sheet_names() {
     for length in [0_usize, 1, 256, 257, 4096] {
         // Zero, then a fill: a 1-byte buffer can draw zero honestly, so
@@ -31,10 +28,6 @@ fn fill_random_fills_buffers_of_each_size_the_sheet_names() {
 }
 
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "a real system call: Miri checks the Rust around it through the stand-in tests"
-)]
 fn fill_random_draws_different_bytes_each_time() {
     let mut first = [0_u8; 64];
     let mut second = [0_u8; 64];
@@ -44,13 +37,17 @@ fn fill_random_draws_different_bytes_each_time() {
 }
 
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "a real system call: Miri checks the Rust around it through the stand-in tests"
-)]
 fn getrandom_reports_a_full_piece_of_at_most_256_bytes() {
     let mut piece = [0_u8; 256];
     assert!(matches!(getrandom(&mut piece), Piece::Filled(256)));
+}
+
+#[test]
+fn arguments_pass_the_buffer_address_and_length_and_zeros_each_as_a_long() {
+    let mut piece = [0_u8; 200];
+    let address = piece.as_mut_ptr().expose_provenance();
+    let found: [core::ffi::c_long; 6] = arguments(&mut piece).unwrap();
+    assert_eq!(found, [i64::try_from(address).unwrap(), 200, 0, 0, 0, 0]);
 }
 
 #[test]

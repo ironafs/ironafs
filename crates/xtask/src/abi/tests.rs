@@ -4,9 +4,9 @@
 //! Tests for the declaration reader and the C it generates.
 
 use super::{CType, DataModel, Declarations, Function, Struct, c_source, declarations};
-use crate::rust_source::tokens;
+use crate::rust_source::tokens_with_strings;
 
-const CLOCK: &str = "use core::ffi::{c_int, c_long};\n\
+const CLOCK: &str = "use core::ffi::{c_char, c_int, c_long};\n\
                      #[repr(C)]\n#[derive(Debug)]\n\
                      pub(super) struct timespec {\n pub(super) tv_sec: c_long,\n tv_nsec: c_long,\n}\n\
                      pub(super) const CLOCK_BOOTTIME: c_int = 7;\n\
@@ -22,7 +22,7 @@ const CLOCK: &str = "use core::ffi::{c_int, c_long};\n\
 
 fn read(source: &str) -> Declarations {
     let mut found = Declarations::default();
-    declarations(&tokens(source).unwrap(), &mut found).unwrap();
+    declarations(&tokens_with_strings(source).unwrap(), "C", &mut found).unwrap();
     found
 }
 
@@ -86,14 +86,44 @@ fn declarations_read_structs_constants_and_foreign_functions() {
     );
 }
 
-#[test]
-fn declarations_refuse_a_struct_without_repr_c() {
+/// The reader's error for `source`.
+#[track_caller]
+fn refused(source: &str) -> String {
     let mut found = Declarations::default();
-    let error = declarations(
-        &tokens("struct timespec { tv_sec: c_long }").unwrap(),
-        &mut found,
-    );
-    assert!(error.is_err());
+    declarations(&tokens_with_strings(source).unwrap(), "C", &mut found).unwrap_err()
+}
+
+#[test]
+fn declarations_refuse_what_c_cannot_be_compared_with() {
+    for (source, phrase) in [
+        (
+            "struct timespec { tv_sec: c_long }",
+            "line 1: a struct in a declaration file is #[repr(C)]",
+        ),
+        (
+            "#[repr(C, packed)]\nstruct timespec { tv_sec: c_long }",
+            "line 2: a struct whose repr is not exactly C",
+        ),
+        (
+            "#[repr(C)]\n#[repr(align(16))]\nstruct timespec { tv_sec: c_long }",
+            "line 3: a struct whose repr is not exactly C",
+        ),
+        (
+            "unsafe extern \"system\" { fn close(fd: c_int) -> c_int; }",
+            "line 1: an extern block whose ABI is \"system\", not \"C\"",
+        ),
+        (
+            "unsafe extern \"C\" { #[link_name = \"other\"] fn close(fd: c_int) -> c_int; }",
+            "line 1: an attribute on a foreign function",
+        ),
+        (
+            "use core::ffi::c_long as c_int;",
+            "line 1: a renaming import",
+        ),
+    ] {
+        let error = refused(source);
+        assert!(error.starts_with(phrase), "{source}: {error}");
+    }
 }
 
 #[test]
@@ -127,8 +157,10 @@ fn c_source_asserts_layout_member_types_constants_and_function_types() {
 
 #[test]
 fn c_source_lays_out_padding_as_repr_c_does() {
-    let found =
-        read("#[repr(C)]\nstruct padded { a: c_char, b: c_int, c: c_char, d: *mut c_void }\n");
+    let found = read(
+        "use core::ffi::{c_char, c_int, c_void};\n\
+         #[repr(C)]\nstruct padded { a: c_char, b: c_int, c: c_char, d: *mut c_void }\n",
+    );
     let source = c_source("row", &[], &found, DataModel::Lp64).unwrap();
     for line in [
         "_Static_assert(offsetof(struct padded, b) == 4, \"row: offsetof(struct padded, b)\");",
@@ -148,7 +180,7 @@ fn c_source_takes_long_as_four_bytes_on_windows() {
     let source = c_source(
         "row",
         &[],
-        &read("#[repr(C)]\nstruct pair { a: c_long, b: c_long }\n"),
+        &read("use core::ffi::c_long;\n#[repr(C)]\nstruct pair { a: c_long, b: c_long }\n"),
         DataModel::Llp64,
     )
     .unwrap();
@@ -159,9 +191,36 @@ fn c_source_takes_long_as_four_bytes_on_windows() {
 }
 
 #[test]
-fn c_source_refuses_a_type_it_has_no_c_name_for() {
-    let found = read("#[repr(C)]\nstruct odd { a: String }\n");
-    assert!(c_source("row", &[], &found, DataModel::Lp64).is_err());
+fn c_source_resolves_type_names_by_identity_not_spelling() {
+    for (source, error) in [
+        (
+            "#[repr(C)]\nstruct odd { a: String }\n",
+            "`String` is neither imported from core::ffi, a primitive integer, nor a struct or type alias of \
+             the declaration files",
+        ),
+        (
+            "#[repr(C)]\nstruct odd { a: c_long }\n",
+            "`c_long` is neither imported from core::ffi, a primitive integer, nor a struct or type alias of \
+             the declaration files",
+        ),
+        (
+            "#[repr(C)]\nstruct odd { a: libc::c_long }\n",
+            "`libc::c_long`: a type path other than core::ffi, whose identity this check \
+             cannot prove",
+        ),
+    ] {
+        assert_eq!(
+            c_source("row", &[], &read(source), DataModel::Lp64),
+            Err(error.to_owned()),
+            "{source}"
+        );
+    }
+    let written_out = read("#[repr(C)]\nstruct ok { a: core::ffi::c_long }\n");
+    assert!(
+        c_source("row", &[], &written_out, DataModel::Lp64)
+            .unwrap()
+            .contains("_Generic(((struct ok *)0)->a, long: 1)")
+    );
 }
 
 const RLIMIT: &str = "use core::ffi::c_int;\n\
@@ -198,12 +257,35 @@ fn declarations_refuse_an_alias_of_anything_but_a_scalar() {
         "type stamp = timespec;",
         "type pair = (u8, u8);",
     ] {
-        let mut found = Declarations::default();
-        assert!(
-            declarations(&tokens(source).unwrap(), &mut found).is_err(),
+        assert_eq!(
+            refused(source),
+            "line 1: a type alias that is not `NAME = <C scalar>;`",
             "{source}"
         );
     }
+}
+
+#[test]
+fn c_source_reads_an_alias_of_a_core_ffi_type_by_its_identity() {
+    let unsigned = c_source(
+        "row",
+        &[],
+        &read("type rlim_t = core::ffi::c_ulong;"),
+        DataModel::Lp64,
+    )
+    .unwrap();
+    assert!(
+        unsigned
+            .lines()
+            .any(|line| line == "_Static_assert((rlim_t)-1 > 0, \"row: rlim_t is unsigned\");"),
+        "{unsigned}"
+    );
+    let not_imported = c_source("row", &[], &read("type rlim_t = c_ulong;"), DataModel::Lp64);
+    assert_eq!(
+        not_imported.unwrap_err(),
+        "`c_ulong` is neither imported from core::ffi, a primitive integer, nor a struct or type \
+         alias of the declaration files"
+    );
 }
 
 #[test]

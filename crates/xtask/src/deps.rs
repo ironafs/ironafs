@@ -112,7 +112,8 @@ const NO_DEPENDENCIES: &[&str] = &["ironafs-time", "ironafs-events"];
 /// The workspace crates each driver depends on directly. A layer may use
 /// `ironafs-os`, so what `ironafs-os` reaches, a layer reaches too.
 const DRIVER_MAY_USE: &[(&str, &[&str])] = &[
-    ("ironafs-os", &["ironafs-time"]),
+    // ADR 0005, point 1.4: no dependencies, in any dependency table.
+    ("ironafs-os", &[]),
     ("ironafs-net", &["ironafs-rx", "ironafs-time", "ironafs-os"]),
     ("ironafs-gss", &["ironafs-time", "ironafs-os"]),
 ];
@@ -164,6 +165,12 @@ const NAMED_FFI: &[&str] = &["ironafs-gss"];
 /// equal the workspace's except `OWN_LINTS_CHANGE`. A pure crate is never
 /// listed: `check-pure` forbids its unsafe code on the command line.
 pub(crate) const OWN_LINTS: &[&str] = &["ironafs-os"];
+
+/// Crates whose manifest may hold no dependency table at all, normal,
+/// development, build or target-specific (ADR 0005, point 1.4). The
+/// resolved graph leaves development dependencies out, so this is read
+/// from the manifest itself.
+const NO_DEPENDENCY_TABLES: &[&str] = &["ironafs-os"];
 
 /// The edition every target of the workspace is compiled in: the one whose
 /// lexical rules the token reader of `rust_source` follows.
@@ -285,6 +292,12 @@ pub(crate) enum Violation {
         name: String,
         manifest: PathBuf,
         differences: Vec<String>,
+    },
+    /// A crate that may have no dependencies has a dependency table.
+    DependencyTable {
+        name: String,
+        manifest: PathBuf,
+        line: String,
     },
     NoWorkspaceLints {
         name: String,
@@ -440,6 +453,16 @@ impl fmt::Display for Violation {
                  `unsafe_code = \"deny\"` (ADR 0005, point 1.5): {}",
                 manifest.display(),
                 differences.join("; ")
+            ),
+            Self::DependencyTable {
+                name,
+                manifest,
+                line,
+            } => write!(
+                formatter,
+                "{}: {name} has no dependencies in any table (ADR 0005, point 1.4), but its \
+                 manifest says `{line}`",
+                manifest.display()
             ),
             Self::NoWorkspaceLints { name, manifest } => write!(
                 formatter,
@@ -820,6 +843,45 @@ fn own_lints_differences(workspace_manifest: &str, manifest: &str) -> Vec<String
         .collect()
 }
 
+/// The members of `names` whose manifest has a dependency table or key.
+///
+/// # Errors
+///
+/// Returns an error if a manifest cannot be read.
+fn dependency_table_violations(
+    workspace: &Workspace,
+    names: &[&str],
+) -> Result<Vec<Violation>, Error> {
+    let mut violations = Vec::new();
+    for member in workspace
+        .members
+        .iter()
+        .filter(|member| names.contains(&member.name.as_str()))
+    {
+        let (text, manifest) = read_manifest(workspace, member)?;
+        if let Some(line) = dependency_line(&text) {
+            violations.push(Violation::DependencyTable {
+                name: member.name.clone(),
+                manifest,
+                line,
+            });
+        }
+    }
+    Ok(violations)
+}
+
+/// The first line of a manifest, comments aside, that names a dependency
+/// table or key (`[dependencies]`, `[dev-dependencies]`,
+/// `[build-dependencies]`, `[target.'...'.dependencies]`, or a dotted or
+/// inline key), as written.
+fn dependency_line(manifest: &str) -> Option<String> {
+    manifest
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or_default().trim())
+        .find(|line| line.contains("dependencies"))
+        .map(str::to_owned)
+}
+
 /// A member's manifest, and its path as shown, relative to the workspace
 /// root.
 ///
@@ -1002,7 +1064,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     if self_test {
         return self_test::run(&workspace.target_dir, output);
     }
-    let (violations, scanned) = check(&workspace, THIRD_PARTY)?;
+    let (violations, scanned) = check(&workspace, THIRD_PARTY, NO_DEPENDENCY_TABLES)?;
     if !violations.is_empty() {
         return Err(Error::Rules {
             check: "check-deps",
@@ -1033,9 +1095,11 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
 fn check(
     workspace: &Workspace,
     third_party: ThirdPartyLists,
+    no_tables: &[&str],
 ) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
     let mut violations = graph_violations(workspace, third_party);
     violations.extend(lint_violations(workspace, OWN_LINTS)?);
+    violations.extend(dependency_table_violations(workspace, no_tables)?);
     violations.extend(edition_violations(workspace)?);
     let (found, scanned) = pure_source::scan(workspace)?;
     violations.extend(found);

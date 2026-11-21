@@ -20,19 +20,35 @@
 //! its callers' to decide.
 //!
 //! The crate builds for the targets of ADR 0005, point 5.3, only: their
-//! declarations are written and proved for those targets alone.
+//! declarations are written and proved for those targets alone. The guard
+//! below names every property that tells them apart from the compiler's
+//! other targets, and `cargo xtask check-os` evaluates it against every
+//! target the pinned compiler knows: it must accept exactly those seven.
 
-#[cfg(not(any(
-    all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64"),
-        any(target_env = "gnu", target_env = "musl"),
-    ),
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(
-        target_os = "windows",
-        target_env = "msvc",
-        any(target_arch = "x86_64", target_arch = "aarch64"),
+#[cfg(not(all(
+    target_pointer_width = "64",
+    target_endian = "little",
+    any(
+        all(
+            target_os = "linux",
+            target_vendor = "unknown",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            any(target_env = "gnu", target_env = "musl"),
+            target_abi = "",
+        ),
+        all(
+            target_os = "macos",
+            target_vendor = "apple",
+            target_arch = "aarch64",
+            target_abi = "",
+        ),
+        all(
+            target_os = "windows",
+            target_vendor = "pc",
+            target_env = "msvc",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_abi = "",
+        ),
     ),
 )))]
 compile_error!(

@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 
 use crate::metadata::{self, Workspace};
 use crate::os::{self, Built};
-use crate::rust_source::{self, Token, TokenKind, ident, punct};
+use crate::rust_source::{self, Token, TokenKind, ident, matching, punct};
 use crate::{Command, Error};
 
 #[cfg(test)]
@@ -88,6 +88,9 @@ pub(crate) struct Declarations {
     pub(crate) functions: Vec<Function>,
     /// Each `type NAME = <scalar>;`: a C typedef the declarations name.
     pub(crate) aliases: Vec<(String, CType)>,
+    /// The names the declaration files import from `core::ffi`: only these
+    /// spell C's types (a `c_int` from anywhere else is not C's `int`).
+    pub(crate) ffi_names: Vec<String>,
 }
 
 /// The sizes of C's integer types on the target.
@@ -109,51 +112,102 @@ impl DataModel {
     }
 }
 
-/// Reads the declarations among `tokens` into `found`: every
-/// `#[repr(C)]` struct, every `const`, and every function of an `unsafe
-/// extern` block.
+/// Reads the declarations among `tokens` (read with their strings) into
+/// `found`: every `#[repr(C)]` struct, every `const`, every function of an
+/// `extern "<abi>"` block, and the names imported from `core::ffi`.
 ///
 /// # Errors
 ///
-/// Returns what the reader cannot take: a struct without `#[repr(C)]`, a
-/// constant that is not an integer literal, or a declaration it cannot
-/// read exactly.
-pub(crate) fn declarations(tokens: &[Token], found: &mut Declarations) -> Result<(), String> {
+/// Returns what the reader refuses rather than guess at: an extern block
+/// whose ABI is not `abi`, an attribute on a foreign function (such as
+/// `link_name`, which would link another symbol), a struct whose `repr` is
+/// not exactly `C` (such as `packed` or `align`, which change its layout),
+/// a renaming import, a constant that is not an integer literal, or a
+/// declaration it cannot read exactly.
+pub(crate) fn declarations(
+    tokens: &[Token],
+    abi: &str,
+    found: &mut Declarations,
+) -> Result<(), String> {
     let mut at = 0;
     while let Some(token) = tokens.get(at) {
         let line = token.line;
-        match ident(Some(token)) {
-            Some("struct") if !token.raw => {
-                if !repr_c_before(tokens, at) {
-                    return Err(format!(
-                        "line {line}: a struct in a declaration file is #[repr(C)]"
-                    ));
-                }
+        match ident(Some(token)).filter(|_| !token.raw) {
+            Some("struct") => {
+                repr_c_only(tokens, at).map_err(|error| format!("line {line}: {error}"))?;
                 let (item, next) = read_struct(tokens, at)
                     .ok_or_else(|| format!("line {line}: a struct that cannot be read"))?;
                 found.structs.push(item);
                 at = next;
             }
-            Some("type") if !token.raw => {
+            Some("type") => {
                 let (alias, next) = read_alias(tokens, at).ok_or_else(|| {
                     format!("line {line}: a type alias that is not `NAME = <C scalar>;`")
                 })?;
                 found.aliases.push(alias);
                 at = next;
             }
-            Some("const") if !token.raw => {
+            Some("const") => {
                 let (constant, next) = read_constant(tokens, at).ok_or_else(|| {
                     format!("line {line}: a constant that is not `NAME: TYPE = <integer>;`")
                 })?;
                 found.constants.push(constant);
                 at = next;
             }
-            // The reader drops the ABI string, so `extern "C" {` reads as
-            // `extern {`.
-            Some("extern") if !token.raw && punct(tokens.get(at + 1)) == Some('{') => {
-                let close = matching(tokens, at + 1)
+            Some("use") => {
+                let end = tokens
+                    .get(at..)
+                    .unwrap_or_default()
+                    .iter()
+                    .position(|token| punct(Some(token)) == Some(';'))
+                    .map(|offset| at + offset)
+                    .ok_or_else(|| format!("line {line}: an unterminated use"))?;
+                let item = tokens.get(at + 1..end).unwrap_or_default();
+                if item
+                    .iter()
+                    .any(|token| ident(Some(token)) == Some("as") && !token.raw)
+                {
+                    return Err(format!(
+                        "line {line}: a renaming import, under which a name would not mean what \
+                         it says"
+                    ));
+                }
+                let from_ffi = ident(item.first()) == Some("core")
+                    && ident(item.get(2)) == Some("ffi")
+                    && matches!(
+                        item.get(3).map(|token| &token.kind),
+                        Some(TokenKind::PathSep)
+                    );
+                if from_ffi {
+                    found.ffi_names.extend(
+                        item.iter()
+                            .skip(4)
+                            .filter_map(|token| ident(Some(token)))
+                            .map(str::to_owned),
+                    );
+                }
+                at = end + 1;
+            }
+            Some("extern") => {
+                let written = match tokens.get(at + 1).map(|token| &token.kind) {
+                    Some(TokenKind::Str(written)) => written.as_str(),
+                    _ => "",
+                };
+                if written != abi || punct(tokens.get(at + 2)) != Some('{') {
+                    return Err(format!(
+                        "line {line}: an extern block whose ABI is \"{written}\", not \"{abi}\""
+                    ));
+                }
+                let close = matching(tokens, at + 2, '{', '}')
                     .ok_or_else(|| format!("line {line}: an unclosed extern block"))?;
-                read_functions(tokens.get(at + 2..close).unwrap_or_default(), found)
+                let body = tokens.get(at + 3..close).unwrap_or_default();
+                if body.iter().any(|token| punct(Some(token)) == Some('#')) {
+                    return Err(format!(
+                        "line {line}: an attribute on a foreign function (such as link_name), \
+                         which this check cannot compare with C"
+                    ));
+                }
+                read_functions(body, found)
                     .ok_or_else(|| format!("line {line}: an extern block that cannot be read"))?;
                 at = close + 1;
             }
@@ -163,9 +217,9 @@ pub(crate) fn declarations(tokens: &[Token], found: &mut Declarations) -> Result
     Ok(())
 }
 
-/// Whether the attributes before the `struct` at `at` include
-/// `#[repr(C)]`.
-fn repr_c_before(tokens: &[Token], at: usize) -> bool {
+/// Checks that the attributes before the `struct` at `at` include
+/// `#[repr(C)]` and no other `repr`.
+fn repr_c_only(tokens: &[Token], at: usize) -> Result<(), String> {
     let start = tokens
         .get(..at)
         .unwrap_or_default()
@@ -173,30 +227,28 @@ fn repr_c_before(tokens: &[Token], at: usize) -> bool {
         .rposition(|token| matches!(punct(Some(token)), Some(';' | '}')))
         .map_or(0, |found| found + 1);
     let before = tokens.get(start..at).unwrap_or_default();
-    before.windows(4).any(|window| {
-        ident(window.first()) == Some("repr")
-            && punct(window.get(1)) == Some('(')
-            && ident(window.get(2)) == Some("C")
-            && punct(window.get(3)) == Some(')')
-    })
-}
-
-/// The index of the `}` that closes the `{` at `open`.
-fn matching(tokens: &[Token], open: usize) -> Option<usize> {
-    let mut depth = 0_usize;
-    for (index, token) in tokens.iter().enumerate().skip(open) {
-        match punct(Some(token)) {
-            Some('{') => depth += 1,
-            Some('}') => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
+    let mut repr_c = false;
+    for (index, token) in before.iter().enumerate() {
+        if ident(Some(token)) != Some("repr") {
+            continue;
+        }
+        let close =
+            matching(before, index + 1, '(', ')').ok_or("a repr attribute that cannot be read")?;
+        let inside = before.get(index + 2..close).unwrap_or_default();
+        if inside.len() == 1 && ident(inside.first()) == Some("C") {
+            repr_c = true;
+        } else {
+            return Err(
+                "a struct whose repr is not exactly C (packed or align change its layout)"
+                    .to_owned(),
+            );
         }
     }
-    None
+    if repr_c {
+        Ok(())
+    } else {
+        Err("a struct in a declaration file is #[repr(C)]".to_owned())
+    }
 }
 
 /// Skips a visibility (`pub`, `pub(...)`) at `at`.
@@ -237,16 +289,17 @@ fn read_type(tokens: &[Token], at: usize) -> Option<(CType, usize)> {
     ) {
         next += 1;
     }
-    let mut name = ident(tokens.get(next))?;
+    let mut name = ident(tokens.get(next))?.to_owned();
     next += 1;
     while matches!(
         tokens.get(next).map(|token| &token.kind),
         Some(TokenKind::PathSep)
     ) {
-        name = ident(tokens.get(next + 1))?;
+        name.push_str("::");
+        name.push_str(ident(tokens.get(next + 1))?);
         next += 2;
     }
-    Some((CType::Named(name.to_owned()), next))
+    Some((CType::Named(name), next))
 }
 
 fn read_struct(tokens: &[Token], at: usize) -> Option<(Struct, usize)> {
@@ -255,7 +308,7 @@ fn read_struct(tokens: &[Token], at: usize) -> Option<(Struct, usize)> {
     if punct(tokens.get(open)) != Some('{') {
         return None;
     }
-    let close = matching(tokens, open)?;
+    let close = matching(tokens, open, '{', '}')?;
     let mut fields = Vec::new();
     let mut next = open + 1;
     while next < close {
@@ -316,7 +369,12 @@ fn read_alias(tokens: &[Token], at: usize) -> Option<((String, CType), usize)> {
     let CType::Named(scalar_name) = &aliased else {
         return None;
     };
-    scalar(scalar_name, DataModel::Lp64)?;
+    scalar(
+        scalar_name
+            .strip_prefix("core::ffi::")
+            .unwrap_or(scalar_name),
+        DataModel::Lp64,
+    )?;
     if punct(tokens.get(next)) != Some(';') {
         return None;
     }
@@ -429,18 +487,14 @@ fn scalar(name: &str, model: DataModel) -> Option<(&'static str, usize)> {
 /// base: `int`, `struct timespec`, `const char *`.
 fn c_name(found: &CType, declarations: &Declarations, model: DataModel) -> Result<String, String> {
     match found {
-        CType::Named(name) if name == "c_void" => Ok("void".to_owned()),
-        CType::Named(name) if alias(declarations, name).is_some() => Ok(name.clone()),
-        CType::Named(name) => scalar(name, model)
-            .map(|(spelling, _)| spelling.to_owned())
-            .or_else(|| {
-                declarations
-                    .structs
-                    .iter()
-                    .any(|item| item.name == *name)
-                    .then(|| format!("struct {name}"))
-            })
-            .ok_or_else(|| format!("`{name}` has no C type this check knows")),
+        CType::Named(name) => match resolve(name, declarations)? {
+            Resolved::Scalar("c_void") => Ok("void".to_owned()),
+            Resolved::Scalar(name) => scalar(name, model)
+                .map(|(spelling, _)| spelling.to_owned())
+                .ok_or_else(|| format!("`{name}` has no C type this check knows")),
+            Resolved::Struct(name) => Ok(format!("struct {name}")),
+            Resolved::Alias(name, _) => Ok(name.to_owned()),
+        },
         CType::Pointer { constant, to } => {
             let base = c_name(to, declarations, model)?;
             Ok(if *constant {
@@ -452,13 +506,60 @@ fn c_name(found: &CType, declarations: &Declarations, model: DataModel) -> Resul
     }
 }
 
-/// The scalar a declared alias names, if `name` is one.
-fn alias<'a>(declarations: &'a Declarations, name: &str) -> Option<&'a CType> {
-    declarations
-        .aliases
+/// What a type's name refers to.
+enum Resolved<'a> {
+    /// A `core::ffi` type or a primitive integer, by its name.
+    Scalar(&'a str),
+    /// A struct of the declaration files.
+    Struct(&'a str),
+    /// A type alias of the declaration files (a C typedef), and the scalar
+    /// it aliases.
+    Alias(&'a str, &'a CType),
+}
+
+/// The primitive integer types, which no import can rename (renaming
+/// imports are refused).
+const PRIMITIVES: &[&str] = &[
+    "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "usize", "isize",
+];
+
+/// Resolves a type name by its identity, not its last segment: a C type is
+/// a name imported from `core::ffi` or written `core::ffi::<name>`; a
+/// primitive integer is itself; any other name must be a struct the
+/// declaration files declare.
+fn resolve<'a>(name: &'a str, declarations: &'a Declarations) -> Result<Resolved<'a>, String> {
+    if let Some(rest) = name.strip_prefix("core::ffi::") {
+        return if rest.contains("::") {
+            Err(format!("`{name}` is no type of core::ffi"))
+        } else {
+            Ok(Resolved::Scalar(rest))
+        };
+    }
+    if name.contains("::") {
+        return Err(format!(
+            "`{name}`: a type path other than core::ffi, whose identity this check cannot prove"
+        ));
+    }
+    if PRIMITIVES.contains(&name) {
+        return Ok(Resolved::Scalar(name));
+    }
+    if declarations
+        .ffi_names
         .iter()
-        .find(|(alias, _)| alias == name)
-        .map(|(_, aliased)| aliased)
+        .any(|imported| imported == name)
+    {
+        return Ok(Resolved::Scalar(name));
+    }
+    if let Some((_, aliased)) = declarations.aliases.iter().find(|(alias, _)| alias == name) {
+        return Ok(Resolved::Alias(name, aliased));
+    }
+    if declarations.structs.iter().any(|item| item.name == name) {
+        return Ok(Resolved::Struct(name));
+    }
+    Err(format!(
+        "`{name}` is neither imported from core::ffi, a primitive integer, nor a struct or type alias \
+         of the declaration files"
+    ))
 }
 
 /// Whether a scalar is unsigned (`Some(true)`), signed (`Some(false)`), or
@@ -481,24 +582,30 @@ fn layout(
 ) -> Result<(usize, usize), String> {
     match found {
         CType::Pointer { .. } => Ok((8, 8)),
-        CType::Named(name) => {
-            if let Some(aliased) = alias(declarations, name) {
-                return layout(aliased, declarations, model, depth);
+        CType::Named(name) => match resolve(name, declarations)? {
+            Resolved::Scalar("c_void") => Err("`c_void` has no size".to_owned()),
+            Resolved::Scalar(name) => scalar(name, model)
+                .map(|(_, size)| (size, size))
+                .ok_or_else(|| format!("`{name}` has no C type this check knows")),
+            Resolved::Alias(name, aliased) => {
+                if depth > 8 {
+                    return Err(format!("type {name} nests too deep"));
+                }
+                layout(aliased, declarations, model, depth + 1)
             }
-            if let Some((_, size)) = scalar(name, model) {
-                return Ok((size, size));
+            Resolved::Struct(name) => {
+                let item = declarations
+                    .structs
+                    .iter()
+                    .find(|item| item.name == name)
+                    .ok_or_else(|| format!("struct {name} is not declared"))?;
+                if depth > 8 {
+                    return Err(format!("struct {name} nests too deep"));
+                }
+                struct_layout(item, declarations, model, depth + 1)
+                    .map(|(size, align, _)| (size, align))
             }
-            let item = declarations
-                .structs
-                .iter()
-                .find(|item| item.name == *name)
-                .ok_or_else(|| format!("`{name}` has no C type this check knows"))?;
-            if depth > 8 {
-                return Err(format!("struct {name} nests too deep"));
-            }
-            struct_layout(item, declarations, model, depth + 1)
-                .map(|(size, align, _)| (size, align))
-        }
+        },
     }
 }
 
@@ -557,7 +664,10 @@ pub(crate) fn c_source(
             format!("_Alignof({name}) == {align}"),
             format!("_Alignof({name})"),
         );
-        let CType::Named(scalar_name) = aliased else {
+        let CType::Named(aliased_name) = aliased else {
+            return Err(format!("`{name}` aliases a type that is not a scalar"));
+        };
+        let Resolved::Scalar(scalar_name) = resolve(aliased_name, declarations)? else {
             return Err(format!("`{name}` aliases a type that is not a scalar"));
         };
         match unsigned(scalar_name) {
@@ -619,8 +729,9 @@ pub(crate) fn c_source(
     Ok(source)
 }
 
-/// Compiles `source` with the platform's C compiler, warnings as errors,
-/// syntax only; returns the compiler's first error line on failure.
+/// Compiles `source` with the platform's C compiler (`$CC`, or `cc`),
+/// warnings as errors, syntax only; returns the compiler's first error line
+/// on failure.
 ///
 /// # Errors
 ///
@@ -628,11 +739,12 @@ pub(crate) fn c_source(
 /// be started.
 pub(crate) fn compile(source: &str, file: &Path) -> Result<Result<(), String>, Error> {
     crate::fixture::write_file(file, source)?;
-    let output = Command::new("cc")
+    let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+    let output = Command::new(compiler)
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
         .arg(file)
         .output()
-        .map_err(Error::io("run cc"))?;
+        .map_err(Error::io("run the C compiler"))?;
     if output.status.success() {
         return Ok(Ok(()));
     }
@@ -640,7 +752,7 @@ pub(crate) fn compile(source: &str, file: &Path) -> Result<Result<(), String>, E
     Ok(Err(stderr
         .lines()
         .find(|line| line.contains("error"))
-        .unwrap_or("cc failed with no error line")
+        .unwrap_or("the C compiler failed with no error line")
         .to_owned()))
 }
 
@@ -657,57 +769,130 @@ fn host_target() -> Result<String, Error> {
         .ok_or(Error::UnexpectedOutput("rustc -vV"))
 }
 
+/// The ABI string a declaration for `model`'s system is written with.
+fn abi_of(model: DataModel) -> &'static str {
+    match model {
+        DataModel::Lp64 => "C",
+        DataModel::Llp64 => "system",
+    }
+}
+
 /// The declarations of a row's module on one target: every file under
 /// `src/<module>/` that the compiler read.
 fn row_declarations(
     crate_dir: &Path,
     module: &str,
     read: &std::collections::BTreeSet<PathBuf>,
+    abi: &str,
 ) -> Result<Result<Declarations, String>, Error> {
     let directory = Path::new("src").join(module);
     let mut found = Declarations::default();
     for file in read.iter().filter(|file| file.starts_with(&directory)) {
         let path = crate_dir.join(file);
         let text = fs::read_to_string(&path).map_err(Error::path_io("read source file", &path))?;
-        let tokens = match rust_source::tokens(&text) {
+        let tokens = match rust_source::tokens_with_strings(&text) {
             Ok(tokens) => tokens,
             Err(error) => return Ok(Err(format!("{}: {error}", file.display()))),
         };
-        if let Err(error) = declarations(&tokens, &mut found) {
+        if let Err(error) = declarations(&tokens, abi, &mut found) {
             return Ok(Err(format!("{}: {error}", file.display())));
         }
     }
     Ok(Ok(found))
 }
 
-/// Checks the host target's implemented rows, or with `self_test` proves
-/// on a host-portable fixture that each planted mismatch fails to compile.
+/// The rows implemented on `target` that hold a foreign item: what this
+/// check proves there. Empty on a target with none, where it has nothing
+/// to prove; `cargo xtask check` then skips it, and a CI lane that runs it
+/// fails.
 ///
 /// # Errors
 ///
-/// Returns the rows whose check failed, or why the check could not run.
-pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error> {
+/// Returns an error if the copy cannot be read, or its problems.
+pub(crate) fn rows_to_prove(workspace: &Workspace, target: &str) -> Result<Vec<String>, Error> {
+    let crate_dir = os::crate_dir(workspace)?;
+    let inventory = match os::read_inventory(&workspace.root, &crate_dir)? {
+        Ok(inventory) => inventory,
+        Err(problems) => {
+            return Err(Error::Rules {
+                check: CHECK,
+                violations: problems.iter().map(ToString::to_string).collect(),
+            });
+        }
+    };
+    Ok(inventory
+        .rows
+        .iter()
+        .filter(|row| {
+            row.implemented_on(target)
+                && row
+                    .code
+                    .as_ref()
+                    .is_some_and(|code| !code.extern_blocks.is_empty())
+        })
+        .map(|row| row.id.clone())
+        .collect())
+}
+
+/// Whether this host has anything for `check-abi` to prove.
+///
+/// # Errors
+///
+/// As `rows_to_prove`, and if the host's triple cannot be read.
+pub(crate) fn applies_here() -> Result<(bool, String), Error> {
+    let workspace = metadata::load(None, &[])?;
+    let host = host_target()?;
+    let rows = rows_to_prove(&workspace, &host)?;
+    Ok((!rows.is_empty(), host))
+}
+
+/// Checks `target` (the host's by default), or with `self_test` proves on
+/// a host-portable fixture that each planted mismatch is caught.
+///
+/// # Errors
+///
+/// Returns the rows whose check failed, a target with nothing to prove, or
+/// why the check could not run.
+pub(super) fn run(
+    self_test: bool,
+    target: Option<&str>,
+    output: &mut impl Write,
+) -> Result<(), Error> {
     let workspace = metadata::load(None, &[])?;
     let dir = crate::fixture::fresh_dir(&workspace.target_dir, CHECK)?;
     let result = if self_test {
         self_test::run(&dir, output)
     } else {
-        check_host(&workspace, &dir, output)
+        let target = match target {
+            Some(target) => target.to_owned(),
+            None => host_target()?,
+        };
+        check_target(&workspace, &target, &dir, output)
     };
     crate::fixture::remove_dir(&dir)?;
     result
 }
 
-fn check_host(workspace: &Workspace, dir: &Path, output: &mut impl Write) -> Result<(), Error> {
-    let host = host_target()?;
+fn check_target(
+    workspace: &Workspace,
+    target: &str,
+    dir: &Path,
+    output: &mut impl Write,
+) -> Result<(), Error> {
     let crate_dir = os::crate_dir(workspace)?;
     let fail = |violations: Vec<String>| Error::Rules {
         check: CHECK,
         violations,
     };
-    if !os::ALLOWLIST.contains(&host.as_str()) {
+    if !os::ALLOWLIST.contains(&target) {
         return Err(fail(vec![format!(
-            "{host} is not a target of ADR 0005, point 5.3: run this check on one that is"
+            "{target} is not a target of ADR 0005, point 5.3: run this check on one that is"
+        )]));
+    }
+    let to_prove = rows_to_prove(workspace, target)?;
+    if to_prove.is_empty() {
+        return Err(fail(vec![format!(
+            "no row with a foreign item is implemented on {target}, so this run proves nothing"
         )]));
     }
     let inventory = match os::read_inventory(&workspace.root, &crate_dir)? {
@@ -715,21 +900,22 @@ fn check_host(workspace: &Workspace, dir: &Path, output: &mut impl Write) -> Res
         Err(problems) => return Err(fail(problems.iter().map(ToString::to_string).collect())),
     };
     let build_dir = workspace.target_dir.join("xtask-check-os");
-    let read = match os::files_for(workspace, &crate_dir, &build_dir, &host)? {
+    let read = match os::files_for(workspace, &crate_dir, &build_dir, target)? {
         Built::Files(files) => files,
-        Built::Refused(error) => return Err(fail(vec![format!("{host}: {error}")])),
+        Built::Refused(error) => return Err(fail(vec![format!("{target}: {error}")])),
     };
-    let model = DataModel::of(&host);
+    let model = DataModel::of(target);
     let mut checked = Vec::new();
     let mut violations = Vec::new();
-    for row in &inventory.rows {
-        let Some(code) = row.code.as_ref().filter(|_| row.implemented_on(&host)) else {
+    for row in inventory
+        .rows
+        .iter()
+        .filter(|row| to_prove.contains(&row.id))
+    {
+        let Some(code) = row.code.as_ref() else {
             continue;
         };
-        if code.extern_blocks.is_empty() {
-            continue;
-        }
-        let found = match row_declarations(&crate_dir, &code.module, &read)? {
+        let found = match row_declarations(&crate_dir, &code.module, &read, abi_of(model))? {
             Ok(found) => found,
             Err(error) => {
                 violations.push(format!("{}: {error}", row.id));
@@ -779,13 +965,10 @@ fn check_host(workspace: &Workspace, dir: &Path, output: &mut impl Write) -> Res
     if !violations.is_empty() {
         return Err(fail(violations));
     }
-    let summary = if checked.is_empty() {
-        format!("no row with a foreign item is implemented on {host}; nothing to prove there")
-    } else {
-        format!(
-            "{host}: the system's C compiler accepted {}",
-            checked.join("; ")
-        )
-    };
-    writeln!(output, "check-abi: {summary}").map_err(Error::io("report check-abi"))
+    writeln!(
+        output,
+        "check-abi: {target}: the system's C compiler accepted {}",
+        checked.join("; ")
+    )
+    .map_err(Error::io("report check-abi"))
 }

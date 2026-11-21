@@ -21,7 +21,7 @@
 //! module), and `target_env` anywhere but the crate root's target
 //! allowlist, so a musl build compiles exactly the glibc build's code.
 
-use crate::rust_source::{Token, TokenKind, ident, punct};
+use crate::rust_source::{Token, TokenKind, ident, matching, punct};
 
 #[cfg(test)]
 mod tests;
@@ -65,11 +65,22 @@ pub(crate) enum SiteKind {
         link: Option<String>,
         items: Vec<ExternItem>,
     },
-    /// An `unsafe` block and the last segment of the path it calls.
-    Block { operation: String },
+    /// An `unsafe` block: the path it calls, as written, and its
+    /// arguments, each as its tokens' text joined by spaces.
+    Block {
+        operation: String,
+        arguments: Vec<String>,
+    },
     /// An `unsafe impl`.
     Impl,
+    /// An `unsafe fn` standing in for a foreign function under Miri: only
+    /// in a Miri stand-in, named `<site id>: Miri stand-in`.
+    StandInFn,
 }
+
+/// The suffix of the name a Miri stand-in's sites carry (ADR 0005, point
+/// 6.5): `#[expect(unsafe_code, reason = "<site id>: Miri stand-in")]`.
+pub(crate) const STAND_IN: &str = ": Miri stand-in";
 
 /// One site, its name (`None` if it carries no named expectation) and the
 /// line of its `unsafe`.
@@ -118,16 +129,21 @@ pub(crate) fn scan(tokens: &[Token], root: bool) -> Scan {
             line: token.line,
             what,
         };
-        let Some(word) = ident(Some(token)).filter(|_| !token.raw) else {
+        let Some(word) = ident(Some(token)) else {
             continue;
         };
+        // A raw identifier is a name, never a keyword: `r#unsafe` opens no
+        // block. But `r#cfg`, `r#path` and the other built-in names below
+        // are not keywords, so their raw spelling still names the built-in
+        // and is checked like the plain one.
+        let keyword = !token.raw;
         match word {
-            "unsafe" if index >= extern_end => {
+            "unsafe" if keyword && index >= extern_end => {
                 if let Some(end) = read_unsafe(tokens, index, &mut scan) {
                     extern_end = end;
                 }
             }
-            "extern" if !follows_unsafe(tokens, index) => {
+            "extern" if keyword && !follows_unsafe(tokens, index) => {
                 scan.problems.push(problem(EXTERN_FORM));
             }
             "link" if opens_attribute(tokens, index) && !on_extern_block(tokens, index) => {
@@ -237,11 +253,14 @@ fn read_unsafe(tokens: &[Token], index: usize, scan: &mut Scan) -> Option<usize>
             Some(close + 1)
         }
         (_, Some('{')) => {
-            let operation = matching(tokens, index + 1, '{', '}')
+            let call = matching(tokens, index + 1, '{', '}')
                 .and_then(|close| tokens.get(index + 2..close))
                 .and_then(one_call);
-            match operation {
-                Some(operation) => push(SiteKind::Block { operation }),
+            match call {
+                Some((operation, arguments)) => push(SiteKind::Block {
+                    operation,
+                    arguments,
+                }),
                 None => scan.problems.push(Problem {
                     line,
                     what: BLOCK_BODY,
@@ -251,6 +270,10 @@ fn read_unsafe(tokens: &[Token], index: usize, scan: &mut Scan) -> Option<usize>
         }
         (Some("impl"), _) => {
             push(SiteKind::Impl);
+            None
+        }
+        (Some("fn"), _) if id.as_deref().is_some_and(|id| id.ends_with(STAND_IN)) => {
+            push(SiteKind::StandInFn);
             None
         }
         _ => {
@@ -364,55 +387,54 @@ fn extern_items(body: &[Token]) -> Option<Vec<ExternItem>> {
     Some(items)
 }
 
-/// The operation of a block body that is exactly one call of a path with
-/// plain arguments, and an optional `;`: the path's last segment.
-fn one_call(body: &[Token]) -> Option<String> {
-    let mut at = usize::from(matches!(
+/// The path and arguments of a block body that is exactly one call of a
+/// path with plain arguments, and an optional `;`.
+fn one_call(body: &[Token]) -> Option<(String, Vec<String>)> {
+    let mut at = 0;
+    let mut path = String::new();
+    if matches!(
         body.first().map(|token| &token.kind),
         Some(TokenKind::PathSep)
-    ));
-    let mut operation = ident(body.get(at))?;
+    ) {
+        path.push_str("::");
+        at = 1;
+    }
+    path.push_str(ident(body.get(at))?);
     at += 1;
     while matches!(
         body.get(at).map(|token| &token.kind),
         Some(TokenKind::PathSep)
     ) {
-        operation = ident(body.get(at + 1))?;
+        path.push_str("::");
+        path.push_str(ident(body.get(at + 1))?);
         at += 2;
     }
     if punct(body.get(at)) != Some('(') {
         return None;
     }
     let close = matching(body, at, '(', ')')?;
-    let plain = body
-        .get(at + 1..close)?
-        .iter()
-        .all(|token| match &token.kind {
-            TokenKind::Ident(_) | TokenKind::PathSep | TokenKind::Str(_) => true,
-            TokenKind::Punct(next) => matches!(next, ',' | '&' | '-'),
-            TokenKind::Lifetime => false,
-        });
+    let mut arguments = Vec::new();
+    let mut argument: Vec<String> = Vec::new();
+    for token in body.get(at + 1..close)? {
+        let text = match &token.kind {
+            TokenKind::Ident(name) => name.clone(),
+            TokenKind::PathSep => "::".to_owned(),
+            TokenKind::Str(text) => format!("\"{text}\""),
+            TokenKind::Punct(',') => {
+                arguments.push(std::mem::take(&mut argument).join(" "));
+                continue;
+            }
+            TokenKind::Punct(next @ ('&' | '-')) => next.to_string(),
+            TokenKind::Punct(_) | TokenKind::Lifetime => return None,
+        };
+        argument.push(text);
+    }
+    if !argument.is_empty() {
+        arguments.push(argument.join(" "));
+    }
     let rest = body.get(close + 1..).unwrap_or_default();
     let ends = rest.is_empty() || (rest.len() == 1 && punct(rest.first()) == Some(';'));
-    (plain && ends).then(|| operation.to_owned())
-}
-
-/// The index of the bracket that closes the one at `open`.
-fn matching(tokens: &[Token], open: usize, opening: char, closing: char) -> Option<usize> {
-    let mut depth = 0_usize;
-    for (index, token) in tokens.iter().enumerate().skip(open) {
-        match punct(Some(token)) {
-            Some(next) if next == opening => depth += 1,
-            Some(next) if next == closing => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    ends.then_some((path, arguments))
 }
 
 /// Whether the word at `index` is the first inside `#[` or `#![`.

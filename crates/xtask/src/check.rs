@@ -49,7 +49,21 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         crate::grants::run(self_test, output)?;
         crate::pure::run(self_test, output)?;
         crate::os::run(self_test, output)?;
-        crate::abi::run(self_test, output)?;
+    }
+    // check-abi proves the host's own foreign declarations against its C
+    // headers; on a host with none it has nothing to prove (and would fail
+    // as a run that proves nothing), so the local aggregate says so. CI
+    // runs it, unconditionally, on each Linux target that has rows.
+    let (applies, host) = crate::abi::applies_here()?;
+    if applies {
+        crate::abi::run(false, None, output)?;
+        crate::abi::run(true, None, output)?;
+    } else {
+        writeln!(
+            output,
+            "skipped check-abi: no row with a foreign item is implemented on {host}"
+        )
+        .map_err(Error::io("report skipped check"))?;
     }
     crate::wipe::run(output)?;
 

@@ -114,16 +114,20 @@ fn problems_name_each_planted_departure() {
         (
             "a call of a function the row does not declare",
             text.replacen(
-                "\"operation\": \"clock_gettime\"",
-                "\"operation\": \"clock_settime\"",
+                "\"operation\": \"abi::clock_gettime\"",
+                "\"operation\": \"abi::clock_settime\"",
                 1,
             ),
-            "cannot hold `clock_settime`",
+            "cannot hold `abi::clock_settime(id, out)`",
         ),
         (
             "a write that is not volatile",
-            text.replacen("\"operation\": \"write_volatile\"", "\"operation\": \"write\"", 1),
-            "cannot hold `write`",
+            text.replacen(
+                "\"operation\": \"core::ptr::write_volatile\"",
+                "\"operation\": \"core::ptr::write\"",
+                1,
+            ),
+            "cannot hold `core::ptr::write(byte, 0)`",
         ),
         (
             "an unknown block kind",
@@ -136,15 +140,64 @@ fn problems_name_each_planted_departure() {
             "differs from the ADR's row",
         ),
     ];
+    assert_caught(&text, &cases);
+}
+
+/// Each case's plant changes the copy, and the problems found include its
+/// expected phrase.
+#[track_caller]
+fn assert_caught(text: &str, cases: &[(&str, String, &str)]) {
     for (name, planted, expected) in cases {
-        assert_ne!(planted, text, "{name}: the plant changed nothing");
-        let found = match parse(&planted) {
+        assert_ne!(planted.as_str(), text, "{name}: the plant changed nothing");
+        let found = match parse(planted) {
             Ok(inventory) => problems(&inventory, &adr_text()),
             Err(error) => vec![error],
         };
         assert!(
-            found.iter().any(|problem| problem.contains(expected)),
+            found.iter().any(|problem| problem.contains(*expected)),
             "{name}: {found:?}"
         );
     }
+}
+
+#[test]
+fn problems_bind_the_recorded_code_to_the_adr_row() {
+    let text = inventory_text();
+    let cases: [(&str, String, &str); 5] = [
+        (
+            "a volatile write of a value other than zero",
+            text.replacen("\"byte\",\n              \"0\"", "\"byte\",\n              \"1\"", 1),
+            "cannot hold `core::ptr::write_volatile(byte, 1)`",
+        ),
+        (
+            "a declaration and its call, both recorded, that the ADR does not name",
+            text.replacen("\"name\": \"clock_gettime\"", "\"name\": \"clock_settime\"", 1)
+                .replacen(
+                    "\"operation\": \"abi::clock_gettime\"",
+                    "\"operation\": \"abi::clock_settime\"",
+                    1,
+                ),
+            "declares `clock_settime`, which the ADR's row does not name",
+        ),
+        (
+            "a link the ADR's row does not name",
+            text.replacen("\"link\": null", "\"link\": \"name=rt\"", 1),
+            "an extern block linked as",
+        ),
+        (
+            "a second block where the ADR's row says one",
+            text.replacen(
+                "\"blocks\": [\n          {\n            \"kind\": \"write\"",
+                "\"blocks\": [\n          {\n            \"kind\": \"write\", \"operation\": \"core::ptr::write_volatile\", \"arguments\": [\"byte\", \"0\"]\n          },\n          {\n            \"kind\": \"write\"",
+                1,
+            ),
+            "holds 2 unsafe blocks and impls",
+        ),
+        (
+            "the open flag differing from the ADR",
+            text.replacen("\"open\": true", "\"open\": false", 1),
+            "an open owner decision",
+        ),
+    ];
+    assert_caught(&text, &cases);
 }
