@@ -383,31 +383,47 @@ fn encoder_debug_shows_the_message_name_only() {
 fn encode_into_never_grows_an_allocated_buffer_for_any_message() {
     // Growing would move the bytes and release the old block, which may
     // hold an earlier secret encoding, without the caller's wipe.
-    for message in [MESSAGE, SECRET] {
+    for message in [ROOMY, ROOMY_SECRET] {
         let mut out = Vec::with_capacity(4);
         out.extend_from_slice(&[0xaa; 4]);
         let before = (out.as_ptr(), out.capacity());
-        let error = encode_message(&message, &Short(b"abc"), &mut out).unwrap_err();
+        let error = encode_message(&message, &Past::new(&out), &mut out).unwrap_err();
         assert_error(&error, ErrorKind::AllocationFailed, None, None);
         assert_eq!(out, []);
         assert_eq!((out.as_ptr(), out.capacity()), before);
     }
 }
 
-/// Three words: 12 bytes.
-struct Twelve;
+/// A message with room for any test buffer's capacity and more.
+const ROOMY: Message = Message {
+    cap: 4096,
+    ..MESSAGE
+};
 
-impl Encode for Twelve {
+const ROOMY_SECRET: Message = Message {
+    secret: true,
+    ..ROOMY
+};
+
+/// Whole words, one more than fit in the capacity of the buffer it is
+/// built from: whatever capacity the allocator gave, too big for it.
+struct Past(usize);
+
+impl Past {
+    fn new(out: &Vec<u8>) -> Self {
+        Self(out.capacity() / 4 + 1)
+    }
+}
+
+impl Encode for Past {
     const SECRET: bool = false;
 
     fn encoded_len(&self) -> Result<u64, Error> {
-        Ok(12)
+        Ok(4 * u64::try_from(self.0).unwrap())
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
-        encoder.put_u32(1)?;
-        encoder.put_u32(2)?;
-        encoder.put_u32(3)
+        (0..self.0).try_for_each(|_| encoder.put_u32(1))
     }
 }
 
@@ -438,7 +454,7 @@ fn encode_into_empties_the_buffer_on_every_error() {
         // An allocated buffer too small for the message.
         (
             &MESSAGE,
-            &|m, out| encode_message(m, &Twelve, out),
+            &|_, out| encode_message(&ROOMY, &Past::new(out), out),
             ErrorKind::AllocationFailed,
         ),
         // A value that writes past its size.
