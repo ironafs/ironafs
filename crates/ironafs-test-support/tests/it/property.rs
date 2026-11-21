@@ -327,3 +327,17 @@ pub(crate) fn pair_within_ranges(pair: &(u64, i64)) {
 fn ranged_draws_stay_in_their_ranges() {
     Property::new("ranged draws stay in their ranges").check(ranged_pair, pair_within_ranges);
 }
+
+#[test]
+fn run_reports_a_local_minimum_past_a_passing_gap() {
+    // Fails at 10 and at 1000 or more, passes in between: the search for
+    // a threshold from a large failing value stops at 1000.
+    for seed in 0..8 {
+        let failure = Property::new("passing gap")
+            .seed(seed)
+            .run(Source::u64, |value| assert!(*value != 10 && *value < 1000))
+            .unwrap_err();
+        assert_eq!(*failure.value(), 1000, "seed {seed}");
+        assert!(!failure.shrink_budget_exhausted() && !failure.shrink_timed_out());
+    }
+}

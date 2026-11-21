@@ -12,8 +12,8 @@
 //!
 //! The result is a local minimum: no step the passes below try from it
 //! still fails. A simpler failing input can exist elsewhere, reachable only
-//! through inputs that pass, such as a failure at lengths 3 and 10 but not
-//! at 4 to 9, found from length 12, which stops at 10.
+//! through inputs that pass: a failure on 10 and on 1000 or more, but not
+//! in between, found from a large value, stops at 1000.
 //!
 //! Besides blind passes over runs of choices, the shrinker deletes whole
 //! elements of collections at the spans their draws recorded, so an

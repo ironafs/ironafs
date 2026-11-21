@@ -449,6 +449,13 @@ fn test_failure<T, V: Verdict>(test: &mut impl FnMut(&T) -> V, value: &T) -> Opt
 
 /// The simplest failing input found for a property, and how to replay it.
 ///
+/// The input is a local minimum: no deletion, zeroing or lowering of its
+/// choices that the shrinker tries still fails. A simpler failing input
+/// can exist that is reachable only through passing inputs: a property
+/// that fails on 10 and on 1000 or more, but passes in between, shrinks a
+/// large failing integer to 1000. The report does not say "may not be
+/// minimal" in that case, because the shrinker cannot know.
+///
 /// Its `Display` is the report [`Property::check`] fails with.
 #[derive(Debug)]
 pub struct Counterexample<T> {
