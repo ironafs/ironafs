@@ -26,13 +26,36 @@ fn hook_rejects_foreign_scripts_that_reference_xtask() {
 }
 
 #[test]
+fn install_updates_a_managed_hook_with_stale_contents() {
+    let directory =
+        std::env::temp_dir().join(format!("ironafs-xtask-hook-stale-{}", std::process::id()));
+    fs::create_dir(&directory).unwrap();
+    let pre_push = directory.join("pre-push");
+    fs::write(&pre_push, format!("{HOOK_HEADER}exec cargo xtask check\n")).unwrap();
+
+    let mut output = Vec::new();
+    install_in(&directory, false, &mut output).unwrap();
+    assert_eq!(
+        fs::read_to_string(&pre_push).unwrap(),
+        format!("{HOOK_HEADER}exec cargo xtask pre-push \"$1\" \"$2\"\n")
+    );
+    assert_eq!(output, [] as [u8; 0]);
+    assert_eq!(
+        fs::read_dir(&directory).unwrap().count(),
+        2,
+        "only pre-push and commit-msg remain"
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn install_adds_commit_msg_alongside_an_existing_managed_pre_push() {
     let directory =
         std::env::temp_dir().join(format!("ironafs-xtask-hook-install-{}", std::process::id()));
     fs::create_dir(&directory).unwrap();
     let pre_push = directory.join("pre-push");
     let commit_msg = directory.join("commit-msg");
-    let existing = format!("{HOOK_HEADER}exec cargo xtask check\n");
+    let existing = format!("{HOOK_HEADER}exec cargo xtask pre-push \"$1\" \"$2\"\n");
     fs::write(&pre_push, &existing).unwrap();
 
     let mut output = Vec::new();
@@ -116,7 +139,7 @@ fn forced_install_moves_both_foreign_hooks_and_refuses_an_existing_backup() {
             pre_push,
             pre_push_backup,
             "original pre-push",
-            "exec cargo xtask check\n",
+            "exec cargo xtask pre-push \"$1\" \"$2\"\n",
         ),
         (
             commit_msg,
