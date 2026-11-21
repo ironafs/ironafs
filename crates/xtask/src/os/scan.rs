@@ -487,7 +487,7 @@ fn is_test_gate(tokens: &[Token], index: usize) -> bool {
 
 /// The token range of the crate root's target allowlist: the attribute
 /// `#[cfg(not(any(...)))]` directly before the first `compile_error`.
-fn allowlist_range(tokens: &[Token]) -> Option<std::ops::Range<usize>> {
+pub(crate) fn allowlist_range(tokens: &[Token]) -> Option<std::ops::Range<usize>> {
     let call = tokens
         .iter()
         .position(|token| ident(Some(token)) == Some("compile_error"))?;

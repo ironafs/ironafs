@@ -42,7 +42,28 @@
             ]
           }
         ],
-        "impls": 0
+        "impls": 0,
+        "c_facts": {
+          "structs": [
+            "timespec"
+          ],
+          "constants": [
+            "CLOCK_MONOTONIC",
+            "CLOCK_BOOTTIME"
+          ]
+        },
+        "stand_in": {
+          "functions": 1,
+          "blocks": [
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "tp",
+                "reading"
+              ]
+            }
+          ]
+        }
       }
     },
     {
@@ -174,7 +195,29 @@
             ]
           }
         ],
-        "impls": 0
+        "impls": 0,
+        "c_facts": {
+          "structs": [],
+          "constants": [
+            "EINTR",
+            "EPERM",
+            "ENOSYS",
+            "SYS_getrandom"
+          ]
+        },
+        "stand_in": {
+          "functions": 1,
+          "blocks": [
+            {
+              "operation": "core::ptr::write_bytes",
+              "arguments": [
+                "pointer",
+                "value",
+                "count"
+              ]
+            }
+          ]
+        }
       }
     },
     {
@@ -434,7 +477,12 @@
             ]
           }
         ],
-        "impls": 0
+        "impls": 0,
+        "c_facts": {
+          "structs": [],
+          "constants": []
+        },
+        "stand_in": null
       }
     }
   ]

@@ -126,6 +126,8 @@ pub(crate) enum Violation {
         expected: Vec<String>,
         found: Vec<String>,
     },
+    /// A file the compiler read for a target that this check did not scan.
+    NotScanned { target: String, file: PathBuf },
     /// The copy departs from the ADR or from its own rules.
     Inventory(String),
     /// A target was not built as the allowlist requires.
@@ -183,6 +185,12 @@ impl fmt::Display for Violation {
                 "{target}: `{id}` holds [{}] where sites.json records [{}] (ADR 0005, point 6.7)",
                 found.join(", "),
                 expected.join(", ")
+            ),
+            Self::NotScanned { target, file } => write!(
+                formatter,
+                "{target}: the compiler read {}, which this check did not scan, so its sites \
+                 went uncounted",
+                file.display()
             ),
             Self::Inventory(problem) => write!(formatter, "{problem}"),
             Self::Target { target, what } => write!(formatter, "{target}: {what}"),
@@ -258,7 +266,6 @@ pub(crate) fn compare(
     compiled: &BTreeMap<String, BTreeSet<PathBuf>>,
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
-    let row_of = |id: &str| inventory.rows.iter().find(|row| row.id == id);
     for file in files {
         violations.extend(file.scan.problems.iter().map(|problem| Violation::Rule {
             file: file.path.clone(),
@@ -266,60 +273,17 @@ pub(crate) fn compare(
             what: problem.what,
         }));
         let compiled_somewhere = compiled.values().any(|set| set.contains(&file.path));
-        for site in &file.scan.sites {
-            let line = site.line;
-            let Some(id) = &site.id else {
-                violations.push(Violation::Unnamed {
-                    file: file.path.clone(),
-                    line,
-                });
-                continue;
-            };
-            if let Some(base) = id.strip_suffix(scan::STAND_IN) {
-                violations.extend(stand_in_violations(
-                    inventory,
-                    file,
-                    line,
-                    base,
-                    compiled_somewhere,
-                ));
-                continue;
-            }
-            if site.kind == SiteKind::StandInFn {
-                violations.push(Violation::Rule {
-                    file: file.path.clone(),
-                    line,
-                    what: scan::UNSAFE_ITEM,
-                });
-            }
-            let Some(row) = row_of(id) else {
-                violations.push(Violation::Unknown {
-                    file: file.path.clone(),
-                    line,
-                    id: id.clone(),
-                });
-                continue;
-            };
-            if let Some(code) = &row.code
-                && !in_module(&file.path, &code.module)
-            {
-                violations.push(Violation::OutsideModule {
-                    file: file.path.clone(),
-                    line,
-                    id: id.clone(),
-                    module: code.module.clone(),
-                });
-            }
-            if !compiled_somewhere {
-                violations.push(Violation::NotCompiled {
-                    file: file.path.clone(),
-                    line,
-                    id: id.clone(),
-                });
-            }
-        }
+        violations.extend(site_violations(inventory, file, compiled_somewhere));
     }
+    violations.extend(stand_in_mismatches(inventory, files));
+    let scanned: BTreeSet<&PathBuf> = files.iter().map(|file| &file.path).collect();
     for (target, read) in compiled {
+        for path in read.iter().filter(|path| !scanned.contains(path)) {
+            violations.push(Violation::NotScanned {
+                target: target.clone(),
+                file: path.clone(),
+            });
+        }
         let mut found: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         for file in files.iter().filter(|file| read.contains(&file.path)) {
             for site in &file.scan.sites {
@@ -352,6 +316,113 @@ pub(crate) fn compare(
                     found: held,
                 });
             }
+        }
+    }
+    violations
+}
+
+/// The rules each site of one file must meet on its own: a name, a known
+/// row (or a stand-in's), its row's module, and a file some target
+/// compiles.
+fn site_violations(
+    inventory: &Inventory,
+    file: &CrateFile,
+    compiled_somewhere: bool,
+) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    let row_of = |id: &str| inventory.rows.iter().find(|row| row.id == id);
+    for site in &file.scan.sites {
+        let line = site.line;
+        let Some(id) = &site.id else {
+            violations.push(Violation::Unnamed {
+                file: file.path.clone(),
+                line,
+            });
+            continue;
+        };
+        if let Some(base) = id.strip_suffix(scan::STAND_IN) {
+            violations.extend(stand_in_violations(
+                inventory,
+                file,
+                line,
+                base,
+                compiled_somewhere,
+            ));
+            continue;
+        }
+        if site.kind == SiteKind::StandInFn {
+            violations.push(Violation::Rule {
+                file: file.path.clone(),
+                line,
+                what: scan::UNSAFE_ITEM,
+            });
+        }
+        let Some(row) = row_of(id) else {
+            violations.push(Violation::Unknown {
+                file: file.path.clone(),
+                line,
+                id: id.clone(),
+            });
+            continue;
+        };
+        if let Some(code) = &row.code
+            && !in_module(&file.path, &code.module)
+        {
+            violations.push(Violation::OutsideModule {
+                file: file.path.clone(),
+                line,
+                id: id.clone(),
+                module: code.module.clone(),
+            });
+        }
+        if !compiled_somewhere {
+            violations.push(Violation::NotCompiled {
+                file: file.path.clone(),
+                line,
+                id: id.clone(),
+            });
+        }
+    }
+    violations
+}
+
+/// Each row's Miri stand-ins against what the copy records for them: the
+/// number of stand-in functions and each block's call and arguments.
+fn stand_in_mismatches(inventory: &Inventory, files: &[CrateFile]) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    for row in &inventory.rows {
+        let id = format!("{}{}", row.id, scan::STAND_IN);
+        let mut held: Vec<String> = files
+            .iter()
+            .flat_map(|file| &file.scan.sites)
+            .filter(|site| site.id.as_deref() == Some(id.as_str()))
+            .map(|site| describe(&site.kind))
+            .collect();
+        held.sort();
+        let mut expected: Vec<String> = row
+            .code
+            .as_ref()
+            .and_then(|code| code.stand_in.as_ref())
+            .map_or_else(Vec::new, |stand_in| {
+                let mut kinds: Vec<SiteKind> = stand_in
+                    .blocks
+                    .iter()
+                    .map(|(operation, arguments)| SiteKind::Block {
+                        operation: operation.clone(),
+                        arguments: arguments.clone(),
+                    })
+                    .collect();
+                kinds.extend((0..stand_in.functions).map(|_| SiteKind::StandInFn));
+                kinds.iter().map(describe).collect()
+            });
+        expected.sort();
+        if held != expected {
+            violations.push(Violation::Mismatch {
+                target: "cfg(miri)".to_owned(),
+                id,
+                expected,
+                found: held,
+            });
         }
     }
     violations
@@ -701,6 +772,98 @@ fn allowlist_violations(
     Ok((violations, equivalent))
 }
 
+/// Why naming a key that tells musl from glibc is refused.
+pub(crate) const MUSL_KEY: &str = "names a cfg key whose value differs between the musl and glibc \
+                                   targets (outside the crate root's allowlist), so a musl build \
+                                   could compile other code than the glibc build whose status \
+                                   it shares in sites.json";
+
+/// Every use, in the crate's files, of a cfg key that tells musl from
+/// glibc, other than `target_env` (the site reader's own rule) and the
+/// crate root's allowlist.
+pub(crate) fn musl_key_violations(
+    crate_dir: &Path,
+    keys: &BTreeSet<String>,
+) -> Result<Vec<Violation>, Error> {
+    let mut violations = Vec::new();
+    let (files, _) = crate::pure::package_files(crate_dir, &crate_dir.join("target"))?;
+    for file in files
+        .iter()
+        .filter(|file| file.extension().is_some_and(|extension| extension == "rs"))
+    {
+        let path = file.strip_prefix(crate_dir).unwrap_or(file).to_path_buf();
+        let text = fs::read_to_string(file).map_err(Error::path_io("read source file", file))?;
+        violations.extend(musl_key_uses(&path, &text, keys));
+    }
+    Ok(violations)
+}
+
+/// The uses of `keys` in one file's text.
+pub(crate) fn musl_key_uses(path: &Path, text: &str, keys: &BTreeSet<String>) -> Vec<Violation> {
+    let Ok(tokens) = rust_source::tokens_with_strings(text) else {
+        return Vec::new();
+    };
+    let allowlist = if path == Path::new("src/lib.rs") {
+        scan::allowlist_range(&tokens)
+    } else {
+        None
+    };
+    tokens
+        .iter()
+        .enumerate()
+        .filter(|(index, token)| {
+            rust_source::ident(Some(token))
+                .is_some_and(|word| word != "target_env" && keys.contains(word))
+                && !allowlist
+                    .as_ref()
+                    .is_some_and(|range| range.contains(index))
+        })
+        .map(|(_, token)| Violation::Rule {
+            file: path.to_path_buf(),
+            line: token.line,
+            what: MUSL_KEY,
+        })
+        .collect()
+}
+
+/// The repository's build matrix (the targets in `rust-toolchain.toml` and
+/// every workflow file) names none of the targets whose cfg set equals an
+/// allowlisted one's: the crate's source cannot refuse them, so nothing
+/// the repository builds or ships may target them.
+fn matrix_violations(root: &Path, equivalent: &[String]) -> Result<Vec<Violation>, Error> {
+    let mut sources = vec![root.join("rust-toolchain.toml")];
+    let workflows = root.join(".github").join("workflows");
+    if workflows.is_dir() {
+        let (files, _) = crate::pure::package_files(&workflows, &workflows.join("none"))?;
+        sources.extend(files);
+    }
+    let mut violations = Vec::new();
+    for source in sources {
+        let text = fs::read_to_string(&source).map_err(Error::path_io("read", &source))?;
+        violations.extend(matrix_uses(&source, &text, equivalent));
+    }
+    Ok(violations)
+}
+
+/// The equivalent targets `text` names, as whole words.
+pub(crate) fn matrix_uses(source: &Path, text: &str, equivalent: &[String]) -> Vec<Violation> {
+    let words: BTreeSet<&str> = text
+        .split(|next: char| !(next.is_ascii_alphanumeric() || next == '_' || next == '-'))
+        .collect();
+    equivalent
+        .iter()
+        .filter(|target| words.contains(target.as_str()))
+        .map(|target| Violation::Target {
+            target: target.clone(),
+            what: format!(
+                "named in {}: the crate's guard cannot refuse this target (its cfg set equals \
+                 an allowlisted one's), so nothing in the repository may build for it",
+                source.display()
+            ),
+        })
+        .collect()
+}
+
 /// The crate's directory in the workspace.
 pub(crate) fn crate_dir(workspace: &Workspace) -> Result<PathBuf, Error> {
     workspace
@@ -750,6 +913,9 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     violations.extend(outside_violations(&workspace.root, &crate_dir)?);
     let (found, equivalent) = allowlist_violations(&workspace.root, &crate_dir)?;
     violations.extend(found);
+    violations.extend(matrix_violations(&workspace.root, &equivalent)?);
+    let keys = allowlist::musl_keys(&workspace.root)?;
+    violations.extend(musl_key_violations(&crate_dir, &keys)?);
     let (files, unreadable) = crate_files(&crate_dir)?;
     violations.extend(unreadable);
     violations.extend(compare(&inventory, &files, &compiled));

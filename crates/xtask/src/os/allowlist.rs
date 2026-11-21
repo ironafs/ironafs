@@ -76,6 +76,7 @@ pub(crate) fn guard(tokens: &[Token]) -> Result<Expression, String> {
             punct(tokens.get(at)) == Some('#') && matching(tokens, at + 1, '[', ']') == Some(close)
         })
         .ok_or("no attribute stands directly before compile_error!")?;
+    top_level_alone(tokens, open)?;
     let start = open + 2;
     let (expression, next) = read(tokens, start)?;
     if next != close {
@@ -88,6 +89,86 @@ pub(crate) fn guard(tokens: &[Token]) -> Result<Expression, String> {
         },
         _ => Err("the attribute is not #[cfg(not(...))]".to_owned()),
     }
+}
+
+/// Checks that the guard attribute at `open` stands at the top level of
+/// the crate root (outside every brace) and alone on its item: before it
+/// comes only the start of the file, the end of another item (`;` or
+/// `}`), or an inner attribute (`#![...]`). Another outer attribute there,
+/// such as `#[cfg(any())]`, could remove the `compile_error!` on a target
+/// the guard itself refuses.
+fn top_level_alone(tokens: &[Token], open: usize) -> Result<(), String> {
+    let mut depth = 0_i64;
+    for token in tokens.get(..open).unwrap_or_default() {
+        match punct(Some(token)) {
+            Some('{') => depth += 1,
+            Some('}') => depth -= 1,
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err(
+            "the compile_error! guard is not at the top level of the crate root".to_owned(),
+        );
+    }
+    let Some(before) = open.checked_sub(1) else {
+        return Ok(());
+    };
+    match punct(tokens.get(before)) {
+        Some(';' | '}') => Ok(()),
+        Some(']') => {
+            let start = (0..before)
+                .rev()
+                .find(|&at| matching(tokens, at, '[', ']') == Some(before))
+                .ok_or("an unbalanced attribute before the guard")?;
+            let inner = start.checked_sub(2).is_some_and(|hash| {
+                punct(tokens.get(hash)) == Some('#') && punct(tokens.get(hash + 1)) == Some('!')
+            });
+            if inner {
+                Ok(())
+            } else {
+                Err(
+                    "another attribute stands on the compile_error! guard's item, and could \
+                     remove it"
+                        .to_owned(),
+                )
+            }
+        }
+        _ => Err("the compile_error! guard does not start its own item".to_owned()),
+    }
+}
+
+/// The cfg keys whose values differ between a musl target and the glibc
+/// target of the same architecture, as the pinned compiler reports them
+/// (`target_env`, and `target_feature`'s `crt-static`). Naming any of them
+/// in the crate outside its allowlist could make a musl build compile other
+/// code than the glibc build, which the copy's equal statuses assume it
+/// does not.
+///
+/// # Errors
+///
+/// Returns an error if `rustc` cannot be run.
+pub(crate) fn musl_keys(root: &std::path::Path) -> Result<BTreeSet<String>, crate::Error> {
+    let mut keys = BTreeSet::new();
+    for (musl, gnu) in [
+        ("x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"),
+        ("aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"),
+    ] {
+        let musl = parse_cfg(&print_cfg(root, musl)?);
+        let gnu = parse_cfg(&print_cfg(root, gnu)?);
+        keys.extend(musl.symmetric_difference(&gnu).map(|(key, _)| key.clone()));
+    }
+    Ok(keys)
+}
+
+fn print_cfg(root: &std::path::Path, target: &str) -> Result<String, crate::Error> {
+    let output = crate::Command::new("rustc")
+        .current_dir(root)
+        .args(["--print", "cfg", "--target", target])
+        .output()
+        .map_err(crate::Error::io("run rustc --print cfg"))?;
+    crate::Error::check_status("rustc --print cfg", output.status)?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Reads one predicate at `at`; `cfg(...)` reads as an `all` of its
