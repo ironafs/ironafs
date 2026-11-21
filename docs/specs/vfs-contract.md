@@ -23,11 +23,12 @@ an ADR decides, and restates no decision as its own.
 |---|---|---|---|
 | C7 | 1 to 6 | Working | 5.1, 5.4 to 5.7 |
 | C8 | 1 to 3 | Firm | 5.3, 5.11 |
-| C9 | 1 to 5 | Working | 5.6, point 5; 5.12 |
-| C11 | 2, 4, 10 | Working | 5.7; 5.2 |
-| C13 | 1 to 5 | Firm | 5.3, 5.6 |
-| C14 | 1, 3 | Working | 5.6, point 2; 5.10 |
-| C15 | 6 | Firm | 5.10, point 7 |
+| C9 | 1 to 5 | Working | 5.6, point 2; 5.8, points 3 and 4; 5.12, point 6 |
+| C10 | 6 | Working | 5.6, point 9; 5.12, point 2 |
+| C11 | 2, 4, 10 | Working | 5.2; 5.6, point 1 |
+| C13 | 1 to 5 | Firm | 5.3; 5.5 |
+| C14 | 1, 3 | Working | 5.3, point 3; 5.8, point 9 |
+| C15 | 6 | Firm | 5.10, point 5 |
 | C16 | 1 to 6 | Firm | 5.9 |
 | C17 | 1 to 6 | Working | 5.10 |
 | C37 | 1, 4, 5 | Working | 5.8 |
@@ -40,7 +41,7 @@ an ADR decides, and restates no decision as its own.
 | L29 | 1, 2 | Firm | 5.2, point 2 |
 | N41 | 1 to 4, 7, 9, 10 | Firm | 5.2, point 5 |
 | N43 | 1, 2 | Working | 5.12 |
-| N46 | 1, 2, 4 | Working | 5.6, point 8 |
+| N46 | 1, 2, 4 | Working | 5.5, points 1 and 5; 5.6, point 8 |
 | N47 | 3, 5 | Firm | 5.10; 5.12 |
 | O45 | 3 | Working | 5.8 |
 | ADR 0004 S1 | | (specification item) | 2 |
@@ -125,9 +126,11 @@ The invariants this page must keep, word for word:
 ## 3. The design in short
 
 1. **Three kinds of operation, one type each.** A caller operation takes a
-   `&CallerCap`, a handle operation a `&HandleCap` (or the cap by value when
-   it ends the handle), a binding operation neither. The types make it a
-   compile error to call a caller operation with a handle (C7, C8).
+   `&CallerCap`, a handle operation a `&HandleCap`, and a binding
+   operation no capability to act with: only `release` and
+   `release_directory` take a `HandleCap`, by value, to end it. The types
+   make it a compile error to call a caller operation with a handle (C7,
+   C8).
 2. **Only the core mints.** The fields of a capability are private to
    `ironafs-vfs`. `Mint` makes them; only the composition names `Mint`, and
    a check over the workspace's sources holds that. The core checks every
@@ -135,21 +138,24 @@ The invariants this page must keep, word for word:
    another binding or another mint is refused at run time (C8, point 2).
 3. **A request table per binding.** Each request from the operating system
    gets one entry: its id, its arrival sample, its deadline, its cancel
-   token and its state. The entry moves from open to completed once, in one
-   serialised claim. The worker's submission, the deadline, a cancel and
-   shutdown each try the claim; the first wins.
+   token and its state. The entry moves from open to claimed once, in one
+   compare-and-set. The worker's submission, the deadline timer, a cancel
+   and shutdown each try it; the one that wins writes the completion, and
+   only it. The claim reads the clock: past the deadline, the completion is
+   the deadline's error whoever wins.
 4. **The completion owner** is the housekeeping loop. It waits with
-   `Clock::wait` on the earliest open deadline and completes that request
-   with `TimedOut`, whoever is still working on it.
+   `Clock::wait` on the earliest open deadline and claims that request,
+   whoever is still working on it.
 5. **Deadlines are on the boot clock,** counted from arrival. A suspend
    that crosses a deadline completes the request at resume (pending the
    amendments of section 13, Q1).
-6. **The fence check is the claim.** For a binding in the daemon's
-   process, submission compares the reply's ticket with the core's
-   counters and claims the request's entry under the node's object lock,
-   releases the lock, then writes to the kernel. Nothing a break records
-   after the claim can stop that reply; the notifier drains it before it
-   purges.
+6. **The fence check ends in the claim.** For a binding in the daemon's
+   process, submission registers a sequence number, takes the object locks
+   of every node the reply depends on in one order, compares the reply's
+   ticket with the core's counters and gates, claims the request's entry,
+   releases the locks, then writes to the kernel. A break recorded after
+   the claim finds the reply delivered; the notifier drains every
+   registered submission before it purges.
 7. **Invalidations are coalesced per node and acknowledged by revision**
    after the operating system's purge. A purge that fails is reported, never
    acknowledged.
@@ -171,8 +177,9 @@ The invariants this page must keep, word for word:
   layer, that the core must complete once (the seams specification, 4).
 - **Request table:** a binding's bounded table of open contract requests
   (5.8).
-- **Claim:** the one serialised step that moves a request's entry from
-  open to completed (5.8, point 4).
+- **Claim:** the one compare-and-set that moves a request's entry from
+  open to claimed; its winner, and only its winner, writes the completion
+  (5.8, point 4).
 - **Completion owner:** the loop that completes a request at its deadline
   independently of the worker serving it (5.8, point 6).
 - **Ticket:** what a fetch recorded when it was sent: the break counters
@@ -182,8 +189,12 @@ The invariants this page must keep, word for word:
 - **Submission:** the step that checks a reply's ticket and claims its
   request's entry; a reply whose submission succeeded counts as delivered
   (C16, point 3).
-- **Slot:** a node's pending invalidation in one binding: the union of its
-  effects and a revision (C17, point 6).
+- **Revision:** a binding's event counter: one sequence per binding,
+  raised by every merge into any of its slots and by every overflow (C17,
+  point 6).
+- **Slot:** a node's pending invalidation in one binding: each pending
+  effect with the revision at which it was last merged, and the latest
+  revision delivered for the node (5.10, point 1).
 - **Composition:** the crate that builds the daemon from the core and the
   drivers: `ironafsd`.
 - **Cap:** the most a value may be, checked when the value is received.
@@ -203,8 +214,10 @@ submit replies and push events [ADR 0004 C7.1: Working].
 1. **Request envelope.** Every contract request carries, beside its
    operation's payload: the `BindingId`; the `Ingress` record (its
    `RequestId`, its arrival `Stamp`, its cancel `WatchRef`); and an
-   `Extensions` list [ADR 0004 N41.7: Firm]. Binding operations carry the
-   envelope but no capability.
+   `Extensions` list [ADR 0004 N41.7: Firm]. No operation carries a second
+   list in its payload. Binding operations carry the envelope and no
+   capability to act with; `release` and `release_directory` take the
+   `HandleCap` they end, by value (5.6, point 1).
 2. **Completion envelope.** Every completion is `Result<Reply, VfsError>`
    for one `RequestId`, plus, for an out-of-process binding, the fence
    epoch of C16, point 6. No completion is both; no `Reply` carries an
@@ -239,15 +252,28 @@ named, and nothing else happens.
 | A `control` request | the control endpoint's request cap (local IPC specification, 65,536 bytes) | `OutOfRange` | [OWN] point 6 |
 | Time values (set attributes) | seconds as `i64`, nanoseconds below 1,000,000,000 | `OutOfRange` | [ADR 0004 C38.1, C38.3: Working] |
 | Mode (set attributes, create) | at most `0o7777` | `OutOfRange` | [OWN] point 7 |
+| Size (set attributes: truncate or extend) | at most `i64::MAX` | `OutOfRange` | [OWN] point 4; [ADR 0004 C38.3: Working] |
+| Copy-range | both ranges as "offset plus length"; length at most 1,048,576 per call | `OutOfRange` | [OWN] points 3 and 4 |
+| Allocate, punch | as "offset plus length" | `OutOfRange` | [OWN] point 4 |
+| Extended-attribute write value | 65,536 bytes | `OutOfRange` | [OWN] point 6 |
+| Named-stream selector (`open`) | as a name | the layer's own name error | [OWN] point 2 |
+| `access` mask, `subscribe` filter, `open` flags, share access | only the bits this page defines | `OutOfRange` | [OWN] point 8 |
+| A `control` reply | 1,048,576 bytes (the local IPC specification's reply cap) | `Protocol` | [OWN] point 6 |
+| Subscriptions | one per directory handle; 1,024 per binding | `Busy` | [OWN] point 9 |
+| Byte-range locks held | 4,096 per credential context | `Busy` | [OWN] point 9 |
+| `forget` count | the references the binding holds | saturates; a layer fault, counted | [OWN] 5.6, point 4 |
 | Open requests per binding | the request table's size, 1,024 entries | `Busy`, counted | [ADR 0004 C39.2: Working]; [OWN] size, 5.8 |
 | Open handles per binding | the context's budget (C27, point 4) | `Busy` | [ADR 0004 C11.10: Working] |
 | Pinned nodes | the pinning context's budget | `Busy` | [ADR 0004 C11.10: Working] |
-| Invalidation acknowledgements per event | one per revision delivered | ignored and counted (5.10, point 6) | [OWN] |
+| Acknowledgements and failure reports | only for a delivery the binding holds (5.10, point 6) | changes nothing; counted unless a repeat | [OWN] |
 
 1. **Ids from a layer.** A `RequestId` is unique among the binding's open
-   entries; a second open request with the same id is refused with
-   `Conflict` and never enters the table, and the open one is untouched
-   [OWN: a duplicate would let one completion answer two requests]. A
+   entries (5.8, point 1, says when an id is free again). A second request
+   with the id of an open entry is dropped at ingress: it never enters the
+   table, no completion is written under that id for it, the open entry is
+   untouched, and a layer fault is counted [OWN: a completion under the
+   id would answer the open request too]. For an out-of-process binding,
+   S1 says whether the fault tears the binding down. A
    `NodeId` the binding does not hold, and a capability the core did not
    record for this binding, are refused as 5.3 says. No id from a layer is
    an index: each is looked up, and a miss is an error.
@@ -291,11 +317,24 @@ named, and nothing else happens.
    [UNVERIFIED for Linux's own limit; section 13, Q6]. The ACL and
    `control` caps defer to the specifications that own those values; the
    contract's figure is a ceiling they may lower and never raise without
-   changing this page.
+   changing this page. A `control` reply over its cap is a fault of the
+   core's own reply, reported as `Protocol` (5.12).
 7. **Mode.** Only the twelve permission and set-id bits cross the
    contract; a value with any other bit is refused. What the core stores of
    a set-id bit is the file service's question; what a layer shows never
    includes one (L3, point 2) [OWN].
+8. **Bit sets.** A mask, a filter, open flags or share access with a bit
+   this page does not define is refused whole; no unknown bit is ignored or
+   passed on [OWN: an ignored bit is a request applied in part, which N41,
+   point 4's rule forbids for extensions].
+9. **Counts the core holds for a layer.** A directory handle carries at
+   most one subscription; a second `subscribe` on it is refused with
+   `Conflict`, and `unsubscribe` or the handle's release ends it. A binding
+   holds at most 1,024 subscriptions, and a credential context at most
+   4,096 byte-range locks (each with its owner token); past either, the
+   request is refused with `Busy` [OWN: both are core memory a layer could
+   otherwise grow without limit; the figures are generous for one desktop
+   and are revisited with C27's budgets].
 
 ### 5.3 Capabilities
 
@@ -353,7 +392,7 @@ value (5.7, point 1).
 | `get_attributes` | node | `Attributes` |
 | `access` | node, a mask of read, write, execute | nothing (success) or `Access` |
 | `rights` | node | the caller's effective AFS rights on the node, as bits |
-| `open` | parent node, name, disposition (open, create, create new, open or create, overwrite, overwrite or create), access mode (read, write, both, attributes only), share access (read, write, delete), flags (truncate, append, write-through, directory, non-directory), mode for a create, `Extensions` | `HandleCap`, entry, whether it created the file |
+| `open` | parent node, name, disposition (open, create, create new, open or create, overwrite, overwrite or create), access mode (read, write, both, attributes only), share access (read, write, delete), flags (truncate, append, write-through, directory, non-directory), mode for a create, a named-stream selector (absent, or a name: reserved, 5.6, point 8) | `HandleCap`, entry, whether it created the file |
 | `open_directory` | node | `HandleCap` |
 | `create` | parent node, name, mode, flags as `open` | `HandleCap`, entry |
 | `make_directory` | parent node, name, mode | entry |
@@ -368,9 +407,11 @@ value (5.7, point 1).
 | `lock` | node, `LockRequest` (5.7, point 4) | nothing; a conflict is `WouldBlock` or `Conflict` (5.7, point 4), naming no other holder |
 | `get_acl` | node | `Acl` |
 | `set_acl` | node, `Acl` | nothing |
-| `extended_attribute` | node, name, read budget | value bytes, never more than the budget |
-| `list_extended_attributes` | node, read budget | names |
-| `control` | an `fs` command's encoded request | its encoded reply |
+| `extended_attribute` | node, name, read budget | the whole value; or, with a budget of 0, only its length |
+| `list_extended_attributes` | node, read budget | every name; or, with a budget of 0, only the list's length |
+| `set_extended_attribute` (reserved) | node, name, value, disposition (create, replace, either) | nothing |
+| `remove_extended_attribute` (reserved) | node, name | nothing |
+| `control` | the node the layer resolved (or none, for a command on no node), an `fs` command's encoded request | its encoded reply |
 
 1. **`open` is one call.** Disposition and share access travel with the
    open, so an SMB create is one atomic call [ADR 0004 C7.2: Working].
@@ -384,6 +425,11 @@ value (5.7, point 1).
    after C7, point 5's checks [ADR 0004 C7.5: Working].
 4. **POSIX ACL attribute names are refused** in `extended_attribute` and
    `list_extended_attributes` never shows them [ADR 0004 N42.7: Firm].
+5. **Extended attributes are never truncated.** A value or a list longer
+   than a non-zero budget fails with `TooSmall` and returns nothing; a
+   budget of 0 asks only for the length; an absent attribute is
+   `NoAttribute` [ADR 0004 C46.4: Working; OWN: the getxattr(2) shape the
+   POSIX layers present].
 
 ### 5.5 Handle operations
 
@@ -398,12 +444,16 @@ C13.2, C13.3: Firm].
 | `read_directory` | a cookie (`u64`, 0 at the start), budget in bytes | entries (name, node, kind, the next cookie), and whether the listing ended |
 | `commit` | `CommitReason`, durability (data, or data and attributes), boundary (all dirty data up to now) | nothing |
 | `lock_handle` | `LockRequest` | as `lock` |
-| `subscribe` | a change-notification filter, and whether the subtree is watched | a subscription id; events then arrive on the stream (5.10) |
+| `subscribe` | a change-notification filter, and whether the subtree is watched (a directory handle only) | nothing; events then arrive on the stream (5.10) |
+| `unsubscribe` | none | nothing; it never fails |
 | `get_information` | none | `Attributes` |
 | `set_information` | `SetAttributes` | `Attributes` |
 | `set_disposition` | delete on close, or not | nothing |
 | `rename_handle` | target parent, target name, `RenameFlags` | nothing |
 | `seek` | offset, whence (data or hole) | the resulting offset |
+| `copy_range` (reserved) | source offset, a second `&HandleCap` and its offset, length, the clone flag | the count copied, always the whole length |
+| `allocate` (reserved) | offset, length, whether the size may grow | nothing |
+| `punch` (reserved) | offset, length | nothing |
 
 1. **A short read is the end of the file, and only that.** A read that
    cannot return every byte up to the end of file in its range fails; it
@@ -422,16 +472,22 @@ C13.2, C13.3: Firm].
    directory [ADR 0004 C7.3: Working].
 5. **`seek`** treats the whole file as data: seeking for data returns the
    offset if it is below the size; seeking for a hole returns the size. An
-   offset at or past the size fails as lseek(2) says; the exact values are
-   the Linux layer's (issue #92) [ADR 0004 N46.2: Working]. It is a handle
-   operation because it acts on an open file (C7, point 3's rule); C7,
-   point 3, does not name it, and 13, Q7, asks for that line.
+   offset at or past the size fails with `PastEnd`, which the POSIX layers
+   present as `ENXIO`, lseek(2)'s answer; the exact values at the end of
+   the file are the Linux layer's (issue #92) [ADR 0004 N46.2: Working].
+   It is a handle operation because it acts on an open file (C7, point 3's
+   rule); C7, point 3, does not name it, and 13, Q7, asks for that line.
+   C13, point 2's check applies to every handle operation on this page,
+   including `seek`, `subscribe` and the reserved ones, whatever its
+   parenthetical list names [OWN reading; 13, Q7].
 6. **`commit`** follows 5.12, point 6.
 
 ### 5.6 Binding operations, and the rules every operation keeps
 
-1. **Binding operations** take the `BindingId` and what they name, never a
-   capability [ADR 0004 C7.4: Working]:
+1. **Binding operations** take the `BindingId` and what they name, and no
+   capability to act with: never a `CallerCap`, never a `&HandleCap`.
+   `release` and `release_directory` take the `HandleCap` they end, by
+   value, so the layer holds no copy afterwards [ADR 0004 C7.4: Working]:
 
    | Operation | Request payload | Completion payload |
    |---|---|---|
@@ -440,10 +496,10 @@ C13.2, C13.3: Firm].
    | `release_directory` | `HandleCap` by value | nothing; it never fails |
    | `reclaim` | node | nothing |
    | `cancel` | `RequestId` | none: it has no reply |
-   | `volume_sync` | node (any node of the volume), or the whole binding | nothing |
+   | `volume_sync` | node (any node of the volume), or the whole binding | nothing, or the commit errors of 5.12, point 6 |
    | `pin`, `unpin` | node | nothing; `pin` may fail with `Busy` (C11, point 10) |
    | `acknowledge` | `Ack` (5.10) | none |
-   | `purge_failed` | node or overflow, revision | none |
+   | `purge_failed` | `PurgeFailed` (5.10, point 5): a node and the revision delivered, or a node the binding holds and the overflow's revision | none |
 
    `acknowledge` and `purge_failed` answer the invalidation stream; they
    release state the binding holds, as C7, point 4, requires, and are
@@ -458,7 +514,9 @@ C13.2, C13.3: Firm].
    handle is not live, so nothing is left to release [OWN: release's
    contract is "the layer holds nothing now", which holds].
 3. **Binding operations change no data.** `volume_sync` flushes, through
-   the commit path, only what the binding's handles already hold dirty;
+   the commit path, only what the binding's handles already hold dirty,
+   and is the one binding operation that waits: it has a request-table
+   entry and a deadline as a commit has (5.8, point 3);
    `reclaim` and `forget` drop the binding's references; `pin` and `unpin`
    move the binding's pins. None names a caller, so none can act for one
    [ADR 0004 C7.4: Working].
@@ -476,19 +534,29 @@ C13.2, C13.3: Firm].
 7. **No made-up values.** A completion's every field comes from the core's
    state; a field the core cannot fill fails the operation rather than
    being filled with a default [ADR 0004 C46.4: Working]. The creation time
-   records whether the server supplied it (N47, point 6).
+   records whether the server supplied it (N47, point 6). A value from the
+   server that the contract cannot carry (a name that is not a `Name`, a
+   link target over its cap, a time outside C38's range) fails the
+   operation with `Protocol` (5.12, point 5).
 8. **Reserved operations are present and refused.** Copy-range (with or
    without the clone flag), allocate, punch, extended-attribute writes and
    removals, the named-stream selector in `open`, and rename flags
    (`RenameFlags::no_replace`, and exchange) are part of the contract.
    Until the volume's capability offers one, the core answers it with
    `NotSupported`, per operation, never by refusing the kind for the whole
-   binding [ADR 0004 N46.1: Working; N43.1, N43.2: Working]. A rename with
-   "do not replace" is refused with `OutOfRange`, which reaches the
-   application as "invalid argument" [ADR 0004 C10.6: Working; C46.1:
-   Working]. Copy-range and allocate and punch are handle operations (two
-   handles for a copy); extended-attribute writes are caller operations
-   (C7's rule) [OWN].
+   binding [ADR 0004 N46.1: Working; N43.1, N43.2: Working]. Each value a
+   reserved operation carries is checked against 5.2's caps first, so a
+   refusal never follows an unchecked value. Copy-range, allocate and punch
+   are handle operations (two handles for a copy); extended-attribute
+   writes and removals are caller operations (C7's rule) [OWN].
+9. **A rename with flags, presented.** The contract value of a refused
+   rename flag is `NotSupported` (N46, point 1). C10, point 6, says the
+   application sees the operating system's "invalid argument" for "do not
+   replace". Both hold: the POSIX layers present `NotSupported` from a
+   rename with flags as `EINVAL`, a per-operation row of 5.12, point 2,
+   and every other `NotSupported` as that table says [ADR 0004 N46.1,
+   C10.6: Working; OWN: the reconciliation]. `Reserved::RenameFlags`'s
+   refusal in `ironafs-vfs` is `NotSupported`, which this keeps.
 
 ### 5.7 Values
 
@@ -502,7 +570,8 @@ C13.2, C13.3: Firm].
    `Extensions` [ADR 0004 N41.1: Firm]. Its full field list is fixed with
    the file service's specification (issue #65).
 2. **`SetAttributes`:** each of mode, size, access time, modification time
-   is either absent, a value, or (for times) "now". An owner or group change
+   is either absent, a value, or (for times) "now"; the size is at most
+   `i64::MAX` (5.2). An owner or group change
    is refused with `NotSupported` until L31's mapping is specified [OWN: a
    displayed owner grants nothing (L30, point 1), so no local id can be
    taken as an AFS owner].
@@ -525,93 +594,125 @@ C13.2, C13.3: Firm].
 
 ### 5.8 The request table, deadlines and the completion owner
 
-1. **One table per binding.** The core keeps, per binding, a table of open
+1. **One table per binding.** The core keeps, per binding, a table of
    contract requests, bounded at 1,024 entries [OWN: twice a generous
    executor queue, so the table is never what refuses a request the
    executor would take; a figure measured at M2a load tests replaces it].
    An entry holds: the `RequestId`; the arrival `Stamp`; the `Deadline`
    (point 2); the cancel token; whether a mutation RPC has been sent for it
-   (point 7); and its state: **open**, **claimed** (by whom: worker,
-   deadline, cancel, shutdown) and **written**. The table is owned by the
-   core's ingress side and lives in `ironafs-client`.
+   (point 7); whether a store is in progress for it (point 4); and its
+   state: **open**, then **claimed** (with the claimant: worker, deadline,
+   cancel or shutdown, and the completion it chose), then gone. The id map
+   that 5.2, point 1, checks holds open entries only: a claimed entry's id
+   is free from the moment of its claim, before its completion is written,
+   so a kernel that reuses an id as soon as it reads the reply never meets
+   it [OWN]. Claimed entries stay counted in the binding's **writing set**
+   until their completion is written, for teardown (point 9). The table is
+   owned by the core's ingress side and lives in `ironafs-client`.
 2. **The deadline.** The ingress records the arrival sample (`Ingress`).
    The core, never the layer, builds the deadline from that sample: the
    arrival's boot-clock reading plus the request deadline (point 3), on the
    **boot clock** (the clock that counts suspend) [ADR 0004 C39.3: Working;
    C37.1: Working, amended as 13, Q1 proposes]. A layer never hands the core
-   a deadline. An ingress whose clock sample failed records no arrival and
-   completes the request at once with `TimedOut`, never entering it in the
-   table: no deadline is set without a valid sample [ADR 0004 C37.5:
+   a deadline or an arrival: for the FUSE binding, the reader that samples
+   is the daemon's own thread; for an out-of-process binding, the daemon
+   samples when the request arrives on the adapter endpoint, and the front
+   end keeps its own deadline for the request its operating system sees
+   (point 6) [OWN]. An ingress whose clock sample failed records no arrival
+   and completes the request at once with `TimedOut`, never entering it in
+   the table: no deadline is set without a valid sample [ADR 0004 C37.5:
    Working].
 3. **The request deadline.** One value for every caller and handle
-   operation: 60 seconds by default, configurable from 1 to 3,600 seconds
-   [OWN proposal: long enough for a fetch over a slow link with Rx's own
-   retries, short enough that no process waits as an NFS hard mount would;
-   section 13, Q2]. A commit's absolute deadline is the same value unless
-   the configuration gives commit its own (C9, point 3). Binding operations
-   wait on nothing: they complete without a deadline wait.
-4. **The claim.** An entry moves from open to claimed once, in one
-   serialised step (an atomic compare-and-set on the entry's state, which
-   never blocks). The step first evaluates the deadline, from one fresh
-   `Clock::sample`, doubt included (the seams specification, 5.3, point
-   4): if the deadline has passed, the step claims the entry for the
-   deadline, whoever makes it, and the completion is `TimedOut`; a worker's
-   success is discarded. Otherwise the claimant is whoever made the step.
-   Every later attempt finds the entry claimed and is discarded [the seams
-   specification, 5.7, point 4].
-5. **Who writes.** The claimant writes the completion to the binding (for
-   FUSE, the one reply whose `unique` is the request's `[E62: CONFIRMED]`),
-   then marks the entry written and removes it. No other party writes for
-   that request.
+   operation and for `volume_sync`: 60 seconds by default, configurable
+   from 1 to 3,600 seconds [OWN proposal: long enough for a fetch over a
+   slow link with Rx's own retries, short enough that no process waits as
+   an NFS hard mount would; section 13, Q2]. A commit's absolute deadline is
+   the same value unless the configuration gives commit its own (C9, point
+   3). Every other binding operation (`forget`, `release`,
+   `release_directory`, `reclaim`, `cancel`, `pin`, `unpin`, `acknowledge`,
+   `purge_failed`) waits on nothing: it completes, or ends with no reply,
+   without a deadline wait and without a table entry.
+4. **The claim.** An entry moves from open to claimed once, by an atomic
+   compare-and-set on its state, which never blocks. Whoever attempts it
+   (the worker at submission, 5.9; the completion owner, point 6; a
+   `cancel`'s worker, point 7; shutdown, point 9) first takes one fresh
+   `Clock::sample` and evaluates the deadline, doubt included (the seams
+   specification, 5.3, point 4), then attempts the compare-and-set with
+   the completion it will write:
+   - if the deadline has passed, the completion is the **deadline's
+     error**, whoever attempts: `NotYetStored` when a store is in progress
+     for the request (a `commit` or a `volume_sync` whose store is still
+     making progress, C9, point 3), otherwise `TimedOut`. A worker's
+     success is never the completion of a claim made after the deadline;
+   - otherwise, the attempt's own completion (the worker's reply, or
+     `Interrupted`, or shutdown's error).
+
+   **The winner of the compare-and-set, and only the winner, writes the
+   completion** it claimed with (point 5); every other attempt finds the
+   entry claimed and writes nothing. So exactly one completion is written
+   for each request, by exactly one party, and a deadline that has passed
+   is honoured by whichever party reaches the entry first [the seams
+   specification, 5.7, point 4; OWN: the single-writer rule].
+5. **Writing.** The winner writes the completion to the binding (for FUSE,
+   the one reply whose `unique` is the request's `[E62: CONFIRMED]`), then
+   removes the entry from the writing set. A write that fails (the kernel
+   refused it, or the device closed) still removes it: the request is
+   over, and the failure is logged [OWN].
 6. **The completion owner is the housekeeping loop** (C39, point 1, gives
    it expiry). It waits with `Clock::wait` on the earliest open deadline of
    every in-process binding's table, through a deadline index kept beside
    the tables, and on that index's signal when an earlier deadline is
-   added. When a deadline is reached it makes the claim for that entry; if
-   it wins, it completes the request with `TimedOut`. It never blocks on a
-   device, a `Disk` call or an `Rpc` wait [the seams specification, 5.7,
-   point 4; ADR 0004 C39.4: Working]. Its completions are bounded by the
-   tables' sizes. An out-of-process binding's front end is the completion
-   owner for the request its operating system sees, with its own table and
-   timer under the same rules; the daemon's table completes the IPC request
-   on its side, and a late daemon reply finds the front end's entry claimed
-   and is discarded (S1) [OWN].
+   added. When a deadline is reached it attempts the claim for that entry
+   (point 4). It never blocks on a device, a `Disk` call or an `Rpc` wait
+   [the seams specification, 5.7, point 4; ADR 0004 C39.4: Working]. Its
+   completions are bounded by the tables' sizes. An out-of-process
+   binding's front end is the completion owner for the request its
+   operating system sees, with its own table and timer under the same
+   rules; the daemon's table completes the IPC request on its side, and a
+   late daemon reply finds the front end's entry claimed and is discarded
+   (S1) [OWN].
 7. **Cancel.** `cancel(request)` fires the entry's cancel token, and
-   nothing else. The worker's next wait ends `Cancelled` and it claims the
-   entry with `Interrupted` (5.12) only while no mutation RPC has been sent
-   for the request. From the moment a mutation is sent the request's cancel
-   no longer ends it: the worker waits for the outcome within the deadline,
-   and the deadline's completion is `TimedOut`, with the mutation's outcome
-   read back and never repeated [ADR 0004 C28.4: Firm; OWN: `Interrupted`
-   tells the application nothing happened, which is true only before a
-   mutation leaves]. So operation code passes a mutation's `Rpc::call`
-   only the shutdown cancel, not the request's. A `cancel` naming no open
-   entry is ignored: the request was already answered, or never existed
-   [OWN; FUSE documents that an interrupt may arrive for a request already
-   answered `[E63: CONFIRMED]`]. On FUSE, the interrupt's own reply, if the
-   layer sends one, is the FUSE codec's question: the kernel's
-   documentation describes an `EAGAIN` reply to an interrupt `[E63:
-   CONFIRMED]`, while fuse(4) says the interrupt "requires no response"
-   `[E62: CONFIRMED]`; the codec's specification settles which it follows
-   (issue #92). FSKit's volume operations offer no per-operation cancel in
-   the macOS 27.2 headers inspected (only `FSTask` has a cancellation
-   handler) `[E64: CONFIRMED]`, so an FSKit request ends at its completion
-   or its deadline. An SMB cancel names its target by `MessageId` on the
-   same connection `[E66: CONFIRMED]`; how the front end completes it is
-   S2's.
+   nothing else. The worker's next wait ends `Cancelled`, and it attempts
+   the claim with `Interrupted` only while no mutation RPC has been sent
+   for the request. From the moment a mutation is sent, the request's
+   cancel no longer ends it: the worker waits for the outcome within the
+   deadline, and a claim at the deadline completes with the deadline's
+   error (point 4), the mutation's outcome read back and never repeated
+   [ADR 0004 C28.4: Firm; OWN: `Interrupted` tells the application nothing
+   happened, which is true only before a mutation leaves]. So **every wait
+   after a mutation is sent** (its `Rpc::call`, a `Disk` call, a read-back
+   RPC) takes only the shutdown cancel, never the request's. A `cancel`
+   naming no open entry is ignored: the request was already answered, or
+   never existed [OWN; FUSE documents that an interrupt may arrive for a
+   request already answered `[E63: CONFIRMED]`]. On FUSE, the interrupt's
+   own reply, if the layer sends one, is the FUSE codec's question: the
+   kernel's documentation describes an `EAGAIN` reply to an interrupt
+   `[E63: CONFIRMED]`, while fuse(4) says the interrupt "requires no
+   response" `[E62: CONFIRMED]`; the codec's specification settles which it
+   follows (issue #92). FSKit's volume operations offer no per-operation
+   cancel in the macOS 27.2 headers inspected (only `FSTask` has a
+   cancellation handler) `[E64: CONFIRMED]`, so an FSKit request ends at
+   its completion or its deadline. An SMB cancel names its target by
+   `MessageId` on the same connection `[E66: CONFIRMED]`; how the front end
+   completes it is S2's.
 8. **Executor full.** A request that finds the executor full is completed
    by the ingress at once with `Busy`, is counted, and never enters the
    table [ADR 0004 C39.2: Working]. A request that finds the table full is
    treated the same way.
-9. **Shutdown and binding teardown** claim every open entry for shutdown
-   and complete each once with `Interrupted`, never a success, before the
-   binding closes [the seams specification, 5.7, point 4]. Teardown also
-   revokes the binding's handles [ADR 0004 C14.3: Working].
+9. **Shutdown and binding teardown** attempt the claim on every open
+   entry with `Interrupted` (point 4 still turns a passed deadline into the
+   deadline's error), so each open request is completed once, never with a
+   success. Then they wait until the binding's writing set is empty, so a
+   completion another party claimed is written before the binding closes;
+   that wait is bounded by the kernel's acceptance of a reply, and a write
+   that fails empties its place (point 5) [the seams specification, 5.7,
+   point 4; OWN: the writing set]. Teardown also revokes the binding's
+   handles [ADR 0004 C14.3: Working].
 10. **Suspend.** A suspend that crosses an open request's boot-clock
     deadline completes the request at the first instant the host runs
-    after it, with `TimedOut` [the seams specification, 5.6, point 7].
-    This is a departure from O45, point 3, as written; 13, Q1, proposes its
-    amendment.
+    after it, with the deadline's error [the seams specification, 5.6,
+    point 7]. This is a departure from O45, point 3, as written; 13, Q1,
+    proposes its amendment.
 
 ### 5.9 The fence check at submission
 
@@ -620,88 +721,166 @@ and the write one serialised step without holding a core lock across the
 write [ADR 0004 C16.3: Firm; C39.4: Working]. A binding in its own process
 makes it with the fence epoch of C16, point 6, under S1.
 
-1. **The submission step.** `Binding::submit(request, Fenced<Reply>)` does,
-   in order, with no yield between the first and the third:
-   1. take the object lock of the reply's node (for a reply with no node,
-      a directory listing's directory; for a mutation, the node it
-      changed);
-   2. compare the clocks (C32, point 5), then the ticket with the current
-      break counters of object, volume and server, the overload record
-      (the seams specification, 5.4, point 7), and the credential and
-      rights generations; check that the handle or caller is still live;
-   3. if they match, make the claim of 5.8, point 4, for the worker, and
-      give the reply the binding's next **submission sequence number**;
-   4. release the object lock;
-   5. write the reply to the kernel, with no core lock held; then mark the
-      sequence number written.
+1. **The lock set.** A reply depends on every node whose state it carries
+   or whose cache entry it lets the kernel fill. Its **lock set** is the
+   object locks of those nodes, one lock per file object (aliases of one
+   file share it), taken in ascending order of the object's key (cell,
+   volume, vnode, uniquifier) and released together. This order sits at
+   the object level of C39, point 4's order (server, volume, object, chunk)
+   and is the only order in which two object locks are ever held together
+   [ADR 0004 C39.4: Working; OWN: the order within the level].
 
-   If step 2 fails, the reply is discarded and `submit` returns `Fenced`;
-   if the claim fails, it is discarded and `submit` returns `Late`. A
+   | Reply of | Lock set |
+   |---|---|
+   | `lookup`, `create`, `make_directory`, `symlink`, `open` (with a name) | the parent and the entry's node |
+   | `link` | the node and the new parent |
+   | `rename`, `rename_handle` | both parents, the moved node, and the replaced node if any |
+   | `unlink`, `remove_directory` | the parent and the removed node |
+   | `read_directory` | the directory |
+   | `copy_range` | both files |
+   | every other operation | the node it names, or its handle's node |
+
+2. **The submission step.** `Binding::submit(request, Fenced<Reply>)`
+   does, in order, with no yield from step 1 to step 5:
+   1. **register:** take the binding's next **submission sequence number**
+      by an atomic fetch-and-add, and mark it in flight;
+   2. take the lock set (point 1);
+   3. **check:** compare the clocks (C32, point 5); compare the ticket with
+      the current break counters of object, volume and server, the
+      overload record (the seams specification, 5.4, point 7), and the
+      credential and rights generations; check that the handle or caller
+      is still live, that no node of the lock set has a gate in this
+      binding for the state the reply needs (point 5), and that the
+      binding has no overflow pending;
+   4. **claim:** attempt the claim of 5.8, point 4, with the reply if the
+      check passed, or attempt nothing if it failed;
+   5. release the lock set;
+   6. if the claim was won with the reply, write the reply to the kernel,
+      with no core lock held; if it was won with the deadline's error,
+      write that error instead and discard the reply;
+   7. mark the sequence number done, whatever happened above: a failed
+      check, a lost claim, or a write that failed.
+
+   If the check fails, the reply is discarded and `submit` returns
+   `Fenced`; if the compare-and-set is lost, the reply is discarded,
+   nothing is written and `submit` returns `Late`; if the claim is won with
+   the deadline's error, `submit` writes that error and returns `Late`. A
    discarded reply is never written [ADR 0004 C16.2: Firm].
-2. **Why it holds.** A break, a revocation or a staleness is recorded in
-   the core under that object lock before any event is queued (C16, point
-   1). So a change recorded before step 1 stops the reply at step 2, and a
-   change recorded after step 4 finds the reply submitted, which counts as
-   delivered (C16, point 3). Steps 1 to 4 hold one lock, never across a
-   wait or a write [OWN].
-3. **The drain.** Before the notifier applies a purge for an event, it
-   reads the binding's submission sequence number, then waits, with
-   `Clock::wait` on the event's deadline (5.10, point 8), until every
-   sequence number up to it is marked written. So no reply submitted before
-   the event can fill the kernel's cache after the purge [ADR 0004 C17.2:
-   Working]. The writes it waits on hold no lock, so the wait is bounded by
-   the kernel's acceptance of a reply.
-4. **Retries.** A reply that fails its fence at the install or at
+3. **Recording a change, and why the step holds.** Whoever records a
+   break, a revocation, a staleness, a generation change or an overflow
+   does so in the core before any event is queued (C16, point 1), and in
+   the same step, under the locks it records under, it sets the gate of
+   each affected binding's slot (or the binding's overflow) **before** it
+   queues the event. The sequence counter's fetch-and-add and load, every
+   write of a counter, generation, gate or overflow flag that step 3 reads,
+   and step 3's reads of them, are sequentially consistent atomic
+   operations [OWN]. Then, for any submission and any recorded change:
+   - if the submission's registration comes before the notifier's read of
+     the sequence counter for that change's event (point 4), the drain
+     waits for it;
+   - otherwise its registration comes after that read, which comes after
+     the change was recorded, so its check (step 3) reads the change and
+     fails.
+
+   A change recorded under a node's object lock is also ordered by that
+   lock against every submission whose lock set holds the node. A change
+   recorded after step 5 finds the reply submitted, which counts as
+   delivered (C16, point 3). Steps 2 to 5 hold the lock set only, never
+   across a wait or a write.
+4. **The drain.** When the notifier takes an event for a binding, it reads
+   the binding's sequence counter, then waits with `Clock::wait`, bounded
+   by the event's deadline (5.10, point 8), until every sequence number
+   below that reading is marked done. Only then does it apply the purge
+   [ADR 0004 C17.2: Working]. **A drain that reaches the event's deadline
+   with any of those numbers still in flight applies no purge and
+   acknowledges nothing:** the event is treated as `purge_failed` for its
+   node (or, for an overflow, for every node the binding holds), and every
+   later purge on that binding also waits for those numbers [OWN: purging
+   while a reply may still be written would let that reply refill the
+   cache; failing closed is C15, point 6's path]. The writes waited on
+   hold no lock, so a drain is bounded by the kernel's acceptance of a
+   reply.
+5. **Gated nodes.** From the moment a change is recorded until the binding
+   acknowledges its revision, the node's gate in that binding fails step 3
+   for a reply that needs the purged state, and new operations needing it
+   wait for the acknowledgement within their deadline [ADR 0004 C16.5:
+   Firm].
+6. **Retries.** A reply that fails its fence at the install or at
    submission is discarded, and the read is retried at most 3 times in all,
    then fails with `Stale` [ADR 0004 C16.2: Firm; OWN: three attempts
    outlast a single break and a racing revalidation, and bound the work a
    break storm can cause; the seams specification's `fence_retries`]. A
    fenced mutation reply is never retried: its outcome is read back (C28,
    point 4).
-5. **Gated nodes.** While a node's slot holds pending effects in this
-   binding, step 2 also fails for a reply that needs the purged state, and
-   new operations needing it wait for the acknowledgement within their
-   deadline [ADR 0004 C16.5: Firm].
 
 ### 5.10 The invalidation stream and its acknowledgements
 
 The values are `ironafs-vfs`'s `Event`, `Invalidation`, `Overflow`,
-`Effects`, `Entries`, `Rights`, `Scope` and `Ack` [ADR 0004 C17: Working;
-N47.3: Firm].
+`Effects`, `Entries`, `Rights`, `Scope` and `Ack`, and the `PurgeFailed`
+report of point 5 [ADR 0004 C17: Working; N47.3: Firm].
 
-1. **Coalesced per node.** Each binding has one slot per node it holds; a
-   new event merges into the slot by `Effects::merge` and raises its
-   revision; the merged effects cover both (`Effects::covers`) [ADR 0004
-   C17.1, C17.6: Working]. Two different entry names, or a rename paired
-   with any other names, widen to all entries; two contexts' rights widen
-   to all contexts [ADR 0004 N47.3: Firm].
-2. **Order at the binding.** For each event, the binding: gates the node
-   (5.9, point 5); drains or fences earlier replies (5.9, point 3);
-   applies the operating system's purge; then acknowledges [ADR 0004
-   C17.2: Working].
-3. **What an acknowledgement says.** `Ack::Node { node, revision }` says
-   the purge of every effect up to `revision` was applied. The core clears
-   from the slot only the effects merged at or below that revision; an
-   effect merged later stays pending under its higher revision, and the
-   node stays gated until it too is acknowledged [ADR 0004 C17.6: Working].
-   `Ack::Overflow { revision }` clears the overflow; slots merged after the
-   overflow's revision stay.
+1. **Coalesced per node, one revision per binding.** Each binding has one
+   revision counter (`u64`, from 1). Every merge into one of its slots, and
+   every overflow, takes the next revision. A node's slot holds each
+   pending effect (data, attributes, entries, rights) with the revision at
+   which it was last merged, and the latest revision delivered for the
+   node; the union widens by `Effects::merge` and covers both
+   (`Effects::covers`) [ADR 0004 C17.1, C17.6: Working]. Two different
+   entry names, or a rename paired with any other names, widen to all
+   entries; two contexts' rights widen to all contexts [ADR 0004 N47.3:
+   Firm]. A delivery carries the slot's pending effects and the revision of
+   its latest merge.
+2. **Order.** The core gates the node when it records the change (5.9,
+   point 3). The binding then, for each event: drains or fences earlier
+   replies (5.9, point 4); applies the operating system's purge; then
+   acknowledges [ADR 0004 C17.2: Working].
+3. **What an acknowledgement clears.** `Ack::Node { node, revision }` says
+   the purge of the delivery carrying `revision` was applied. The core
+   clears from the slot each effect whose merge revision is at or below
+   `revision`; an effect merged later, even of the same kind, stays
+   pending under its own revision, and the node stays gated until it too
+   is acknowledged [ADR 0004 C17.6: Working]. `Ack::Overflow { revision }`
+   clears the overflow of that revision; a slot merged after it stays.
 4. **Only after the purge.** A binding acknowledges only after the
    operating system accepted the purge. For FUSE, a notification the kernel
    answers with "not cached" is a purge applied [UNVERIFIED: the kernel's
    answer for an uncached entry; settled with the FUSE codec, issue #92].
-5. **A purge that fails** is reported with `purge_failed`, never
-   acknowledged. The core then applies C17, point 5, and C15, point 6, to
-   that node, in every binding: on Linux the node answers `Stale`, its
-   handles are revoked, and new opens and mappings of it are refused until a
-   purge succeeds [ADR 0004 C15.6: Firm; C17.5: Working]. Under overflow,
-   that applies to each node that failed, not to the binding (C17, point 6).
-6. **Acknowledgements are untrusted.** An acknowledgement for a node with
-   no pending slot, for a revision above the latest delivered, or for an
-   overflow not delivered, changes nothing and is counted as a layer fault;
-   for an out-of-process binding, S1 says whether such a fault tears the
-   binding down. A repeated acknowledgement is idempotent. An
-   acknowledgement never clears effects above its revision [OWN].
+5. **A purge that fails** is reported, never acknowledged, with
+   `purge_failed`, carrying a `PurgeFailed`: either `Node { node,
+   revision }`, for a delivery of that node's slot, or `OverflowNode {
+   node, revision }`, for one node the binding holds that failed under the
+   overflow of `revision`. Under an overflow, the binding reports each
+   node that failed and then acknowledges the overflow, which clears it for
+   every node not reported. For each valid report the core applies C17,
+   point 5, and C15, point 6, to that node, which on Linux is: the node
+   answers `Stale` in every binding, its handles are revoked, and new opens
+   and mappings of it are refused until a purge of it succeeds [ADR 0004
+   C15.6: Firm; C17.5, C17.6: Working]. The core offers the failing binding
+   the purge again, as a new delivery widened to every effect, and the
+   node's stale state ends when that binding acknowledges it or is torn
+   down [OWN].
+6. **Reports are untrusted, and one rule covers both kinds.** An
+   acknowledgement or a `PurgeFailed` report is **valid** only if it names
+   a delivery the core made to this binding that is not yet acknowledged
+   or reported: for a node, a revision the core delivered for that node's
+   slot; for an overflow, the overflow's delivered revision and, for
+   `OverflowNode`, a node the binding held when the overflow was
+   delivered. A valid report acts as points 3 and 5 say. An invalid one
+   changes nothing, and:
+   - if its revision is at or below the latest revision the core has
+     delivered to this binding for that node (or that overflow), it is a
+     **repeat**: ignored, never a fault, whatever the slot's state now;
+   - otherwise (a revision never delivered for it, a node the binding
+     does not hold, an overflow never delivered) it is counted as a layer
+     fault; for an out-of-process binding, S1 says whether faults tear the
+     binding down.
+
+   An acknowledgement never clears effects above its revision, and a
+   failure report never revokes anything for a delivery it does not name
+   [OWN; ADR 0004 C24.6: Firm: only demonstrated purge failure revokes].
+   The core keeps the latest delivered revision of each node the binding
+   holds, so the repeat rule is checkable; that memory is bounded by the
+   node table.
 7. **Rights events name a context.** The core sends a rights event to every
    binding holding the node, and a layer purges for the named context, or
    for all where it cannot tell contexts apart (FUSE's kernel caches are
@@ -714,10 +893,10 @@ N47.3: Firm].
    say the revocation completed].
 9. **Overflow.** When a binding's pending slots reach their byte bound
    (C39, point 3; proposed: 1 MiB of slot state per binding), the binding
-   gets one `Overflow`: every node it holds is gated and purged, or handled
-   under point 5 [ADR 0004 C17.6: Working]. An event a layer does not
-   understand is handled conservatively at its scope, or as an overflow
-   where its scope cannot be determined [ADR 0004 N47.3: Firm].
+   gets one `Overflow`: every node it holds is gated and purged, or
+   reported under point 5 [ADR 0004 C17.6: Working]. An event a layer does
+   not understand is handled conservatively at its scope, or as an
+   overflow where its scope cannot be determined [ADR 0004 N47.3: Firm].
 10. **Who writes kernel notifications.** For an in-process binding, the
     notifier thread, holding no core lock (C17, point 4; L5, point 4).
 
@@ -727,30 +906,52 @@ N47.3: Firm].
    `ironafs-vfs` (which defines it), `ironafsd` (the composition, which
    creates the one mint and gives it to the core), `ironafs-client` (the
    core, which holds it), and the test-only crates `ironafs-sim` and
-   `ironafs-test-support` (the scripted core, issue #98). No layer crate
-   (`ironafs-fuse`, `ironafs-smb`, `ironafs-cloudfiles`) and no other
-   crate names it, and `ironafs-client` exposes no function that returns
-   one or a capability built outside its record [OWN; it serves ADR 0004
-   C8.2: Firm].
+   `ironafs-test-support` (the scripted core, issue #98); and, in `xtask`,
+   only the module of the check in point 3 and its planted canary fixture,
+   which name it to find it. No layer crate (`ironafs-fuse`, `ironafs-smb`,
+   `ironafs-cloudfiles`) and no other crate or module names it. None of the
+   allowed crates exposes a function or a macro that returns a `Mint`, or a
+   capability built outside the core's record. `Mint` implements neither
+   `Default`, `Clone` nor `Copy`, and `Mint::new` is its one constructor
+   [OWN; it serves ADR 0004 C8.2: Firm].
 2. **Why it is a rule and not only a type.** A crate that builds its own
    `Mint` can make capability values, but the core refuses every one it did
    not record (5.3, point 3), so the rule is a second barrier behind the
    run-time check, not the check itself. It keeps a layer's code from even
    looking like it mints.
-3. **How it is checked.** `cargo xtask check` gains a source check over
-   every workspace crate outside point 1's list: it fails on any path or
-   `use` that names `Mint` from `ironafs_vfs` (directly, through a rename
-   `as`, or through a glob import followed by the bare name), and on any
-   `#[allow]` or `#[expect]` of a lint that bans it. It runs with a planted
-   canary crate that names `Mint` each of those ways and must fail, as
-   `check-bans` proves its bans fire. The check belongs with `check-deps`'s
-   layer rules (C4, point 4), which already know which crates are layers
-   [OWN; section 13, Q4, asks where it lands]. Until it exists, review
-   holds the rule, as the crate's documentation says.
+3. **How it is checked.** Two checks, each proved to fire:
+   - **A token ban.** `cargo xtask check` reads every Rust source file of
+     every workspace crate outside point 1's list, as the compiler
+     tokenises it (the source reader `check-deps` already uses), and fails
+     on any identifier token `Mint`, in code, whatever path, alias,
+     `extern crate ... as`, glob import or module re-export it reaches it
+     through. Banning the token, not a path, is what closes the alias
+     routes: every route that reaches the type must spell its name.
+   - **A type ban.** The root `clippy.toml` lists `ironafs_vfs::Mint` under
+     `disallowed-types`, so clippy, which resolves types, refuses any use
+     of it in any crate; the allowed crates of point 1 each name it at their
+     few sites under `#[expect(clippy::disallowed_types, reason = ...)]`.
+     The token check also fails on any `allow` or `expect` of
+     `clippy::disallowed_types` in a crate outside point 1's list.
+
+   Both run against a planted canary crate that reaches `Mint` each of
+   those ways (a direct path, `use ... as`, a crate alias, `extern crate
+   ... as`, a glob import, a re-export from a module, an `expect` of the
+   lint) and must fail on every one, as `check-bans` proves its bans fire.
+   **Limits, which review covers:** stable Rust cannot assemble an
+   identifier from macro fragments without a procedural macro, and no layer
+   crate may depend on one (C4, point 4), so the token ban sees every name;
+   a `macro_rules!` macro exported by an allowed crate that expands to
+   `Mint` would hide it, and point 1 forbids such a macro. The checks
+   belong with `check-deps`'s layer rules (C4, point 4), which already know
+   which crates are layers [OWN; section 13, Q4, asks where they land].
+   Until they exist, review holds the rule, as the crate's documentation
+   says.
 
 ### 5.12 Errors, per operating system
 
-1. **One error type,** `VfsError`, with C46, point 1's values; the token
+1. **One error type,** `VfsError`, with C46, point 1's values and the
+   seven this page adds (point 9); the token
    errors and `SecurityFloor` reach applications as a permission error and
    `OutOfRange` as an invalid-argument error, each with its cause in the
    side channel [ADR 0004 C46.1: Working]. Each layer maps it with an
@@ -788,6 +989,19 @@ N47.3: Firm].
    | `Unreachable` | `EHOSTUNREACH` | `EHOSTUNREACH` | `STATUS_HOST_UNREACHABLE` |
    | `Conflict` | `EBUSY` | `EBUSY` | `STATUS_SHARING_VIOLATION` |
    | `OutOfRange` | `EINVAL` | `EINVAL` | `STATUS_INVALID_PARAMETER` |
+   | `NotADirectory` | `ENOTDIR` | `ENOTDIR` | `STATUS_NOT_A_DIRECTORY` |
+   | `IsADirectory` | `EISDIR` | `EISDIR` | `STATUS_FILE_IS_A_DIRECTORY` |
+   | `NotEmpty` | `ENOTEMPTY` | `ENOTEMPTY` | `STATUS_DIRECTORY_NOT_EMPTY` |
+   | `NoAttribute` | `ENODATA` | `ENOATTR` | `STATUS_NONEXISTENT_EA_ENTRY` |
+   | `TooSmall` | `ERANGE` | `ERANGE` | `STATUS_BUFFER_TOO_SMALL` |
+   | `PastEnd` | `ENXIO` | `ENXIO` | `STATUS_END_OF_FILE` |
+   | `Protocol` | `EIO` | `EIO` | `STATUS_INVALID_NETWORK_RESPONSE` |
+
+   **Per-operation rows.** A layer maps by value, and these operations
+   override one value: on Linux and macOS, `NotSupported` from a rename
+   with flags is `EINVAL` (5.6, point 9) [ADR 0004 C10.6: Working]. Any
+   other per-operation row is the layer specification's, and is listed
+   there; no per-operation row may map to success.
 
    The permission and invalid-argument rows are ADR 0004 C46, point 1's
    [Working]. Every other row is [OWN], chosen as the system's own error
@@ -808,6 +1022,16 @@ N47.3: Firm].
      POSIX meaning;
    - `Stale` is `ESTALE`, "Stale file handle" `[E61: CONFIRMED]`, the
      condition it names;
+   - the seven added values take the errors errno(3) documents for the
+     same conditions: "Not a directory", "Is a directory", "Directory not
+     empty", `ENODATA` as "The named attribute does not exist", "Result too
+     large", "No such device or address" (lseek(2)'s answer for data or a
+     hole past the end), and "Input/output error" `[E61: CONFIRMED]`; macOS
+     names the missing attribute `ENOATTR`, "Attribute not found" `[E64:
+     CONFIRMED]`; the NTSTATUS rows are error-severity values of MS-ERREF
+     2.3.1 `[E65: CONFIRMED]`. `Protocol` and `NotYetStored` share `EIO`:
+     both tell an application the operation did not do what it asked, and
+     the side channel tells them apart;
    - on Linux `ENOTSUP` and `EOPNOTSUPP` are one value `[E61: CONFIRMED]`;
      on macOS they differ and `ENOTSUP` is "Operation not supported" `[E64:
      CONFIRMED]`. Never `ENOSYS`: L2, point 4, and N43 forbid it for any
@@ -833,43 +1057,59 @@ N47.3: Firm].
    (proposed; L24 and L25 settle it) [OWN]. A request whose extension list
    breaks its caps is refused as `NotSupported` (5.2, point 5).
 5. **A server value the contract cannot carry** fails the operation with
-   `OutOfRange`, cause in the side channel: a directory entry whose name is
+   `Protocol`, cause in the side channel: a directory entry whose name is
    not a valid `Name`, a link target over its cap, a time outside C38's
-   range. The listing or reply is never shortened to leave it out [ADR
-   0004 C38.3: Working; C46.4: Working].
-6. **`commit` and its errors.** `commit` returns success only when the
-   server accepted the store; past its deadline with the store still making
-   progress it returns `NotYetStored`; otherwise the store's own error
+   range, a reply over its cap (point 7). The listing or reply is never
+   shortened to leave it out [ADR 0004 C46.4: Working; OWN: `Protocol`,
+   because the server, not the caller, sent the value]. `OutOfRange` stays
+   for a value the caller supplied that the protocol cannot carry (C38,
+   point 3).
+6. **`commit` and its errors.** `commit` (and `volume_sync`, for the
+   commits it makes) returns success only when the server accepted the
+   store; a claim at its deadline while the store is still making progress
+   completes it with `NotYetStored`, whoever makes the claim (5.8, point
+   4), never `TimedOut` and never success; otherwise the store's own error
    [ADR 0004 C9.3, C9.5: Working]. The Linux layer maps FLUSH and FSYNC to
    it as L6 says, and RELEASE never fails [ADR 0004 L6: Working; C9.4:
    Working].
 7. **A reply over its cap.** An `Rpc` call that ends
    `NoReply(ReplyTooLarge)` (the seams specification, 5.4, point 2) fails
-   its request at once with `OutOfRange`, is not retried, and does not mark
+   its request at once with `Protocol`, is not retried, and does not mark
    the server unreachable; its own event, naming the server and the RPC,
    goes to the side channel [OWN: the peer answered with more than any
-   reply the contract can carry, which is C46's "out of range"; neither
-   "timed out" nor "unreachable" is true, and a retry meets the same cap.
-   Section 13, Q5, asks whether a protocol-error value should be added
-   instead].
+   reply the contract can carry; neither "timed out" nor "unreachable" is
+   true, a retry meets the same cap, and "invalid argument" would blame
+   the caller].
 8. **An abort code** is classified by the RPC and the server that returned
    it, never by its number alone, before it becomes a `VfsError` [ADR 0004
    C46.3: Working]. That classification is the protocol specifications'.
+9. **The seven added values.** C46, point 1, lists the values the error
+   type "include[s]"; the layers need seven more to present their systems'
+   errors without inventing them: `NotADirectory`, `IsADirectory`,
+   `NotEmpty`, `NoAttribute`, `TooSmall`, `PastEnd` and `Protocol`. Each
+   is a distinct condition the core decides and a layer cannot derive from
+   another value, and each fails, never succeeds [ADR 0004 C46.1, C46.4:
+   Working; OWN: the seven]. Section 13, Q5, records that a reading of
+   C46, point 1, as a closed list would make this a Working amendment.
+   Adding them changes the crate's enum (so every layer's match), and the
+   local IPC specification's numbering of contract values (issue #62).
 
 ## 6. Arithmetic
 
-1. `offset + length` for read, write, copy-range, allocate, punch and lock
-   ranges: checked addition in `u64`, then compared with `i64::MAX`; an
-   overflow or an excess is `OutOfRange` (5.2).
+1. `offset + length` for read, write, allocate, punch and lock ranges, and
+   for both the source and the destination range of copy-range: checked
+   addition in `u64`, then compared with `i64::MAX`; an overflow or an
+   excess is `OutOfRange` (5.2). A `SetAttributes` size is compared with
+   `i64::MAX` the same way.
 2. The deadline: the arrival's boot reading plus the request deadline in
    nanoseconds, by checked addition in the `ironafs-time` deadline type; an
    overflow is `TimedOut` at ingress, never a wrapped deadline [OWN].
-3. Slot revisions: `u64`, raised by one per merge with checked addition. A
-   slot whose revision would overflow is turned into an overflow of its
-   binding [OWN: unreachable in practice, and never a wrap that would let an
-   old acknowledgement clear a new effect].
-4. Submission sequence numbers: `u64`, raised by one per submission, never
-   wrapping; reaching `u64::MAX` tears the binding down [OWN].
+3. A binding's revision counter: `u64`, raised by one per merge or
+   overflow with checked addition. A binding whose counter would overflow is
+   torn down [OWN: unreachable in practice, and never a wrap that would let
+   an old acknowledgement clear a new effect].
+4. Submission sequence numbers: `u64`, raised by one per registration,
+   never wrapping; reaching `u64::MAX` tears the binding down [OWN].
 5. `forget` counts: subtraction saturating at zero, with the excess counted
    (5.6, point 4).
 6. Extension list totals: checked addition against `MAX_EXTENSION_BYTES`
@@ -882,15 +1122,16 @@ N47.3: Firm].
    [ADR 0004 N41.4: Firm].
 2. A capability check that fails never reveals what the capability named
    in another binding (5.3, point 3).
-3. A layer fault (5.3, 5.6, 5.10) is counted per binding and logged once
+3. A layer fault (5.2, 5.3, 5.6, 5.10) is counted per binding and logged once
    per episode; whether repeated faults tear a binding down is S1's for an
    out-of-process binding and the FUSE layer's for FUSE [OWN].
 4. A failed clock sample at ingress completes the request with `TimedOut`
    at once (5.8, point 2); a failed sample at the claim treats the
    deadline as passed [the seams specification, 5.3, point 4].
 5. Every failure path fails closed: an uncertain fence, an unacknowledged
-   purge, an unreadable deadline and an unknown critical extension all
-   end in a refusal, never in a served reply.
+   purge, a drain that did not finish, an unreadable deadline and an
+   unknown critical extension all end in a refusal or a purge failure,
+   never in a served reply or an applied purge.
 
 ## 8. Security
 
@@ -900,11 +1141,13 @@ N47.3: Firm].
 | The same | to use a capability of another binding | 5.3, point 3 |
 | The same | to exhaust the daemon's memory with large values or many requests | 5.2's caps, the bounded table (5.8, point 1), the bounded slots (5.10, point 9) |
 | The same | to clear an invalidation it never applied | 5.10, points 3 and 6: an acknowledgement clears only up to its revision; a forged one only hides the purge in its own operating system, which it already controls |
+| The same | to revoke other users' handles, in other bindings, with forged failure reports | 5.10, point 6: a report naming no delivery the core made to this binding changes nothing and is counted |
+| The same | to hold locks or subscriptions without limit | 5.2, point 9 |
 | The same | to hold nodes gated for ever | 5.10, point 8 |
-| A local user | to read data after a revocation through a reply already in flight | 5.9: the fence at submission; 5.9, point 3: the drain before the purge |
+| A local user | to read data after a revocation through a reply already in flight | 5.9: the lock set and the fence at submission; 5.9, point 3: registration before the check; 5.9, point 4: the drain before the purge, failing closed |
 | A slow or hostile server | to hang a process | 5.8: every request completes by its deadline, by the completion owner, whatever the worker is doing |
 | The same | to send an oversized reply | 5.12, point 7 |
-| A layer's own error mapping | to turn a failure into success | 5.12, points 1 and 3: exhaustive matches, error severity only |
+| A layer's own error mapping | to turn a failure into success | 5.12, points 1 to 3: exhaustive matches, per-operation rows that never reach success, error severity only |
 
 What this page does not stop: a compromised out-of-process front end can
 act for the users it currently serves on its own bindings (ADR 0004 C8,
@@ -917,18 +1160,18 @@ act for the users it currently serves on its own bindings (ADR 0004 C8,
 | C7, point 4 | 5.6, points 1 to 3 | `ironafs-vfs`: compile-fail `binding_op_takes_no_caller`; `ironafs-client`: `binding::volume_sync_flushes_only_held` |
 | C8, point 2 | 5.3; 5.11 | `ironafs-vfs`: the compile-fail doctests of `capability.rs`; `ironafs-client`: `capability::other_binding_refused`, `capability::foreign_mint_refused`; `xtask`: `mint_check_fires_on_canary` |
 | C9, point 4 | 5.6, point 2 | `ironafs-client`: `binding::release_never_fails` (including a stale cap) |
-| C9, point 5 | 5.12, point 6 | `ironafs-client`: `commit::not_yet_stored_at_deadline` (M3) |
+| C9, point 5 | 5.8, point 4; 5.12, point 6 | `ironafs-client`: `commit::not_yet_stored_at_deadline`, `commit::deadline_claim_by_worker_is_not_yet_stored` (M3) |
 | C13, point 2 | 5.3, point 3; 5.5 | `ironafs-client`: `handle::lost_right_refused_kept_right_works` |
-| C16, point 2 | 5.9, points 1 and 4 | `ironafs-client`: `read::break_before_submission_is_fenced` (the seams specification's) |
-| C16, point 3 | 5.9, points 1 and 2 | `ironafs-client`: `submit::break_after_claim_is_delivered`, `submit::check_and_claim_one_step` |
-| C16, point 5 | 5.9, point 5 | `ironafs-client`: `binding::gated_node_serves_nothing_purged` |
-| C17, point 2 | 5.9, point 3; 5.10, points 2 and 4 | `ironafs-client`: `binding::drain_before_purge`, `binding::ack_only_after_purge` |
+| C16, point 2 | 5.9, points 2 and 6 | `ironafs-client`: `read::break_before_submission_is_fenced` (the seams specification's) |
+| C16, point 3 | 5.9, points 1 to 3 | `ironafs-client`: `submit::break_after_claim_is_delivered`, `submit::parent_break_fences_lookup`, `submit::generation_change_between_register_and_check` |
+| C16, point 5 | 5.9, points 3 and 5 | `ironafs-client`: `binding::gate_set_when_recorded` |
+| C17, point 2 | 5.9, point 4; 5.10, points 2 and 4 | `ironafs-client`: `binding::drain_before_purge`, `binding::drain_timeout_is_purge_failure`, `binding::ack_only_after_purge` |
 | C39, point 2 | 5.8, point 8 | `ironafs-client`: `ingress::executor_full_is_busy_and_counted` |
-| C39, point 4 | 5.8, point 6; 5.9, point 1 | `ironafs-client`: `submit::no_lock_across_kernel_write` (lock-order check in the simulator) |
+| C39, point 4 | 5.8, point 6; 5.9, points 1 and 2 | `ironafs-client`: `submit::no_lock_across_kernel_write`, `submit::lock_set_in_key_order` (lock-order check in the simulator) |
 | C46, point 4; L1, point 2 | 5.5, points 1 to 3; 5.12, points 1, 3, 5 | `ironafs-vfs`: compile-fail `mapping_without_wildcard`; `ironafs-fuse`: `errno::every_value_maps_to_an_error`; `ironafs-smb`: `ntstatus::all_error_severity`; `ironafs-client`: `readdir::bad_server_name_fails_listing` |
-| L1, point 7; O45, point 3 | 5.8 | the simulator's invariant "every OS request completes within its deadline" (the seams specification, 10.5); `ironafs-client`: `request::deadline_beats_stuck_worker`, `request::late_success_discarded` |
+| L1, point 7; O45, point 3 | 5.8 | the simulator's invariant "every OS request completes within its deadline" (the seams specification, 10.5); `ironafs-client`: `request::deadline_beats_stuck_worker`, `request::late_worker_writes_deadline_error`, `request::one_writer_per_request` |
 | N41, point 4 | 5.6, point 5 | `ironafs-vfs`: `extension::first_unknown_critical`; `ironafs-client`: `request::unknown_critical_refused_whole` |
-| N46, point 1 | 5.6, point 8 | `ironafs-vfs`: `reserved::every_reserved_refused`; `ironafs-client`: `reserved::refused_per_operation` |
+| N46, point 1 | 5.6, points 8 and 9 | `ironafs-vfs`: `reserved::every_reserved_refused`; `ironafs-client`: `reserved::refused_per_operation`; `ironafs-fuse`: `errno::rename_flags_is_einval` |
 
 ## 10. Tests
 
@@ -951,7 +1194,11 @@ S1's, with its own vectors.
 For `Name::new`: the empty string; `.`; `..`; any byte string with `/` or
 NUL; 256 bytes (5.2). For `Extensions`: a 17th extension; 4,097 bytes in
 one extension; 4,097 bytes over two; a repeated tag (5.2, point 5). Each
-lives in the crate's unit tests.
+lives in the crate's unit tests. For the core's checks (`ironafs-client`
+and the scripted core): a size of `i64::MAX + 1`; an offset and length
+whose sum overflows, for each range of a copy-range; an `access` mask or
+open flags with an undefined bit; a 1,025th subscription on a binding; a
+second subscription on one handle; a 4,097th lock in one context (5.2).
 
 ### 10.4 Fuzz target
 
@@ -964,9 +1211,10 @@ job of issue #45 for the duration that job states.
 
 1. **No layer mints.** Compile-fail tests: a literal capability, a
    changed binding, a cloned `HandleCap`, a `HandleCap` passed as a
-   `CallerCap`, a `Default` capability, and a binding operation called with
-   a capability argument. Each must fail to compile with the error code
-   named (rule 15).
+   `CallerCap`, a `Default` capability, a `Default` or cloned `Mint`, and a
+   binding operation other than `release` and `release_directory` called
+   with a capability argument. Each must fail to compile with the error
+   code named (rule 15).
 2. **Another binding's capability.** Start: two bindings, a caller
    capability minted on the first. Events: a lookup on the second with it.
    Result: `Stale`; the fault is counted; nothing is looked up (issue #98's
@@ -975,10 +1223,13 @@ job of issue #45 for the duration that job states.
    a `Disk` call. Events: virtual time reaches the deadline. Result: the
    completion owner completes it with `TimedOut` at the deadline's instant;
    the worker's later submission returns `Late` and writes nothing.
-4. **Late success discarded.** Start: a read whose worker finishes after
-   the deadline, before the completion owner's timer runs. Result: the
-   claim evaluates the deadline as passed, the completion is `TimedOut`,
-   and the success is never written.
+4. **Late success discarded, deadline still written.** Start: a read
+   whose worker finishes after the deadline, before the completion owner's
+   timer runs. Result: the worker wins the claim, which evaluates the
+   deadline as passed; the worker writes `TimedOut` and discards its
+   reply; the completion owner's later attempt finds the entry claimed and
+   writes nothing. Exactly one completion is written. The same case with a
+   commit whose store is making progress writes `NotYetStored`.
 5. **Cancel before and after a mutation.** Start: a create. Events: a
    cancel before the RPC is sent; separately, a cancel after it is sent.
    Result: the first completes `Interrupted` and sends nothing; the second
@@ -993,25 +1244,45 @@ job of issue #45 for the duration that job states.
    seams specification, 5.6, point 6): a callback break recorded, and the
    submission's claim. Result: break first, the reply is fenced and
    retried; claim first, the reply is delivered and the notifier's drain
-   waits for its write before the purge.
+   waits for its write before the purge. Repeated for a `lookup` with the
+   break on the parent, and for a credential generation change recorded
+   between the submission's registration and its check: in each order the
+   reply is fenced or drained, never written after the purge.
 8. **A second event during a purge.** Start: a rights event and an entry
    event on one node, merged. Events: the binding begins the purge; a data
    event arrives; the binding acknowledges the first revision. Result: the
    data effect stays pending under its revision and the node stays gated
    until it is acknowledged (C17, point 6's test).
-9. **A forged acknowledgement.** Events: an acknowledgement above the
-   latest delivered revision, and one for a node with no slot. Result:
-   nothing clears; two faults counted.
-10. **A purge that fails.** Events: `purge_failed` for a node two contexts
-    hold. Result: both get `Stale` on that node only; their data and records
-    are kept (C15, point 6's test).
+9. **Forged and repeated reports.** Events: an acknowledgement above the
+   latest delivered revision; one for a node the binding does not hold; a
+   `purge_failed` for a revision never delivered; then a valid
+   acknowledgement sent twice. Result: the first three change nothing and
+   count three faults, and no handle in any binding is revoked; the repeat
+   is ignored and counts nothing.
+10. **A purge that fails.** Events: `purge_failed` for a delivered revision
+    of a node two contexts hold. Result: both get `Stale` on that node only;
+    their data and records are kept (C15, point 6's test). Under an
+    overflow: one node reported failed, then the overflow acknowledged; only
+    that node is stale.
 11. **Reply too large.** Start: a fetch whose reply exceeds its cap.
-    Result: `OutOfRange` at once, no retry, the server not marked
+    Result: `Protocol` at once, no retry, the server not marked
     unreachable, one event.
 12. **Executor full.** Result: `Busy`, counted, no table entry.
 13. **Reserved operations.** Each of N46, point 1's operations answers
     `NotSupported` per request, and the next request of the same kind
     reaches the core again (no `ENOSYS`, N43).
+14. **A drain that cannot finish.** Start: a submission registered and
+    held before its write. Events: an event for that node reaches its
+    deadline. Result: no purge is applied, nothing is acknowledged, and the
+    node is handled as `purge_failed`.
+15. **Teardown waits for claimed writes.** Start: a request whose worker
+    has claimed and not yet written. Events: teardown. Result: the
+    binding closes only after that write; every other open request gets
+    `Interrupted` once.
+16. **An id reused at once.** Start: a request claimed and being written.
+    Events: the kernel sends a new request with the same id before the
+    write returns. Result: the new request enters the table (the id was
+    freed at the claim) and is answered once.
 
 **Gaps:** every `ironafs-client` test above waits for that crate's
 operation code (issues #91, #98 and the M2a operation briefs); the `xtask`
@@ -1102,29 +1373,46 @@ entry (5.10, point 4) is to be observed with the FUSE codec (issue #92).
   configurable (5.8, point 3). **Recommendation:** keep it as proposed and
   measure at the M2a acceptance runs against the test cell; the
   configuration key is the configuration specification's (issue #93).
-- **Q3. `PurgeFailed` and `acknowledge` in the crate.** `ironafs-vfs` has
-  `Ack` but no value for a failed purge, and no binding-operation names.
-  **Recommendation:** add `purge_failed` to the crate as 5.6, point 1, and
-  5.10, point 5, state, in issue #67's pull request.
+- **Q3. The crate and the scripted core follow this page.** `ironafs-vfs`
+  has no `PurgeFailed` value (5.10, point 5), no `VfsError` values of 5.12,
+  point 9, and documents `Revision` as a slot's counter rather than a
+  binding's (5.10, point 1). The scripted core (issue #98) refuses another
+  binding's capability with `Access` where 5.3, point 3, says `Stale`; its
+  `purge_failed` takes no revision and checks only that the node is held
+  (5.10, points 5 and 6); its acknowledgement accepts any revision issued
+  rather than delivered, and treats every unknown one as an error rather
+  than splitting repeats from faults (5.10, point 6); and it has no
+  overflow failure report. **Recommendation:** bring both in line in
+  issue #67's and issue #98's pull requests, before this page is
+  reviewed again.
 - **Q4. Where the Mint check lands.** **Recommendation:** in `check-deps`
   (issue #46's checks), with its canary, filed as a follow-up of #67;
   review holds the rule until then.
-- **Q5. A reply over its cap.** `OutOfRange` (5.12, point 7) reaches
-  applications as "invalid argument", which reads oddly for a listing.
-  The alternative is a new C46 value for a server protocol error, reported
-  as `EIO`. **Recommendation:** keep `OutOfRange` for M2a; revisit with
-  C46's trigger if users cannot act on it.
+- **Q5. The seven added error values** (5.12, point 9). C46, point 1,
+  introduces its list with "include", so this page reads it as open and
+  adds `NotADirectory`, `IsADirectory`, `NotEmpty`, `NoAttribute`,
+  `TooSmall`, `PastEnd` and `Protocol`. If the review reads the list as
+  closed, adding them is a Working amendment of C46, point 1.
+  **Recommendation:** name them in the same amendment issue as Q1, so the
+  ADR's list and the crate's agree, and have the local IPC specification
+  (issue #62) number them.
 - **Q6. Platform limits to register.** Linux's `NAME_MAX` (255) and its
   extended-attribute value limit, and whether every Windows name of 255
   UTF-16 units fits 255 bytes after L25's mapping, are UNVERIFIED here.
   **Recommendation:** register the Linux limits with the FUSE codec (issue
   #92); settle the Windows question with L24's table, where a longer cap
   for Windows names would be a change of this page.
-- **Q7. `seek` is not in C7's lists.** N46, point 2, requires the core to
-  answer it, and it acts on an open file. **Recommendation:** add "seek to
-  data or hole" to C7, point 3's handle operations in the same amendment
-  as Q1.
-- **Q8. Mapping rows of my own.** Every non-ADR row of 5.12, point 2's
+- **Q7. `seek` is not in C7's lists, and C13, point 2's list is partial.**
+  N46, point 2, requires the core to answer `seek`, and it acts on an open
+  file. C13, point 2 (Firm), names in parentheses the handle operations it
+  checks, and already omits C7, point 3's subscription; this page applies
+  C13, point 2's check to every handle operation (5.5, point 5).
+  **Recommendation:** add "seek to data or hole" and the reserved handle
+  operations to C7, point 3 (Working) in the same amendment as Q1; and ask
+  the owner to change C13, point 2's parenthetical to "every handle
+  operation of C7, point 3", which keeps its rule and changes a Firm
+  decision's words only, so it is the owner's decision.
+- **Q8. Mapping rows chosen here.** Every non-ADR row of 5.12, point 2's
   table is [OWN]. **Recommendation:** the FUSE codec's review (issue #92)
   re-checks the Linux column against each operation's documented errors;
   S2 fixes the Windows column.
