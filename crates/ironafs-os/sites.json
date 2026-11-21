@@ -381,10 +381,60 @@
       "blocks": "one per call (two), and one that adopts a received descriptor (`OwnedFd::from_raw_fd`)",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved"
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented"
+      },
+      "code": {
+        "module": "linux_fdpass",
+        "headers": [
+          "sys/socket.h",
+          "sys/uio.h"
+        ],
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "sendmsg",
+                "safe": false
+              },
+              {
+                "name": "recvmsg",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "abi::sendmsg",
+            "arguments": [
+              "descriptor",
+              "pointer",
+              "flags"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::recvmsg",
+            "arguments": [
+              "descriptor",
+              "pointer",
+              "flags"
+            ]
+          },
+          {
+            "kind": "adopt",
+            "operation": "OwnedFd::from_raw_fd",
+            "arguments": [
+              "descriptor"
+            ]
+          }
+        ],
+        "impls": 0
       }
     },
     {

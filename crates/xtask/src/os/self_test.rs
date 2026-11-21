@@ -187,12 +187,12 @@ const CASES: &[Case] = &[
     Case {
         name: "code for a row that is only approved",
         edits: &[add(
-            "src/linux_peercred.rs",
-            "#[expect(unsafe_code, reason = \"linux-peercred\")]\n\
-             unsafe extern \"C\" { fn getsockopt(fd: c_int) -> c_int; }\n",
+            "src/linux_mount.rs",
+            "#[expect(unsafe_code, reason = \"linux-mount\")]\n\
+             unsafe extern \"C\" { fn mount(source: c_int) -> c_int; }\n",
             LINUX,
         )],
-        expect: &[|found| mismatch(found, "linux-peercred")],
+        expect: &[|found| mismatch(found, "linux-mount")],
     },
     Case {
         name: "an item of an implemented row removed",
@@ -256,6 +256,32 @@ const CASES: &[Case] = &[
             "use super::timespec;\n\n#[cfg(target_arch = \"x86_64\")]\nconst PLANTED: u8 = 0;",
         )],
         expect: &[|found| rule(found, CFG)],
+    },
+    Case {
+        name: "a site in a C library's declaration file",
+        edits: &[replace(
+            "src/linux_fdpass/abi/gnu.rs",
+            "impl cmsghdr {",
+            "fn planted() {\n    #[expect(unsafe_code, reason = \"linux-fdpass\")]\n    \
+             // SAFETY: planted.\n    let () = unsafe { core::hint::unreachable_unchecked() };\n}\n\n\
+             impl cmsghdr {",
+        )],
+        expect: &[
+            |found| rule(found, super::scan::LIBRARY_SITE),
+            // The library file now holds a site, so its own cfg attributes
+            // are refused too, and the glibc build's sites differ.
+            |found| rule(found, CFG),
+            |found| mismatch(found, "linux-fdpass"),
+        ],
+    },
+    Case {
+        name: "a target_env gate in an abi.rs on a module not named for its library",
+        edits: &[replace(
+            "src/linux_fdpass/abi.rs",
+            "#[cfg(target_env = \"musl\")]\nmod musl;",
+            "#[cfg(target_env = \"musl\")]\nmod gnu;",
+        )],
+        expect: &[|found| rule(found, TARGET_ENV)],
     },
     Case {
         name: "target_env outside the crate root's allowlist",

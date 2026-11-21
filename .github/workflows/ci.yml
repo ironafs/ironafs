@@ -123,7 +123,8 @@ jobs:
         # goes to <dir>/core.<pid>, first written by the kernel, then through
         # a pipe to tee, with core_pipe_limit above zero so the kernel waits
         # for the collector. The tests run as root (the id-change and
-        # set-id exec tests need it), through nextest's target runner.
+        # set-id exec tests, and the peer under another uid, need it),
+        # through nextest's target runner.
         timeout-minutes: 10
         run: |
           dir="$RUNNER_TEMP/ironafs-cores"
@@ -132,7 +133,7 @@ jobs:
           ulimit -c unlimited
           export IRONAFS_CORE_DIR="$dir"
           export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="sudo --preserve-env=IRONAFS_CORE_DIR"
-          filter='test(/leaves_no_image|dump_of_an_unprotected|id_change|set_id_exec/)'
+          filter='test(/leaves_no_image|dump_of_an_unprotected|id_change|set_id_exec|another_uid/)'
           for pattern in "$dir/core.%p" "|/usr/bin/tee $dir/core.%p"; do
             sudo sysctl -w kernel.core_pipe_limit=16 "kernel.core_pattern=$pattern"
             cargo nextest run -p ironafs-os --profile ci --retries 0 --no-tests fail --locked --run-ignored only -E "$filter"
@@ -174,7 +175,7 @@ jobs:
       contents: read
     env:
       TARGET: ${{ matrix.target }}
-      SITES: linux-clock linux-random unix-nodump linux-dontdump
+      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -206,6 +207,10 @@ jobs:
           install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
       - name: Run ironafs-os's tests on the target, real system calls included
         run: cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked
+      - name: Lint ironafs-os for the target, its C library's declarations included
+        env:
+          CARGO_BUILD_WARNINGS: deny
+        run: cargo clippy -p ironafs-os --all-targets --target "$TARGET" --locked
       - name: Prove the target's foreign declarations against its C headers
         env:
           CC: ${{ matrix.cc || 'cc' }}
@@ -260,6 +265,9 @@ jobs:
               linux_random::tests::arguments_pass_the_buffer_address_and_length_and_zeros_each_as_a_long \
               unix_nodump::tests::disable_dumps_in_this_process_reads_back_not_dumpable \
               linux_dontdump::tests::secret_buffer_new_advises_its_whole_block_through_the_call \
+              linux_peercred::tests::peer_credentials_of_a_socket_pair_name_this_process \
+              linux_fdpass::tests::a_sent_descriptor_arrives_as_a_new_descriptor_for_the_same_socket \
+              fdpass::tests::accept_hands_out_only_the_valid_case_and_never_leaks_across_the_sweep \
               mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257; do
               grep -q "^test $test \.\.\. ok$" "miri-$target.log"
             done
