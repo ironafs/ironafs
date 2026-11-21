@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::ffi::OsStr;
 
 use super::{
-    BANS, Ban, CONF_DIR, Found, Lint, Violation, build_overrides, config_files, fired_violations,
-    listed, overridden, planted_source, root_config, uncovered, unreadable,
+    BANS, Ban, CONF_DIR, Found, Lint, Snapshot, Violation, build_overrides, cargo_warnings,
+    changed, config_files, fired_violations, line_breaks, listed, overridden, plain_terminal,
+    planted_source, root_config, uncovered, unreadable,
 };
 
 /// Clippy's short-format warning for `ban` fired on line `line`, spelt
@@ -414,11 +415,23 @@ fn executed(package: &str, env: &str) -> String {
     )
 }
 
+/// Cargo's last message after a build that succeeded.
+const FINISHED: &str = "{\"reason\":\"build-finished\",\"success\":true}\n";
+
+/// A compiler-artifact message for `package`'s build script.
+fn script_built(package: &str) -> String {
+    format!(
+        "{{\"reason\":\"compiler-artifact\",\"package_id\":\"{package}\",\
+         \"target\":{{\"kind\":[\"custom-build\"],\"name\":\"build-script-build\"}},\
+         \"fresh\":true}}"
+    )
+}
+
 #[test]
 fn build_overrides_reports_a_variable_clippy_reads() {
     for name in ["CLIPPY_CONF_DIR", "CLIPPY_ARGS", "CARGO_MANIFEST_DIR"] {
         let messages = format!(
-            "{}\n{}\n",
+            "{}\n{}\n{FINISHED}",
             executed("p#0.0.0", "[]"),
             executed(
                 "q#0.0.0",
@@ -437,13 +450,104 @@ fn build_overrides_reports_a_variable_clippy_reads() {
 }
 
 #[test]
+fn build_overrides_reports_a_variable_clippy_reads_in_any_case() {
+    // Windows reads environment names without regard to case.
+    for name in ["clippy_conf_dir", "Clippy_Conf_Dir", "cargo_manifest_dir"] {
+        let messages = format!(
+            "{}\n{FINISHED}",
+            executed("q#0.0.0", &format!("[[\"{name}\",\"/x\"]]"))
+        );
+        assert_eq!(
+            build_overrides(&messages),
+            [Violation::BuildOverride {
+                package: "q#0.0.0".to_owned(),
+                name: name.to_owned()
+            }],
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn build_overrides_ignores_other_variables_and_messages() {
     let messages = format!(
-        "{}\n{{\"reason\":\"compiler-artifact\",\"env\":[[\"CLIPPY_ARGS\",\"x\"]]}}\n\
-         not json\n",
+        "{}\n{}\n{{\"reason\":\"compiler-artifact\",\"target\":{{\"kind\":[\"lib\"]}},\"env\":[[\"CLIPPY_ARGS\",\"x\"]]}}\n\n\
+         {FINISHED}",
+        script_built("p#0.0.0"),
         executed("p#0.0.0", "[[\"OTHER\",\"1\"]]")
     );
     assert_eq!(build_overrides(&messages), []);
+}
+
+#[test]
+fn build_overrides_refuses_a_report_it_cannot_read_whole() {
+    for (case, messages) in [
+        (
+            "no env",
+            "{\"reason\":\"build-script-executed\",\"package_id\":\"q#0.0.0\"}\n".to_owned(),
+        ),
+        ("env not an array", executed("q#0.0.0", "{}")),
+        (
+            "a pair not an array",
+            executed("q#0.0.0", "[\"CLIPPY_ARGS\"]"),
+        ),
+        ("a pair of one", executed("q#0.0.0", "[[\"CLIPPY_ARGS\"]]")),
+        (
+            "a pair of three",
+            executed("q#0.0.0", "[[\"A\",\"1\",\"2\"]]"),
+        ),
+        ("a name not a string", executed("q#0.0.0", "[[1,\"x\"]]")),
+        ("a value not a string", executed("q#0.0.0", "[[\"A\",1]]")),
+        (
+            "no package",
+            "{\"reason\":\"build-script-executed\",\"env\":[]}\n".to_owned(),
+        ),
+        ("a line that is not json", "not json".to_owned()),
+    ] {
+        let messages = format!("{messages}\n{FINISHED}");
+        let found = build_overrides(&messages);
+        assert!(
+            matches!(found.as_slice(), [Violation::Unbuilt(_)]),
+            "{case}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn build_overrides_needs_cargo_to_say_the_build_finished() {
+    for (case, end) in [
+        ("no record", ""),
+        (
+            "a failed build",
+            "{\"reason\":\"build-finished\",\"success\":false}\n",
+        ),
+        (
+            "success not a bool",
+            "{\"reason\":\"build-finished\",\"success\":\"true\"}\n",
+        ),
+    ] {
+        let messages = format!("{}\n{end}", executed("p#0.0.0", "[]"));
+        let found = build_overrides(&messages);
+        assert!(
+            matches!(found.as_slice(), [Violation::Unbuilt(_)]),
+            "{case}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn build_overrides_needs_a_report_from_every_build_script_built() {
+    let messages = format!(
+        "{}\n{}\n{}\n{FINISHED}",
+        script_built("p#0.0.0"),
+        script_built("q#0.0.0"),
+        executed("p#0.0.0", "[]")
+    );
+    let found = build_overrides(&messages);
+    assert!(
+        matches!(found.as_slice(), [Violation::Unbuilt(error)] if error.contains("q#0.0.0")),
+        "{found:?}"
+    );
 }
 
 #[test]
@@ -476,13 +580,278 @@ fn read_and_build_violations_say_what_failed() {
 
 #[test]
 fn build_overrides_refuses_a_build_script_message_it_cannot_parse() {
-    let messages = "{\"reason\":\"build-script-executed\",\"env\":[[\"CLIPPY_ARGS\"\n";
+    let messages =
+        format!("{{\"reason\":\"build-script-executed\",\"env\":[[\"CLIPPY_ARGS\"\n{FINISHED}");
     assert!(
         matches!(
-            build_overrides(messages).as_slice(),
+            build_overrides(&messages).as_slice(),
             [Violation::Unbuilt(_)]
         ),
         "{:?}",
-        build_overrides(messages)
+        build_overrides(&messages)
+    );
+}
+
+#[test]
+fn unreadable_reports_a_ban_key_spelt_another_way() {
+    // TOML decodes each of these keys to a ban key clippy reads.
+    for text in [
+        "\"disallowed\\u002dmethods\" = [\n]\n",
+        "\"disallowed\\U0000002Dtypes\" = [\n]\n",
+        "\"disallowed\\u005fmethods\" = [\n]\n",
+        "[[\"disallowed\\u002dtypes\"]]\npath = \"a::B\"\n",
+        "'disallowed-methods' = [\n]\n",
+        "disallowed-method = [\n]\n",
+    ] {
+        let found = unreadable(text);
+        assert!(
+            matches!(found.as_slice(), [Violation::Unreadable { line: 1, .. }]),
+            "{text:?}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn unreadable_reports_a_quoted_key_it_cannot_decode() {
+    for text in ["\"a\\q\" = 1\n", "\"a\\u00\" = 1\n", "\"a = 1\n"] {
+        let found = unreadable(text);
+        assert!(
+            matches!(found.as_slice(), [Violation::Unreadable { line: 1, .. }]),
+            "{text:?}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn unreadable_accepts_other_quoted_keys() {
+    assert_eq!(
+        unreadable("\"doc\\u002dvalid-idents\" = [\"a\"]\n'x' = 1\n"),
+        []
+    );
+}
+
+#[test]
+fn unreadable_reports_an_entry_line_holding_more_than_one_ban() {
+    for text in [
+        "disallowed-methods = [\n  { path = \"a::b\" }, { \"path\" = \"c::d\" },\n]\n",
+        "disallowed-methods = [\n  { path = \"a::b\", reason = \"r\" }, { 'path' = \"c::d\" },\n]\n",
+        "disallowed-methods = [\n  { path = \"a\\u003a:b\", reason = \"r\" },\n]\n",
+        "disallowed-methods = [\n  { path = \"a::b\", reason = \"r\\\" }, {\" },\n]\n",
+    ] {
+        let found = unreadable(text);
+        assert!(
+            matches!(found.as_slice(), [Violation::Unreadable { line: 2, .. }]),
+            "{text:?}: {found:?}"
+        );
+    }
+}
+
+/// A snapshot holding each of `files` with its text.
+fn snapshot(files: &[(&str, &str)]) -> Snapshot {
+    files
+        .iter()
+        .map(|(file, text)| (PathBuf::from(file), text.as_bytes().to_vec()))
+        .collect()
+}
+
+/// A configuration `changed` names for `file`.
+fn changed_file(file: &str) -> Found {
+    Found {
+        file: file.to_owned(),
+        violation: Violation::Changed,
+    }
+}
+
+#[test]
+fn changed_accepts_the_same_configurations() {
+    let files = snapshot(&[("clippy.toml", "a"), ("crates/b/clippy.toml", "b")]);
+    assert_eq!(changed(&files, &files.clone()), []);
+}
+
+#[test]
+fn changed_reports_a_configuration_rewritten_added_or_removed() {
+    let before = snapshot(&[("clippy.toml", "a"), ("crates/b/clippy.toml", "b")]);
+    for (after, file) in [
+        (
+            snapshot(&[("clippy.toml", "a "), ("crates/b/clippy.toml", "b")]),
+            "clippy.toml",
+        ),
+        (
+            snapshot(&[
+                ("clippy.toml", "a"),
+                ("crates/b/clippy.toml", "b"),
+                ("crates/c/.clippy.toml", "a"),
+            ]),
+            "crates/c/.clippy.toml",
+        ),
+        (snapshot(&[("clippy.toml", "a")]), "crates/b/clippy.toml"),
+    ] {
+        assert_eq!(changed(&before, &after), [changed_file(file)], "{file}");
+    }
+}
+
+#[test]
+fn changed_violation_says_what_failed() {
+    assert_eq!(
+        changed_file("crates/b/clippy.toml").to_string(),
+        "crates/b/clippy.toml: added, removed or rewritten while the workspace was built, so \
+         clippy may have linted with a configuration this check did not prove: a build script \
+         writes it; remove that"
+    );
+}
+
+#[test]
+fn build_overrides_refuses_a_message_with_no_reason_it_knows() {
+    for line in [
+        "{\"reason\":\"something-new\"}",
+        "{\"no\":\"reason\"}",
+        "{\"reason\":1}",
+        "[]",
+    ] {
+        let found = build_overrides(&format!("{line}\n{FINISHED}"));
+        assert!(
+            matches!(found.as_slice(), [Violation::Unbuilt(_)]),
+            "{line}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn build_overrides_needs_build_finished_last() {
+    let messages = format!("{FINISHED}{}\n", executed("p#0.0.0", "[]"));
+    let found = build_overrides(&messages);
+    assert!(
+        matches!(found.as_slice(), [Violation::Unbuilt(_)]),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn build_overrides_needs_a_report_for_each_build_script_unit() {
+    let messages = format!(
+        "{}\n{}\n{}\n{FINISHED}",
+        script_built("p#0.0.0"),
+        script_built("p#0.0.0"),
+        executed("p#0.0.0", "[]")
+    );
+    let found = build_overrides(&messages);
+    assert!(
+        matches!(found.as_slice(), [Violation::Unbuilt(_)]),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn build_overrides_refuses_an_artifact_with_no_target_kinds() {
+    for artifact in [
+        "{\"reason\":\"compiler-artifact\",\"package_id\":\"p#0.0.0\"}",
+        "{\"reason\":\"compiler-artifact\",\"package_id\":\"p#0.0.0\",\"target\":{\"kind\":\"custom-build\"}}",
+        "{\"reason\":\"compiler-artifact\",\"package_id\":\"p#0.0.0\",\"target\":{\"kind\":[1]}}",
+    ] {
+        let found = build_overrides(&format!("{artifact}\n{FINISHED}"));
+        assert!(
+            matches!(found.as_slice(), [Violation::Unbuilt(_)]),
+            "{artifact}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn uncovered_reads_past_a_byte_order_mark() {
+    // TOML skips a leading byte order mark, and so does clippy.
+    let text = "\u{feff}\"disallowed\\u002dmethods\" = [\n  { path = \"std::thread::sleep\", reason = \"r\" },\n]\n";
+    assert!(
+        matches!(
+            unreadable(text).as_slice(),
+            [Violation::Unreadable { line: 1, .. }]
+        ),
+        "{:?}",
+        unreadable(text)
+    );
+    let text =
+        "\u{feff}disallowed-methods = [\n  { path = \"std::thread::sleep\", reason = \"r\" },\n]\n";
+    assert_eq!(unreadable(text), []);
+    assert_eq!(
+        uncovered(text),
+        [Violation::Uncovered {
+            lint: Lint::Method,
+            path: "std::thread::sleep".to_owned()
+        }]
+    );
+}
+
+#[test]
+fn cargo_warnings_refuses_each_warning_cargo_prints() {
+    for line in [
+        "warning: unused manifest key: package.bogus",
+        "warning: planted@0.0.0: planted",
+        "error: something cargo said",
+        "warning[E0001]: a coded warning",
+    ] {
+        let stderr = format!(
+            "    Checking planted v0.0.0 (/w/planted)\n{line}\n    Finished `dev` profile in 0.2s\n"
+        );
+        assert_eq!(
+            cargo_warnings(&stderr),
+            [Violation::Lint(line.to_owned())],
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn cargo_warnings_accepts_cargo_progress() {
+    let stderr = "   Compiling planted v0.0.0 (/w/warning)\n    Checking x v0.0.0\n    \
+                  Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.26s\n";
+    assert_eq!(cargo_warnings(stderr), []);
+}
+
+#[test]
+fn cargo_warnings_reads_a_warning_after_a_progress_bar() {
+    let stderr = "    Building [=====>   ] 3/9: planted\rwarning: planted@0.0.0: x\n";
+    assert_eq!(
+        cargo_warnings(stderr),
+        [Violation::Lint("warning: planted@0.0.0: x".to_owned())]
+    );
+}
+
+#[test]
+fn plain_terminal_sets_every_terminal_setting_over_the_caller() {
+    let mut command = crate::Command::new("cargo");
+    command
+        .env("CARGO_TERM_QUIET", "true")
+        .env("CARGO_TERM_PROGRESS_WHEN", "always");
+    plain_terminal(&mut command);
+    let set = |name: &str| {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+    };
+    for (name, value) in [
+        ("CARGO_TERM_QUIET", "false"),
+        ("CARGO_TERM_VERBOSE", "false"),
+        ("CARGO_TERM_PROGRESS_WHEN", "never"),
+        ("CARGO_TERM_COLOR", "never"),
+    ] {
+        assert_eq!(set(name).as_deref(), Some(value), "{name}");
+    }
+}
+
+#[test]
+fn line_breaks_refuses_a_path_holding_one() {
+    let paths = [
+        Path::new("/w/ok"),
+        Path::new("/w/a\nwarning: x"),
+        Path::new("/w/b\rc"),
+    ];
+    let found = line_breaks(&paths);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+        found
+            .iter()
+            .all(|violation| matches!(violation, Violation::Unbuilt(_))),
+        "{found:?}"
     );
 }

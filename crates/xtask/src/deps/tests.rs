@@ -114,6 +114,8 @@ fn crate_table_names_every_crate_of_the_architecture_once() {
         "xtask",
         "ironafs-sim",
         "ironafs-test-support",
+        // check-bans' canary, outside the architecture's list.
+        "ironafs-bans-canary",
     ];
     expected.sort_unstable();
     assert_eq!(names, expected);

@@ -7,7 +7,7 @@ use std::io;
 
 use std::ffi::OsStr;
 
-use super::{check_reuse_result, clippy, lists_deny, report_skipped};
+use super::{check_reuse_result, lists_deny, report_skipped};
 use crate::Error;
 
 #[test]
@@ -56,7 +56,7 @@ fn check_detects_deny_as_an_exact_cargo_command() {
 #[test]
 fn check_lints_without_a_clippy_configuration_override() {
     // The variable would replace the configuration check-bans proves.
-    let command = clippy();
+    let command = crate::bans::workspace_clippy();
     let removed = command
         .get_envs()
         .any(|(name, value)| name == OsStr::new(crate::bans::CONF_DIR) && value.is_none());
