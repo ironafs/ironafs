@@ -149,8 +149,9 @@ every filesystem operation into a hand-written continuation.
 ### C4. Crates and their dependency rules
 
 **Working.** Revisit if: a boundary below forces a dependency that point 4
-forbids, or the first implementation of a crate shows it has no content of
-its own.
+forbids, the first implementation of a crate shows it has no content of
+its own, or no log sink outside Linux still needs a site in `ironafs-os`
+(then the safe log transport could live in a crate without `unsafe`).
 
 1. **Pure crates** have no I/O and no `unsafe`, and are fuzzed where they
    decode:
@@ -184,7 +185,7 @@ its own.
    | `ironafs-smb` | the SMB 3.1.1 front end, a separate process (L18, L19) |
    | `ironafs-cloudfiles` | the Windows replica, later and optional (L27) |
    | `ironafs-gss` | Kerberos and GSS through each system's own library |
-   | `ironafs-os` | small operating-system bindings (C5) |
+   | `ironafs-os` | small operating-system bindings (C5), and the safe transport that carries encoded events to the operating system's log sinks (O8) |
    | `ironafsd`, `ironafs-cli` (the `afs` binary), `xtask` | the binaries and the repository's automation, including the generators for `ironafs-proto`, `ironafs-ipc` and `ironafs-events` |
 
 4. **Rules the dependency graph keeps:**
@@ -215,8 +216,9 @@ Cargo and rustc `[LAY-045]`.
 ### C5. The cryptography boundary and the operating-system bindings
 
 **Working.** Revisit if: a mainstream crate offers rxkad's cipher, a FIPS
-mode is scheduled (O31), or an operating system ships a safe interface
-that removes a site from the `ironafs-os` list.
+mode is scheduled (O31), an operating system ships a safe interface
+that removes a site from the `ironafs-os` list, or the `ironafs-os`
+ADR's closed list adds a kind of call this point does not name.
 
 1. `ironafs-crypto` is an interface in the pure layer. Protocol crates
    call only it. Implementations are supplied when the client is composed:
@@ -235,14 +237,27 @@ that removes a site from the `ironafs-os` list.
    output as inputs when the client is composed. The exact interface is
    part of the rxgk profile record (N25).
 4. Kerberos and GSS come from each system's own library (`ironafs-gss`).
-5. `ironafs-os` holds the few calls that have no safe route: the clock
-   pairs of C37, peer credentials (C43), the service controls, the log
-   calls of O8, the dump controls of O26 and, on Windows, the query of the
-   operating system's FIPS algorithm mode (O31, point 4). It needs
-   `unsafe`, so it gets its own ADR with a closed list of named sites and
-   safe interfaces on top, before any of it is written. Since Rust 1.82 a foreign declaration can be marked safe
-   to call, with the proof left to whoever writes the declaration
-   `[DES-018]`; that ADR states the proof for each.
+5. `ironafs-os` holds the few calls that have no safe route: the
+   clock pairs of C37; the cryptographic random source of point 1,
+   from the operating system; the resolver calls of C33, point 2, on
+   macOS and Windows; peer credentials (C43) and, on Windows, the
+   control endpoint's named pipe: its creation, its I/O and its
+   caller's token (C45, point 1), and, in the sender, the pipe
+   server's process token checked against the daemon's service
+   identity (C43, points 1, 2 and 4); the Linux mount call and the FUSE
+   descriptor hand-off (L7, point 1); on Linux, the IPv6-only socket
+   of the callback service (C34, point 2), the free-space query of
+   C27, point 3, and network-change notification (C23, point 2); the
+   service controls; the log calls of O8, with a safe module that
+   carries encoded messages to the operating system's log sinks; the
+   dump controls of O25 and O26; the volatile wipe that zeroes key
+   material and token buffers (O28, point 2); and, on Windows,
+   the query of the operating system's FIPS algorithm mode (O31,
+   point 4). It needs `unsafe`, so it gets its own ADR with a closed
+   list of named sites and safe interfaces on top, before any of it
+   is written. Since Rust 1.82 a foreign declaration can be marked
+   safe to call, with the proof left to whoever writes the
+   declaration `[DES-018]`; that ADR states the proof for each.
 
 Why: the constraint on dependencies allows crates for mainstream
 cryptography only, and rxkad's cipher is not mainstream. An interface
