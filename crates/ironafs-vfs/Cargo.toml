@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# A pure crate (ADR 0004, C4, point 1): no I/O, no unsafe, no features, no
+# build script. Every value a layer hands it is untrusted input.
+[package]
+name = "ironafs-vfs"
+description = "IronAFS's contract between the core and the operating-system layers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
