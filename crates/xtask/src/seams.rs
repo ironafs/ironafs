@@ -10,18 +10,24 @@
 //!   crate's library source, a seam trait's name (`Clock`, `Rng`, `Rpc`,
 //!   `Disk`) appears only where its home crate defines it (`trait Name`),
 //!   where its home crate's library root re-exports it (`pub use`), and as
-//!   an enum variant: declared in an `enum` body, or reached through an
-//!   enum that declares it (in the same crate or a seam's home crate), or
-//!   through `Self::` in a file that declares it. A `use` or `extern crate`
-//!   item that names a seam's home crate and renames (`as`) or globs (`*`)
-//!   is refused, since it could bring a seam in under another name; and a
-//!   seam trait's body provides no method.
+//!   an enum variant the path resolves to: declared in an `enum` body;
+//!   `Owner::Name` where `Owner` is an enum of this crate that declares it
+//!   (alone, or after `crate`, `self`, `super` or a module), or a home
+//!   crate's enum that declares it, reached as `home_crate::Owner` or
+//!   imported by name with `use home_crate::...::Owner`; or `Self::Name` in
+//!   a file that declares it. Anything else, a `::`-rooted path included,
+//!   is refused, not exempt. So that a home crate's name always means the
+//!   crate: a `use` or `extern crate` item naming a home crate with `as` or
+//!   `*` is refused, an item named like a home crate is refused, and a pure
+//!   crate's manifest may not rename a dependency (`package = ...`). A seam
+//!   trait's body provides no method.
 //! - **`deadline_built_from_a_fresh_sample`.** Every source of every crate
 //!   builds a `Deadline` only inside its one named sampling function; in
 //!   `ironafs-time` the constructors' names appear only where they are
 //!   defined. Inside the sampling function: one fresh sample, bound by
 //!   `let now = clock.sample().map_err(DeadlineError::Clock)?;` from a
-//!   parameter; each constructor called directly, after that binding, as
+//!   parameter whose type names `Clock`; each constructor called
+//!   directly, after that binding, as
 //!   `Deadline::boot_after(&now, from, ...)`, with `from` the function's
 //!   own parameter; and the two names appear nowhere else in the body (no
 //!   parameter, pattern, shadowing, use or assignment of either). The
@@ -32,9 +38,9 @@
 //!   module, `impl` or trait of a crate that names a constructor, and on no
 //!   other function that does.
 //!
-//! Both checks refuse a `#[path]` attribute anywhere, so every module's
-//! file is where the walk reads it and none passes as test code under
-//! another name. `#[cfg(test)]` items, test modules their parent gates
+//! Both checks refuse a `#[path]` attribute and an `include!` anywhere,
+//! so every compiled file is where the walk reads it, as what it is, and
+//! none passes as test code under another name. `#[cfg(test)]` items, test modules their parent gates
 //! (coding standards rule 15) and `tests/` directories are left out. Both
 //! checks read source as written and expand no macro; the second trusts
 //! that only the ingress writes a request's `arrival` and only the call
@@ -44,7 +50,7 @@
 
 mod self_test;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -115,6 +121,14 @@ pub(crate) enum Violation {
     /// A renamed or glob import of a seam's home crate in a pure crate,
     /// which could bring a seam in under another name.
     HomeImport { file: PathBuf, line: usize },
+    /// An item in a pure crate named like a seam's home crate, which a
+    /// path could take for the crate.
+    HomeShadow { file: PathBuf, line: usize },
+    /// A pure crate's manifest renames a dependency (`package = ...`), so a
+    /// crate could be named in source by any name.
+    RenamedDependency { file: PathBuf, line: usize },
+    /// An `include!` of source from another file.
+    IncludeMacro { file: PathBuf, line: usize },
     /// A seam trait that provides a method.
     ProvidedMethod {
         file: PathBuf,
@@ -198,6 +212,27 @@ impl fmt::Display for Violation {
                 formatter.write_str(
                     "a pure crate renames or glob-imports a seam's home crate, which could name \
                      a seam out of this check's sight",
+                )
+            }
+            Self::HomeShadow { file, line } => {
+                at(formatter, file, line)?;
+                formatter.write_str(
+                    "a pure crate declares an item named like a seam's home crate, which a path \
+                     could take for the crate",
+                )
+            }
+            Self::RenamedDependency { file, line } => {
+                at(formatter, file, line)?;
+                formatter.write_str(
+                    "a pure crate's manifest renames a dependency, so source could name a crate \
+                     by any name",
+                )
+            }
+            Self::IncludeMacro { file, line } => {
+                at(formatter, file, line)?;
+                formatter.write_str(
+                    "an `include!` brings in source from a file the walk does not read as what \
+                     it is",
                 )
             }
             Self::ProvidedMethod { file, line, name } => {
@@ -322,6 +357,39 @@ pub(crate) fn source_file(
     })
 }
 
+/// Each line of a pure crate's manifest that renames a dependency: a
+/// `package` key, inline or in a dependency table, but not the
+/// `[package]` header.
+pub(crate) fn renamed_dependencies(path: &Path, manifest: &str) -> Vec<Violation> {
+    manifest
+        .lines()
+        .enumerate()
+        .filter(|(_, text)| {
+            let code = text.split('#').next().unwrap_or("");
+            let mut rest = code;
+            // A `package` key: the word, then `=` after optional spaces,
+            // at a line's start or after `{` or `,` in an inline table.
+            while let Some(at) = rest.find("package") {
+                let (head, tail) = rest.split_at(at);
+                let before = head.trim_end();
+                let tail = tail.get("package".len()..).unwrap_or("");
+                let after = tail.trim_start();
+                if (before.is_empty() || before.ends_with('{') || before.ends_with(','))
+                    && after.starts_with('=')
+                {
+                    return true;
+                }
+                rest = tail;
+            }
+            false
+        })
+        .map(|(index, _)| Violation::RenamedDependency {
+            file: path.to_path_buf(),
+            line: index + 1,
+        })
+        .collect()
+}
+
 /// Runs both checks over `files`, with `sampling` as the sampling
 /// functions.
 pub(crate) fn check(files: &[SourceFile], sampling: &[Sampling]) -> Vec<Violation> {
@@ -344,18 +412,36 @@ pub(crate) fn check(files: &[SourceFile], sampling: &[Sampling]) -> Vec<Violatio
                     });
                 }
             }
+            if is_ident(&file.tokens, index, "include") && is_punct(&file.tokens, index + 1, '!') {
+                violations.push(Violation::IncludeMacro {
+                    file: file.path.clone(),
+                    line: line(&file.tokens, index),
+                });
+            }
         }
     }
+    // The variants each seam's home crate declares, by the name source
+    // gives that crate.
+    let home_variants: BTreeMap<String, BTreeSet<(String, String)>> = SEAMS
+        .iter()
+        .map(|(_, home)| {
+            let declared = files
+                .iter()
+                .filter(|file| file.krate == *home)
+                .flat_map(|file| declared_variants(&file.tokens))
+                .map(|(enumeration, variant, _)| (enumeration, variant))
+                .collect();
+            (home.replace('-', "_"), declared)
+        })
+        .collect();
     for file in files.iter().filter(|file| file.pure) {
-        let variants: BTreeSet<(String, String)> = files
+        let local: BTreeSet<(String, String)> = files
             .iter()
-            .filter(|other| {
-                other.krate == file.krate || SEAMS.iter().any(|(_, home)| *home == other.krate)
-            })
+            .filter(|other| other.krate == file.krate)
             .flat_map(|other| declared_variants(&other.tokens))
             .map(|(enumeration, variant, _)| (enumeration, variant))
             .collect();
-        pure_crate_calls_no_seam(file, &variants, &mut violations);
+        pure_crate_calls_no_seam(file, &local, &home_variants, &mut violations);
     }
     deadline_built_from_a_fresh_sample(files, sampling, &mut violations);
     violations
@@ -504,9 +590,97 @@ fn home_crate_idents() -> impl Iterator<Item = String> {
     SEAMS.iter().map(|(_, home)| home.replace('-', "_"))
 }
 
+/// Keywords that can stand before a `::`-rooted path, so are never one of
+/// its segments.
+const KEYWORDS: &[&str] = &[
+    "as", "async", "await", "box", "break", "const", "continue", "dyn", "else", "enum", "extern",
+    "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+    "return", "static", "struct", "trait", "type", "union", "unsafe", "use", "where", "while",
+];
+
+/// Item keywords whose name a path could take for a crate's.
+const NAMING: &[&str] = &[
+    "mod", "enum", "struct", "union", "type", "trait", "fn", "const", "static",
+];
+
+/// The names a file imports from a seam's home crate by `use` (no `as`,
+/// no glob: those are refused), each with that crate's source name.
+fn home_imports(tokens: &[Token], homes: &[String]) -> BTreeMap<String, String> {
+    let mut imports = BTreeMap::new();
+    for index in 0..tokens.len() {
+        if !is_ident(tokens, index, "use") {
+            continue;
+        }
+        let start = if matches!(kind(tokens, index + 1), Some(TokenKind::PathSep)) {
+            index + 2
+        } else {
+            index + 1
+        };
+        let Some(home) = ident(tokens.get(start)).filter(|word| homes.iter().any(|h| h == word))
+        else {
+            continue;
+        };
+        let end = item_end(tokens, index);
+        for at in start + 1..end {
+            if let Some(name) = ident(tokens.get(at))
+                && matches!(punct(tokens.get(at + 1)), Some(',' | '}' | ';'))
+            {
+                imports.insert(name.to_owned(), home.to_owned());
+            }
+        }
+    }
+    imports
+}
+
+/// Whether the seam name at `index` resolves to an enum variant, not the
+/// seam: `Owner::Name` where `Owner` is an enum that declares `Name` and
+/// the path reaches it, through a seam's home crate by its own name, or
+/// through this crate (a path from `crate`, `self`, `super` or a module,
+/// or `Owner` alone where it is declared in this crate or imported from a
+/// home crate). A `::`-rooted path whose first segment is the owner names a
+/// crate, and anything else unresolvable is refused, not exempt.
+fn resolves_to_variant(
+    tokens: &[Token],
+    index: usize,
+    name: &str,
+    local: &BTreeSet<(String, String)>,
+    home_variants: &BTreeMap<String, BTreeSet<(String, String)>>,
+    imports: &BTreeMap<String, String>,
+    file_declares: &[(String, String, usize)],
+) -> bool {
+    let Some(owner) = variant_path_owner(tokens, index) else {
+        return false;
+    };
+    let pair = (owner.to_owned(), name.to_owned());
+    if owner == "Self" {
+        return file_declares.iter().any(|(_, variant, _)| variant == name);
+    }
+    if index >= 3 && matches!(kind(tokens, index - 3), Some(TokenKind::PathSep)) {
+        let segment = index
+            .checked_sub(4)
+            .and_then(|at| ident(tokens.get(at)))
+            .filter(|word| !KEYWORDS.contains(word));
+        return match segment {
+            Some(segment) if home_variants.contains_key(segment) => home_variants
+                .get(segment)
+                .is_some_and(|declared| declared.contains(&pair)),
+            Some(_) => local.contains(&pair),
+            // `::Owner::Name`: the owner is a crate.
+            None => false,
+        };
+    }
+    local.contains(&pair)
+        || imports.get(owner).is_some_and(|home| {
+            home_variants
+                .get(home)
+                .is_some_and(|declared| declared.contains(&pair))
+        })
+}
+
 fn pure_crate_calls_no_seam(
     file: &SourceFile,
-    variants: &BTreeSet<(String, String)>,
+    local: &BTreeSet<(String, String)>,
+    home_variants: &BTreeMap<String, BTreeSet<(String, String)>>,
     violations: &mut Vec<Violation>,
 ) {
     let tokens = &file.tokens;
@@ -530,6 +704,18 @@ fn pure_crate_calls_no_seam(
             });
         }
     }
+    // An item named like a home crate, which a path could take for it.
+    for index in 1..tokens.len() {
+        if ident(tokens.get(index)).is_some_and(|word| homes.iter().any(|home| home == word))
+            && ident(tokens.get(index - 1)).is_some_and(|word| NAMING.contains(&word))
+        {
+            violations.push(Violation::HomeShadow {
+                file: file.path.clone(),
+                line: line(tokens, index),
+            });
+        }
+    }
+    let imports = home_imports(tokens, &homes);
     // The token ranges of `pub use ... ;` items of a home crate's root.
     let mut reexport = vec![false; tokens.len()];
     if file.lib_root {
@@ -556,13 +742,15 @@ fn pure_crate_calls_no_seam(
         // through an enum that declares it (in this crate or a seam's home
         // crate), or `Self::` in a file that declares it.
         let declaration = declared.iter().any(|(_, _, at)| *at == index);
-        let through_enum = variant_path_owner(tokens, index).is_some_and(|owner| {
-            if owner == "Self" {
-                declared.iter().any(|(_, variant, _)| variant == name)
-            } else {
-                variants.contains(&(owner.to_owned(), name.to_owned()))
-            }
-        });
+        let through_enum = resolves_to_variant(
+            tokens,
+            index,
+            name,
+            local,
+            home_variants,
+            &imports,
+            &declared,
+        );
         if declaration || through_enum {
             continue;
         }
@@ -741,7 +929,7 @@ fn parameter_name(tokens: &[Token], (start, end): (usize, usize)) -> Option<&str
 
 /// The binding of the one fresh sample, as `(name, index of let)`:
 /// `let NAME = PARAM . sample ( ) . map_err ( DeadlineError :: Clock ) ? ;`
-/// with PARAM one of `params`.
+/// with PARAM one of `params`, the parameters whose type names `Clock`.
 fn fresh_bindings<'a>(
     tokens: &'a [Token],
     body: (usize, usize),
@@ -924,7 +1112,19 @@ fn deadline_built_from_a_fresh_sample(
                         line: line(&file.tokens, found.params.0),
                     });
                 }
-                check_sampling_body(file, &found, &names, violations);
+                // The parameters whose type names `Clock`: the only
+                // receivers of the fresh sample.
+                let clocks: Vec<&str> = params
+                    .iter()
+                    .filter(|(start, end)| {
+                        let colon = (*start..*end).find(|at| is_punct(&file.tokens, *at, ':'));
+                        colon.is_some_and(|colon| {
+                            (colon..*end).any(|at| is_ident(&file.tokens, at, "Clock"))
+                        })
+                    })
+                    .filter_map(|range| parameter_name(&file.tokens, *range))
+                    .collect();
+                check_sampling_body(file, &found, &names, &clocks, violations);
             }
         }
         if count > 1 {
@@ -1067,6 +1267,7 @@ fn check_sampling_body(
     file: &SourceFile,
     found: &Found,
     params: &[&str],
+    clocks: &[&str],
     violations: &mut Vec<Violation>,
 ) {
     let tokens = &file.tokens;
@@ -1091,7 +1292,7 @@ fn check_sampling_body(
             });
         }
     }
-    let bindings = fresh_bindings(tokens, found.body, params);
+    let bindings = fresh_bindings(tokens, found.body, clocks);
     let now = if let [(name, _)] = bindings.as_slice() {
         Some(*name)
     } else {
@@ -1263,6 +1464,15 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     }
     let workspace = metadata::load(None, &[])?;
     let (files, mut violations) = workspace_files(&workspace)?;
+    for member in &workspace.members {
+        if deps::kind_of(&member.name) == Some(Kind::Pure) {
+            let manifest = member.dir.join("Cargo.toml");
+            let text = std::fs::read_to_string(&manifest)
+                .map_err(Error::path_io("read manifest", &manifest))?;
+            let shown = manifest.strip_prefix(&workspace.root).unwrap_or(&manifest);
+            violations.extend(renamed_dependencies(shown, &text));
+        }
+    }
     violations.extend(check(&files, SAMPLING));
     if !violations.is_empty() {
         return Err(Error::Rules {

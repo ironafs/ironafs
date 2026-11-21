@@ -4,7 +4,9 @@
 //! Tests for the seam checks on sources held in memory, and for the
 //! self-test's planted cases.
 
-use super::{Sampling, SourceFile, Violation, check, self_test, source_file};
+use std::path::Path;
+
+use super::{Sampling, SourceFile, Violation, check, renamed_dependencies, self_test, source_file};
 
 const SAMPLING: &[Sampling] = &[Sampling {
     krate: "core-crate",
@@ -295,6 +297,137 @@ fn seams_check_refuses_a_path_attribute() {
     let found = check(&[core_file(&source)], SAMPLING);
     assert!(
         matches!(found.as_slice(), [Violation::PathAttribute { .. }]),
+        "{found:?}"
+    );
+}
+
+fn time_error_enum() -> SourceFile {
+    pure_file(
+        "ironafs-time",
+        "src/wait.rs",
+        "pub enum DeadlineError { Clock(u8), Overflow }\n",
+    )
+}
+
+#[test]
+fn pure_check_refuses_a_rooted_path_through_an_enum_named_like_a_home_crate() {
+    let files = [pure_file(
+        "ironafs-rx",
+        "src/endpoint.rs",
+        "pub enum ironafs_time { Clock }\npub fn tick(clock: &dyn ::ironafs_time::Clock) {}\n",
+    )];
+    let found = check(&files, SAMPLING);
+    assert!(
+        found.iter().any(|found| matches!(
+            found,
+            Violation::SeamInPure {
+                name: "Clock",
+                line: 2,
+                ..
+            }
+        )),
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|found| matches!(found, Violation::HomeShadow { line: 1, .. })),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn pure_check_refuses_a_home_enum_path_that_is_not_imported() {
+    // The name could be a renamed dependency, not the enum.
+    let files = [
+        time_error_enum(),
+        pure_file(
+            "ironafs-rx",
+            "src/endpoint.rs",
+            "pub fn tick(clock: &dyn DeadlineError::Clock) {}\n",
+        ),
+    ];
+    let found = check(&files, SAMPLING);
+    assert!(
+        matches!(
+            found.as_slice(),
+            [Violation::SeamInPure {
+                name: "Clock",
+                line: 1,
+                ..
+            }]
+        ),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn pure_check_passes_a_home_enum_variant_imported_or_by_full_path() {
+    let files = [
+        time_error_enum(),
+        pure_file(
+            "ironafs-rx",
+            "src/endpoint.rs",
+            "use ironafs_time::{DeadlineError, Stamp};\n\
+             pub fn failed() -> DeadlineError { DeadlineError::Clock(0) }\n\
+             pub fn also() -> ironafs_time::DeadlineError { ironafs_time::DeadlineError::Clock(1) }\n",
+        ),
+    ];
+    assert_eq!(check(&files, SAMPLING), []);
+}
+
+#[test]
+fn renamed_dependency_in_a_pure_manifest_is_refused() {
+    let manifest = "[package]\nname = \"ironafs-rx\"\n\n[dependencies]\n\
+                    DeadlineError = { package = \"ironafs-time\", path = \"../ironafs-time\" }\n\
+                    ironafs-time.workspace = true\n\n[dependencies.Other]\npackage = \"ironafs-time\"\n";
+    let found = renamed_dependencies(Path::new("crates/ironafs-rx/Cargo.toml"), manifest);
+    assert!(
+        matches!(
+            found.as_slice(),
+            [
+                Violation::RenamedDependency { line: 5, .. },
+                Violation::RenamedDependency { line: 9, .. }
+            ]
+        ),
+        "{found:?}"
+    );
+    assert_eq!(
+        renamed_dependencies(
+            Path::new("Cargo.toml"),
+            "[package]\nname = \"a\" # package = no\n"
+        ),
+        []
+    );
+}
+
+#[test]
+fn seams_check_refuses_an_include_macro() {
+    let source = format!("{CONTROL}\ninclude!(\"../generated.rs\");\n");
+    let found = check(&[core_file(&source)], SAMPLING);
+    assert!(
+        matches!(found.as_slice(), [Violation::IncludeMacro { .. }]),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn deadline_check_refuses_a_sample_from_a_parameter_that_is_not_the_clock() {
+    let source = CONTROL
+        .replace(
+            "pub fn deadline_after(clock: &dyn Clock, from",
+            "pub fn deadline_after(clock: &dyn Clock, fake: &Fake, from",
+        )
+        .replace("let now = clock.sample()", "let now = fake.sample()")
+        .replace(
+            "deadline_after(clock, &request.arrival",
+            "deadline_after(clock, &fake, &request.arrival",
+        );
+    let found = check(&[core_file(&source)], SAMPLING);
+    assert!(
+        found
+            .iter()
+            .any(|found| matches!(found, Violation::NoFreshSample { .. })),
         "{found:?}"
     );
 }

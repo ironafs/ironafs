@@ -12,9 +12,11 @@
 //! by that run itself, which fails if it reads nothing.
 
 use std::io::Write;
+use std::path::Path;
 
-use super::{CHECK, Sampling, SourceFile, Violation, check, source_file};
+use super::{CHECK, Sampling, SourceFile, Violation, check, renamed_dependencies, source_file};
 use crate::Error;
+use crate::rust_source::TokenKind;
 
 /// The sampling function the plants use.
 const SAMPLING: &[Sampling] = &[Sampling {
@@ -99,11 +101,24 @@ fn with_body(body: &str) -> String {
     )
 }
 
-/// One planted case: its sources and the violation it must give.
+/// One planted case: its sources, the one kind of violation it must give,
+/// and an identifier on the planted line, where that kind has a line: the
+/// violation must be on a line holding it. So a plant cannot pass because
+/// some other rule fired somewhere else.
 struct Case {
     name: &'static str,
     files: fn() -> Vec<SourceFile>,
-    expect: fn(&Violation) -> bool,
+    kind: fn(&Violation) -> bool,
+    at: Option<&'static str>,
+}
+
+/// The time crate's error enum, as a pure crate's plants see it.
+fn time_error_enum() -> Vec<SourceFile> {
+    pure(
+        "ironafs-time",
+        "src/wait.rs",
+        "pub enum DeadlineError { Clock(u8), Overflow }\n",
+    )
 }
 
 const CASES: &[Case] = &[
@@ -111,15 +126,11 @@ const CASES: &[Case] = &[
         name: "a `now` kept from an earlier sample",
         files: || {
             core(&with_body(
-                "ClockKind::Boot => { let kept = now; Deadline::boot_after(&kept, from, d) }",
+                "ClockKind::Boot => Deadline::boot_after(kept, from, d),",
             ))
         },
-        expect: |found| {
-            matches!(
-                found,
-                Violation::NowNotFresh { .. } | Violation::Reassigned { .. }
-            )
-        },
+        kind: |found| matches!(found, Violation::NowNotFresh { .. }),
+        at: Some("kept"),
     },
     Case {
         name: "a `now` passed in, with no fresh sample",
@@ -129,132 +140,56 @@ const CASES: &[Case] = &[
                 "let now = clock.kept();",
             ))
         },
-        expect: |found| {
-            matches!(
-                found,
-                Violation::NoFreshSample { .. } | Violation::NowNotFresh { .. }
+        kind: |found| matches!(found, Violation::NoFreshSample { .. }),
+        at: None,
+    },
+    Case {
+        name: "a fresh sample taken from a parameter that is not the clock",
+        files: || {
+            core(
+                &CONTROL
+                    .replace(
+                        "    kind: ClockKind,\n",
+                        "    kind: ClockKind,\n    fake: &Fake,\n",
+                    )
+                    .replace("let now = clock.sample()", "let now = fake.sample()"),
             )
         },
+        kind: |found| matches!(found, Violation::NoFreshSample { .. }),
+        at: None,
     },
     Case {
         name: "the fresh sample's binding reassigned",
         files: || {
             core(&CONTROL.replace(
                 "let now = clock.sample().map_err(DeadlineError::Clock)?;",
-                "let now = clock.sample().map_err(DeadlineError::Clock)?; now = earlier;",
+                "let now = clock.sample().map_err(DeadlineError::Clock)?;\n    now = earlier;",
             ))
         },
-        expect: |found| matches!(found, Violation::Reassigned { .. }),
+        kind: |found| matches!(found, Violation::Reassigned { .. }),
+        at: Some("earlier"),
     },
     Case {
-        name: "a constructor called outside the sampling function",
+        name: "a parameter that shares the fresh sample's name",
         files: || {
-            core(&format!(
-                "{CONTROL}\npub fn other(now: &Stamp, d: Duration) -> Result<Deadline, DeadlineError> {{\n    Deadline::awake_after(now, now, d)\n}}\n"
+            core(&CONTROL.replace(
+                "    kind: ClockKind,\n",
+                "    kind: ClockKind,\n    now: Stamp,\n",
             ))
         },
-        expect: |found| matches!(found, Violation::Outside { .. }),
+        kind: |found| matches!(found, Violation::Reassigned { .. }),
+        at: None,
     },
     Case {
-        name: "a second function in the same crate with its own allowance",
+        name: "a constructor before the fresh sample is bound",
         files: || {
-            core(&format!(
-                "{CONTROL}\n#[expect(clippy::disallowed_methods, reason = \"a second\")]\npub fn second(clock: &dyn Clock, from: &Stamp, d: Duration) -> Result<Deadline, DeadlineError> {{\n    let now = clock.sample().map_err(DeadlineError::Clock)?;\n    Deadline::boot_after(&now, from, d)\n}}\n"
+            core(&CONTROL.replace(
+                "    let now = clock.sample().map_err(DeadlineError::Clock)?;\n    match kind {\n        ClockKind::Boot => Deadline::boot_after(&now, from, d),",
+                "    let early = Deadline::boot_after(&now, from, d);\n    let now = clock.sample().map_err(DeadlineError::Clock)?;\n    match kind {\n        ClockKind::Boot => early,",
             ))
         },
-        expect: |found| {
-            matches!(
-                found,
-                Violation::Outside { .. }
-                    | Violation::Allowance {
-                        on: "another function",
-                        ..
-                    }
-            )
-        },
-    },
-    Case {
-        name: "a module-level allowance",
-        files: || {
-            core(&format!(
-                "#![expect(clippy::disallowed_methods, reason = \"the module\")]\n{CONTROL}"
-            ))
-        },
-        expect: |found| {
-            matches!(
-                found,
-                Violation::Allowance {
-                    on: "a module or the crate",
-                    ..
-                }
-            )
-        },
-    },
-    Case {
-        name: "an allowance on a module item",
-        files: || {
-            core(&format!(
-                "{CONTROL}\n#[expect(clippy::disallowed_methods, reason = \"the module\")]\nmod time;\n"
-            ))
-        },
-        expect: |found| matches!(found, Violation::Allowance { on: "a module", .. }),
-    },
-    Case {
-        name: "the constructor carried out by a closure",
-        files: || {
-            core(&with_body(
-                "ClockKind::Boot => { let build = |x: Duration| Deadline::boot_after(&now, from, x); build(d) }",
-            ))
-        },
-        expect: |found| matches!(found, Violation::Hides { .. }),
-    },
-    Case {
-        name: "the constructor carried out by a function pointer",
-        files: || {
-            core(&with_body(
-                "ClockKind::Boot => { let build = Deadline::boot_after; build(&now, from, d) }",
-            ))
-        },
-        expect: |found| matches!(found, Violation::AsValue { .. }),
-    },
-    Case {
-        name: "the constructor inside a macro call",
-        files: || {
-            core(&with_body(
-                "ClockKind::Boot => identity!(Deadline::boot_after(&now, from, d)),",
-            ))
-        },
-        expect: |found| matches!(found, Violation::InMacro { .. }),
-    },
-    Case {
-        name: "a nested function in the sampling function",
-        files: || {
-            core(&with_body(
-                "ClockKind::Boot => { fn inner() {} Deadline::boot_after(&now, from, d) }",
-            ))
-        },
-        expect: |found| matches!(found, Violation::Hides { .. }),
-    },
-    Case {
-        name: "a parameter named `now`, used before the fresh sample",
-        files: || {
-            core(
-                &CONTROL
-                    .replace("    kind: ClockKind,\n", "    kind: ClockKind,\n    now: &Stamp,\n")
-                    .replace(
-                        "    let now = clock.sample().map_err(DeadlineError::Clock)?;\n    match kind {\n        ClockKind::Boot => Deadline::boot_after(&now, from, d),",
-                        "    let early = Deadline::boot_after(&now, from, d);\n    let now = clock.sample().map_err(DeadlineError::Clock)?;\n    match kind {\n        ClockKind::Boot => early,",
-                    )
-                    .replace("ClockKind::Boot, &request.arrival", "ClockKind::Boot, &kept, &request.arrival")
-                    .replace("ClockKind::Boot, reply.first_sent", "ClockKind::Boot, &kept, reply.first_sent"),
-            )
-        },
-        expect: |found| {
-            matches!(
-                found,
-                Violation::Reassigned { .. } | Violation::NowNotFresh { .. }
-            )
-        },
+        kind: |found| matches!(found, Violation::NowNotFresh { .. }),
+        at: Some("early"),
     },
     Case {
         name: "a pattern binding that shadows the fresh sample",
@@ -263,7 +198,8 @@ const CASES: &[Case] = &[
                 "ClockKind::Boot => { if let Some(now) = kept { return Deadline::boot_after(&now, from, d); } Deadline::boot_after(&now, from, d) }",
             ))
         },
-        expect: |found| matches!(found, Violation::Reassigned { .. }),
+        kind: |found| matches!(found, Violation::Reassigned { .. }),
+        at: Some("kept"),
     },
     Case {
         name: "a constructor whose `from` is another parameter",
@@ -272,67 +208,146 @@ const CASES: &[Case] = &[
                 "ClockKind::Boot => Deadline::boot_after(&now, forged, d),",
             ))
         },
-        expect: |found| matches!(found, Violation::NotFromParameter { .. }),
+        kind: |found| matches!(found, Violation::NotFromParameter { .. }),
+        at: Some("forged"),
+    },
+    Case {
+        name: "a constructor called outside the sampling function",
+        files: || {
+            core(&format!(
+                "{CONTROL}\npub fn other(now: &Stamp, d: Duration) -> Result<Deadline, DeadlineError> {{ Deadline::awake_after(now, now, d) }}\n"
+            ))
+        },
+        kind: |found| matches!(found, Violation::Outside { .. }),
+        at: Some("other"),
+    },
+    Case {
+        name: "a second function in the same crate with its own allowance",
+        files: || {
+            core(&format!(
+                "{CONTROL}\n#[expect(clippy::disallowed_methods, reason = \"a second\")] pub fn second(clock: &dyn Clock, from: &Stamp, d: Duration) -> Result<Deadline, DeadlineError> {{ let now = clock.sample().map_err(DeadlineError::Clock)?; Deadline::boot_after(&now, from, d) }}\n"
+            ))
+        },
+        kind: |found| {
+            matches!(
+                found,
+                Violation::Allowance {
+                    on: "another function",
+                    ..
+                }
+            )
+        },
+        at: Some("second"),
+    },
+    Case {
+        name: "a module-level allowance",
+        files: || {
+            core(&format!(
+                "#![expect(clippy::disallowed_methods, reason = \"the module\")] use crate::module_level;\n{CONTROL}"
+            ))
+        },
+        kind: |found| {
+            matches!(
+                found,
+                Violation::Allowance {
+                    on: "a module or the crate",
+                    ..
+                }
+            )
+        },
+        at: Some("module_level"),
+    },
+    Case {
+        name: "an allowance on a module item",
+        files: || {
+            core(&format!(
+                "{CONTROL}\n#[expect(clippy::disallowed_methods, reason = \"the module\")] mod time;\n"
+            ))
+        },
+        kind: |found| matches!(found, Violation::Allowance { on: "a module", .. }),
+        at: Some("time"),
+    },
+    Case {
+        name: "the constructor carried out by a closure",
+        files: || {
+            core(&with_body(
+                "ClockKind::Boot => { let build = |x: Duration| Deadline::boot_after(&now, from, x); build(d) }",
+            ))
+        },
+        kind: |found| matches!(found, Violation::Hides { what, .. } if what.starts_with("a closure")),
+        at: Some("build"),
+    },
+    Case {
+        name: "the constructor carried out by a function pointer",
+        files: || {
+            core(&with_body(
+                "ClockKind::Boot => { let build = Deadline::boot_after; build(&now, from, d) }",
+            ))
+        },
+        kind: |found| matches!(found, Violation::AsValue { .. }),
+        at: Some("build"),
+    },
+    Case {
+        name: "the constructor inside a macro call",
+        files: || {
+            core(&with_body(
+                "ClockKind::Boot => identity!(Deadline::boot_after(&now, from, d)),",
+            ))
+        },
+        kind: |found| matches!(found, Violation::InMacro { .. }),
+        at: Some("identity"),
+    },
+    Case {
+        name: "a nested function in the sampling function",
+        files: || {
+            core(&with_body(
+                "ClockKind::Boot => { fn inner() {} Deadline::boot_after(&now, from, d) }",
+            ))
+        },
+        kind: |found| {
+            matches!(
+                found,
+                Violation::Hides {
+                    what: "a nested function",
+                    ..
+                }
+            )
+        },
+        at: Some("inner"),
     },
     Case {
         name: "a helper in `ironafs-time` that builds a deadline",
         files: || {
-            source_file(
+            pure(
                 "ironafs-time",
                 "src/wait.rs",
-                true,
-                false,
                 "impl Deadline {\n    pub fn boot_after(now: &Stamp, from: &Stamp, d: Duration) -> Result<Self, DeadlineError> { build() }\n}\npub fn deadline(now: &Stamp, from: &Stamp, d: Duration) -> Result<Deadline, DeadlineError> { Deadline::boot_after(now, from, d) }\n",
             )
-            .map_or_else(|_| Vec::new(), |file| vec![file])
         },
-        expect: |found| matches!(found, Violation::Outside { .. }),
+        kind: |found| matches!(found, Violation::Outside { .. }),
+        at: Some("deadline"),
     },
     Case {
         name: "a `#[path]` module, out of the walk's sight",
         files: || {
             core(&format!(
-                "{CONTROL}\n#[path = \"../elsewhere.rs\"]\nmod elsewhere;\n"
+                "{CONTROL}\n#[path = \"../elsewhere.rs\"] mod elsewhere;\n"
             ))
         },
-        expect: |found| matches!(found, Violation::PathAttribute { .. }),
+        kind: |found| matches!(found, Violation::PathAttribute { .. }),
+        at: Some("elsewhere"),
     },
     Case {
-        name: "a seam through an uppercase alias of its home crate",
-        files: || {
-            with_pure(pure(
-                "ironafs-rx",
-                "src/endpoint.rs",
-                "use ironafs_time as Time;\npub fn tick(clock: &dyn Time::Clock) -> u64 { 0 }\n",
-            ))
-        },
-        expect: |found| {
-            matches!(
-                found,
-                Violation::SeamInPure { name: "Clock", .. } | Violation::HomeImport { .. }
-            )
-        },
-    },
-    Case {
-        name: "a seam through a glob re-export behind an uppercase module",
-        files: || {
-            with_pure(pure(
-                "ironafs-cache",
-                "src/plan.rs",
-                "mod Time { pub use ironafs_time::*; }\npub fn plan(rng: &dyn Time::Rng) {}\n",
-            ))
-        },
-        expect: |found| {
-            matches!(
-                found,
-                Violation::SeamInPure { name: "Rng", .. } | Violation::HomeImport { .. }
-            )
-        },
+        name: "an `include!` of source from elsewhere",
+        files: || core(&format!("{CONTROL}\ninclude!(\"../generated.rs\");\n")),
+        kind: |found| matches!(found, Violation::IncludeMacro { .. }),
+        at: Some("include"),
     },
     Case {
         name: "a `from` that is a fresh sample",
         files: || core(&with_from("&clock.sample()?")),
-        expect: |found| matches!(found, Violation::BadFrom { .. }),
+        kind: |found| matches!(found, Violation::BadFrom { .. }),
+        at: Some("sample"),
     },
     Case {
         name: "a `from` that is a forged `Stamp` literal with a high count",
@@ -341,12 +356,14 @@ const CASES: &[Case] = &[
                 "&Stamp { boot, awake, wall, doubt: Doubt { boot: u64::MAX, awake: u64::MAX }, episodes: 0 }",
             ))
         },
-        expect: |found| matches!(found, Violation::BadFrom { .. }),
+        kind: |found| matches!(found, Violation::BadFrom { .. }),
+        at: Some("episodes"),
     },
     Case {
         name: "a `from` that is a local",
         files: || core(&with_from("&arrived")),
-        expect: |found| matches!(found, Violation::BadFrom { .. }),
+        kind: |found| matches!(found, Violation::BadFrom { .. }),
+        at: Some("arrived"),
     },
     Case {
         name: "the sampling function renamed on import",
@@ -355,7 +372,8 @@ const CASES: &[Case] = &[
                 "{CONTROL}\nuse crate::time::deadline_after as make;\n"
             ))
         },
-        expect: |found| matches!(found, Violation::Renamed { .. }),
+        kind: |found| matches!(found, Violation::Renamed { .. }),
+        at: Some("make"),
     },
     Case {
         name: "the sampling function passed as a value",
@@ -364,7 +382,8 @@ const CASES: &[Case] = &[
                 "{CONTROL}\npub fn table() -> usize {{ let f = deadline_after; 0 }}\n"
             ))
         },
-        expect: |found| matches!(found, Violation::AsValue { .. }),
+        kind: |found| matches!(found, Violation::AsValue { .. }),
+        at: Some("table"),
     },
     Case {
         name: "the sampling function defined twice",
@@ -373,12 +392,14 @@ const CASES: &[Case] = &[
             files.extend(core(CONTROL));
             files
         },
-        expect: |found| matches!(found, Violation::Duplicate { .. }),
+        kind: |found| matches!(found, Violation::Duplicate { .. }),
+        at: None,
     },
     Case {
         name: "the listed sampling function missing from its crate",
         files: || core("pub fn other() {}\n"),
-        expect: |found| matches!(found, Violation::Missing { .. }),
+        kind: |found| matches!(found, Violation::Missing { .. }),
+        at: None,
     },
     Case {
         name: "a pure crate takes a seam as `&dyn`",
@@ -389,7 +410,8 @@ const CASES: &[Case] = &[
                 "pub fn tick(clock: &dyn ironafs_time::Clock) -> u64 { 0 }\n",
             ))
         },
-        expect: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("tick"),
     },
     Case {
         name: "a pure crate bounds a generic by a seam",
@@ -400,7 +422,8 @@ const CASES: &[Case] = &[
                 "pub fn plan<D: Disk>(disk: &D) {}\n",
             ))
         },
-        expect: |found| matches!(found, Violation::SeamInPure { name: "Disk", .. }),
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Disk", .. }),
+        at: Some("plan"),
     },
     Case {
         name: "a pure crate implements a seam",
@@ -411,7 +434,8 @@ const CASES: &[Case] = &[
                 "impl ironafs_time::Rng for Fake { fn fill(&self, bytes: &mut [u8]) {} }\n",
             ))
         },
-        expect: |found| matches!(found, Violation::SeamInPure { name: "Rng", .. }),
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Rng", .. }),
+        at: Some("Fake"),
     },
     Case {
         name: "a pure crate renames a seam on import",
@@ -422,7 +446,8 @@ const CASES: &[Case] = &[
                 "pub use ironafs_time::Clock as Tick;\n",
             ))
         },
-        expect: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("Tick"),
     },
     Case {
         name: "a seam named through a module path",
@@ -433,7 +458,8 @@ const CASES: &[Case] = &[
                 "pub fn plan(disk: &crate::Disk) {}\n",
             ))
         },
-        expect: |found| matches!(found, Violation::SeamInPure { name: "Disk", .. }),
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Disk", .. }),
+        at: Some("plan"),
     },
     Case {
         name: "a raw identifier naming a seam",
@@ -444,7 +470,8 @@ const CASES: &[Case] = &[
                 "pub fn tick(rpc: &dyn r#Rpc) {}\n",
             ))
         },
-        expect: |found| matches!(found, Violation::SeamInPure { name: "Rpc", .. }),
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Rpc", .. }),
+        at: Some("tick"),
     },
     Case {
         name: "a seam re-exported outside its home crate's root",
@@ -455,7 +482,94 @@ const CASES: &[Case] = &[
                 "pub use crate::Clock;\n",
             ))
         },
-        expect: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("use"),
+    },
+    Case {
+        name: "a seam through an uppercase alias of its home crate: the path",
+        files: || {
+            with_pure(pure(
+                "ironafs-rx",
+                "src/endpoint.rs",
+                "use ironafs_time as Time;\npub fn tick(clock: &dyn Time::Clock) -> u64 { 0 }\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("tick"),
+    },
+    Case {
+        name: "a seam through an uppercase alias of its home crate: the import",
+        files: || {
+            with_pure(pure(
+                "ironafs-rx",
+                "src/endpoint.rs",
+                "use ironafs_time as Time;\npub fn tick(clock: &dyn Time::Clock) -> u64 { 0 }\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::HomeImport { .. }),
+        at: Some("use"),
+    },
+    Case {
+        name: "a seam through a glob re-export behind an uppercase module: the path",
+        files: || {
+            with_pure(pure(
+                "ironafs-cache",
+                "src/plan.rs",
+                "mod Time { pub use ironafs_time::*; }\npub fn plan(rng: &dyn Time::Rng) {}\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Rng", .. }),
+        at: Some("plan"),
+    },
+    Case {
+        name: "a seam through a glob re-export behind an uppercase module: the glob",
+        files: || {
+            with_pure(pure(
+                "ironafs-cache",
+                "src/plan.rs",
+                "mod Time { pub use ironafs_time::*; }\npub fn plan(rng: &dyn Time::Rng) {}\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::HomeImport { .. }),
+        at: Some("mod"),
+    },
+    Case {
+        name: "a `::`-rooted seam path through an enum named like its home crate: the path",
+        files: || {
+            with_pure(pure(
+                "ironafs-rx",
+                "src/endpoint.rs",
+                "pub enum ironafs_time { Clock }\npub fn tick(clock: &dyn ::ironafs_time::Clock) {}\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("tick"),
+    },
+    Case {
+        name: "a `::`-rooted seam path through an enum named like its home crate: the enum",
+        files: || {
+            with_pure(pure(
+                "ironafs-rx",
+                "src/endpoint.rs",
+                "pub enum ironafs_time { Clock }\npub fn tick(clock: &dyn ::ironafs_time::Clock) {}\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::HomeShadow { .. }),
+        at: Some("enum"),
+    },
+    Case {
+        name: "a home crate's enum name used as a path without its import (a renamed dependency)",
+        files: || {
+            let mut files = with_pure(time_error_enum());
+            files.extend(pure(
+                "ironafs-rx",
+                "src/endpoint.rs",
+                "pub fn tick(clock: &dyn DeadlineError::Clock) {}\n",
+            ));
+            files
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("tick"),
     },
     Case {
         name: "a `Clock` method called inside `ironafs-time` through a provided method",
@@ -468,7 +582,8 @@ const CASES: &[Case] = &[
             ));
             files
         },
-        expect: |found| matches!(found, Violation::ProvidedMethod { name: "Clock", .. }),
+        kind: |found| matches!(found, Violation::ProvidedMethod { name: "Clock", .. }),
+        at: Some("twice"),
     },
     Case {
         name: "a `Clock` method called inside `ironafs-time` on a value",
@@ -479,9 +594,15 @@ const CASES: &[Case] = &[
                 "pub fn sampled(clock: &dyn Clock) -> u64 { clock.sample() }\n",
             ))
         },
-        expect: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("sampled"),
     },
 ];
+
+/// A pure crate's manifest that renames a dependency, inline and as a
+/// table, with the lines each rename is on.
+const RENAMED_MANIFEST: &str = "[package]\nname = \"ironafs-rx\"\n\n[dependencies]\nDeadlineError = { package = \"ironafs-time\", path = \"../ironafs-time\" }\n\n[dependencies.Other]\npackage = \"ironafs-time\"\n";
+const RENAMED_LINES: &[usize] = &[5, 8];
 
 /// The recorded limits (5.3, point 2, "Limits"): a forged `from` with a
 /// count equal to `now`'s and an earlier instant, written through each of
@@ -498,7 +619,60 @@ const LIMITS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Runs the controls, every planted case and the recorded limits.
+/// Where a violation is, if it has a line.
+fn location(found: &Violation) -> Option<(&Path, usize)> {
+    match found {
+        Violation::SeamInPure { file, line, .. }
+        | Violation::HomeImport { file, line }
+        | Violation::HomeShadow { file, line }
+        | Violation::RenamedDependency { file, line }
+        | Violation::IncludeMacro { file, line }
+        | Violation::ProvidedMethod { file, line, .. }
+        | Violation::Outside { file, line, .. }
+        | Violation::AsValue { file, line, .. }
+        | Violation::Renamed { file, line }
+        | Violation::InMacro { file, line }
+        | Violation::Hides { file, line, .. }
+        | Violation::NoFreshSample { file, line }
+        | Violation::Reassigned { file, line }
+        | Violation::NowNotFresh { file, line }
+        | Violation::NoFrom { file, line }
+        | Violation::BadFrom { file, line }
+        | Violation::NotFromParameter { file, line }
+        | Violation::PathAttribute { file, line }
+        | Violation::Allowance { file, line, .. } => Some((file.as_path(), *line)),
+        Violation::Duplicate { .. }
+        | Violation::Missing { .. }
+        | Violation::Unreadable { .. }
+        | Violation::NothingScanned => None,
+    }
+}
+
+/// Whether `found` holds the case's kind, on a line that holds the case's
+/// identifier when it names one.
+fn planted(case: &Case, files: &[SourceFile], found: &[Violation]) -> Option<String> {
+    let lines: Vec<(&Path, usize)> = case.at.map_or_else(Vec::new, |at| {
+        files
+            .iter()
+            .flat_map(|file| {
+                file.tokens
+                    .iter()
+                    .filter(
+                        move |token| matches!(&token.kind, TokenKind::Ident(word) if word == at),
+                    )
+                    .map(move |token| (file.path.as_path(), token.line))
+            })
+            .collect()
+    });
+    found
+        .iter()
+        .filter(|found| (case.kind)(found))
+        .find(|found| case.at.is_none() || location(found).is_some_and(|at| lines.contains(&at)))
+        .map(ToString::to_string)
+}
+
+/// Runs the controls, every planted case, the planted manifest and the
+/// recorded limits.
 ///
 /// # Errors
 ///
@@ -525,15 +699,33 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     for case in CASES {
         let files = (case.files)();
         let found = check(&files, SAMPLING);
-        // The planted violation must be among those found; the stricter
-        // rules may report the same plant from another side too.
-        match found.iter().find(|found| (case.expect)(found)) {
-            Some(first) if !files.is_empty() => {
-                report(format!("caught: {}: {first}", case.name))?;
+        match planted(case, &files, &found) {
+            Some(caught) if !files.is_empty() => {
+                report(format!("caught: {}: {caught}", case.name))?;
             }
             _ => return Err(failure(case.name, &found)),
         }
     }
+
+    let found = renamed_dependencies(Path::new("Cargo.toml"), RENAMED_MANIFEST);
+    let lines: Vec<usize> = found
+        .iter()
+        .filter_map(location)
+        .map(|(_, line)| line)
+        .collect();
+    if lines != RENAMED_LINES
+        || !found
+            .iter()
+            .all(|found| matches!(found, Violation::RenamedDependency { .. }))
+    {
+        return Err(failure(
+            "a pure crate's manifest renames a dependency",
+            &found,
+        ));
+    }
+    report(
+        "caught: a pure crate's manifest renames a dependency, inline and as a table".to_owned(),
+    )?;
 
     for (name, source) in LIMITS {
         let files = core(&format!("{CONTROL}\n{source}"));
@@ -550,9 +742,9 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     }
     report("caught: nothing read".to_owned())?;
     report(format!(
-        "check-seams --self-test: the controls passed, {} planted cases failed as planted, and \
-         the {} recorded limits passed",
-        CASES.len() + 1,
+        "check-seams --self-test: the controls passed, {} planted cases failed as planted, each \
+         with its own kind on its planted line, and the {} recorded limits passed",
+        CASES.len() + 2,
         LIMITS.len()
     ))
 }

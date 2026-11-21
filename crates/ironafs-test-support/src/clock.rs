@@ -73,9 +73,11 @@ struct ClockState {
     episodes: u64,
     /// An episode of failed reads is open until a valid sample returns.
     failing_episode: bool,
-    /// The last boot and awake values a read returned, for regressions.
-    seen_boot: Option<BootInstant>,
-    seen_awake: Option<AwakeInstant>,
+    /// What a read is judged against for a regression: the last valid
+    /// sample's boot and awake values, lowered to a read's value once that
+    /// read's regression is counted, so one regression counts once.
+    boot_reference: Option<BootInstant>,
+    awake_reference: Option<AwakeInstant>,
     /// The last valid sample, for suspends and wall jumps.
     last_sample: Option<(BootInstant, AwakeInstant, WallTime)>,
 }
@@ -117,8 +119,8 @@ impl SeededClock {
                 doubt: Doubt { boot: 0, awake: 0 },
                 episodes: 0,
                 failing_episode: false,
-                seen_boot: None,
-                seen_awake: None,
+                boot_reference: None,
+                awake_reference: None,
                 last_sample: None,
             }),
         }
@@ -266,10 +268,13 @@ impl ClockState {
         if self.failing.boot {
             return Err(self.fail(ClockKind::Boot));
         }
-        if self.seen_boot.is_some_and(|seen| self.boot < seen) {
+        if self
+            .boot_reference
+            .is_some_and(|reference| self.boot < reference)
+        {
             self.regressed();
+            self.boot_reference = Some(self.boot);
         }
-        self.seen_boot = Some(self.boot);
         Ok(self.boot)
     }
 
@@ -277,10 +282,13 @@ impl ClockState {
         if self.failing.awake {
             return Err(self.fail(ClockKind::Awake));
         }
-        if self.seen_awake.is_some_and(|seen| self.awake < seen) {
+        if self
+            .awake_reference
+            .is_some_and(|reference| self.awake < reference)
+        {
             self.regressed();
+            self.awake_reference = Some(self.awake);
         }
-        self.seen_awake = Some(self.awake);
         Ok(self.awake)
     }
 
@@ -311,6 +319,8 @@ impl ClockState {
             }
         }
         self.last_sample = Some((boot, awake, wall));
+        self.boot_reference = Some(boot);
+        self.awake_reference = Some(awake);
         self.failing_episode = false;
     }
 }

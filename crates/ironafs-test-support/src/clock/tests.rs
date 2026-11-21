@@ -373,3 +373,39 @@ fn wait_whose_advance_overflows_fails_and_moves_nothing() {
     );
     assert_reads(&clock, u64::MAX - 2, 0, wall(100, 0));
 }
+
+#[test]
+fn regression_is_judged_against_the_last_valid_sample_not_a_later_read() {
+    // A read after the sample moves no reference: going back to a value
+    // still past the last valid sample is no regression (5.3, point 2).
+    let clock = at(5_000_000_000, 5_000_000_000, 100);
+    let _ = sample(&clock);
+    clock.advance(Duration::from_secs(2)).unwrap();
+    assert_eq!(clock.boot(), Ok(BootInstant::from_nanos(7_000_000_000)));
+    assert_eq!(clock.awake(), Ok(AwakeInstant::from_nanos(7_000_000_000)));
+    clock
+        .regress(ClockKind::Boot, Duration::from_secs(1))
+        .unwrap();
+    clock
+        .regress(ClockKind::Awake, Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(clock.boot(), Ok(BootInstant::from_nanos(6_000_000_000)));
+    assert_eq!(counts(&clock), (NO_DOUBT, 0));
+}
+
+#[test]
+fn a_regression_below_the_last_valid_sample_counts_once_until_the_next_sample() {
+    let clock = at(5_000_000_000, 5_000_000_000, 100);
+    let _ = sample(&clock);
+    clock
+        .regress(ClockKind::Boot, Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(clock.boot(), Ok(BootInstant::from_nanos(3_000_000_000)));
+    assert_eq!(clock.boot(), Ok(BootInstant::from_nanos(3_000_000_000)));
+    assert_eq!(counts(&clock), (Doubt { boot: 1, awake: 0 }, 1));
+    // A further regression below the regressed value counts again.
+    clock
+        .regress(ClockKind::Boot, Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(counts(&clock), (Doubt { boot: 2, awake: 0 }, 2));
+}
