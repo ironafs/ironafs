@@ -57,7 +57,7 @@ impl Drop for Held {
 /// descriptor handed out is in `dropped` too).
 fn run(received: &Received) -> (Option<i32>, Option<FdPassError>, Log) {
     let log = Rc::new(RefCell::new(Log::default()));
-    let result = accept(&RULES, received, |descriptor| {
+    let result = accept(&RULES, *received, |descriptor| {
         log.borrow_mut().adopted.push(descriptor);
         Held(descriptor, Rc::clone(&log))
     });

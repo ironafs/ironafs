@@ -35,6 +35,7 @@ fn clock_code() -> Code {
         module: "linux_clock".into(),
         headers: vec!["time.h".into()],
         defines: Vec::new(),
+        expressions: Vec::new(),
         extern_blocks: vec![ExternBlock {
             link: None,
             items: vec![ExternItem {

@@ -177,10 +177,7 @@ fn a_control_message_that_fails_a_check_closes_no_descriptor_of_this_process() {
     ] {
         let before = open_descriptors();
         assert!(
-            matches!(
-                accept(&RULES, &arrived, adopt),
-                Err(FdPassError::BadControl)
-            ),
+            matches!(accept(&RULES, arrived, adopt), Err(FdPassError::BadControl)),
             "{case}"
         );
         assert!(is_open(number), "{case}");

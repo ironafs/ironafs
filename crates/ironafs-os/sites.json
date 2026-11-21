@@ -392,6 +392,11 @@
           "sys/socket.h",
           "sys/uio.h"
         ],
+        "expressions": {
+          "CMSG_LEN_ONE": "CMSG_LEN(sizeof(int))",
+          "CMSG_LEN_TWO": "CMSG_LEN(2 * sizeof(int))",
+          "CMSG_SPACE_ONE": "CMSG_SPACE(sizeof(int))"
+        },
         "extern_blocks": [
           {
             "link": null,

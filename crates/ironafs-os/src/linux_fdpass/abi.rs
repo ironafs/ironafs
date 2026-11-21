@@ -9,7 +9,9 @@
 //! per C library (point 5.2): glibc's lengths are `size_t`, musl's are
 //! `int` and `socklen_t` beside `int` padding fields, at the same sizes
 //! and offsets on these little-endian 64-bit targets. The constants have
-//! the same values in both libraries and on both architectures.
+//! the same values in both libraries and on both architectures; the
+//! `CMSG_*` values are compared with the headers' macros themselves
+//! (sites.json's `expressions`).
 
 use core::ffi::{c_int, c_void};
 
@@ -45,6 +47,16 @@ pub(super) const MSG_CMSG_CLOEXEC: c_int = 1_073_741_824;
 /// `MSG_CTRUNC`: control data was discarded for lack of room.
 pub(super) const MSG_CTRUNC: c_int = 8;
 
+/// `CMSG_LEN(sizeof(int))`: the header length of one descriptor.
+pub(super) const CMSG_LEN_ONE: usize = 20;
+
+/// `CMSG_LEN(2 * sizeof(int))`: the header length of two descriptors.
+pub(super) const CMSG_LEN_TWO: usize = 24;
+
+/// `CMSG_SPACE(sizeof(int))`: what a control message of one descriptor
+/// occupies.
+pub(super) const CMSG_SPACE_ONE: usize = 24;
+
 // Each C library's `struct msghdr` and `struct cmsghdr`. No site is in
 // either file, so a musl build's sites are the glibc build's.
 #[cfg(target_env = "gnu")]
@@ -59,13 +71,14 @@ pub(super) use musl::{cmsghdr, msghdr};
 
 // The foreign functions, or under Miri, which cannot call them, the
 // in-crate stand-ins of ADR 0005, point 6.5, which the same calls reach,
-// so the wrappers' buffers, pointers and checks run unchanged.
+// so the wrappers' buffers, pointers and checks run unchanged; and the
+// errno the calls set, which a stand-in sets as planned.
 #[cfg(not(miri))]
 mod foreign;
 #[cfg(miri)]
-mod stand_in;
+pub(super) mod stand_in;
 
 #[cfg(not(miri))]
-pub(super) use foreign::{recvmsg, sendmsg};
+pub(super) use foreign::{last_error, recvmsg, sendmsg};
 #[cfg(miri)]
-pub(super) use stand_in::{recvmsg, sendmsg};
+pub(super) use stand_in::{last_error, recvmsg, sendmsg};

@@ -67,6 +67,47 @@ fn parse_reads_statuses_and_the_code_of_implemented_rows() {
 }
 
 #[test]
+fn parse_reads_a_row_s_c_expressions_and_refuses_any_outside_their_alphabet() {
+    let text = inventory_text();
+    let with = |expressions: &str| {
+        text.replacen(
+            "\"module\": \"linux_clock\",",
+            &format!("\"module\": \"linux_clock\",\n      \"expressions\": {expressions},"),
+            1,
+        )
+    };
+    let clock = |inventory: &super::Inventory| {
+        inventory
+            .rows
+            .iter()
+            .find(|row| row.id == "linux-clock")
+            .and_then(|row| row.code.clone())
+            .unwrap()
+    };
+    assert_eq!(
+        clock(&parse(&text).unwrap()).expressions,
+        Vec::<(String, String)>::new()
+    );
+    assert_eq!(
+        clock(&parse(&with("{\"CMSG_LEN_ONE\": \"CMSG_LEN(sizeof(int))\"}")).unwrap()).expressions,
+        [(
+            "CMSG_LEN_ONE".to_owned(),
+            "CMSG_LEN(sizeof(int))".to_owned()
+        )]
+    );
+    for refused in [
+        "{\"X\": \"1; int y\"}",
+        "{\"X\": \"\\\"s\\\"\"}",
+        "{\"X\": \"1)\\n#include <x.h>\\n(1\"}",
+        "{\"X\": \"\"}",
+        "{\"x y\": \"1\"}",
+    ] {
+        let error = parse(&with(refused)).unwrap_err();
+        assert!(error.contains("expressions"), "{refused}: {error}");
+    }
+}
+
+#[test]
 fn parse_reads_a_row_s_feature_macros_and_refuses_any_but_gnu_source() {
     let text = inventory_text();
     let with = |defines: &str| {
@@ -235,6 +276,7 @@ fn adopting(module: &str) -> Code {
         module: module.to_owned(),
         headers: Vec::new(),
         defines: Vec::new(),
+        expressions: Vec::new(),
         extern_blocks: Vec::new(),
         blocks: vec![Block {
             kind: BlockKind::Adopt,

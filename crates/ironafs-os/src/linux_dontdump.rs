@@ -93,6 +93,9 @@ impl SecretBuffer {
 impl Drop for SecretBuffer {
     fn drop(&mut self) {
         self.clear();
+        // The wiped memory, just before the box frees it (a no-op but
+        // under Miri, whose stand-in checks it is all zero).
+        abi::released(self.as_slice());
     }
 }
 
@@ -142,7 +145,7 @@ fn dont_dump(memory: &mut [u8]) -> io::Result<()> {
     let status = unsafe { abi::madvise(address, length, advice) };
     if status != 0 {
         // At once, with no call in between, on the thread that made it.
-        return Err(io::Error::last_os_error());
+        return Err(abi::last_error());
     }
     Ok(())
 }

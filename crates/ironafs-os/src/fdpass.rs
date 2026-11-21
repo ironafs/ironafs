@@ -18,6 +18,17 @@
 //! ones are dropped, which closes them. An integer from a message that
 //! fails a check is never adopted (it may be another descriptor of this
 //! process), and a negative one never is.
+//!
+//! **Where a received descriptor is an integer.** Sheet 14 keeps it an
+//! integer "only between the checked read of the control buffer and its
+//! adoption, in one private function". Here that span is the receive
+//! (`linux_fdpass::receive_fd`), which reads its control buffer into a
+//! [`Received`] and hands it by value to [`accept`], which checks and
+//! adopts: two functions, with no fallible step or early return between
+//! the read and the adoption. The checks are a safe function over owned
+//! values so that the tests, and a fuzz target once the fuzzing engine is
+//! decided (ADR 0005, point 6.5), reach every branch without a socket.
+//! This departure is recorded for sheet 14's next amendment.
 
 use std::error::Error;
 use std::fmt;
@@ -109,7 +120,12 @@ pub(crate) struct Rules {
 }
 
 /// What one receive returned, read out of the receiver's own buffers.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// It holds the delivered descriptors as integers, so it is not `Copy` or
+/// `Clone` outside the tests: the receive builds it and hands it, by
+/// value, straight to [`accept`], which adopts or drops what it holds.
+#[derive(Debug, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(Clone, Copy))]
 #[cfg_attr(
     all(not(target_os = "linux"), not(test)),
     expect(dead_code, reason = "used by the Linux site")
@@ -145,12 +161,29 @@ pub(crate) struct Received {
     all(not(target_os = "linux"), not(test)),
     expect(dead_code, reason = "used by the Linux site")
 )]
+#[cfg_attr(
+    not(test),
+    expect(
+        clippy::needless_pass_by_value,
+        reason = "the receive hands over what it read, so no copy of the descriptors' integers \
+                  stays with it"
+    )
+)]
 pub(crate) fn accept<T>(
     rules: &Rules,
-    received: &Received,
+    received: Received,
     mut adopt: impl FnMut(i32) -> T,
 ) -> Result<T, FdPassError> {
-    let delivered = delivered(rules, received);
+    let number = delivered(rules, &received);
+    let Received {
+        count,
+        flags,
+        control,
+        payload,
+        byte,
+        ..
+    } = received;
+    let delivered = number.and_then(|number| payload.get(..number));
     // Adopt first: from here every delivered descriptor is owned, and
     // dropped on any refusal below.
     let mut adopted = [None, None];
@@ -159,13 +192,13 @@ pub(crate) fn accept<T>(
             *slot = Some(adopt(value));
         }
     }
-    if received.count == 0 {
+    if count == 0 {
         return Err(FdPassError::Closed);
     }
-    if received.flags & rules.truncated != 0 {
+    if flags & rules.truncated != 0 {
         return Err(FdPassError::Truncated);
     }
-    if received.control == 0 {
+    if control == 0 {
         return Err(FdPassError::NoDescriptor);
     }
     let Some(delivered) = delivered else {
@@ -177,7 +210,7 @@ pub(crate) fn accept<T>(
     if delivered.len() != 1 {
         return Err(FdPassError::TooMany);
     }
-    if received.byte != rules.data {
+    if byte != rules.data {
         return Err(FdPassError::BadData);
     }
     let [Some(descriptor), None] = adopted else {
@@ -186,9 +219,10 @@ pub(crate) fn accept<T>(
     Ok(descriptor)
 }
 
-/// The integers a receive's control message delivered as descriptors: one
-/// or two, only if the control length and the header pass every check.
-fn delivered<'a>(rules: &Rules, received: &'a Received) -> Option<&'a [i32]> {
+/// How many integers a receive's control message delivered as
+/// descriptors: one or two, only if the control length and the header pass
+/// every check.
+fn delivered(rules: &Rules, received: &Received) -> Option<usize> {
     let control = (rules.one..=rules.capacity).contains(&received.control);
     let length = received.length <= received.control;
     let kind = received.level == rules.level && received.kind == rules.rights;
@@ -199,7 +233,7 @@ fn delivered<'a>(rules: &Rules, received: &'a Received) -> Option<&'a [i32]> {
     } else {
         return None;
     };
-    (control && length && kind).then(|| received.payload.get(..count))?
+    (control && length && kind).then_some(count)
 }
 
 /// The result of one send of the data byte.

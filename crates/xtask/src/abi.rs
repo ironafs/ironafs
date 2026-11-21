@@ -25,7 +25,9 @@
 //!   with fields that are never read and whose names differ between
 //!   libraries or releases (`struct statvfs`'s spares), bound only by the
 //!   struct's size and alignment;
-//! - each constant's value;
+//! - each constant's value, against its C name, or against the C
+//!   expression sites.json maps it to (`expressions`), for a value a macro
+//!   gives, such as `CMSG_LEN(sizeof(int))`;
 //! - each type alias's size, alignment and sign: an alias names a C
 //!   typedef whose spelling differs between C libraries at one size
 //!   (`rlim_t`), and a member of that type is checked against the typedef;
@@ -636,6 +638,27 @@ fn unsigned(name: &str) -> Option<bool> {
     }
 }
 
+/// Refuses an expression mapped to a constant the declarations do not
+/// hold, which would otherwise prove nothing.
+fn unmapped_expressions(
+    expressions: &[(String, String)],
+    declarations: &Declarations,
+) -> Result<(), String> {
+    for (name, _) in expressions {
+        if !declarations
+            .constants
+            .iter()
+            .any(|(constant, _)| constant == name)
+        {
+            return Err(format!(
+                "sites.json maps `{name}` to a C expression, but the declarations hold no such \
+                 constant"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The size and alignment of a type under `repr(C)`.
 fn layout(
     found: &CType,
@@ -711,6 +734,7 @@ pub(crate) fn c_source(
     row: &str,
     defines: &[String],
     headers: &[String],
+    expressions: &[(String, String)],
     declarations: &Declarations,
     model: DataModel,
 ) -> Result<String, String> {
@@ -786,8 +810,12 @@ pub(crate) fn c_source(
             );
         }
     }
+    unmapped_expressions(expressions, declarations)?;
     for (name, value) in &declarations.constants {
-        assert(format!("{name} == {value}"), name.clone());
+        match expressions.iter().find(|(constant, _)| constant == name) {
+            Some((_, expression)) => assert(format!("({expression}) == {value}"), name.clone()),
+            None => assert(format!("{name} == {value}"), name.clone()),
+        }
     }
     for function in &declarations.functions {
         let returns = match &function.returns {
@@ -1031,7 +1059,14 @@ fn check_target(
             ));
             continue;
         }
-        let source = match c_source(&row.id, &code.defines, &code.headers, &found, model) {
+        let source = match c_source(
+            &row.id,
+            &code.defines,
+            &code.headers,
+            &code.expressions,
+            &found,
+            model,
+        ) {
             Ok(source) => source,
             Err(error) => {
                 violations.push(format!("{}: {error}", row.id));

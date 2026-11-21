@@ -54,15 +54,17 @@ pub(super) const SOL_SOCKET: c_int = 1;
 /// `SO_PEERCRED`: the peer's credentials, read-only.
 pub(super) const SO_PEERCRED: c_int = 17;
 
-// The foreign function, or under Miri, which cannot call it, the in-crate
-// stand-in of ADR 0005, point 6.5, which the same call reaches, so the
-// wrapper's pointers and the length check run unchanged.
+// The foreign function, the errno it sets and the peer check before it, or
+// under Miri, which cannot call the C library or ask a socket pair for its
+// peer's name, the in-crate stand-ins of ADR 0005, point 6.5, which the
+// same calls reach, so the wrapper's pointers and checks run unchanged and
+// its tests can plan each failure.
 #[cfg(not(miri))]
 mod foreign;
 #[cfg(miri)]
-mod stand_in;
+pub(super) mod stand_in;
 
 #[cfg(not(miri))]
-pub(super) use foreign::getsockopt;
+pub(super) use foreign::{connected, getsockopt, last_error};
 #[cfg(miri)]
-pub(super) use stand_in::getsockopt;
+pub(super) use stand_in::{connected, getsockopt, last_error};

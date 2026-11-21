@@ -9,7 +9,8 @@
 //!
 //! - by the C compiler, after the declarations were read and the C
 //!   generated (ADR 0005, point 5.6): a member type changed at the same
-//!   size and offset, a member's size changed, a constant changed by one, a
+//!   size and offset, a member's size changed, a constant changed by one
+//!   (one compared with a C expression too), a
 //!   parameter's type changed, a return type changed, and an alias of the
 //!   wrong size or sign. Each must fail with the assertion that names it;
 //! - by the declaration reader, which refuses what C cannot be compared
@@ -47,6 +48,7 @@ const FIXTURE: &str = "use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};\
                        #[repr(C)]\n\
                        struct timespec {\n    tv_sec: c_long,\n    tv_nsec: c_long,\n}\n\
                        const EINTR: c_int = 4;\n\
+                       const TIMESPEC_SIZE: usize = 16;\n\
                        type rlim_t = u64;\n\
                        #[repr(C)]\n\
                        struct rlimit {\n    rlim_cur: rlim_t,\n    rlim_max: rlim_t,\n}\n\
@@ -66,6 +68,10 @@ const ARRAY_PLANT: (&str, &str, &str, &str) = (
     "[c_char; 15]",
     "->sa_data, char (*)[15]: 1",
 );
+
+/// The fixture's constants compared with a C expression, as sites.json's
+/// `expressions` maps a value a macro gives.
+const EXPRESSIONS: &[(&str, &str)] = &[("TIMESPEC_SIZE", "sizeof(struct timespec)")];
 
 /// Mismatches the C compiler must refuse: the case, the text it replaces,
 /// and the assertion's label the compiler's error must carry.
@@ -87,6 +93,12 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
         "EINTR: c_int = 4",
         "EINTR: c_int = 5",
         "EINTR == 5",
+    ),
+    (
+        "a constant compared with a C expression changed by one",
+        "TIMESPEC_SIZE: usize = 16",
+        "TIMESPEC_SIZE: usize = 17",
+        "(sizeof(struct timespec)) == 17",
     ),
     (
         "a parameter's type changed",
@@ -280,7 +292,18 @@ fn stage(source: &str, headers: &[&str], file: &Path) -> Result<Stage, Error> {
         return Ok(Stage::Reader(error));
     }
     let headers: Vec<String> = headers.iter().map(|header| (*header).to_owned()).collect();
-    let c = match c_source("self-test", &[], &headers, &found, DataModel::Lp64) {
+    let expressions: Vec<(String, String)> = EXPRESSIONS
+        .iter()
+        .map(|(name, expression)| ((*name).to_owned(), (*expression).to_owned()))
+        .collect();
+    let c = match c_source(
+        "self-test",
+        &[],
+        &headers,
+        &expressions,
+        &found,
+        DataModel::Lp64,
+    ) {
         Ok(c) => c,
         Err(error) => return Ok(Stage::Generator(error)),
     };

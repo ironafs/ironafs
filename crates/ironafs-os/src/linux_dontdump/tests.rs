@@ -16,6 +16,8 @@ use crate::dump::DumpError;
 
 #[cfg(not(miri))]
 mod kernel;
+#[cfg(miri)]
+mod stand_in;
 
 const ENOMEM: i32 = 12;
 

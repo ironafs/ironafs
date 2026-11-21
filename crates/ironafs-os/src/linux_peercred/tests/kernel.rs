@@ -8,13 +8,15 @@
 //! process id; and the credentials are those of the connection's time.
 
 use std::io::Read;
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 
 use super::super::peer_credentials;
-use crate::dump::harness::{command, role};
+use crate::dump::harness::{PrivateDir, command, role};
+use crate::peer::PeerError;
 
 /// This file's entry test, which a child runs.
 const ENTRY: &str = "linux_peercred::tests::kernel::child";
@@ -106,4 +108,48 @@ fn peer_credentials_name_a_peer_under_another_uid() {
     assert_eq!((peer.uid(), peer.gid()), (NOBODY, NOBODY));
     assert_eq!(peer.pid(), i32::try_from(child.id()).unwrap());
     assert_ne!(peer.uid(), effective_ids().0, "run this test as root");
+}
+
+#[test]
+fn peer_credentials_refuse_a_listener_wrapped_as_a_stream() {
+    // Safe Rust can wrap any descriptor as a `UnixStream`; a listener's
+    // `SO_PEERCRED` answers with its own credentials.
+    let dir = PrivateDir::create("ironafs-peercred").unwrap();
+    let listener = UnixListener::bind(dir.path().join("socket")).unwrap();
+    let wrapped = UnixStream::from(OwnedFd::from(listener));
+    assert!(
+        matches!(peer_credentials(&wrapped), Err(PeerError::NotConnected(_))),
+        "{:?}",
+        peer_credentials(&wrapped)
+    );
+}
+
+#[test]
+fn peer_credentials_refuse_sockets_with_no_peer_credentials() {
+    // A connected datagram socket, an unconnected one and a UDP socket,
+    // each wrapped as a stream: the kernel answers -1 for the ids, or the
+    // socket has no Unix peer.
+    let dir = PrivateDir::create("ironafs-peercred").unwrap();
+    let ours = UnixDatagram::bind(dir.path().join("ours")).unwrap();
+    let _theirs = UnixDatagram::bind(dir.path().join("theirs")).unwrap();
+    ours.connect(dir.path().join("theirs")).unwrap();
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    for (case, descriptor) in [
+        ("a connected datagram socket", OwnedFd::from(ours)),
+        (
+            "an unconnected datagram socket",
+            OwnedFd::from(UnixDatagram::unbound().unwrap()),
+        ),
+        ("a UDP socket", OwnedFd::from(udp)),
+    ] {
+        let wrapped = UnixStream::from(descriptor);
+        let found = peer_credentials(&wrapped);
+        assert!(
+            matches!(
+                found,
+                Err(PeerError::NotConnected(_) | PeerError::NoCredentials)
+            ),
+            "{case}: {found:?}"
+        );
+    }
 }

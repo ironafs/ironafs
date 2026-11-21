@@ -15,7 +15,8 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 use super::super::{disable_dumps, dumpable};
 use crate::dump::harness::{
-    Collector, Run, command, command_at, contains, core_limits, marker, plant, role, run,
+    Collector, PrivateDir, Run, command, command_at, contains, core_limits, marker, plant, role,
+    run,
 };
 
 /// This file's entry test, which a child runs.
@@ -60,9 +61,13 @@ fn child() {
         "disable-then-exec" | "disable-then-exec-as-nobody" | "disable-then-exec-set-id" => {
             disable_dumps().unwrap();
             println!("self={}", dumpable().unwrap());
+            // Held until the grandchild has run, then removed.
+            let mut _private = None;
             let mut command = match role.as_str() {
                 "disable-then-exec-set-id" => {
-                    command_at(&set_id_copy(), ENTRY, "report-then-disable")
+                    let (dir, copy) = set_id_copy();
+                    _private = Some(dir);
+                    command_at(&copy, ENTRY, "report-then-disable")
                 }
                 _ => command(ENTRY, "report-then-disable"),
             };
@@ -88,16 +93,29 @@ fn child() {
     }
 }
 
-/// A copy of this test binary, owned by root and set-user-id, in a
-/// directory of its own that any user can enter.
-fn set_id_copy() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("ironafs-os-set-id-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let copy = dir.join("set-id-child");
-    std::fs::copy(std::env::current_exe().unwrap(), &copy).unwrap();
-    std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o4755)).unwrap();
-    copy
+/// A copy of this test binary, owned by root and set-user-id, that only
+/// `nobody`'s group may run: in a new private directory (refused if its
+/// path exists), which root owns and that group may only enter. The copy is
+/// created new, never over an existing file, and the directory is removed,
+/// with it, when the returned guard is dropped, on every path.
+fn set_id_copy() -> (PrivateDir, std::path::PathBuf) {
+    use std::os::unix::fs::{OpenOptionsExt, chown};
+    let dir = PrivateDir::create("ironafs-os-set-id").unwrap();
+    chown(dir.path(), Some(0), Some(NOBODY)).unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o710)).unwrap();
+    let copy = dir.path().join("set-id-child");
+    let mut source = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+    let mut target = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(&copy)
+        .unwrap();
+    std::io::copy(&mut source, &mut target).unwrap();
+    drop(target);
+    chown(&copy, Some(0), Some(NOBODY)).unwrap();
+    std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o4710)).unwrap();
+    (dir, copy)
 }
 
 /// The value `/proc/sys/fs/suid_dumpable` holds: what the kernel resets
@@ -128,6 +146,22 @@ fn assert_reset_then_restored(run: &Run, reset_to: &str) {
 }
 
 #[test]
+fn a_private_directory_is_new_entered_by_its_owner_alone_and_removed_on_drop() {
+    let first = PrivateDir::create("ironafs-os-test").unwrap();
+    let path = first.path().to_path_buf();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o7777, 0o700, "{mode:o}");
+    // A path that exists already is refused, never reused.
+    assert_eq!(
+        PrivateDir::at(path.clone()).unwrap_err().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    std::fs::write(path.join("file"), b"x").unwrap();
+    drop(first);
+    assert!(!path.exists());
+}
+
+#[test]
 fn disable_dumps_reads_back_not_dumpable_and_zeroes_both_core_limits() {
     let run = run(&mut command(ENTRY, "disable"));
     assert!(run.status.success(), "{run:?}");
@@ -142,13 +176,18 @@ fn an_exec_resets_the_attribute_to_dumpable_and_disable_dumps_restores_it() {
     assert_reset_then_restored(&run, "1");
 }
 
+/// An exec as another user: the child is started under `nobody` (the id
+/// change is made between fork and exec, by the standard library), and the
+/// exec that follows, with real and effective ids equal, makes the
+/// attribute 1. What the id change alone does, before any exec, is not
+/// observed here: safe Rust has no in-process id change, and no site of
+/// ADR 0005 makes one (sheet 11), so that is MISSING evidence until a
+/// change adds one.
 #[test]
 #[ignore = "needs root, to change to another user: run as root on a Linux guest"]
-fn an_exec_after_an_id_change_resets_the_attribute_and_disable_dumps_restores_it() {
+fn an_exec_as_another_user_resets_the_attribute_and_disable_dumps_restores_it() {
     assert!(is_root(), "run this test as root");
     let run = run(&mut command(ENTRY, "disable-then-exec-as-nobody"));
-    // The id change resets it to suid_dumpable; the exec that follows, with
-    // real and effective ids equal, makes it 1.
     assert_reset_then_restored(&run, "1");
 }
 

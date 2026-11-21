@@ -10,7 +10,9 @@
 //! listen(2), or socketpair(2)", unix(7)), not the peer's current ones: a
 //! process that changes identity after connecting still shows its old one,
 //! and a connection handed to another process still carries its opener's.
-//! Which peer may do what is the caller's policy.
+//! The ids are as the reading process's user namespace sees them; an id
+//! with no mapping there reads as the overflow id (`nobody`, 65534 by
+//! default). Which peer may do what is the caller's policy.
 
 use std::error::Error;
 use std::fmt;
@@ -51,6 +53,9 @@ impl PeerCredentials {
 /// Why a peer's credentials could not be read.
 #[derive(Debug)]
 pub enum PeerError {
+    /// The socket is not connected to a peer (a listener, or an unconnected
+    /// socket, wrapped as a stream); the error carries the errno.
+    NotConnected(io::Error),
     /// The call failed; the error carries its errno.
     Failed(io::Error),
     /// The call reported a credential length other than its structure's
@@ -61,13 +66,22 @@ pub enum PeerError {
         /// The structure's size.
         expected: usize,
     },
+    /// The kernel reported no peer credentials (each id -1): the socket
+    /// is not a Unix stream or a socket pair.
+    NoCredentials,
 }
 
 impl fmt::Display for PeerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotConnected(error) => {
+                write!(formatter, "the socket has no connected peer: {error}")
+            }
             Self::Failed(error) => {
                 write!(formatter, "reading the peer's credentials failed: {error}")
+            }
+            Self::NoCredentials => {
+                formatter.write_str("the kernel holds no credentials for the socket's peer")
             }
             Self::Length { returned, expected } => write!(
                 formatter,
@@ -80,8 +94,8 @@ impl fmt::Display for PeerError {
 impl Error for PeerError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Failed(error) => Some(error),
-            Self::Length { .. } => None,
+            Self::NotConnected(error) | Self::Failed(error) => Some(error),
+            Self::Length { .. } | Self::NoCredentials => None,
         }
     }
 }
@@ -105,12 +119,16 @@ pub(crate) struct Read {
     pub(crate) gid: u32,
 }
 
-/// The credentials of one read, only if the call succeeded and reported
-/// exactly the structure's size.
+/// The credentials of one read, only if the call succeeded, reported
+/// exactly the structure's size, and named real ids: the kernel answers -1
+/// for each id of a socket with no peer credentials (a datagram socket that
+/// is not one of a pair, or one that is not a Unix socket), and -1 is no
+/// user's or group's id.
 ///
 /// # Errors
 ///
-/// [`PeerError::Failed`] with the call's error, or [`PeerError::Length`].
+/// [`PeerError::Failed`] with the call's error, [`PeerError::Length`], or
+/// [`PeerError::NoCredentials`].
 #[cfg_attr(
     all(not(target_os = "linux"), not(test)),
     expect(
@@ -125,6 +143,9 @@ pub(crate) fn checked(read: Read) -> Result<PeerCredentials, PeerError> {
             returned: read.returned,
             expected: read.expected,
         });
+    }
+    if read.uid == u32::MAX || read.gid == u32::MAX {
+        return Err(PeerError::NoCredentials);
     }
     Ok(PeerCredentials {
         pid: read.pid,
