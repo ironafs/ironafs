@@ -19,7 +19,7 @@ Class P.
 
 | File | Change | Why |
 |---|---|---|
-| `docs/adr/README.md` | ADR 0004's row says "accepted 2026-11-20; amended 2026-11-20 (#32)" | The row showed only the amendment's date. ADR 0004 landed on 2026-11-20 (8a07bbc, PR #25). |
+| `docs/adr/README.md` | ADR 0004's row says "accepted 2026-11-20; amended 2026-11-20 (#32)"; ADR 0003's row says "accepted 2026-11-19 (#10)" | ADR 0004's row showed only the amendment's date; it landed on 2026-11-20 (8a07bbc, PR #25). ADR 0003's row said "proposed", though it landed on 2026-11-19 (796ab3f, PR #10). |
 | `docs/coding-standards.md`, rule 21 | The concurrency item now says blocking code on standard-library threads and no async runtime, citing C3 | It allowed an async runtime "if the architecture ADR shows it is needed". C3, point 5, uses none, neither a third-party one nor one of our own. |
 | `docs/workflow.md` §5 | macOS FSKit: "a macOS 27 machine or VM on Apple silicon (ADR 0004, L8)"; one sentence pointing to the matrix (L36 to L39) for release venues | It said "macOS 26/27". L8 sets the floor at macOS 27 on Apple silicon. The Windows line already matches L37 and L38. |
 | `docs/research/2026-11-18-project-layout-and-tests.md`, G8 | One dated line: answered by C4, points 3 and 5 | G8 named `ironafs-fskit` and said the ADR decides. |
@@ -63,9 +63,6 @@ the added lines, each marked "Update, 2026-11-21".
   system component against GPLv3's System Libraries definition. ADR 0004
   does not. The check is planned for ADR 0005 (`ironafs-os`, #43), which
   names those components.
-- `docs/adr/README.md` lists ADR 0003 as "proposed", and its own status
-  line says the same, though it landed in 796ab3f (#10). That is an ADR
-  status question, outside this sweep.
 
 ## Review
 
