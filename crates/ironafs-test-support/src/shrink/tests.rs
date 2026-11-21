@@ -20,6 +20,11 @@ fn replay_oracle<T>(
     }
 }
 
+/// A time limit that never runs out.
+fn never() -> bool {
+    false
+}
+
 /// Generates fresh inputs from `seed` until one fails, then shrinks it.
 fn shrink_first_failure<T>(
     seed: u64,
@@ -33,7 +38,7 @@ fn shrink_first_failure<T>(
         let value = generate(&mut source);
         if failing(&value) {
             let oracle = replay_oracle(&mut generate, &mut failing);
-            return shrink(source.into_recording(), value, budget, oracle);
+            return shrink(source.into_recording(), value, budget, never, oracle);
         }
     }
     panic!("no failing input found");
@@ -171,7 +176,7 @@ fn erratic_start() -> Vec<u64> {
 #[test]
 fn shrink_erratic_property_stops_at_budget() {
     let start = erratic_start();
-    let shrunk = shrink(start.clone().into(), start, 20, erratic);
+    let shrunk = shrink(start.clone().into(), start, 20, never, erratic);
     assert_eq!(shrunk.runs, 20);
     assert!(shrunk.budget_exhausted);
     assert!(erratic(&shrunk.payload).is_some());
@@ -180,7 +185,13 @@ fn shrink_erratic_property_stops_at_budget() {
 #[test]
 fn shrink_erratic_property_terminates_without_reaching_large_budget() {
     let start = erratic_start();
-    let shrunk = shrink(start.clone().into(), start.clone(), u32::MAX, erratic);
+    let shrunk = shrink(
+        start.clone().into(),
+        start.clone(),
+        u32::MAX,
+        never,
+        erratic,
+    );
     assert!(!shrunk.budget_exhausted);
     assert!(shrunk.runs < 1_000_000, "{}", shrunk.runs);
     assert!(shrunk.payload.len() < start.len());
@@ -189,9 +200,13 @@ fn shrink_erratic_property_terminates_without_reaching_large_budget() {
 
 #[test]
 fn shrink_keeps_original_when_nothing_simpler_fails() {
-    let shrunk = shrink(vec![0, 7].into(), "original", 1000, |choices: &[u64]| {
-        (choices == [0, 7]).then(|| (choices.to_vec().into(), "replayed"))
-    });
+    let shrunk = shrink(
+        vec![0, 7].into(),
+        "original",
+        1000,
+        never,
+        |choices: &[u64]| (choices == [0, 7]).then(|| (choices.to_vec().into(), "replayed")),
+    );
     assert_eq!(shrunk.payload, "original");
     assert!(!shrunk.budget_exhausted);
 }
@@ -204,7 +219,7 @@ fn shrink_ignores_trailing_zero_choices() {
         |source| (source.u8(), source.u8()),
         |(first, second)| *first == 7 || *second == 7,
     );
-    let shrunk = shrink(vec![0, 7].into(), (0, 7), 1000, oracle);
+    let shrunk = shrink(vec![0, 7].into(), (0, 7), 1000, never, oracle);
     assert_eq!(shrunk.payload, (7, 0));
 }
 
@@ -310,4 +325,31 @@ fn shrink_string_reaches_shortest_lowest_trigger() {
         );
         assert_eq!(shrunk.payload, ("\u{e9}".to_owned(), 7), "seed {seed}");
     }
+}
+
+#[test]
+fn shrink_out_of_time_stops_with_best_so_far() {
+    let mut checks = 0;
+    let out_of_time = || {
+        checks += 1;
+        checks > 30
+    };
+    let oracle = replay_oracle(Source::u64, |value| *value >= 1000);
+    let start = 1 << 40;
+    let shrunk = shrink(vec![start].into(), start, 10_000, out_of_time, oracle);
+    assert_eq!(shrunk.runs, 30);
+    assert!(shrunk.timed_out);
+    assert!(!shrunk.budget_exhausted);
+    assert!(
+        shrunk.payload >= 1000 && shrunk.payload < start,
+        "{}",
+        shrunk.payload
+    );
+    assert_eq!(shrunk.choices, vec![shrunk.payload]);
+}
+
+#[test]
+fn shrink_within_time_reports_no_timeout() {
+    let shrunk = shrink_first_failure(1, 10_000, Source::u64, |value| *value >= 1000);
+    assert!(!shrunk.timed_out);
 }

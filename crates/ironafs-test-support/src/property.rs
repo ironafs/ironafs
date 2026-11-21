@@ -5,10 +5,13 @@
 //!
 //! A property is a generator, which builds an input from a [`Source`], and
 //! a test, which checks one input. The runner draws each case from a
-//! generator seeded by the run's seed. On the first failure it shrinks the
-//! input's choices and reports the simplest failing input with the seed, so
-//! that `IRONAFS_TEST_SEED=<seed>` replays the same run (coding standards
-//! rule 15: random inputs come from a seed printed on failure).
+//! generator seeded by the run's seed. On the first failure it writes the
+//! seed to standard error at once, then shrinks the input's choices within
+//! a run budget and a time limit, and reports the simplest failing input
+//! with the seed, so that `IRONAFS_TEST_SEED=<seed>` replays the same run
+//! (coding standards rule 15: random inputs come from a seed printed on
+//! failure). A test killed by the runner while shrinking has still printed
+//! its seed.
 //!
 //! The seed is fixed unless asked otherwise: without `IRONAFS_TEST_SEED` or
 //! [`Property::seed`], it is derived from the property's name, so every run
@@ -19,6 +22,7 @@
 use std::env::{self, VarError};
 use std::fmt;
 use std::panic::{self, AssertUnwindSafe};
+use std::time::{Duration, Instant};
 
 use crate::capture::catch_quietly;
 use crate::shrink::shrink;
@@ -47,11 +51,13 @@ pub struct Property {
     cases: u32,
     seed: Option<u64>,
     shrink_budget: u32,
+    shrink_time_limit: Duration,
 }
 
 impl Property {
-    /// A property with 256 cases and a shrink budget of 10,000 runs, seeded
-    /// from `name` unless `IRONAFS_TEST_SEED` is set.
+    /// A property with 256 cases, a shrink budget of 10,000 runs and a
+    /// shrink time limit of 20 seconds, seeded from `name` unless
+    /// `IRONAFS_TEST_SEED` is set.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -59,6 +65,7 @@ impl Property {
             cases: 256,
             seed: None,
             shrink_budget: 10_000,
+            shrink_time_limit: Duration::from_secs(20),
         }
     }
 
@@ -89,6 +96,22 @@ impl Property {
     pub fn shrink_budget(self, runs: u32) -> Self {
         Self {
             shrink_budget: runs,
+            ..self
+        }
+    }
+
+    /// Sets the longest time spent shrinking a failure, measured on the
+    /// wall clock. When it runs out, the simplest failing input found so
+    /// far is reported, and the report says that it may not be minimal.
+    ///
+    /// The default of 20 seconds leaves room, under the test runner's
+    /// 60-second limit per test (`.config/nextest.toml`), for the failing
+    /// case itself and the report. The seed is printed before shrinking
+    /// starts, so a test stopped by the runner still names it.
+    #[must_use]
+    pub fn shrink_time_limit(self, limit: Duration) -> Self {
+        Self {
+            shrink_time_limit: limit,
             ..self
         }
     }
@@ -193,12 +216,38 @@ impl Property {
         }
     }
 
-    /// Runs the property from `seed`, without reading the environment.
+    /// Runs the property from `seed`, without reading the environment,
+    /// writing the first failure's notice to standard error and timing
+    /// the shrink on the wall clock.
     pub(crate) fn run_seeded<T, V: Verdict>(
         &self,
         seed: u64,
         generate: &mut impl FnMut(&mut Source) -> T,
         test: &mut impl FnMut(&T) -> V,
+    ) -> Result<(), Counterexample<T>> {
+        // The shrink time limit guards against the test runner's own
+        // wall-clock kill, so it reads the real clock (a departure from
+        // rule 7, which covers the code under test, not the runner).
+        let origin = Instant::now();
+        self.run_with(
+            seed,
+            generate,
+            test,
+            &mut |notice| eprintln!("{notice}"),
+            &mut || origin.elapsed(),
+        )
+    }
+
+    /// Runs the property from `seed`. `notice` receives the line that
+    /// announces the first failure, before shrinking starts; `now` reads a
+    /// monotonic clock, against which the shrink time limit is measured.
+    pub(crate) fn run_with<T, V: Verdict>(
+        &self,
+        seed: u64,
+        generate: &mut impl FnMut(&mut Source) -> T,
+        test: &mut impl FnMut(&T) -> V,
+        notice: &mut impl FnMut(&str),
+        now: &mut impl FnMut() -> Duration,
     ) -> Result<(), Counterexample<T>> {
         let mut case_seeds = SplitMix64::new(seed);
         for case in 0..self.cases {
@@ -218,10 +267,22 @@ impl Property {
             let Some(failure) = test_failure(test, &value) else {
                 continue;
             };
+            notice(&format!(
+                "property `{}` failed on case {} of {} (seed {}); shrinking it now; \
+                 replay with {SEED_VARIABLE}={}",
+                self.name,
+                u64::from(case) + 1,
+                self.cases,
+                SeedText(seed),
+                SeedText(seed),
+            ));
+            let started = now();
+            let limit = self.shrink_time_limit;
             let shrunk = shrink(
                 source.into_recording(),
                 (value, failure),
                 self.shrink_budget,
+                || now().saturating_sub(started) >= limit,
                 |choices| {
                     let mut replay = Source::from_choices(choices.to_vec());
                     let value = catch_quietly(|| generate(&mut replay)).ok()?;
@@ -241,6 +302,7 @@ impl Property {
                 choices: shrunk.choices,
                 shrink_runs: shrunk.runs,
                 shrink_budget_exhausted: shrunk.budget_exhausted,
+                shrink_timed_out: shrunk.timed_out,
             });
         }
         Ok(())
@@ -327,6 +389,7 @@ pub struct Counterexample<T> {
     choices: Vec<u64>,
     shrink_runs: u32,
     shrink_budget_exhausted: bool,
+    shrink_timed_out: bool,
 }
 
 impl<T> Counterexample<T> {
@@ -381,6 +444,13 @@ impl<T> Counterexample<T> {
     pub fn shrink_budget_exhausted(&self) -> bool {
         self.shrink_budget_exhausted
     }
+
+    /// Whether shrinking stopped at its time limit, so a simpler failing
+    /// input may exist.
+    #[must_use]
+    pub fn shrink_timed_out(&self) -> bool {
+        self.shrink_timed_out
+    }
 }
 
 impl<T> Counterexample<T> {
@@ -393,6 +463,8 @@ impl<T> Counterexample<T> {
             .map_or_else(String::new, |location| format!("panicked at: {location}\n"));
         let budget = if self.shrink_budget_exhausted {
             "; the shrink budget ran out, so the input may not be minimal"
+        } else if self.shrink_timed_out {
+            "; the shrink time limit ran out, so the input may not be minimal"
         } else {
             ""
         };

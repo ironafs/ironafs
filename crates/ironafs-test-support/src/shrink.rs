@@ -8,7 +8,12 @@
 //! as long and lexicographically smaller), trailing zeros ignored because a
 //! replay reads zero past the end. That order has no infinite descending
 //! chain, so shrinking terminates on its own; the run budget also bounds
-//! how many times the property is run.
+//! how many times the property is run, and a time limit how long.
+//!
+//! The result is a local minimum: no step the passes below try from it
+//! still fails. A simpler failing input can exist elsewhere, reachable only
+//! through inputs that pass, such as a failure at lengths 3 and 10 but not
+//! at 4 to 9, found from length 12, which stops at 10.
 //!
 //! Besides blind passes over runs of choices, the shrinker deletes whole
 //! elements of collections at the spans their draws recorded, so an
@@ -41,17 +46,22 @@ pub(crate) struct Shrunk<P> {
     pub(crate) runs: u32,
     /// Whether shrinking stopped because the budget ran out.
     pub(crate) budget_exhausted: bool,
+    /// Whether shrinking stopped because its time ran out.
+    pub(crate) timed_out: bool,
 }
 
 /// Shrinks the failing `recording`, whose run returned `payload`.
 ///
 /// `fails` replays a candidate and returns what that run recorded and its
 /// payload if the property failed, or `None` if it passed. It is called at
-/// most `budget` times.
+/// most `budget` times, and not at all once `out_of_time` returns `true`,
+/// which it is asked before each run. Either way, the simplest failing
+/// choices found so far are returned.
 pub(crate) fn shrink<P>(
     recording: Recording,
     payload: P,
     budget: u32,
+    out_of_time: impl FnMut() -> bool,
     fails: impl FnMut(&[u64]) -> Option<(Recording, P)>,
 ) -> Shrunk<P> {
     let mut shrinker = Shrinker {
@@ -61,6 +71,8 @@ pub(crate) fn shrink<P>(
         runs: 0,
         budget,
         budget_exhausted: false,
+        timed_out: false,
+        out_of_time,
         fails,
     };
     loop {
@@ -70,7 +82,7 @@ pub(crate) fn shrink<P>(
         shrinker.zero_chunks();
         shrinker.minimise_each();
         shrinker.minimise_repeated();
-        if shrinker.budget_exhausted || shrinker.best == before {
+        if shrinker.stopped() || shrinker.best == before {
             break;
         }
     }
@@ -79,10 +91,11 @@ pub(crate) fn shrink<P>(
         choices: shrinker.best,
         runs: shrinker.runs,
         budget_exhausted: shrinker.budget_exhausted,
+        timed_out: shrinker.timed_out,
     }
 }
 
-struct Shrinker<P, F> {
+struct Shrinker<P, T, F> {
     best: Vec<u64>,
     /// The element spans the run on `best` recorded; they may reach past
     /// its end, where trailing zeros were removed.
@@ -91,19 +104,34 @@ struct Shrinker<P, F> {
     runs: u32,
     budget: u32,
     budget_exhausted: bool,
+    timed_out: bool,
+    out_of_time: T,
     fails: F,
 }
 
-impl<P, F: FnMut(&[u64]) -> Option<(Recording, P)>> Shrinker<P, F> {
+impl<P, T: FnMut() -> bool, F: FnMut(&[u64]) -> Option<(Recording, P)>> Shrinker<P, T, F> {
+    /// Whether the run budget or the time ran out.
+    fn stopped(&self) -> bool {
+        self.budget_exhausted || self.timed_out
+    }
+
     /// Runs `candidate` if it is simpler than the best so far and budget
-    /// remains, and keeps it if it still fails. Returns whether it was kept.
+    /// and time remain, and keeps it if it still fails. Returns whether it
+    /// was kept.
     fn try_candidate(&mut self, candidate: Vec<u64>) -> bool {
         let candidate = without_trailing_zeros(candidate);
         if !shortlex_less(&candidate, &self.best) {
             return false;
         }
+        if self.stopped() {
+            return false;
+        }
         if self.runs >= self.budget {
             self.budget_exhausted = true;
+            return false;
+        }
+        if (self.out_of_time)() {
+            self.timed_out = true;
             return false;
         }
         self.runs += 1;
@@ -129,7 +157,7 @@ impl<P, F: FnMut(&[u64]) -> Option<(Recording, P)>> Shrinker<P, F> {
     /// and every later draw reads its own choices.
     fn delete_spans(&mut self) {
         let mut index = 0;
-        while !self.budget_exhausted {
+        while !self.stopped() {
             let Some(span) = self.spans.get(index).cloned() else {
                 break;
             };
@@ -150,7 +178,7 @@ impl<P, F: FnMut(&[u64]) -> Option<(Recording, P)>> Shrinker<P, F> {
     fn delete_chunks(&mut self) {
         for size in CHUNK_SIZES {
             let mut start = 0;
-            while start < self.best.len() && !self.budget_exhausted {
+            while start < self.best.len() && !self.stopped() {
                 let end = start.saturating_add(size).min(self.best.len());
                 let mut candidate = self.best.clone();
                 candidate.drain(start..end);
@@ -165,7 +193,7 @@ impl<P, F: FnMut(&[u64]) -> Option<(Recording, P)>> Shrinker<P, F> {
     fn zero_chunks(&mut self) {
         for size in CHUNK_SIZES {
             let mut start = 0;
-            while start < self.best.len() && !self.budget_exhausted {
+            while start < self.best.len() && !self.stopped() {
                 let end = start.saturating_add(size).min(self.best.len());
                 let mut candidate = self.best.clone();
                 candidate
@@ -185,7 +213,7 @@ impl<P, F: FnMut(&[u64]) -> Option<(Recording, P)>> Shrinker<P, F> {
     /// on every other choice.
     fn minimise_each(&mut self) {
         let mut index = 0;
-        while index < self.best.len() && !self.budget_exhausted {
+        while index < self.best.len() && !self.stopped() {
             let current = self.best.get(index).copied().unwrap_or(0);
             self.minimise_at(&[index], current);
             let current = self.best.get(index).copied().unwrap_or(0);
@@ -201,7 +229,7 @@ impl<P, F: FnMut(&[u64]) -> Option<(Recording, P)>> Shrinker<P, F> {
     fn minimise_repeated(&mut self) {
         let mut seen = Vec::new();
         let mut index = 0;
-        while index < self.best.len() && !self.budget_exhausted {
+        while index < self.best.len() && !self.stopped() {
             let value = self.best.get(index).copied().unwrap_or(0);
             index += 1;
             if value == 0 || seen.contains(&value) {
@@ -231,7 +259,7 @@ impl<P, F: FnMut(&[u64]) -> Option<(Recording, P)>> Shrinker<P, F> {
     fn minimise_at(&mut self, positions: &[usize], current: u64) {
         let small = SMALL_VALUES.min(current);
         for probe in 0..small {
-            if self.budget_exhausted || self.try_at(positions, probe) {
+            if self.stopped() || self.try_at(positions, probe) {
                 return;
             }
         }
@@ -250,7 +278,7 @@ impl<P, F: FnMut(&[u64]) -> Option<(Recording, P)>> Shrinker<P, F> {
     ) {
         // Every step at or above `high` has failed; every step below `low`
         // has passed.
-        while low < high && !self.budget_exhausted {
+        while low < high && !self.stopped() {
             let step = low + (high - low) / 2;
             if self.try_at(positions, value(step)) {
                 high = step;

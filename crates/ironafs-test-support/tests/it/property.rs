@@ -255,3 +255,15 @@ fn run_planted_bulk_content_keeps_a_failing_seed() {
     let mut replay = Source::from_choices(failure.choices().to_vec());
     assert_eq!(replay.bulk_bytes(0..=64 << 10), *failure.value());
 }
+
+#[test]
+fn run_zero_time_limit_reports_the_first_failure_unshrunk() {
+    let failure = Property::new("no time to shrink")
+        .seed(2)
+        .shrink_time_limit(std::time::Duration::ZERO)
+        .run(Source::u64, |value| assert!(*value < 1000))
+        .unwrap_err();
+    assert_eq!(failure.shrink_runs(), 0);
+    assert!(failure.shrink_timed_out());
+    assert!(*failure.value() >= 1000);
+}

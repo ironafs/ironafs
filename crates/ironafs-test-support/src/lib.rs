@@ -9,7 +9,8 @@
 //! every failure report prints; setting `IRONAFS_TEST_SEED` to it replays
 //! the run. A failing input is shrunk through the choices its draws
 //! recorded, so generators need no shrinking code of their own, and
-//! shrinking always stops within its run budget.
+//! shrinking always stops within its run budget and time limit. The seed is
+//! printed when the first case fails, before shrinking starts.
 //!
 //! This crate is a dev-dependency only: no shipped crate depends on it.
 

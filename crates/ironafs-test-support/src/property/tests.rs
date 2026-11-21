@@ -6,6 +6,7 @@
 use std::env::VarError;
 use std::ffi::OsString;
 use std::panic;
+use std::time::Duration;
 
 use super::{
     Counterexample, Property, Verdict, parse_seed, resolve_seed, seed_from_name, seed_text,
@@ -192,6 +193,7 @@ fn sample(shrink_budget_exhausted: bool) -> Counterexample<Vec<u8>> {
         message: "assertion failed: ok".to_owned(),
         shrink_runs: 57,
         shrink_budget_exhausted,
+        shrink_timed_out: false,
     }
 }
 
@@ -238,4 +240,101 @@ fn counterexample_display_omits_location_of_error() {
 fn counterexample_report_uses_description() {
     let report = sample(false).report(|value| format!("{} bytes", value.len()));
     assert!(report.contains("\nminimal input: 1 bytes\n"), "{report}");
+}
+
+#[test]
+fn run_announces_first_failure_before_shrinking() {
+    let tests_run = std::cell::Cell::new(0_u32);
+    let mut notices = Vec::new();
+    let failure = Property::new("announce")
+        .run_with(
+            0x42,
+            &mut |source: &mut Source| source.u16(),
+            &mut |value: &u16| {
+                tests_run.set(tests_run.get() + 1);
+                assert!(*value < 10);
+            },
+            &mut |notice: &str| notices.push((notice.to_owned(), tests_run.get())),
+            &mut || Duration::ZERO,
+        )
+        .unwrap_err();
+    let case = failure.case() + 1;
+    assert_eq!(
+        notices,
+        [(
+            format!(
+                "property `announce` failed on case {case} of 256 (seed 0x0000000000000042); \
+                 shrinking it now; replay with IRONAFS_TEST_SEED=0x0000000000000042"
+            ),
+            case
+        )]
+    );
+    assert!(tests_run.get() > case, "shrinking ran after the notice");
+}
+
+#[test]
+fn run_stops_shrinking_at_time_limit_with_best_so_far() {
+    // A clock that advances one second each time it is read.
+    let mut seconds = 0;
+    let failure = Property::new("time limit")
+        .shrink_time_limit(Duration::from_secs(5))
+        .run_with(
+            7,
+            &mut Source::u64,
+            &mut |value: &u64| assert!(*value < 1000),
+            &mut |_: &str| (),
+            &mut || {
+                seconds += 1;
+                Duration::from_secs(seconds)
+            },
+        )
+        .unwrap_err();
+    assert!(failure.shrink_timed_out());
+    assert!(!failure.shrink_budget_exhausted());
+    assert!(failure.shrink_runs() < 10, "{}", failure.shrink_runs());
+    assert!(*failure.value() >= 1000);
+}
+
+#[test]
+fn shrink_time_limit_defaults_to_twenty_seconds() {
+    let failure = Property::new("default limit")
+        .run_with(
+            7,
+            &mut Source::u64,
+            &mut |value: &u64| assert!(*value < 1000),
+            &mut |_: &str| (),
+            &mut || Duration::from_secs(19),
+        )
+        .unwrap_err();
+    assert!(!failure.shrink_timed_out());
+    let mut reading = Duration::ZERO;
+    let failure = Property::new("default limit")
+        .run_with(
+            7,
+            &mut Source::u64,
+            &mut |value: &u64| assert!(*value < 1000),
+            &mut |_: &str| (),
+            &mut || {
+                reading += Duration::from_secs(20);
+                reading
+            },
+        )
+        .unwrap_err();
+    assert!(failure.shrink_timed_out());
+    assert_eq!(failure.shrink_runs(), 0);
+}
+
+#[test]
+fn counterexample_display_warns_when_time_ran_out() {
+    let report = Counterexample {
+        shrink_timed_out: true,
+        ..sample(false)
+    }
+    .to_string();
+    assert!(
+        report.contains(
+            "shrunk in 57 runs; the shrink time limit ran out, so the input may not be minimal\n"
+        ),
+        "{report}"
+    );
 }
