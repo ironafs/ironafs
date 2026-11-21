@@ -66,5 +66,11 @@ the added lines, each marked "Update, 2026-11-21".
 
 ## Review
 
-UNKNOWN until the review runs. This class P change needs one non-author
-review; its seat and result are added here before it lands.
+Class P needs one non-author review. GLM (`glm-5.3`, high) reviewed
+`a35ba20..5566690` on 2026-11-21 (UTC), read-only: PASS, with one
+minor.
+
+- **Minor, origin: this change, kind: consistency, fixed:** the ADR 0004
+  Review entry said one pointer was added to each of three research
+  notes, but the platform-support note received two. The entry now
+  says so. Recorded under the stop rule; no further round.

@@ -695,8 +695,9 @@ The full record, with every finding and its disposition, is
   No decision changed.
   - Changed: coding standards rule 21 (no async runtime, C3);
     `docs/workflow.md` §5 (macOS 27 on Apple silicon, L8; the matrix,
-    L36 to L39); one dated pointer to the answer in each of three
-    research notes; the date of acceptance in the ADR index.
+    L36 to L39); dated pointers to the answer in three research notes
+    (two in the platform-support note); the date of acceptance in the
+    ADR index.
   - Left to its own pull request: coding standards rule 20's per-OS
     crates (C4), whose replacement is drafted and lands with the layout
     page.
