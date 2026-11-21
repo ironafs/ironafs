@@ -13,6 +13,9 @@ license = "GPL-3.0-or-later"
 repository = "https://github.com/ironafs/ironafs"
 publish = false
 
+[workspace.dependencies]
+ironafs-test-support = { path = "crates/ironafs-test-support", version = "0.0.0" }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"

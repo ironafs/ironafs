@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Clippy reads the first clippy.toml it finds from the crate upwards, so this
+# file repeats the workspace's settings and adds this crate's own.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+doc-valid-idents = ["IronAFS", "OpenAFS", "AuriStor", "FSKit", "macOS", ".."]
+
+# Every heap request the decoder makes goes through its ledger, and the
+# encoder requests its output once (docs/specs/xdr.md, 5.2, point 9.2, and
+# 5.5, point 3). These allocate, or may reallocate, outside both. The two
+# reservation sites carry the named exceptions; review covers what this
+# list misses.
+disallowed-methods = [
+  { path = "alloc::vec::Vec::with_capacity", reason = "reserve through the decoder's ledger" },
+  { path = "alloc::vec::Vec::reserve", reason = "reserve through the decoder's ledger" },
+  { path = "alloc::vec::Vec::reserve_exact", reason = "reserve through the decoder's ledger" },
+  { path = "alloc::vec::Vec::try_reserve", reason = "reserve through the decoder's ledger" },
+  { path = "alloc::vec::Vec::try_reserve_exact", reason = "reserve through the decoder's ledger" },
+  { path = "alloc::vec::Vec::extend_from_slice", reason = "may reallocate; fill a reserved buffer by push" },
+  { path = "alloc::vec::Vec::extend_from_within", reason = "may reallocate; fill a reserved buffer by push" },
+  { path = "alloc::vec::Vec::insert", reason = "may reallocate; fill a reserved buffer by push" },
+  { path = "alloc::vec::Vec::append", reason = "may reallocate; fill a reserved buffer by push" },
+  { path = "alloc::vec::Vec::resize", reason = "may reallocate; fill a reserved buffer by push" },
+  { path = "alloc::vec::Vec::shrink_to_fit", reason = "reallocates outside the ledger" },
+  { path = "alloc::vec::Vec::into_boxed_slice", reason = "may reallocate outside the ledger" },
+  { path = "core::iter::Extend::extend", reason = "may reallocate; fill a reserved buffer by push" },
+  { path = "core::iter::Iterator::collect", reason = "allocates outside the ledger" },
+  { path = "alloc::borrow::ToOwned::to_owned", reason = "allocates outside the ledger" },
+  { path = "alloc::boxed::Box::new", reason = "allocates outside the ledger" },
+  { path = "alloc::string::ToString::to_string", reason = "allocates outside the ledger" },
+]
+disallowed-macros = [
+  { path = "alloc::vec", reason = "allocates outside the ledger" },
+  { path = "alloc::format", reason = "allocates outside the ledger" },
+]
