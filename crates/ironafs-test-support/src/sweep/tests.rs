@@ -221,3 +221,42 @@ fn check_failure_panics_with_report() {
         "{message}"
     );
 }
+
+#[test]
+fn rerun_failing_names_the_sweep_and_its_failing_input() {
+    let mut notices = Vec::new();
+    let mut runs = 0;
+    Exhaustive::new("bool is false", 2).rerun_failing(
+        &[1],
+        &mut Source::bool,
+        &mut |value: &bool| {
+            runs += 1;
+            assert!(!*value, "true");
+        },
+        &mut |notice: &str| notices.push(notice.to_owned()),
+    );
+    assert_eq!(runs, 1);
+    assert_eq!(
+        notices,
+        vec![
+            "exhaustive sweep `bool is false`: running the failing input once more, with its panic shown"
+        ]
+    );
+}
+
+#[test]
+fn rerun_failing_passing_input_says_not_deterministic() {
+    let mut notices = Vec::new();
+    Exhaustive::new("flaky", 2).rerun_failing(
+        &[1],
+        &mut Source::bool,
+        &mut |_: &bool| (),
+        &mut |notice: &str| notices.push(notice.to_owned()),
+    );
+    assert_eq!(
+        notices.last().map(String::as_str),
+        Some(
+            "exhaustive sweep `flaky`: the failing input passed when run again, so the test is not deterministic"
+        )
+    );
+}

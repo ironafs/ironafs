@@ -199,10 +199,12 @@ impl Property {
         };
         if counterexample.location.is_some() {
             rerun_loudly(
-                &self.name,
+                &format!("property `{}`", self.name),
+                "minimal input",
                 &counterexample.choices,
                 &mut generate,
                 &mut test,
+                &mut |notice| eprintln!("{notice}"),
             );
         }
         panic!("{}", counterexample.report(describe));
@@ -387,23 +389,28 @@ impl Property {
     }
 }
 
-/// Runs the test of the property or sweep `name` once more on the input
-/// `choices` give, with its panic printed by the process's panic hook.
+/// Runs the test once more on the input `choices` give, with its panic
+/// printed by the process's panic hook. `subject` names the property or
+/// sweep and `input` the kind of input, in the lines `notice` receives.
 pub(crate) fn rerun_loudly<T, V: Verdict>(
-    name: &str,
+    subject: &str,
+    input: &str,
     choices: &[u64],
     generate: &mut impl FnMut(&mut Source) -> T,
     test: &mut impl FnMut(&T) -> V,
+    notice: &mut impl FnMut(&str),
 ) {
-    eprintln!("property `{name}`: running the minimal input once more, with its panic shown");
+    notice(&format!(
+        "{subject}: running the {input} once more, with its panic shown"
+    ));
     let rerun = panic::catch_unwind(AssertUnwindSafe(|| {
         let value = generate(&mut Source::from_choices(choices.to_vec()));
         test(&value).failure()
     }));
     if matches!(rerun, Ok(None)) {
-        eprintln!(
-            "property `{name}`: the minimal input passed when run again, so the test is not deterministic"
-        );
+        notice(&format!(
+            "{subject}: the {input} passed when run again, so the test is not deterministic"
+        ));
     }
 }
 

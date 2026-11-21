@@ -114,9 +114,30 @@ impl Exhaustive {
         if let SweepFailure::Failed(failed) = &failure
             && failed.location.is_some()
         {
-            rerun_loudly(&self.name, &failed.choices, &mut generate, &mut test);
+            self.rerun_failing(&failed.choices, &mut generate, &mut test, &mut |notice| {
+                eprintln!("{notice}");
+            });
         }
         panic!("{failure}");
+    }
+
+    /// Runs the test once more on the failing input `choices` give, with
+    /// its panic shown; `notice` receives the lines that announce it.
+    pub(crate) fn rerun_failing<T, V: Verdict>(
+        &self,
+        choices: &[u64],
+        generate: &mut impl FnMut(&mut Source) -> T,
+        test: &mut impl FnMut(&T) -> V,
+        notice: &mut impl FnMut(&str),
+    ) {
+        rerun_loudly(
+            &format!("exhaustive sweep `{}`", self.name),
+            "failing input",
+            choices,
+            generate,
+            test,
+            notice,
+        );
     }
 
     /// Runs the sweep; `notice` receives the line that reports success.
