@@ -1461,4 +1461,5 @@ otherwise. Q1 blocks all code written from this specification.
 
 ## 14. Review
 
-Not yet reviewed. The record will be in `docs/reviews/`.
+The review record is
+[2026-11-21-m2a-65-vl-fs-read](../reviews/2026-11-21-m2a-65-vl-fs-read.md).
