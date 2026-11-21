@@ -47,7 +47,7 @@ fn tokens_skip_comments_strings_and_character_literals() {
         [
             "let", "a", "let", "b", "let", "c", "let", "d", "let", "e", "let", "f", "let", "g",
             "let", "h", "let", "i", "fn", "life", "a", "x", "a", "str", "static", "str", "x",
-            "let", "r#type", "1",
+            "let", "type", "1",
         ]
     );
 }
@@ -133,6 +133,25 @@ fn std_paths_find_expression_paths_and_ignore_other_crates() {
             ("std::net::UdpSocket::bind".into(), 1),
             ("std::thread::JoinHandle".into(), 2),
             ("std::time::Instant::now".into(), 3),
+        ]
+    );
+}
+
+#[test]
+fn std_paths_see_through_raw_identifiers_and_list_a_bare_std() {
+    let source = "let a = r#std::r#fs::read(p);\n\
+                  use r#std::{r#net};\n\
+                  v!(std);\n\
+                  macro_rules! w { ($($t:tt)*) => { std $($t)* } }\n\
+                  let b = value.std;\n";
+
+    assert_eq!(
+        paths(source),
+        [
+            ("std::fs::read".into(), 1),
+            ("std::net".into(), 2),
+            ("std".into(), 3),
+            ("std".into(), 4),
         ]
     );
 }

@@ -3,14 +3,14 @@
 
 //! Tests for reading the workspace graph from `cargo metadata` output.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use super::{Member, Workspace, parse_workspace};
+use super::{Member, Package, Workspace, parse_workspace};
 use crate::Error;
 
 const METADATA: &str = r#"{
   "packages": [
-    {"name": "ironafs-a", "id": "path+file:///w/crates/ironafs-a#0.0.0",
+    {"name": "ironafs-a", "id": "path+file:///w/crates/ironafs-a#0.0.0", "source": null,
      "manifest_path": "/w/crates/ironafs-a/Cargo.toml",
      "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-a/src/lib.rs"}]},
     {"name": "ironafs-b", "id": "path+file:///w/crates/ironafs-b#0.0.0",
@@ -21,9 +21,10 @@ const METADATA: &str = r#"{
      "targets": [{"kind": ["bin"], "src_path": "/w/crates/ironafs-c/src/main.rs"}]},
     {"name": "ironafs-d", "id": "path+file:///w/crates/ironafs-d#0.0.0",
      "manifest_path": "/w/crates/ironafs-d/Cargo.toml",
-     "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-d/src/lib.rs"}]},
+     "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-d/src/lib.rs"},
+                 {"kind": ["custom-build"], "src_path": "/w/crates/ironafs-d/build.rs"}]},
     {"name": "outside", "id": "registry+https://example.invalid#outside@1.0.0",
-     "manifest_path": "/r/outside/Cargo.toml",
+     "source": "registry+https://example.invalid", "manifest_path": "/r/outside/Cargo.toml",
      "targets": [{"kind": ["lib"], "src_path": "/r/outside/src/lib.rs"}]}
   ],
   "workspace_members": [
@@ -43,7 +44,10 @@ const METADATA: &str = r#"{
       {"name": "ironafs_d", "pkg": "path+file:///w/crates/ironafs-d#0.0.0",
        "dep_kinds": [{"kind": "dev", "target": null}, {"kind": null, "target": "cfg(windows)"}]}
     ]},
-    {"id": "path+file:///w/crates/ironafs-b#0.0.0", "deps": []},
+    {"id": "path+file:///w/crates/ironafs-b#0.0.0", "deps": [
+      {"name": "outside", "pkg": "registry+https://example.invalid#outside@1.0.0",
+       "dep_kinds": [{"kind": null, "target": null}]}
+    ]},
     {"id": "path+file:///w/crates/ironafs-c#0.0.0", "deps": []},
     {"id": "path+file:///w/crates/ironafs-d#0.0.0", "deps": []},
     {"id": "registry+https://example.invalid#outside@1.0.0", "deps": []}
@@ -51,6 +55,34 @@ const METADATA: &str = r#"{
   "target_directory": "/w/target",
   "workspace_root": "/w"
 }"#;
+
+fn package(name: &str, path: bool, member: bool, dependencies: &[&str]) -> Package {
+    Package {
+        id: id(name),
+        name: name.into(),
+        path: path.then(|| PathBuf::from(format!("/w/crates/{name}"))),
+        member,
+        dependencies: dependencies.iter().map(|name| id(name)).collect(),
+    }
+}
+
+fn id(name: &str) -> String {
+    if name == "outside" {
+        "registry+https://example.invalid#outside@1.0.0".into()
+    } else {
+        format!("path+file:///w/crates/{name}#0.0.0")
+    }
+}
+
+fn member(name: &str, lib: Option<&str>, target_kinds: &[&str]) -> Member {
+    Member {
+        name: name.into(),
+        id: id(name),
+        dir: PathBuf::from(format!("/w/crates/{name}")),
+        lib_root: lib.map(|file| PathBuf::from(format!("/w/crates/{name}/{file}"))),
+        target_kinds: target_kinds.iter().map(|kind| (*kind).into()).collect(),
+    }
+}
 
 #[test]
 fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
@@ -62,32 +94,28 @@ fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
             root: PathBuf::from("/w"),
             target_dir: PathBuf::from("/w/target"),
             members: vec![
-                Member {
-                    name: "ironafs-a".into(),
-                    dir: PathBuf::from("/w/crates/ironafs-a"),
-                    lib_dir: Some(PathBuf::from("/w/crates/ironafs-a/src")),
-                    dependencies: vec!["ironafs-b".into(), "outside".into(), "ironafs-d".into()],
-                },
-                Member {
-                    name: "ironafs-b".into(),
-                    dir: PathBuf::from("/w/crates/ironafs-b"),
-                    lib_dir: Some(PathBuf::from("/w/crates/ironafs-b/src")),
-                    dependencies: vec![],
-                },
-                Member {
-                    name: "ironafs-c".into(),
-                    dir: PathBuf::from("/w/crates/ironafs-c"),
-                    lib_dir: None,
-                    dependencies: vec![],
-                },
-                Member {
-                    name: "ironafs-d".into(),
-                    dir: PathBuf::from("/w/crates/ironafs-d"),
-                    lib_dir: Some(PathBuf::from("/w/crates/ironafs-d/src")),
-                    dependencies: vec![],
-                },
+                member("ironafs-a", Some("src/lib.rs"), &["lib"]),
+                member("ironafs-b", Some("src/lib.rs"), &["lib"]),
+                member("ironafs-c", None, &["bin"]),
+                member("ironafs-d", Some("src/lib.rs"), &["lib", "custom-build"]),
+            ],
+            packages: vec![
+                package(
+                    "ironafs-a",
+                    true,
+                    true,
+                    &["ironafs-b", "outside", "ironafs-d"]
+                ),
+                package("ironafs-b", true, true, &["outside"]),
+                package("ironafs-c", true, true, &[]),
+                package("ironafs-d", true, true, &[]),
+                package("outside", false, false, &[]),
             ],
         }
+    );
+    assert_eq!(
+        workspace.members[0].lib_dir(),
+        Some(Path::new("/w/crates/ironafs-a/src"))
     );
 }
 
@@ -101,9 +129,10 @@ fn parse_workspace_rejects_output_without_a_resolved_graph() {
             "\"pkg\": \"path+file:///w/crates/unknown#0.0.0\"",
         ),
         &METADATA.replace(
-            "{\"id\": \"path+file:///w/crates/ironafs-b#0.0.0\", \"deps\": []},",
+            "{\"id\": \"path+file:///w/crates/ironafs-c#0.0.0\", \"deps\": []},",
             "",
         ),
+        &METADATA.replace("\"source\": null", "\"source\": 1"),
     ] {
         assert!(
             matches!(

@@ -14,27 +14,81 @@ use crate::metadata::{self, Workspace};
 #[cfg(test)]
 mod tests;
 
-/// One crate of a fixture workspace.
+/// One crate of a fixture: a workspace crate, a local crate outside the
+/// workspace, or a third-party crate served from a local registry copy.
 #[derive(Clone, Debug)]
 struct FixtureCrate {
     name: String,
-    dependencies: Vec<String>,
+    place: Place,
+    dependencies: Vec<Dependency>,
     manifest_tail: String,
     files: Vec<(String, String)>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Place {
+    /// In the workspace, at this directory relative to its root.
+    Workspace(String),
+    /// A local crate outside the workspace root.
+    Outside,
+    /// A third-party crate.
+    ThirdParty,
+}
+
+#[derive(Clone, Debug)]
+enum Dependency {
+    /// A normal dependency on another crate of the fixture, by name.
+    On(String),
+    /// A line written as given.
+    Line(String),
+}
+
 /// A workspace of crates under `crates/`, each with an empty `src/lib.rs`
-/// unless a case changes it.
+/// unless a case changes it, and the crates around it.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Fixture {
     crates: Vec<FixtureCrate>,
 }
 
+/// Where the workspace, the local crates outside it and the third-party
+/// crates are written, below a fixture's directory.
+const WORKSPACE: &str = "workspace";
+const OUTSIDE: &str = "outside";
+const VENDOR: &str = "vendor";
+
 impl Fixture {
-    /// Adds a crate with path dependencies on the named crates.
+    /// Adds a workspace crate under `crates/` with dependencies on the named
+    /// crates.
     pub(crate) fn add_crate(&mut self, name: &str, dependencies: &[&str]) {
+        self.add(
+            name,
+            Place::Workspace(format!("crates/{name}")),
+            dependencies,
+        );
+    }
+
+    /// Adds a workspace crate at `dir`, relative to the workspace root. A
+    /// crate outside `crates/` joins the workspace when a member depends on
+    /// it by path.
+    pub(crate) fn add_crate_at(&mut self, dir: &str, name: &str, dependencies: &[&str]) {
+        self.add(name, Place::Workspace(dir.to_owned()), dependencies);
+    }
+
+    /// Adds a local crate outside the workspace root.
+    pub(crate) fn add_outside_crate(&mut self, name: &str, dependencies: &[&str]) {
+        self.add(name, Place::Outside, dependencies);
+    }
+
+    /// Adds a third-party crate, version 1.0.0, served from a local copy
+    /// of the registry. Its dependencies must be third-party crates.
+    pub(crate) fn add_third_party(&mut self, name: &str, dependencies: &[&str]) {
+        self.add(name, Place::ThirdParty, dependencies);
+    }
+
+    fn add(&mut self, name: &str, place: Place, dependencies: &[&str]) {
         self.crates.push(FixtureCrate {
             name: name.to_owned(),
+            place,
             dependencies: Vec::new(),
             manifest_tail: String::new(),
             files: vec![("src/lib.rs".to_owned(), String::new())],
@@ -44,15 +98,17 @@ impl Fixture {
         }
     }
 
-    /// Adds a normal path dependency.
+    /// Adds a normal dependency on another crate of the fixture.
     pub(crate) fn depend(&mut self, from: &str, to: &str) {
-        self.dependency_line(from, &format!("{to} = {{ path = \"../{to}\" }}"));
+        if let Some(found) = self.find(from) {
+            found.dependencies.push(Dependency::On(to.to_owned()));
+        }
     }
 
     /// Adds a raw line to a crate's `[dependencies]` table.
     pub(crate) fn dependency_line(&mut self, name: &str, line: &str) {
         if let Some(found) = self.find(name) {
-            found.dependencies.push(line.to_owned());
+            found.dependencies.push(Dependency::Line(line.to_owned()));
         }
     }
 
@@ -73,34 +129,69 @@ impl Fixture {
         }
     }
 
-    /// The crate names, in the order they were added.
+    /// The names of the workspace crates, in the order they were added.
     pub(crate) fn names(&self) -> Vec<String> {
-        self.crates.iter().map(|found| found.name.clone()).collect()
+        self.crates
+            .iter()
+            .filter(|found| matches!(found.place, Place::Workspace(_)))
+            .map(|found| found.name.clone())
+            .collect()
     }
 
     fn find(&mut self, name: &str) -> Option<&mut FixtureCrate> {
         self.crates.iter_mut().find(|found| found.name == name)
     }
 
-    /// Writes the workspace into an empty `dir` and returns its manifest.
+    /// A crate's directory relative to the fixture's directory.
+    fn dir_of(found: &FixtureCrate) -> String {
+        match &found.place {
+            Place::Workspace(dir) => format!("{WORKSPACE}/{dir}"),
+            Place::Outside => format!("{OUTSIDE}/{}", found.name),
+            Place::ThirdParty => format!("{VENDOR}/{}", found.name),
+        }
+    }
+
+    /// The manifest line for a dependency of `from` on the crate `to`.
+    fn dependency_text(&self, from: &FixtureCrate, to: &str) -> String {
+        let target = self.crates.iter().find(|found| found.name == to);
+        match target {
+            Some(found) if found.place == Place::ThirdParty => format!("{to} = \"1\""),
+            _ => {
+                let up = "../".repeat(Self::dir_of(from).split('/').count());
+                let dir = target.map_or_else(|| format!("{WORKSPACE}/crates/{to}"), Self::dir_of);
+                format!("{to} = {{ path = \"{up}{dir}\" }}")
+            }
+        }
+    }
+
+    /// Writes the fixture into an empty `dir` and returns the workspace's
+    /// manifest.
     ///
     /// # Errors
     ///
     /// Returns an error if a file cannot be written.
     pub(crate) fn write(&self, dir: &Path) -> Result<PathBuf, Error> {
-        let manifest = dir.join("Cargo.toml");
+        let manifest = dir.join(WORKSPACE).join("Cargo.toml");
         write_file(
             &manifest,
             "[workspace]\nresolver = \"3\"\nmembers = [\"crates/*\"]\n",
         )?;
         for found in &self.crates {
-            let crate_dir = dir.join("crates").join(&found.name);
+            let crate_dir = dir.join(Self::dir_of(found));
+            let version = if found.place == Place::ThirdParty {
+                "1.0.0"
+            } else {
+                "0.0.0"
+            };
             let mut text = format!(
-                "[package]\nname = \"{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\n",
+                "[package]\nname = \"{}\"\nversion = \"{version}\"\nedition = \"2024\"\n\n[dependencies]\n",
                 found.name
             );
-            for line in &found.dependencies {
-                text.push_str(line);
+            for dependency in &found.dependencies {
+                match dependency {
+                    Dependency::On(to) => text.push_str(&self.dependency_text(found, to)),
+                    Dependency::Line(line) => text.push_str(line),
+                }
                 text.push('\n');
             }
             text.push_str(&found.manifest_tail);
@@ -108,14 +199,36 @@ impl Fixture {
             for (path, contents) in &found.files {
                 write_file(&crate_dir.join(path), contents)?;
             }
+            if found.place == Place::ThirdParty {
+                write_file(
+                    &crate_dir.join(".cargo-checksum.json"),
+                    "{\"files\":{},\"package\":null}",
+                )?;
+            }
         }
         Ok(manifest)
+    }
+
+    /// The `--config` values that serve the third-party crates from the
+    /// fixture's local registry copy, if it has any.
+    fn config(&self, dir: &Path) -> Vec<String> {
+        if self
+            .crates
+            .iter()
+            .all(|found| found.place != Place::ThirdParty)
+        {
+            return Vec::new();
+        }
+        vec![
+            "source.crates-io.replace-with='fixture'".to_owned(),
+            format!("source.fixture.directory='{}'", dir.join(VENDOR).display()),
+        ]
     }
 }
 
 impl Fixture {
     /// Writes the fixture into `dir`, reads it back through `cargo metadata`
-    /// and confirms that every crate written was read.
+    /// and confirms that every workspace crate written was read.
     ///
     /// # Errors
     ///
@@ -127,7 +240,7 @@ impl Fixture {
         check: &'static str,
         case: &'static str,
     ) -> Result<Workspace, Error> {
-        let workspace = metadata::load(Some(&self.write(dir)?))?;
+        let workspace = metadata::load(Some(&self.write(dir)?), &self.config(dir))?;
         let mut read: Vec<String> = workspace
             .members
             .iter()

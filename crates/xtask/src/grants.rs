@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::Error;
 use crate::metadata::{self, Workspace};
-use crate::rust_source::{self, TokenKind};
+use crate::rust_source::{self, Token, TokenKind};
 
 #[cfg(test)]
 mod tests;
@@ -59,6 +59,11 @@ pub(crate) enum Violation {
         line: usize,
         name: &'static str,
     },
+    Renamed {
+        file: PathBuf,
+        line: usize,
+        name: &'static str,
+    },
     EvaluatorMissing(PathBuf),
     NotDefined(&'static str),
     Unreadable {
@@ -78,6 +83,12 @@ impl fmt::Display for Violation {
                 formatter,
                 "{}:{line}: names {name}, which only the AFS-3 rights evaluator and the codecs \
                  may use (ADR 0004, N28, point 2)",
+                file.display()
+            ),
+            Self::Renamed { file, line, name } => write!(
+                formatter,
+                "{}:{line}: gives {name} another name, which would carry it outside the \
+                 evaluator unguarded (ADR 0004, N28, point 2)",
                 file.display()
             ),
             Self::EvaluatorMissing(file) => write!(
@@ -131,10 +142,10 @@ fn check(
 ) -> Result<(Vec<Violation>, usize), Error> {
     let mut files = Vec::new();
     for member in &workspace.members {
-        // Build output and hidden directories are not source.
+        // Build output is not source; everything else is read.
         rust_source::files(
             &member.dir,
-            &|name| name == "target" || name.starts_with('.'),
+            &|path| path == workspace.target_dir,
             &mut files,
         )?;
     }
@@ -152,25 +163,20 @@ fn check(
                 continue;
             }
         };
-        let allowed = is_allowed(confinement, shown);
-        let mut previous: Option<&str> = None;
-        for token in &tokens {
-            let TokenKind::Ident(word) = &token.kind else {
-                previous = None;
-                continue;
-            };
-            if let Some(name) = confinement.guarded.iter().find(|name| **name == word) {
-                if !allowed {
+        if is_allowed(confinement, shown) {
+            check_allowed(confinement, shown, &tokens, &mut defined, &mut violations);
+        } else {
+            for token in &tokens {
+                if let TokenKind::Ident(word) = &token.kind
+                    && let Some(name) = confinement.guarded.iter().find(|name| **name == word)
+                {
                     violations.push(Violation::Outside {
                         file: shown.to_path_buf(),
                         line: token.line,
                         name,
                     });
-                } else if previous.is_some_and(|keyword| DEFINING.contains(&keyword)) {
-                    defined.push(*name);
                 }
             }
-            previous = Some(word);
         }
     }
     if files.is_empty() {
@@ -198,6 +204,93 @@ fn check(
     Ok((violations, files.len()))
 }
 
+/// In a file where the guarded names may appear, records each one that is
+/// defined, and reports each one given another name: by `as`, or inside a
+/// type alias outside an `impl` or `trait` block.
+fn check_allowed(
+    confinement: &Confinement,
+    shown: &Path,
+    tokens: &[Token],
+    defined: &mut Vec<&'static str>,
+    violations: &mut Vec<Violation>,
+) {
+    // Whether each open brace began an `impl` or `trait` block.
+    let mut blocks: Vec<bool> = Vec::new();
+    let mut item_is_impl = false;
+    let mut in_alias = false;
+    let mut previous: Option<&str> = None;
+    for (index, token) in tokens.iter().enumerate() {
+        match &token.kind {
+            TokenKind::Punct('{') => {
+                blocks.push(item_is_impl);
+                item_is_impl = false;
+            }
+            TokenKind::Punct('}') => {
+                blocks.pop();
+                item_is_impl = false;
+            }
+            TokenKind::Punct(';') => {
+                in_alias = false;
+                item_is_impl = false;
+            }
+            TokenKind::Punct('=') if previous_alias(tokens, index) => {
+                in_alias = !blocks.iter().any(|is_impl| *is_impl);
+            }
+            TokenKind::Ident(word) if word == "impl" || word == "trait" => item_is_impl = true,
+            TokenKind::Ident(word) => {
+                if let Some(name) = confinement.guarded.iter().find(|name| **name == word) {
+                    let renamed = matches!(
+                        tokens.get(index + 1).map(|next| &next.kind),
+                        Some(TokenKind::Ident(next)) if next == "as"
+                    );
+                    if renamed || in_alias {
+                        violations.push(Violation::Renamed {
+                            file: shown.to_path_buf(),
+                            line: token.line,
+                            name,
+                        });
+                    } else if previous.is_some_and(|keyword| DEFINING.contains(&keyword)) {
+                        defined.push(*name);
+                    }
+                }
+            }
+            _ => {}
+        }
+        previous = match &token.kind {
+            TokenKind::Ident(word) => Some(word),
+            _ => None,
+        };
+    }
+}
+
+/// Whether the `=` at `index` ends the head of a type alias: `type Name =`
+/// or `type Name<...> =`.
+fn previous_alias(tokens: &[Token], index: usize) -> bool {
+    let mut depth = 0_usize;
+    let mut at = index;
+    while let Some(before) = at.checked_sub(1) {
+        at = before;
+        match tokens.get(at).map(|token| &token.kind) {
+            Some(TokenKind::Punct('>')) => depth += 1,
+            Some(TokenKind::Punct('<')) => depth = depth.saturating_sub(1),
+            Some(TokenKind::Ident(word)) if depth == 0 && word == "type" => return true,
+            Some(TokenKind::Ident(_)) if depth > 0 => {}
+            Some(TokenKind::Ident(_)) => {
+                // The alias's own name: the keyword must come right before.
+                return at
+                    .checked_sub(1)
+                    .and_then(|keyword| tokens.get(keyword))
+                    .is_some_and(
+                        |token| matches!(&token.kind, TokenKind::Ident(word) if word == "type"),
+                    );
+            }
+            Some(_) if depth > 0 => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// Checks this repository's workspace, or with `self_test` proves on
 /// planted fixtures that each rule is caught.
 ///
@@ -205,7 +298,7 @@ fn check(
 ///
 /// Returns the violations found, or why the check could not run.
 pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error> {
-    let workspace = metadata::load(None)?;
+    let workspace = metadata::load(None, &[])?;
     if self_test {
         return self_test::run(&workspace.target_dir, output);
     }

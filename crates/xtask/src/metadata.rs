@@ -12,23 +12,47 @@ use crate::json::{self, Value};
 #[cfg(test)]
 mod tests;
 
-/// The workspace members and their resolved dependencies.
+/// The workspace members and every package of the resolved graph.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Workspace {
     pub(crate) root: PathBuf,
     pub(crate) target_dir: PathBuf,
     pub(crate) members: Vec<Member>,
+    /// Every package the graph resolves, the members included.
+    pub(crate) packages: Vec<Package>,
 }
 
 /// One workspace member.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Member {
     pub(crate) name: String,
+    pub(crate) id: String,
     /// The directory holding the member's manifest.
     pub(crate) dir: PathBuf,
-    /// The directory holding the library target's root file, if it has one.
-    pub(crate) lib_dir: Option<PathBuf>,
-    /// Package names of the normal and build dependencies, on any platform
+    /// The library target's root file, if it has one.
+    pub(crate) lib_root: Option<PathBuf>,
+    /// The kinds of every target, such as `lib`, `bin`, `custom-build` (a
+    /// build script) or `test`.
+    pub(crate) target_kinds: Vec<String>,
+}
+
+impl Member {
+    /// The directory holding the library target's root file.
+    pub(crate) fn lib_dir(&self) -> Option<&Path> {
+        self.lib_root.as_deref().and_then(Path::parent)
+    }
+}
+
+/// One package of the resolved graph.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Package {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    /// The directory holding the manifest, for a package that comes from a
+    /// local path rather than a registry or a git repository.
+    pub(crate) path: Option<PathBuf>,
+    pub(crate) member: bool,
+    /// Package ids of the normal and build dependencies, on any platform
     /// and with every feature on. Development dependencies are left out:
     /// they never reach a shipped build.
     pub(crate) dependencies: Vec<String>,
@@ -38,17 +62,21 @@ const COMMAND: &str = "cargo metadata";
 
 /// Runs `cargo metadata` with every feature on and for every platform, and
 /// reads the resolved graph. With no manifest it reads this repository,
-/// with its lock file held fixed.
+/// with its lock file held fixed. Each `config` value is passed as a
+/// `--config` option.
 ///
 /// # Errors
 ///
 /// Returns an error if cargo fails or its output is not the expected graph.
-pub(crate) fn load(manifest: Option<&Path>) -> Result<Workspace, Error> {
+pub(crate) fn load(manifest: Option<&Path>, config: &[String]) -> Result<Workspace, Error> {
     let mut command = Command::new("cargo");
     command.args(["metadata", "--format-version", "1", "--all-features"]);
+    for value in config {
+        command.arg("--config").arg(value);
+    }
     match manifest {
         Some(manifest) => command
-            .arg("--offline")
+            .args(["--offline", "--quiet"])
             .arg("--manifest-path")
             .arg(manifest),
         None => command.arg("--locked"),
@@ -83,26 +111,53 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
         .map(|resolve| array(resolve, "nodes"))
         .ok_or_else(unexpected)??;
 
+    let member_ids = array(&document, "workspace_members")?
+        .iter()
+        .map(|id| id.as_str().ok_or_else(unexpected))
+        .collect::<Result<Vec<_>, _>>()?;
+
     let mut members = Vec::new();
-    for id in array(&document, "workspace_members")? {
-        let id = id.as_str().ok_or_else(unexpected)?;
+    for id in &member_ids {
         let package = find_package(id)?;
         let manifest = PathBuf::from(string(package, "manifest_path")?);
         let dir = manifest.parent().ok_or_else(unexpected)?.to_path_buf();
-        let mut lib_dir = None;
+        let mut lib_root = None;
+        let mut target_kinds = Vec::new();
         for target in array(package, "targets")? {
-            if array(target, "kind")?
-                .iter()
-                .any(|kind| kind.as_str() == Some("lib"))
-            {
-                let source = PathBuf::from(string(target, "src_path")?);
-                lib_dir = Some(source.parent().ok_or_else(unexpected)?.to_path_buf());
+            for kind in array(target, "kind")? {
+                let kind = kind.as_str().ok_or_else(unexpected)?;
+                if kind == "lib" {
+                    lib_root = Some(PathBuf::from(string(target, "src_path")?));
+                }
+                target_kinds.push(kind.to_owned());
             }
         }
-        let node = nodes
+        // Every member must be in the resolved graph.
+        nodes
             .iter()
-            .find(|node| string(node, "id").is_ok_and(|candidate| candidate == id))
+            .find(|node| string(node, "id").is_ok_and(|candidate| candidate == *id))
             .ok_or_else(unexpected)?;
+        members.push(Member {
+            name: string(package, "name")?.to_owned(),
+            id: (*id).to_owned(),
+            dir,
+            lib_root,
+            target_kinds,
+        });
+    }
+
+    let mut resolved = Vec::new();
+    for node in nodes {
+        let id = string(node, "id")?;
+        let package = find_package(id)?;
+        let path = match package.get("source") {
+            None | Some(Value::Null) => {
+                let manifest = PathBuf::from(string(package, "manifest_path")?);
+                Some(manifest.parent().ok_or_else(unexpected)?.to_path_buf())
+            }
+            Some(Value::String(_)) => None,
+            Some(_) => return Err(unexpected()),
+        };
         let mut dependencies = Vec::new();
         for dependency in array(node, "deps")? {
             let mut shipped = false;
@@ -115,14 +170,16 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
                 }
             }
             if shipped {
-                let target = find_package(string(dependency, "pkg")?)?;
-                dependencies.push(string(target, "name")?.to_owned());
+                let target = string(dependency, "pkg")?;
+                find_package(target)?;
+                dependencies.push(target.to_owned());
             }
         }
-        members.push(Member {
+        resolved.push(Package {
+            id: id.to_owned(),
             name: string(package, "name")?.to_owned(),
-            dir,
-            lib_dir,
+            path,
+            member: member_ids.contains(&id),
             dependencies,
         });
     }
@@ -130,6 +187,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
         root: PathBuf::from(string(&document, "workspace_root")?),
         target_dir: PathBuf::from(string(&document, "target_directory")?),
         members,
+        packages: resolved,
     })
 }
 

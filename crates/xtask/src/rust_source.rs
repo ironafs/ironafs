@@ -19,7 +19,8 @@ mod tests;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum TokenKind {
-    /// An identifier, keyword or number. A raw identifier keeps its `r#`.
+    /// An identifier, keyword or number. A raw identifier loses its `r#`:
+    /// `r#std` names the same crate as `std`.
     Ident(String),
     /// `::`
     PathSep,
@@ -53,14 +54,14 @@ pub(crate) struct StdPath {
 }
 
 /// Collects the `.rs` files under `dir` in path order. A directory or file
-/// whose name `skip` accepts is left out with everything under it.
+/// whose path `skip` accepts is left out with everything under it.
 ///
 /// # Errors
 ///
 /// Returns an error if a directory cannot be listed.
 pub(crate) fn files(
     dir: &Path,
-    skip: &impl Fn(&str) -> bool,
+    skip: &impl Fn(&Path) -> bool,
     found: &mut Vec<PathBuf>,
 ) -> Result<(), Error> {
     let mut entries = fs::read_dir(dir)
@@ -72,11 +73,7 @@ pub(crate) fn files(
         .map_err(Error::path_io("list source directory", dir))?;
     entries.sort();
     for path in entries {
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(skip)
-        {
+        if skip(&path) {
             continue;
         }
         if path.is_dir() {
@@ -262,7 +259,7 @@ impl Lexer {
                     .unwrap_or_default()
                     .iter()
                     .collect();
-                self.push(TokenKind::Ident(format!("r#{name}")), line);
+                self.push(TokenKind::Ident(name), line);
                 Ok(())
             }
             ("b" | "c", Some('"'), _) => {
@@ -317,7 +314,8 @@ impl Lexer {
 
 /// Lists every path that names the standard library, with use trees
 /// expanded: `use std::{fs, net::*}` gives `std::fs` and `std::net::*`, and
-/// `self` gives the path it ends.
+/// `self` gives the path it ends. A `std` that no `::` follows is listed as
+/// `std`.
 pub(crate) fn std_paths(tokens: &[Token]) -> Vec<StdPath> {
     let mut paths = Vec::new();
     let mut index = 0;
@@ -340,12 +338,15 @@ pub(crate) fn std_paths(tokens: &[Token]) -> Vec<StdPath> {
             {
                 use_tree(tokens, index + 2, String::new(), &mut found)
             }
-            TokenKind::Ident(word)
-                if word == "std"
-                    && is(tokens, index + 1, &TokenKind::PathSep)
-                    && starts_a_path(tokens, index) =>
-            {
-                expression_path(tokens, index, &mut found)
+            TokenKind::Ident(word) if word == "std" && starts_a_path(tokens, index) => {
+                if is(tokens, index + 1, &TokenKind::PathSep) {
+                    expression_path(tokens, index, &mut found)
+                } else {
+                    // A bare `std`, as a macro argument or before a macro
+                    // fragment, can build any path out of sight.
+                    found.push("std".to_owned());
+                    index + 1
+                }
             }
             _ => index + 1,
         };

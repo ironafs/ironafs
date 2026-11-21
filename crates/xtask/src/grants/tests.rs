@@ -59,9 +59,10 @@ fn member(root: &Path, name: &str, files: &[(&str, &str)]) -> Member {
     }
     Member {
         name: name.into(),
-        lib_dir: Some(dir.join("src")),
+        id: name.into(),
+        lib_root: Some(dir.join("src/lib.rs")),
         dir,
-        dependencies: vec![],
+        target_kinds: vec!["lib".into()],
     }
 }
 
@@ -71,13 +72,14 @@ fn workspace(name: &str, members: impl FnOnce(&Path) -> Vec<Member>) -> Workspac
     Workspace {
         target_dir: root.join("target"),
         members: members(&root),
+        packages: Vec::new(),
         root,
     }
 }
 
 #[test]
 fn check_reports_names_outside_the_module_but_not_in_comments_or_strings() {
-    let workspace = workspace("grants-outside", |root| {
+    let mut workspace = workspace("grants-outside", |root| {
         vec![
             member(
                 root,
@@ -103,31 +105,74 @@ fn check_reports_names_outside_the_module_but_not_in_comments_or_strings() {
                         "src/lib.rs",
                         "fn f() {\n    ironafs_proto::grants::evaluate();\n}\n",
                     ),
-                    ("tests/it/main.rs", "type R = Rights;\n"),
-                    ("target/debug/build.rs", "type R = Rights;\n"),
+                    ("tests/it/main.rs", "type R = r#Rights;\n"),
+                    (".hidden/x.rs", "type R = Rights;\n"),
+                    ("src/target/x.rs", "type R = Rights;\n"),
+                    ("build-output/debug/build.rs", "type R = Rights;\n"),
                 ],
             ),
         ]
     });
+    // Only the workspace's own build output is not read.
+    workspace.target_dir = workspace.root.join("crates/ironafs-cache/build-output");
 
     let (violations, scanned) = check(&workspace, &TEST).unwrap();
 
+    let outside = |file: &str, line, name| Violation::Outside {
+        file: PathBuf::from(file),
+        line,
+        name,
+    };
     assert_eq!(
         violations,
         [
-            Violation::Outside {
-                file: PathBuf::from("crates/ironafs-cache/src/lib.rs"),
-                line: 2,
-                name: "evaluate",
-            },
-            Violation::Outside {
-                file: PathBuf::from("crates/ironafs-cache/tests/it/main.rs"),
-                line: 1,
-                name: "Rights",
-            },
+            outside("crates/ironafs-cache/.hidden/x.rs", 1, "Rights"),
+            outside("crates/ironafs-cache/src/lib.rs", 2, "evaluate"),
+            outside("crates/ironafs-cache/src/target/x.rs", 1, "Rights"),
+            outside("crates/ironafs-cache/tests/it/main.rs", 1, "Rights"),
         ]
     );
-    assert_eq!(scanned, 6);
+    assert_eq!(scanned, 8);
+    fs::remove_dir_all(&workspace.root).unwrap();
+}
+
+#[test]
+fn check_refuses_other_names_for_the_guarded_items_in_allowed_files() {
+    let workspace = workspace("grants-renamed", |root| {
+        vec![member(
+            root,
+            "ironafs-proto",
+            &[
+                (
+                    "src/grants.rs",
+                    "pub struct Rights(u32);\npub fn evaluate() {}\n\
+                     impl core::ops::Not for Rights {\n    type Output = Rights;\n    \
+                     fn not(self) -> Rights { self }\n}\n\
+                     pub type Mask<T> = (Rights, T);\n",
+                ),
+                (
+                    "src/codec/fs.rs",
+                    "pub use crate::grants::{Rights as Mask, evaluate};\n\
+                     pub type Check = fn() -> crate::grants::Rights;\n\
+                     pub type Plain = u32;\nlet x: Rights = y;\n",
+                ),
+            ],
+        )]
+    });
+
+    let renamed = |file: &str, line, name| Violation::Renamed {
+        file: PathBuf::from(file),
+        line,
+        name,
+    };
+    assert_eq!(
+        check(&workspace, &TEST).unwrap().0,
+        [
+            renamed("crates/ironafs-proto/src/codec/fs.rs", 1, "Rights"),
+            renamed("crates/ironafs-proto/src/codec/fs.rs", 2, "Rights"),
+            renamed("crates/ironafs-proto/src/grants.rs", 7, "Rights"),
+        ]
+    );
     fs::remove_dir_all(&workspace.root).unwrap();
 }
 

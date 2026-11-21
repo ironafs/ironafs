@@ -50,6 +50,8 @@ fn in_home(path: &str) -> String {
 fn after() -> Fixture {
     let mut fixture = before();
     fixture.add_crate(HOME, &[]);
+    // An associated type names the type without carrying it anywhere.
+    let first = guarded();
     let definitions: String = CONFINEMENT
         .guarded
         .iter()
@@ -61,6 +63,10 @@ fn after() -> Fixture {
                 format!("pub fn {name}() {{}}\n")
             }
         })
+        .chain([format!(
+            "impl core::ops::Not for {first} {{\n    type Output = {first};\n    \
+             fn not(self) -> {first} {{ self }}\n}}\n"
+        )])
         .collect();
     let uses = format!(
         "use crate::grants::{{{}}};\n",
@@ -116,6 +122,56 @@ const CASES: &[Case] = &[
         expect: |found| is_outside(found, "crates/ironafs-cache/tests/it/main.rs"),
     },
     Case {
+        name: "a guarded name in a hidden directory",
+        build: || {
+            let mut fixture = after();
+            let source = format!("pub fn f(_: {}) {{}}\n", guarded());
+            fixture.file("ironafs-cache", ".hidden/x.rs", Some(&source));
+            fixture
+        },
+        expect: |found| is_outside(found, "crates/ironafs-cache/.hidden/x.rs"),
+    },
+    Case {
+        name: "a guarded name in a source directory named target",
+        build: || {
+            let mut fixture = after();
+            let source = format!("pub fn f(_: {}) {{}}\n", guarded());
+            fixture.file("ironafs-cache", "src/target/x.rs", Some(&source));
+            fixture
+        },
+        expect: |found| is_outside(found, "crates/ironafs-cache/src/target/x.rs"),
+    },
+    Case {
+        name: "a guarded name written as a raw identifier",
+        build: || {
+            let mut fixture = after();
+            let source = format!("pub fn f(_: r#{}) {{}}\n", guarded());
+            fixture.file("ironafs-client", "src/lib.rs", Some(&source));
+            fixture
+        },
+        expect: |found| is_outside(found, "crates/ironafs-client/src/lib.rs"),
+    },
+    Case {
+        name: "a guarded name re-exported under another name in an allowed file",
+        build: || {
+            let mut fixture = after();
+            let source = format!("pub use crate::grants::{} as Other;\n", guarded());
+            fixture.file(HOME, &allowed_file(), Some(&source));
+            fixture
+        },
+        expect: |found| is_renamed(found, &format!("crates/{HOME}/{}", allowed_file())),
+    },
+    Case {
+        name: "a type alias of a guarded name in an allowed file",
+        build: || {
+            let mut fixture = after();
+            let source = format!("pub type Other = crate::grants::{};\n", guarded());
+            fixture.file(HOME, &allowed_file(), Some(&source));
+            fixture
+        },
+        expect: |found| is_renamed(found, &format!("crates/{HOME}/{}", allowed_file())),
+    },
+    Case {
         name: "the evaluator's crate without the evaluator module",
         build: || {
             let mut fixture = after();
@@ -141,6 +197,22 @@ const CASES: &[Case] = &[
 
 fn is_outside(violation: &Violation, path: &str) -> bool {
     matches!(violation, Violation::Outside { file, .. } if file == Path::new(path))
+}
+
+fn is_renamed(violation: &Violation, path: &str) -> bool {
+    matches!(violation, Violation::Renamed { file, .. } if file == Path::new(path))
+}
+
+/// A file, relative to the home crate, in the first allowed directory,
+/// beside the one the clean fixture writes there.
+fn allowed_file() -> String {
+    let dir = CONFINEMENT
+        .allowed
+        .iter()
+        .find(|allowed| allowed.ends_with('/'))
+        .copied()
+        .unwrap_or(CONFINEMENT.evaluator);
+    format!("{}planted.rs", in_home(dir))
 }
 
 /// Runs the clean fixtures, every planted case, and the empty workspace.
@@ -204,6 +276,7 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         root: dir.to_path_buf(),
         target_dir: dir.to_path_buf(),
         members: Vec::new(),
+        packages: Vec::new(),
     };
     let (found, _) = check(&empty, &CONFINEMENT)?;
     if found != [Violation::NothingScanned] {
