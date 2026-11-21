@@ -45,6 +45,10 @@ impl Default for Fake {
                     "#!/bin/sh\ngit push origin main\n".to_owned(),
                 ),
                 (
+                    PathBuf::from(FEATURE).join("commit.sh"),
+                    format!("{COMMIT_OK}\n"),
+                ),
+                (
                     PathBuf::from(FEATURE).join("build.sh"),
                     "cargo build\n".to_owned(),
                 ),
@@ -284,8 +288,14 @@ fn guard_blocks_a_commit_after_a_branch_change_in_the_same_command() {
         "separate command",
     );
     blocked(&format!("git switch main; {COMMIT_OK}"), "separate command");
-    blocked(&format!("git switch main -- && {COMMIT_OK}"), "separate command");
-    blocked(&format!("git checkout main -- && {COMMIT_OK}"), "separate command");
+    blocked(
+        &format!("git switch main -- && {COMMIT_OK}"),
+        "separate command",
+    );
+    blocked(
+        &format!("git checkout main -- && {COMMIT_OK}"),
+        "separate command",
+    );
     blocked("git checkout -B main --", "resets main");
     blocked("git switch -C main --", "resets main");
     allowed(&format!("git checkout -- file.rs && {COMMIT_OK}"));
@@ -531,6 +541,22 @@ fn guard_honours_exported_git_variables() {
         "export GIT_DIR=/repo/main/.git; unset GIT_DIR; {COMMIT_OK}"
     ));
     allowed(&format!("export PATH=/usr/bin; {COMMIT_OK}"));
+}
+
+#[test]
+fn guard_passes_a_command_s_assignments_to_the_shell_it_runs() {
+    for command in [
+        format!("GIT_DIR=/repo/main/.git sh -c \"{COMMIT_OK}\""),
+        "GIT_DIR=/repo/main/.git bash commit.sh".to_owned(),
+        "env GIT_DIR=/repo/main/.git bash commit.sh".to_owned(),
+        "GIT_DIR=/repo/main/.git bash < commit.sh".to_owned(),
+        format!("GIT_DIR=/repo/main/.git eval \"{COMMIT_OK}\""),
+        "GIT_DIR=/repo/main/.git source commit.sh".to_owned(),
+    ] {
+        blocked(&command, ON_MAIN);
+    }
+    allowed("bash commit.sh");
+    allowed("FOO=1 bash commit.sh");
 }
 
 #[test]

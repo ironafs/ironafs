@@ -223,7 +223,8 @@ impl<R: Repo> Guard<'_, R> {
             _ => match self.repo.gh_alias(command) {
                 Ok(Some(expansion)) => {
                     if let Some(script) = expansion.strip_prefix('!') {
-                        self.child_script(script, scope, depth);
+                        let env = scope.env.clone();
+                        self.child_script(script, scope, &env, depth);
                     } else if let Some(words) = self.alias_words(&expansion) {
                         let expanded: Vec<Word> =
                             words.into_iter().chain(rest.iter().cloned()).collect();

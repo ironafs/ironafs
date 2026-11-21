@@ -294,9 +294,17 @@ impl<R: Repo> Guard<'_, R> {
         }
     }
 
-    /// A child shell: directory changes stay inside it.
-    fn child_script(&mut self, script: &str, scope: &mut Scope, depth: usize) {
+    /// A child shell, started with the `GIT_*` environment `env`: directory
+    /// changes and exports stay inside it.
+    fn child_script(
+        &mut self,
+        script: &str,
+        scope: &mut Scope,
+        env: &[(String, Option<String>)],
+        depth: usize,
+    ) {
         let mut child = scope.clone();
+        child.env = env.to_vec();
         self.script(script, &mut child, depth + 1);
         scope.branch_changed |= child.branch_changed;
         scope.config_changed |= child.config_changed;
@@ -434,9 +442,13 @@ impl<R: Repo> Guard<'_, R> {
                 self.wrapped(base, args, stdin, scope, env, depth);
             }
             "env" => self.env(args, stdin, scope, env, depth),
-            "sh" | "bash" | "zsh" | "dash" | "ksh" => self.shell(args, stdin, scope, depth),
+            "sh" | "bash" | "zsh" | "dash" | "ksh" => self.shell(args, stdin, scope, env, depth),
+            // `source` and `eval` run in this shell, with the command's
+            // assignments. The guard keeps them afterwards, as a POSIX shell
+            // does, which can only block more.
             "source" | "." => {
                 if let Some(script) = self.script_file(args.first(), scope) {
+                    scope.env.clone_from(env);
                     self.script(&script, scope, depth + 1);
                 }
             }
@@ -457,7 +469,10 @@ impl<R: Repo> Guard<'_, R> {
             "eval" => {
                 let text: Option<Vec<&str>> = args.iter().map(Word::literal).collect();
                 match text {
-                    Some(parts) => self.script(&parts.join(" "), scope, depth + 1),
+                    Some(parts) => {
+                        scope.env.clone_from(env);
+                        self.script(&parts.join(" "), scope, depth + 1);
+                    }
                     None => self
                         .block("write the text given to eval literally so the guard can read it"),
                 }
@@ -546,7 +561,14 @@ impl<R: Repo> Guard<'_, R> {
         scope.branch_changed |= local.branch_changed;
     }
 
-    fn shell(&mut self, args: &[Word], stdin: &Stdin, scope: &mut Scope, depth: usize) {
+    fn shell(
+        &mut self,
+        args: &[Word],
+        stdin: &Stdin,
+        scope: &mut Scope,
+        env: &[(String, Option<String>)],
+        depth: usize,
+    ) {
         let mut index = 0;
         let mut command_mode = false;
         while let Some(option) = args.get(index).and_then(Word::literal) {
@@ -568,7 +590,7 @@ impl<R: Repo> Guard<'_, R> {
         let operands = args.get(index..).unwrap_or(&[]);
         if command_mode {
             match operands.first().map(Word::literal) {
-                Some(Some(script)) => self.child_script(script, scope, depth),
+                Some(Some(script)) => self.child_script(script, scope, env, depth),
                 Some(None) => {
                     self.block(
                         "write the script given to sh -c literally so the guard can read it",
@@ -580,12 +602,12 @@ impl<R: Repo> Guard<'_, R> {
         }
         if !operands.is_empty() {
             if let Some(script) = self.script_file(operands.first(), scope) {
-                self.child_script(&script, scope, depth);
+                self.child_script(&script, scope, env, depth);
             }
             return;
         }
         match self.stdin_text(stdin, scope) {
-            Text::Known(script) => self.child_script(&script, scope, depth),
+            Text::Known(script) => self.child_script(&script, scope, env, depth),
             Text::Absent => (),
             Text::Unknown | Text::Unreadable(_) => self.block(
                 "the guard cannot read a script piped to a shell's standard input: run the commands directly",
