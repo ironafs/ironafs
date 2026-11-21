@@ -7,9 +7,9 @@ use std::env;
 use std::fmt;
 use std::fs;
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
-use crate::{Error, args::TrailerMode};
+use crate::{Command, Error, args::TrailerMode};
 
 #[cfg(test)]
 mod tests;

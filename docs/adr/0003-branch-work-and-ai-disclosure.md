@@ -3,9 +3,8 @@
 
 # 0003: Branch work and AI disclosure
 
-Status: proposed (2026-11-19). Raised in issue #7. It becomes accepted when
-the owner approves its merge; until then the owner's decision of 2026-11-19
-is applied by hand. Supersedes the parts of
+Status: accepted (2026-11-19), by the owner, at its merge (#10). Raised in
+issue #7. Supersedes the parts of
 [ADR 0002](0002-ai-use-and-attribution.md) named under "What it supersedes".
 
 ## Context
