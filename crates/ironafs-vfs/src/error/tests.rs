@@ -87,7 +87,7 @@ fn out_of_range_reaches_applications_as_invalid_argument() {
 
 #[test]
 fn error_messages_are_lowercase_without_a_trailing_period() {
-    for error in ALL.iter().copied() {
+    for error in ALL {
         let message = error.to_string();
         assert!(!message.is_empty(), "{error:?}");
         assert_eq!(message, message.to_lowercase(), "{error:?}");
