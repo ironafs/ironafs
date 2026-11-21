@@ -25,6 +25,13 @@
 //! possible choices, and reads zero past the end of the input.
 //! [`Source::choice_bytes`] writes a run's choices in that layout.
 //!
+//! For a domain small enough to enumerate, an [`Exhaustive`] sweep runs a
+//! test on every input the same generators can give, up to a bound it
+//! prints, and refuses a larger domain rather than sampling it. The
+//! [`wire`] module gives variants of a known wire message for decoder
+//! tests: single-bit flips, integers near a known one, and fields at all
+//! zeros and all ones.
+//!
 //! This crate is a dev-dependency only: no shipped crate depends on it.
 
 mod capture;
@@ -32,7 +39,10 @@ mod property;
 mod shrink;
 mod source;
 mod splitmix64;
+mod sweep;
+pub mod wire;
 
 pub use property::{Counterexample, Property, Verdict};
 pub use source::Source;
 pub use splitmix64::SplitMix64;
+pub use sweep::{Exhaustive, FailedInput, SweepFailure};

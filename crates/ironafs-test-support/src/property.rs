@@ -198,7 +198,12 @@ impl Property {
             return;
         };
         if counterexample.location.is_some() {
-            self.rerun_loudly(&counterexample.choices, &mut generate, &mut test);
+            rerun_loudly(
+                &self.name,
+                &counterexample.choices,
+                &mut generate,
+                &mut test,
+            );
         }
         panic!("{}", counterexample.report(describe));
     }
@@ -380,29 +385,25 @@ impl Property {
         }
         Ok(())
     }
+}
 
-    /// Runs the test once more on the input `choices` give, with its panic
-    /// printed by the process's panic hook.
-    fn rerun_loudly<T, V: Verdict>(
-        &self,
-        choices: &[u64],
-        generate: &mut impl FnMut(&mut Source) -> T,
-        test: &mut impl FnMut(&T) -> V,
-    ) {
+/// Runs the test of the property or sweep `name` once more on the input
+/// `choices` give, with its panic printed by the process's panic hook.
+pub(crate) fn rerun_loudly<T, V: Verdict>(
+    name: &str,
+    choices: &[u64],
+    generate: &mut impl FnMut(&mut Source) -> T,
+    test: &mut impl FnMut(&T) -> V,
+) {
+    eprintln!("property `{name}`: running the minimal input once more, with its panic shown");
+    let rerun = panic::catch_unwind(AssertUnwindSafe(|| {
+        let value = generate(&mut Source::from_choices(choices.to_vec()));
+        test(&value).failure()
+    }));
+    if matches!(rerun, Ok(None)) {
         eprintln!(
-            "property `{}`: running the minimal input once more, with its panic shown",
-            self.name
+            "property `{name}`: the minimal input passed when run again, so the test is not deterministic"
         );
-        let rerun = panic::catch_unwind(AssertUnwindSafe(|| {
-            let value = generate(&mut Source::from_choices(choices.to_vec()));
-            test(&value).failure()
-        }));
-        if matches!(rerun, Ok(None)) {
-            eprintln!(
-                "property `{}`: the minimal input passed when run again, so the test is not deterministic",
-                self.name
-            );
-        }
     }
 }
 
@@ -426,15 +427,18 @@ impl<E: fmt::Display> Verdict for Result<(), E> {
 }
 
 /// How a test failed on one input.
-struct Failure {
+pub(crate) struct Failure {
     /// The panic message or the error's text.
-    message: String,
+    pub(crate) message: String,
     /// Where the panic was raised; `None` for an error.
-    location: Option<String>,
+    pub(crate) location: Option<String>,
 }
 
 /// Runs `test` on `value` and returns its failure, if any.
-fn test_failure<T, V: Verdict>(test: &mut impl FnMut(&T) -> V, value: &T) -> Option<Failure> {
+pub(crate) fn test_failure<T, V: Verdict>(
+    test: &mut impl FnMut(&T) -> V,
+    value: &T,
+) -> Option<Failure> {
     match catch_quietly(|| test(value)) {
         Ok(verdict) => verdict.failure().map(|message| Failure {
             message,
@@ -556,12 +560,7 @@ impl<T> Counterexample<T> {
              minimal choices: {:?}\n\
              shrunk in {} runs{budget}\n\
              replay with {SEED_VARIABLE}={}\n\
-             pin it with a regression test in tests/it/regressions.rs, \
-             calling this property's generator and test:\n\
-             #[test]\n\
-             fn {}() {{\n    \
-             Property::new({:?}).regression(&{:?}, generate, test);\n\
-             }}",
+             {}",
             self.name,
             u64::from(self.case) + 1,
             self.cases,
@@ -571,9 +570,7 @@ impl<T> Counterexample<T> {
             self.choices,
             self.shrink_runs,
             SeedText(self.seed),
-            regression_test_name(&self.name),
-            self.name,
-            self.choices,
+            regression_snippet(&self.name, &self.choices),
         )
     }
 }
@@ -591,6 +588,20 @@ impl fmt::Display for SeedText {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{:#018x}", self.0)
     }
+}
+
+/// The end of a failure report: a regression test for the property or
+/// sweep `name` that replays `choices`, ready to paste.
+pub(crate) fn regression_snippet(name: &str, choices: &[u64]) -> String {
+    format!(
+        "pin it with a regression test in tests/it/regressions.rs, \
+         calling this property's generator and test:\n\
+         #[test]\n\
+         fn {}() {{\n    \
+         Property::new({name:?}).regression(&{choices:?}, generate, test);\n\
+         }}",
+        regression_test_name(name),
+    )
 }
 
 /// The name of the regression test the report prints: the property's

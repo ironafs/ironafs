@@ -6,5 +6,6 @@
 //! Integration tests for `ironafs-test-support`, through its public API.
 
 mod bulk_bytes;
+mod exhaustive;
 mod property;
 mod regressions;
