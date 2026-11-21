@@ -151,8 +151,10 @@ jobs:
             done
           done
       - name: Run the tests that need root, each named
-        # The id-change and set-id exec resets of the dumpable attribute,
-        # and a peer under another uid, through nextest's target runner.
+        # The dumpable attribute after an exec under another uid and after
+        # a set-id exec (the direct id-change reset is not observed: no
+        # site changes an id), and a peer under another uid, through
+        # nextest's target runner.
         timeout-minutes: 10
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo
