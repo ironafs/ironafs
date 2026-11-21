@@ -21,6 +21,7 @@ const CHECK: &str = "check-deps";
 const FIXTURE_THIRD_PARTY: ThirdPartyLists = &[
     ("ironafs-os", &["libc"]),
     ("ironafs-gss", &["gss-ffi", "libc"]),
+    ("ironafs-sim", &[]),
 ];
 
 /// A workspace the rules allow, with one crate of each kind, a development
@@ -418,6 +419,14 @@ const CASES: &[Case] = &[
         expect: &[
             |found| matches!(found, Violation::ThirdParty { from, to } if from == "ironafs-xdr" && to == "bytes"),
         ],
+    },
+    Case {
+        name: "the simulator on an async runtime",
+        plant: |fixture| {
+            fixture.add_third_party("tokio", &[]);
+            fixture.depend("ironafs-sim", "tokio");
+        },
+        expect: &[|found| is_third_party(found, "ironafs-sim", "tokio")],
     },
     Case {
         name: "a layer crate on a third-party crate",

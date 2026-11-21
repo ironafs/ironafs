@@ -1,0 +1,75 @@
+ironafs-sim trace 1
+d0 sched run sample seed=3 incarnation=0 plants=-
+d0 sched spawn t0 reader
+d0 sched spawn t1 reader
+d0 sched spawn t2 writer
+d0 sched spawn t3 writer
+d0 sched decide [t0,t1,t2,t3] pick=3 drawn draws=1 at=1908055737744326146
+d0 t3 op bump file:f
+d0 t3 call c0 01
+d1 sched decide [t0,t1,t2] pick=0 drawn draws=2 at=1908055737744336146
+d1 t0 op fetch file:f
+d1 t0 call c1 0001601e4f
+d2 sched decide [t1,t2] pick=1 drawn draws=3 at=1908055737744346146
+d2 t2 op bump file:f
+d2 t2 call c2 01
+d3 sched decide [t1] pick=0 drawn draws=4 at=1908055737744356146
+d3 t1 op fetch file:f
+d3 t1 call c3 004b1a1740
+d4 sched time +1992977
+d4 sched decide [delivery#2] pick=0 drawn draws=5 at=1908055737746359123
+d4 world reply c2 0000000000000008
+d5 sched decide [t2] pick=0 drawn draws=6 at=1908055737746369123
+d5 t2 waited signalled
+d5 t2 op bumped file:f 8
+d5 t2 end returned
+d6 sched time +623391
+d6 sched decide [delivery#0] pick=0 drawn draws=7 at=1908055737747002514
+d6 world reply c0 0000000000000009
+d7 sched decide [t3] pick=0 drawn draws=8 at=1908055737747012514
+d7 t3 waited signalled
+d7 t3 op bumped file:f 9
+d7 t3 end returned
+d8 sched time +219383
+d8 sched decide [delivery#3] pick=0 drawn draws=9 at=1908055737747241897
+d8 world reply c3 00000000000000098ff34785799e5cbd
+d9 sched decide [t1] pick=0 drawn draws=10 at=1908055737747251897
+d9 t1 waited signalled
+d9 t1 op fetched file:f 9
+d10 sched time +1448306
+d10 sched decide [delivery#1] pick=0 drawn draws=11 at=1908055737748710203
+d10 world reply c1 00000000000000098ff34785799e5cbd
+d11 sched decide [t0] pick=0 drawn draws=12 at=1908055737748720203
+d11 t0 waited signalled
+d11 t0 op fetched file:f 9
+d12 sched time +481694
+d12 sched decide [t1] pick=0 drawn draws=13 at=1908055737749211897
+d12 t1 waited deadline-passed
+d12 t1 op fetch file:f
+d12 t1 call c4 001a03f17c
+d13 sched time +438306
+d13 sched decide [t0] pick=0 drawn draws=14 at=1908055737749660203
+d13 t0 waited deadline-passed
+d13 t0 op fetch file:f
+d13 t0 call c5 003c090c7c
+d14 sched time +1056992
+d14 sched decide [delivery#5] pick=0 drawn draws=15 at=1908055737750727195
+d14 world reply c5 00000000000000098ff34785799e5cbd
+d15 sched decide [t0] pick=0 drawn draws=16 at=1908055737750737195
+d15 t0 waited signalled
+d15 t0 op fetched file:f 9
+d16 sched time +1104399
+d16 sched decide [delivery#4] pick=0 drawn draws=17 at=1908055737751851594
+d16 world reply c4 00000000000000098ff34785799e5cbd
+d17 sched decide [t1] pick=0 drawn draws=18 at=1908055737751861594
+d17 t1 waited signalled
+d17 t1 op fetched file:f 9
+d18 sched time +985601
+d18 sched decide [t0] pick=0 drawn draws=19 at=1908055737752857195
+d18 t0 waited deadline-passed
+d18 t0 end returned
+d19 sched time +2914399
+d19 sched decide [t1] pick=0 drawn draws=20 at=1908055737755781594
+d19 t1 waited deadline-passed
+d19 t1 end returned
+d20 sched end ok

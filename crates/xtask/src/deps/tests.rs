@@ -360,8 +360,11 @@ fn graph_violations_limit_third_party_crates_of_every_shipped_crate() {
             third_party("ironafs-client", "bytes"),
             third_party("ironafs-net", "bytes"),
             third_party("ironafs-cli", "bytes"),
+            third_party("ironafs-sim", "bytes"),
         ]
     );
+    // A test-only crate is limited only when its list is named: a shipped
+    // crate missing from the lists may use none, a test-only one any.
     let lists: ThirdPartyLists = &[("ironafs-client", &["bytes"])];
     assert_eq!(graph_violations(&graph, lists).len(), 4);
 }
@@ -487,7 +490,10 @@ fn graph_violations_keep_layers_and_drivers_to_their_lists_and_the_core_off_driv
 fn third_party_lists_name_every_shipped_crate_and_start_empty() {
     for (name, kind) in CRATES {
         let listed = THIRD_PARTY.iter().find(|(listed, _)| listed == name);
-        if matches!(kind, Kind::TestOnly | Kind::Automation) {
+        if *name == "ironafs-sim" {
+            // Test-only, and limited all the same: no async runtime.
+            assert_eq!(listed.map(|(_, allowed)| allowed.len()), Some(0), "{name}");
+        } else if matches!(kind, Kind::TestOnly | Kind::Automation) {
             assert!(listed.is_none(), "{name}");
         } else {
             assert_eq!(listed.map(|(_, allowed)| allowed.len()), Some(0), "{name}");
