@@ -788,6 +788,28 @@ const CASES: &[Case] = &[
         expect: &[|found| is_planted(found, "$i::")],
     },
     Case {
+        name: "include! called through a macro fragment",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "macro_rules! call { ($m:ident) => { $m!(\"../../ironafs-net/src/lib.rs\"); }; }\n\
+                 call!(include);\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "$m!")],
+    },
+    Case {
+        name: "a path attribute built from a macro fragment",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "macro_rules! load { ($a:meta) => { #[$a] mod net; }; }\n\
+                 load!(path = \"../../ironafs-net/src/lib.rs\");\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "#[$")],
+    },
+    Case {
         name: "a module loaded by a path attribute",
         plant: |fixture| {
             plant_source(

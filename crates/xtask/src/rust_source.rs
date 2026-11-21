@@ -391,6 +391,22 @@ fn paths(tokens: &[Token]) -> Vec<(StdPath, bool)> {
     paths
 }
 
+/// The name of an identifier token, raw or not.
+pub(crate) fn ident(token: Option<&Token>) -> Option<&str> {
+    match token.map(|token| &token.kind) {
+        Some(TokenKind::Ident(word)) => Some(word),
+        _ => None,
+    }
+}
+
+/// The character of a punctuation token.
+pub(crate) fn punct(token: Option<&Token>) -> Option<char> {
+    match token.map(|token| &token.kind) {
+        Some(TokenKind::Punct(next)) => Some(*next),
+        _ => None,
+    }
+}
+
 fn is(tokens: &[Token], index: usize, kind: &TokenKind) -> bool {
     tokens.get(index).is_some_and(|token| &token.kind == kind)
 }

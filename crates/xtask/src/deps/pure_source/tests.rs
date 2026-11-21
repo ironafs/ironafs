@@ -75,7 +75,9 @@ const HIDDEN: &str = "thread::sleep(d);\n\
                       #[cfg_attr(test, path = \"other.rs\")]\nmod other;\n\
                       #![path = \"x\"]\n\
                       unsafe extern \"C\" { safe fn getpid() -> i32; }\n\
-                      core::arch::global_asm!(\"nop\");\n";
+                      core::arch::global_asm!(\"nop\");\n\
+                      macro_rules! c { ($m:ident) => { $m!(\"../x.rs\") }; }\n\
+                      macro_rules! a { ($a:meta) => { #[$a] mod x; }; }\n";
 
 #[test]
 fn hidden_names_find_what_reaches_the_system_without_a_std_path() {
@@ -96,6 +98,8 @@ fn hidden_names_find_what_reaches_the_system_without_a_std_path() {
             (12, "unsafe".into()),
             (12, "extern".into()),
             (13, "global_asm!".into()),
+            (14, "$m!".into()),
+            (15, "#[$".into()),
         ]
     );
 }

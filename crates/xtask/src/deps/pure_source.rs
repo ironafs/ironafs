@@ -5,14 +5,14 @@
 //! point 2): it may use threads, but makes no socket or operating-system
 //! call, and reads clocks and randomness only through the seams of
 //! `ironafs-time` (coding standards rule 7). The standard library is not a
-//! crate edge, so the graph alone cannot show it. The pure crates need no
-//! scan: `check-pure` builds them where the standard library does not
-//! exist.
+//! crate edge, so the graph alone cannot show it. The pure crates are not
+//! scanned here: `check-pure` builds them where the standard library does
+//! not exist, and holds their source to its own rules.
 //!
 //! The scan reads tokens, not a compiled crate, so it also refuses what
 //! would hide a path from it: renames and globs of the standard library,
-//! imported or renamed built-in macros, macro path fragments, `#[path]` and
-//! `include!`. It refuses `unsafe` and `extern` too, which reach the
+//! imported or renamed built-in macros, macro path fragments, macros called
+//! and attributes built through a fragment, `#[path]` and `include!`. It refuses `unsafe` and `extern` too, which reach the
 //! operating system with no path at all.
 
 use std::path::{Path, PathBuf};
@@ -21,7 +21,7 @@ use super::Kind;
 use super::Violation;
 use crate::Error;
 use crate::metadata::Workspace;
-use crate::rust_source::{self, Token, TokenKind};
+use crate::rust_source::{self, Token, TokenKind, ident, punct};
 
 #[cfg(test)]
 mod tests;
@@ -276,20 +276,6 @@ pub(super) fn gates_every_test_module(tokens: &[Token]) -> bool {
     declared
 }
 
-fn ident(token: Option<&Token>) -> Option<&str> {
-    match token.map(|token| &token.kind) {
-        Some(TokenKind::Ident(word)) => Some(word),
-        _ => None,
-    }
-}
-
-fn punct(token: Option<&Token>) -> Option<char> {
-    match token.map(|token| &token.kind) {
-        Some(TokenKind::Punct(next)) => Some(*next),
-        _ => None,
-    }
-}
-
 fn check_file(file: &Path, shown: &Path, violations: &mut Vec<Violation>) -> Result<(), Error> {
     match rust_source::read(file)? {
         Ok(tokens) => {
@@ -328,11 +314,13 @@ fn check_file(file: &Path, shown: &Path, violations: &mut Vec<Violation>) -> Res
 /// Finds what reaches the operating system without a standard-library path
 /// the scan could see: `unsafe`, `extern` and assembly, hidden clocks, the
 /// standard hash collections and their random state, printing macros,
-/// macro path fragments, `#[path]` and `include!`. A raw identifier such
+/// macro path fragments, macros called and attributes built through a
+/// fragment, `#[path]` and `include!`. A raw identifier such
 /// as `r#unsafe` is a name, not the keyword.
 pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str)> {
     let mut found = Vec::new();
     let mut attribute_depth: Option<usize> = None;
+    let mut fragment_reported = false;
     for (index, token) in tokens.iter().enumerate() {
         let after = tokens.get(index + 1);
         let line = token.line;
@@ -358,18 +346,35 @@ pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str
                 if attribute_depth.is_none() && punct(bracket) == Some('[') {
                     // The bracket itself is counted when it is reached.
                     attribute_depth = Some(0);
+                    fragment_reported = false;
                 }
             }
             TokenKind::Punct('$') => {
-                if let Some(fragment) = ident(after).filter(|name| *name != "crate")
-                    && tokens
-                        .get(index + 2)
-                        .is_some_and(|token| token.kind == TokenKind::PathSep)
+                let fragment = ident(after).filter(|name| *name != "crate");
+                let next = tokens.get(index + 2);
+                if attribute_depth.is_some() && !fragment_reported {
+                    fragment_reported = true;
+                    found.push((
+                        line,
+                        "#[$".to_owned(),
+                        "an attribute built from a macro fragment can hide #[path] out of sight",
+                    ));
+                } else if let Some(fragment) = fragment
+                    && next.is_some_and(|token| token.kind == TokenKind::PathSep)
                 {
                     found.push((
                         line,
                         format!("${fragment}::"),
                         "a macro path fragment can name the standard library out of sight",
+                    ));
+                } else if let Some(fragment) = fragment
+                    && punct(next) == Some('!')
+                {
+                    found.push((
+                        line,
+                        format!("${fragment}!"),
+                        "a macro called through a fragment can be include! or a printing macro \
+                         out of sight",
                     ));
                 }
             }
