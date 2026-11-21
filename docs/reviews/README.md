@@ -35,6 +35,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-13-check-deps](2026-11-21-m2a-13-check-deps.md) | Issue #46: the `xtask` dependency, pure-crate and grant checks |
 | [2026-11-21-m2-plus-plan](2026-11-21-m2-plus-plan.md) | Issue #41: the M2+ plan and wave one's issue texts |
 | [2026-11-21-m1-close-sweep](2026-11-21-m1-close-sweep.md) | The documentation sweep against ADR 0004 at M1's exit |
+| [2026-11-21-adr-0006-review](2026-11-21-adr-0006-review.md) | Issue #52: ADR 0006, what an unprotected Rx packet may change |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
