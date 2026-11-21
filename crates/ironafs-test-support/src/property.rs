@@ -219,14 +219,14 @@ impl Property {
                 continue;
             };
             let shrunk = shrink(
-                source.into_record(),
+                source.into_recording(),
                 (value, failure),
                 self.shrink_budget,
                 |choices| {
                     let mut replay = Source::from_choices(choices.to_vec());
                     let value = catch_quietly(|| generate(&mut replay)).ok()?;
                     let failure = test_failure(test, &value)?;
-                    Some((replay.into_record(), (value, failure)))
+                    Some((replay.into_recording(), (value, failure)))
                 },
             );
             let (value, failure) = shrunk.payload;

@@ -309,3 +309,71 @@ fn vec_of_empty_length_range_panics_with_message() {
         Some(&"vec_of needs a non-empty length range")
     );
 }
+
+#[test]
+fn vec_of_records_a_span_for_each_element_past_minimum() {
+    let mut source = Source::from_choices(vec![4, 1, 1, 5, 6, 1, 7, 8, 0, 9]);
+    let values = source.vec_of(1..=4, |source| (source.u8(), source.u8()));
+    assert_eq!(values, vec![(4, 1), (5, 6), (7, 8)]);
+    assert_eq!(source.u8(), 9);
+    let recording = source.into_recording();
+    assert_eq!(recording.choices, vec![4, 1, 1, 5, 6, 1, 7, 8, 0, 9]);
+    assert_eq!(recording.spans, vec![2..5, 5..8]);
+}
+
+#[test]
+fn nested_vec_of_records_outer_spans_before_inner_ones() {
+    let mut source = Source::from_choices(vec![1, 1, 3, 1, 4, 0, 0]);
+    let values = source.vec_of(0..=2, |source| source.vec_of(0..=2, Source::u8));
+    assert_eq!(values, vec![vec![3, 4]]);
+    assert_eq!(source.into_recording().spans, vec![0..6, 1..3, 3..5]);
+}
+
+#[test]
+fn string_replays_code_points_without_surrogates() {
+    // Choice 0xd800 is the first scalar value after the surrogates.
+    let mut source = Source::from_choices(vec![1, 0xe9, 1, 0xd800, 1, 0x41, 0]);
+    assert_eq!(source.string(16), "\u{e9}\u{e000}A");
+    let recording = source.into_recording();
+    assert_eq!(recording.spans, vec![0..2, 2..4, 4..6]);
+}
+
+#[test]
+fn string_stops_at_its_byte_cap() {
+    // Two bytes left after "é": a three-byte choice is reduced to fit.
+    let mut source = Source::from_choices(vec![1, 0xe9, 1, 0xd800, 1, 0x41]);
+    let text = source.string(3);
+    assert!(text.len() <= 3, "{text:?}");
+    assert_eq!(text.chars().next(), Some('\u{e9}'));
+    assert_eq!(Source::from_choices(vec![1, 0x41, 1]).string(1), "A");
+}
+
+#[test]
+fn ascii_string_reduces_choices_to_ascii() {
+    let mut source = Source::from_choices(vec![1, 0xe9, 0]);
+    assert_eq!(source.ascii_string(8), "i");
+}
+
+#[test]
+fn fresh_strings_stay_within_cap_and_cover_ranges() {
+    let mut source = Source::from_seed(11);
+    let (mut ascii, mut wider, mut astral, mut lengths) = (false, false, false, [false; 13]);
+    for _ in 0..2000 {
+        let text = source.string(12);
+        assert!(text.len() <= 12, "{text:?}");
+        if let Some(seen) = lengths.get_mut(text.len()) {
+            *seen = true;
+        }
+        for character in text.chars() {
+            match character.len_utf8() {
+                1 => ascii = true,
+                4 => astral = true,
+                _ => wider = true,
+            }
+        }
+        let text = source.ascii_string(12);
+        assert!(text.len() <= 12 && text.is_ascii(), "{text:?}");
+    }
+    assert!(ascii && wider && astral);
+    assert!(lengths.iter().all(|seen| *seen), "{lengths:?}");
+}

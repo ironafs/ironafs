@@ -4,6 +4,7 @@
 //! Tests for shrinking choice sequences: known minima and bounded runs.
 
 use super::{Shrunk, shrink};
+use crate::source::Recording;
 use crate::{Source, SplitMix64};
 
 /// Replays `choices` through `generate` and returns the record and value
@@ -11,11 +12,11 @@ use crate::{Source, SplitMix64};
 fn replay_oracle<T>(
     mut generate: impl FnMut(&mut Source) -> T,
     mut failing: impl FnMut(&T) -> bool,
-) -> impl FnMut(&[u64]) -> Option<(Vec<u64>, T)> {
+) -> impl FnMut(&[u64]) -> Option<(Recording, T)> {
     move |choices| {
         let mut source = Source::from_choices(choices.to_vec());
         let value = generate(&mut source);
-        failing(&value).then(|| (source.into_record(), value))
+        failing(&value).then(|| (source.into_recording(), value))
     }
 }
 
@@ -32,7 +33,7 @@ fn shrink_first_failure<T>(
         let value = generate(&mut source);
         if failing(&value) {
             let oracle = replay_oracle(&mut generate, &mut failing);
-            return shrink(source.into_record(), value, budget, oracle);
+            return shrink(source.into_recording(), value, budget, oracle);
         }
     }
     panic!("no failing input found");
@@ -149,12 +150,12 @@ fn shrink_result_still_fails() {
 
 /// Fails for an unpredictable half of all choice sequences, so no pass can
 /// rely on failures being monotone in the choices.
-fn erratic(choices: &[u64]) -> Option<(Vec<u64>, Vec<u64>)> {
+fn erratic(choices: &[u64]) -> Option<(Recording, Vec<u64>)> {
     let mut hash = SplitMix64::new(choices.len() as u64);
     for choice in choices {
         hash = SplitMix64::new(hash.next_u64() ^ choice);
     }
-    (hash.next_u64() & 1 == 1).then(|| (choices.to_vec(), choices.to_vec()))
+    (hash.next_u64() & 1 == 1).then(|| (choices.to_vec().into(), choices.to_vec()))
 }
 
 fn erratic_start() -> Vec<u64> {
@@ -170,7 +171,7 @@ fn erratic_start() -> Vec<u64> {
 #[test]
 fn shrink_erratic_property_stops_at_budget() {
     let start = erratic_start();
-    let shrunk = shrink(start.clone(), start, 20, erratic);
+    let shrunk = shrink(start.clone().into(), start, 20, erratic);
     assert_eq!(shrunk.runs, 20);
     assert!(shrunk.budget_exhausted);
     assert!(erratic(&shrunk.payload).is_some());
@@ -179,7 +180,7 @@ fn shrink_erratic_property_stops_at_budget() {
 #[test]
 fn shrink_erratic_property_terminates_without_reaching_large_budget() {
     let start = erratic_start();
-    let shrunk = shrink(start.clone(), start.clone(), u32::MAX, erratic);
+    let shrunk = shrink(start.clone().into(), start.clone(), u32::MAX, erratic);
     assert!(!shrunk.budget_exhausted);
     assert!(shrunk.runs < 1_000_000, "{}", shrunk.runs);
     assert!(shrunk.payload.len() < start.len());
@@ -188,8 +189,8 @@ fn shrink_erratic_property_terminates_without_reaching_large_budget() {
 
 #[test]
 fn shrink_keeps_original_when_nothing_simpler_fails() {
-    let shrunk = shrink(vec![0, 7], "original", 1000, |choices: &[u64]| {
-        (choices == [0, 7]).then(|| (choices.to_vec(), "replayed"))
+    let shrunk = shrink(vec![0, 7].into(), "original", 1000, |choices: &[u64]| {
+        (choices == [0, 7]).then(|| (choices.to_vec().into(), "replayed"))
     });
     assert_eq!(shrunk.payload, "original");
     assert!(!shrunk.budget_exhausted);
@@ -203,7 +204,7 @@ fn shrink_ignores_trailing_zero_choices() {
         |source| (source.u8(), source.u8()),
         |(first, second)| *first == 7 || *second == 7,
     );
-    let shrunk = shrink(vec![0, 7], (0, 7), 1000, oracle);
+    let shrunk = shrink(vec![0, 7].into(), (0, 7), 1000, oracle);
     assert_eq!(shrunk.payload, (7, 0));
 }
 
@@ -216,4 +217,97 @@ fn shrink_lowers_repeated_choices_together() {
         |(first, second)| first == second && *first != 0,
     );
     assert_eq!(shrunk.payload, (1, 1));
+}
+
+/// Shrinks a vector of `fields`-choice elements followed by a trailer,
+/// failing when some element starts at 100 or more and the trailer is 7, and
+/// checks the exact minimum for every seed.
+fn assert_struct_elements_reach_minimum(fields: usize) {
+    for seed in 0..16 {
+        let shrunk = shrink_first_failure(
+            seed,
+            100_000,
+            |source| {
+                (
+                    source.vec_of(0..=8, |source| {
+                        (0..fields).map(|_| source.u8()).collect::<Vec<u8>>()
+                    }),
+                    source.u8(),
+                )
+            },
+            |(elements, trailer)| {
+                elements
+                    .iter()
+                    .any(|element| element.first().is_some_and(|first| *first >= 100))
+                    && *trailer == 7
+            },
+        );
+        let mut element = vec![0; fields];
+        if let Some(first) = element.first_mut() {
+            *first = 100;
+        }
+        assert_eq!(
+            shrunk.payload,
+            (vec![element], 7),
+            "{fields} fields, seed {seed}"
+        );
+        assert!(!shrunk.budget_exhausted, "{fields} fields, seed {seed}");
+    }
+}
+
+#[test]
+fn shrink_two_field_elements_followed_by_draw_reach_minimum() {
+    for seed in 0..16 {
+        let shrunk = shrink_first_failure(
+            seed,
+            100_000,
+            |source| {
+                (
+                    source.vec_of(0..=8, |source| (source.u8(), source.u8())),
+                    source.u8(),
+                )
+            },
+            |(elements, trailer)| elements.iter().any(|element| element.0 >= 100) && *trailer == 7,
+        );
+        assert_eq!(shrunk.payload, (vec![(100, 0)], 7), "seed {seed}");
+    }
+}
+
+#[test]
+fn shrink_four_field_elements_followed_by_draw_reach_minimum() {
+    assert_struct_elements_reach_minimum(4);
+}
+
+#[test]
+fn shrink_ten_field_elements_followed_by_draw_reach_minimum() {
+    assert_struct_elements_reach_minimum(10);
+}
+
+#[test]
+fn shrink_struct_elements_replay_from_minimal_choices() {
+    let generate = |source: &mut Source| {
+        (
+            source.vec_of(0..=8, |source| (source.u8(), source.u8(), source.u8())),
+            source.u8(),
+        )
+    };
+    let shrunk = shrink_first_failure(2, 100_000, generate, |(elements, trailer)| {
+        elements.iter().any(|element| element.0 >= 100) && *trailer == 7
+    });
+    let replayed = generate(&mut Source::from_choices(shrunk.choices.clone()));
+    assert_eq!(replayed, shrunk.payload);
+    assert_eq!(shrunk.choices, vec![1, 100, 0, 0, 0, 7]);
+}
+
+#[test]
+fn shrink_string_reaches_shortest_lowest_trigger() {
+    for seed in 0..16 {
+        let shrunk = shrink_first_failure(
+            seed,
+            100_000,
+            |source| (source.string(32), source.u8()),
+            |(text, trailer)| text.chars().any(|c| c >= '\u{e9}') && *trailer == 7,
+        );
+        assert_eq!(shrunk.payload, ("\u{e9}".to_owned(), 7), "seed {seed}");
+    }
 }

@@ -198,3 +198,29 @@ fn check_generator_panic_propagates_its_payload() {
         Some(&"pick needs at least one item")
     );
 }
+
+#[test]
+fn run_planted_record_array_shrinks_to_one_record() {
+    // An array of records followed by another field, as in XDR.
+    let generate = |source: &mut Source| {
+        (
+            source.vec_of(0..=8, |source| (source.u32(), source.u8(), source.bool())),
+            source.ascii_string(8),
+        )
+    };
+    for seed in 0..16 {
+        let failure = Property::new("planted record array")
+            .seed(seed)
+            .run(generate, |(records, name)| {
+                assert!(records.iter().all(|record| record.1 < 50) || name.is_empty());
+            })
+            .unwrap_err();
+        assert_eq!(
+            *failure.value(),
+            (vec![(0, 50, false)], "\0".to_owned()),
+            "seed {seed}"
+        );
+        let replayed = generate(&mut Source::from_choices(failure.choices().to_vec()));
+        assert_eq!(replayed, *failure.value(), "seed {seed}");
+    }
+}

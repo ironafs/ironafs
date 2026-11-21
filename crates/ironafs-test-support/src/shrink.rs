@@ -9,6 +9,14 @@
 //! replay reads zero past the end. That order has no infinite descending
 //! chain, so shrinking terminates on its own; the run budget also bounds
 //! how many times the property is run.
+//!
+//! Besides blind passes over runs of choices, the shrinker deletes whole
+//! elements of collections at the spans their draws recorded, so an
+//! element of any number of draws is removed in one step.
+
+use std::ops::Range;
+
+use crate::source::Recording;
 
 #[cfg(test)]
 mod tests;
@@ -35,19 +43,20 @@ pub(crate) struct Shrunk<P> {
     pub(crate) budget_exhausted: bool,
 }
 
-/// Shrinks the failing `choices`, whose run returned `payload`.
+/// Shrinks the failing `recording`, whose run returned `payload`.
 ///
-/// `fails` replays a candidate and returns the choices that run recorded
-/// and its payload if the property failed, or `None` if it passed. It is
-/// called at most `budget` times.
+/// `fails` replays a candidate and returns what that run recorded and its
+/// payload if the property failed, or `None` if it passed. It is called at
+/// most `budget` times.
 pub(crate) fn shrink<P>(
-    choices: Vec<u64>,
+    recording: Recording,
     payload: P,
     budget: u32,
-    fails: impl FnMut(&[u64]) -> Option<(Vec<u64>, P)>,
+    fails: impl FnMut(&[u64]) -> Option<(Recording, P)>,
 ) -> Shrunk<P> {
     let mut shrinker = Shrinker {
-        best: without_trailing_zeros(choices),
+        best: without_trailing_zeros(recording.choices),
+        spans: recording.spans,
         payload,
         runs: 0,
         budget,
@@ -56,6 +65,7 @@ pub(crate) fn shrink<P>(
     };
     loop {
         let before = shrinker.best.clone();
+        shrinker.delete_spans();
         shrinker.delete_chunks();
         shrinker.zero_chunks();
         shrinker.minimise_each();
@@ -74,6 +84,9 @@ pub(crate) fn shrink<P>(
 
 struct Shrinker<P, F> {
     best: Vec<u64>,
+    /// The element spans the run on `best` recorded; they may reach past
+    /// its end, where trailing zeros were removed.
+    spans: Vec<Range<usize>>,
     payload: P,
     runs: u32,
     budget: u32,
@@ -81,7 +94,7 @@ struct Shrinker<P, F> {
     fails: F,
 }
 
-impl<P, F: FnMut(&[u64]) -> Option<(Vec<u64>, P)>> Shrinker<P, F> {
+impl<P, F: FnMut(&[u64]) -> Option<(Recording, P)>> Shrinker<P, F> {
     /// Runs `candidate` if it is simpler than the best so far and budget
     /// remains, and keeps it if it still fails. Returns whether it was kept.
     fn try_candidate(&mut self, candidate: Vec<u64>) -> bool {
@@ -95,10 +108,11 @@ impl<P, F: FnMut(&[u64]) -> Option<(Vec<u64>, P)>> Shrinker<P, F> {
         }
         self.runs += 1;
         match (self.fails)(&candidate) {
-            Some((record, payload)) => {
-                let record = without_trailing_zeros(record);
+            Some((recording, payload)) => {
+                let record = without_trailing_zeros(recording.choices);
                 if shortlex_less(&record, &self.best) {
                     self.best = record;
+                    self.spans = recording.spans;
                     self.payload = payload;
                     true
                 } else {
@@ -106,6 +120,28 @@ impl<P, F: FnMut(&[u64]) -> Option<(Vec<u64>, P)>> Shrinker<P, F> {
                 }
             }
             None => false,
+        }
+    }
+
+    /// Tries removing each recorded element: its "one more" choice and all
+    /// its draws. Deleting a span keeps the sequence well-formed: the
+    /// collection reads its next continuation where the deleted one was,
+    /// and every later draw reads its own choices.
+    fn delete_spans(&mut self) {
+        let mut index = 0;
+        while !self.budget_exhausted {
+            let Some(span) = self.spans.get(index).cloned() else {
+                break;
+            };
+            let end = span.end.min(self.best.len());
+            let start = span.start.min(end);
+            let mut candidate = self.best.clone();
+            candidate.drain(start..end);
+            // A kept candidate brings new spans, and the element that now
+            // sits at `index` is the next one to try.
+            if !self.try_candidate(candidate) {
+                index += 1;
+            }
         }
     }
 

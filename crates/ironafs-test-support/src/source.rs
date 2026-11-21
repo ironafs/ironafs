@@ -9,7 +9,7 @@
 //! The shrinker works on the recorded choices, never on the values, so
 //! any generator built from these draws shrinks without code of its own.
 
-use std::ops::RangeInclusive;
+use std::ops::{Range, RangeInclusive};
 
 use crate::SplitMix64;
 
@@ -47,6 +47,30 @@ enum Origin {
 pub struct Source {
     origin: Origin,
     record: Vec<u64>,
+    spans: Vec<Range<usize>>,
+}
+
+/// The choices a run drew, and where in them each deletable element of a
+/// collection lies.
+#[derive(Debug)]
+pub(crate) struct Recording {
+    /// The choices drawn, in order.
+    pub(crate) choices: Vec<u64>,
+    /// The range of `choices` each deletable element took, outer elements
+    /// before the elements inside them. Removing the choices in one span
+    /// removes that element and leaves every other draw reading its own
+    /// choices.
+    pub(crate) spans: Vec<Range<usize>>,
+}
+
+impl From<Vec<u64>> for Recording {
+    /// A recording with no known elements.
+    fn from(choices: Vec<u64>) -> Self {
+        Self {
+            choices,
+            spans: Vec::new(),
+        }
+    }
 }
 
 impl Source {
@@ -67,6 +91,7 @@ impl Source {
         Self {
             origin: Origin::Fresh(SplitMix64::new(seed)),
             record: Vec::new(),
+            spans: Vec::new(),
         }
     }
 
@@ -80,6 +105,7 @@ impl Source {
                 position: 0,
             },
             record: Vec::new(),
+            spans: Vec::new(),
         }
     }
 
@@ -90,8 +116,44 @@ impl Source {
     }
 
     /// The choices drawn so far, in order.
+    #[cfg(test)]
     pub(crate) fn into_record(self) -> Vec<u64> {
         self.record
+    }
+
+    /// The choices drawn so far and the elements' spans in them.
+    pub(crate) fn into_recording(self) -> Recording {
+        Recording {
+            choices: self.record,
+            spans: self.spans,
+        }
+    }
+
+    /// Draws one optional element: a recorded "one more" choice, which a
+    /// fresh run takes from `more`, then the element from `element` if
+    /// that choice is one and `room` allows it. The continuation choice and
+    /// the element's draws are recorded as one span, so that the shrinker
+    /// can delete the element whole, however many draws it took.
+    fn more_element<T>(
+        &mut self,
+        more: bool,
+        room: bool,
+        element: impl FnOnce(&mut Self) -> T,
+    ) -> Option<T> {
+        let start = self.record.len();
+        if self.draw_with(1, |_| u64::from(more)) == 0 || !room {
+            return None;
+        }
+        // Reserve the span's place first, so that it comes before the spans
+        // of any elements drawn inside this one.
+        let slot = self.spans.len();
+        self.spans.push(start..start);
+        let value = element(self);
+        let end = self.record.len();
+        if let Some(span) = self.spans.get_mut(slot) {
+            span.end = end;
+        }
+        Some(value)
     }
 
     /// Draws one choice in `0..=max` and records it.
@@ -259,13 +321,81 @@ impl Source {
         };
         let mut values: Vec<T> = (0..min).map(|_| element(self)).collect();
         loop {
-            let more = values.len() < target;
-            if self.draw_with(1, |_| u64::from(more)) == 0 || values.len() >= max {
-                break;
+            let (more, room) = (values.len() < target, values.len() < max);
+            match self.more_element(more, room, &mut element) {
+                Some(value) => values.push(value),
+                None => return values,
             }
-            values.push(element(self));
         }
-        values
+    }
+
+    /// Draws a string of at most `max_bytes` bytes of UTF-8, shrinking
+    /// toward fewer characters and lower code points. A fresh run draws
+    /// mostly ASCII, then the rest of the Basic Multilingual Plane, then
+    /// any scalar value.
+    ///
+    /// ```
+    /// use ironafs_test_support::Source;
+    ///
+    /// let text = Source::from_seed(3).string(16);
+    /// assert!(text.len() <= 16);
+    /// ```
+    pub fn string(&mut self, max_bytes: usize) -> String {
+        self.string_below(max_bytes, char::MAX)
+    }
+
+    /// Draws a string of at most `max_bytes` ASCII characters, shrinking
+    /// toward fewer characters and lower code points.
+    pub fn ascii_string(&mut self, max_bytes: usize) -> String {
+        self.string_below(max_bytes, '\u{7f}')
+    }
+
+    /// Draws a string of at most `max_bytes` bytes, each character at most
+    /// `highest`. Like [`Source::vec_of`], every character is preceded by
+    /// a "one more" choice and the string ends with a "no more".
+    fn string_below(&mut self, max_bytes: usize, highest: char) -> String {
+        let target = match &mut self.origin {
+            Origin::Fresh(generator) => {
+                let span = u64::try_from(max_bytes).unwrap_or(u64::MAX);
+                usize::try_from(fresh_choice(generator, span)).unwrap_or(0)
+            }
+            Origin::Replay { .. } => max_bytes,
+        };
+        let mut text = String::new();
+        loop {
+            let room = max_bytes.saturating_sub(text.len());
+            let more = text.chars().count() < target && room > 0;
+            let drawn =
+                self.more_element(more, room > 0, |source| source.char_within(room, highest));
+            match drawn {
+                Some(character) => text.push(character),
+                None => return text,
+            }
+        }
+    }
+
+    /// Draws a character at most `highest` whose UTF-8 encoding fits in
+    /// `room` bytes (at least one), shrinking toward U+0000.
+    fn char_within(&mut self, room: usize, highest: char) -> char {
+        let widest = match room {
+            0 | 1 => '\u{7f}',
+            2 => '\u{7ff}',
+            3 => '\u{ffff}',
+            _ => char::MAX,
+        };
+        let last = scalar_index(widest.min(highest));
+        let choice = self.draw_with(last, |generator| {
+            // The tiers pick how often each range is drawn, not what a
+            // choice means: index n is always the nth scalar value.
+            let tier = generator.next_u64() % 4;
+            let bound = match tier {
+                0 | 1 => scalar_index('\u{7f}'),
+                2 => scalar_index('\u{ffff}'),
+                _ => last,
+            };
+            fresh_choice(generator, bound.min(last))
+        });
+        scalar_at(choice)
     }
 
     /// Draws `None` or `Some` value from `element`, shrinking toward
@@ -326,6 +456,29 @@ impl Source {
         // The index is below the length, so `get` always finds an item.
         items.get(index).unwrap_or(first)
     }
+}
+
+/// The first surrogate code point and how many there are: no `char` has
+/// one, so scalar values are numbered without them.
+const SURROGATES: (u32, u32) = (0xd800, 0x800);
+
+/// The position of `character` among the Unicode scalar values.
+fn scalar_index(character: char) -> u64 {
+    let code = u32::from(character);
+    let (first, count) = SURROGATES;
+    u64::from(if code >= first { code - count } else { code })
+}
+
+/// The scalar value at `index`, or U+0000 past the last one.
+fn scalar_at(index: u64) -> char {
+    let (first, count) = SURROGATES;
+    let code = u32::try_from(index).unwrap_or(u32::MAX);
+    let code = if code >= first {
+        code.saturating_add(count)
+    } else {
+        code
+    };
+    char::from_u32(code).unwrap_or('\0')
 }
 
 /// One fresh draw in this many is a boundary value.
