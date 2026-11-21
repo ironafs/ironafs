@@ -1,9 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Tests of `linux-clock` against the running kernel (ADR 0005, sheet 1:
-//! both clocks advance and never go back across reads). The checks on
-//! invalid values and failures are `clock`'s, with a stand-in.
+//! Tests of `linux-clock` (ADR 0005, sheet 1: both clocks advance and
+//! never go back across reads), against the running kernel, and under Miri
+//! against the foreign function's stand-in. The checks on invalid values
+//! and failures are `clock`'s, with scripted values.
+//!
+//! The two clocks are not compared with each other: a time namespace can
+//! give each its own offset (`time_namespaces(7)`), so the boot clock's
+//! reading need not be at or above the awake clock's.
 
 use super::abi::{CLOCK_BOOTTIME, CLOCK_MONOTONIC};
 use super::{clock_id, read_clock};
@@ -11,6 +16,7 @@ use crate::clock::OsClock;
 
 /// Reads `clock` until it changes, at most a million times; returns the
 /// first and the changed reading.
+#[track_caller]
 fn until_it_moves(clock: OsClock) -> (u64, u64) {
     let first = read_clock(clock).unwrap();
     for _ in 0..1_000_000 {
@@ -24,36 +30,15 @@ fn until_it_moves(clock: OsClock) -> (u64, u64) {
 }
 
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "a real system call: Miri checks the Rust around it through the stand-in tests"
-)]
 fn read_clock_boot_advances_and_never_goes_back() {
     let (first, next) = until_it_moves(OsClock::Boot);
     assert!(next > first);
 }
 
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "a real system call: Miri checks the Rust around it through the stand-in tests"
-)]
 fn read_clock_awake_advances_and_never_goes_back() {
     let (first, next) = until_it_moves(OsClock::Awake);
     assert!(next > first);
-}
-
-#[test]
-#[cfg_attr(
-    miri,
-    ignore = "a real system call: Miri checks the Rust around it through the stand-in tests"
-)]
-fn read_clock_boot_is_never_behind_awake_read_before_it() {
-    for _ in 0..1000 {
-        let awake = read_clock(OsClock::Awake).unwrap();
-        let boot = read_clock(OsClock::Boot).unwrap();
-        assert!(boot >= awake, "boot {boot} behind awake {awake}");
-    }
 }
 
 #[test]

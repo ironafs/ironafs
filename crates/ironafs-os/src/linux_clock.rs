@@ -33,13 +33,16 @@ mod tests;
 /// count or a nanosecond field outside one second, and
 /// [`ClockError::Overflow`] if the time does not fit 64-bit nanoseconds.
 ///
+/// Readings of one clock never go back; readings of the two clocks are
+/// not comparable with each other (a time namespace can offset each on its
+/// own, `time_namespaces(7)`).
+///
 /// ```
 /// use ironafs_os::{OsClock, read_clock};
 ///
-/// let awake = read_clock(OsClock::Awake)?;
-/// let boot = read_clock(OsClock::Boot)?;
-/// // The boot clock counts everything the awake clock does, and suspend.
-/// assert!(boot >= awake);
+/// let before = read_clock(OsClock::Awake)?;
+/// let after = read_clock(OsClock::Awake)?;
+/// assert!(after >= before);
 /// # Ok::<(), ironafs_os::ClockError>(())
 /// ```
 pub fn read_clock(clock: OsClock) -> Result<u64, ClockError> {
