@@ -49,6 +49,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         crate::grants::run(self_test, output)?;
         crate::pure::run(self_test, output)?;
     }
+    crate::guard::run(true, &mut io::empty(), output)?;
 
     check_reuse_result(
         Command::new("reuse").arg("lint").status(),

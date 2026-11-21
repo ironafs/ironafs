@@ -13,6 +13,7 @@ mod guard;
 mod hooks;
 mod json;
 mod metadata;
+mod prepush;
 mod pure;
 mod rust_source;
 mod trailers;
@@ -59,6 +60,8 @@ enum Error {
         check: &'static str,
         violations: Vec<String>,
     },
+    /// The guard blocked a tool call; each entry says what to fix.
+    Blocked(Vec<String>),
     /// A self-test case did not end as planted.
     SelfTest {
         check: &'static str,
@@ -90,7 +93,8 @@ impl Error {
 
     fn exit_code(&self) -> i32 {
         match self {
-            Self::Usage(_) => 2,
+            // Claude Code blocks a tool call only on status 2.
+            Self::Usage(_) | Self::Blocked(_) => 2,
             Self::Failed { status, .. } => {
                 #[cfg(unix)]
                 {
@@ -137,6 +141,12 @@ impl fmt::Display for Error {
                     .iter()
                     .try_for_each(|violation| write!(formatter, "\n  {violation}"))
             }
+            Self::Blocked(fixes) => {
+                write!(formatter, "blocked by the guard:")?;
+                fixes
+                    .iter()
+                    .try_for_each(|fix| write!(formatter, "\n  - {fix}"))
+            }
             Self::SelfTest { check, case, found } => {
                 write!(
                     formatter,
@@ -161,8 +171,10 @@ fn run_task(
         args::Task::CheckDeps { self_test } => deps::run(self_test, output),
         args::Task::CheckGrants { self_test } => grants::run(self_test, output),
         args::Task::CheckPure { self_test } => pure::run(self_test, output),
+        args::Task::Guard { self_test } => guard::run(self_test, &mut io::stdin().lock(), output),
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
+        args::Task::PrePush { remote } => prepush::run(&remote, &mut io::stdin().lock(), output),
         args::Task::Trailers(mode) => trailers::run(mode, output),
     }
 }

@@ -37,7 +37,7 @@ impl fmt::Display for Violation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Rules {
+pub(super) enum Rules {
     MaintainerPr,
     ContributorPr,
     Commit,
@@ -119,7 +119,7 @@ fn head_message() -> Result<String, Error> {
     String::from_utf8(output.stdout).map_err(|_| Error::UnexpectedOutput(COMMAND))
 }
 
-fn validate(message: &str, rules: Rules) -> Result<(), Violation> {
+pub(super) fn validate(message: &str, rules: Rules) -> Result<(), Violation> {
     let lines = message.trim_end().lines();
     let block_len = lines
         .clone()
@@ -272,7 +272,7 @@ impl<'a> Trailers<'a> {
     }
 }
 
-fn valid_model_id(value: &str) -> bool {
+pub(super) fn valid_model_id(value: &str) -> bool {
     value.split_once(':').is_some_and(|(agent, model)| {
         [agent, model].into_iter().all(|id| {
             !id.is_empty()
