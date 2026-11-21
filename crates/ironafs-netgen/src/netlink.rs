@@ -29,9 +29,15 @@ const ALIGN: usize = 4;
 const LINK_BODY: usize = 16;
 const ADDRESS_BODY: usize = 8;
 
+/// An `NLMSG_ERROR` body: the error, then the request's header.
+const ERROR_BODY: usize = 4 + HEADER;
+
+/// An `NLMSG_DONE` body: the dump's status.
+const DONE_BODY: usize = 4;
+
 /// The control message types (`<linux/netlink.h>`). A `NLMSG_NOOP` (1)
 /// received is skipped with every other type not read.
-const NLMSG_NOOP: u16 = 1;
+pub(crate) const NLMSG_NOOP: u16 = 1;
 const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 const NLMSG_OVERRUN: u16 = 4;
@@ -109,14 +115,18 @@ impl Message<'_> {
     }
 }
 
-/// What identifies an address: its family, link, prefix length and bytes
-/// (an IPv4 address in the first four).
+/// What identifies an address: its family, link, prefix length, its own
+/// bytes and its peer's (an IPv4 address in the first four).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct AddressKey {
     pub(crate) family: u8,
     pub(crate) index: u32,
     pub(crate) prefix_length: u8,
+    /// `IFA_LOCAL` when present, else `IFA_ADDRESS`.
     pub(crate) address: [u8; 16],
+    /// `IFA_ADDRESS` when present, else `IFA_LOCAL`: on a point-to-point
+    /// link, the peer's address.
+    pub(crate) peer: [u8; 16],
 }
 
 /// An address and what decides its usability.
@@ -162,10 +172,14 @@ pub(crate) enum Event {
     Rule,
     /// A nexthop object added, changed or removed.
     Nexthop,
-    /// The end of a dump.
+    /// The end of a dump, with status 0 or more.
     Done,
-    /// `NLMSG_ERROR`, with its (negative or zero) error.
+    /// `NLMSG_ERROR` with an error other than 0, or `NLMSG_DONE` with a
+    /// negative status: the request failed.
     Error(i32),
+    /// `NLMSG_ERROR` with error 0: the request of this type, echoed in it,
+    /// was acknowledged.
+    Acknowledged(u16),
     /// `NLMSG_OVERRUN`: data was lost.
     Overrun,
     /// A type this monitor does not read.
@@ -274,21 +288,33 @@ impl<'a> Iterator for Attributes<'a> {
 /// # Errors
 ///
 /// [`Malformed`] for a body shorter than its fixed header, a bad
-/// attribute, a value of the wrong size, or an address message with no
-/// address or another family.
+/// attribute, a value of the wrong size, or an address message of
+/// `AF_INET` or `AF_INET6` with no address. An address message of another
+/// family is skipped once its attributes are walked.
 pub(crate) fn event(message: &Message<'_>) -> Result<Event, Malformed> {
     match message.kind {
         RTM_NEWLINK => Ok(Event::Link(link(message.body)?)),
         RTM_DELLINK => Ok(Event::LinkGone(link(message.body)?.index)),
-        RTM_NEWADDR => Ok(Event::Address(address(message.body)?)),
-        RTM_DELADDR => Ok(Event::AddressGone(address(message.body)?)),
+        RTM_NEWADDR => Ok(address(message.body)?.map_or(Event::Skipped, Event::Address)),
+        RTM_DELADDR => Ok(address(message.body)?.map_or(Event::Skipped, Event::AddressGone)),
         RTM_NEWROUTE..=RTM_GETROUTE => Ok(Event::Route),
         RTM_NEWRULE..=RTM_GETRULE => Ok(Event::Rule),
         RTM_NEWNEXTHOP..=RTM_GETNEXTHOP => Ok(Event::Nexthop),
-        NLMSG_DONE => Ok(Event::Done),
+        NLMSG_DONE => {
+            let status = message.body.get(..DONE_BODY).ok_or(Malformed::ShortBody)?;
+            match i32::from_ne_bytes(array(status)?) {
+                status if status < 0 => Ok(Event::Error(status)),
+                _ => Ok(Event::Done),
+            }
+        }
         NLMSG_ERROR => {
-            let error = message.body.get(..4).ok_or(Malformed::ShortBody)?;
-            Ok(Event::Error(i32::from_ne_bytes(array(error)?)))
+            let fixed = message.body.get(..ERROR_BODY).ok_or(Malformed::ShortBody)?;
+            let error = i32::from_ne_bytes(array(fixed.get(..4).ok_or(Malformed::ShortBody)?)?);
+            if error == 0 {
+                Ok(Event::Acknowledged(u16_at(fixed, 4 + 4)?))
+            } else {
+                Ok(Event::Error(error))
+            }
         }
         NLMSG_OVERRUN => Ok(Event::Overrun),
         _ => Ok(Event::Skipped),
@@ -334,21 +360,28 @@ fn link(body: &[u8]) -> Result<Link, Malformed> {
     Ok(Link { index, state })
 }
 
-/// An address message's body.
-fn address(body: &[u8]) -> Result<Address, Malformed> {
+/// An address message's body; `None` for a family other than `AF_INET` and
+/// `AF_INET6`, which a dump of every family also returns, once its
+/// attributes are walked.
+fn address(body: &[u8]) -> Result<Option<Address>, Malformed> {
     let fixed = body.get(..ADDRESS_BODY).ok_or(Malformed::ShortBody)?;
     let [family, prefix_length, short_flags, scope] =
         array(fixed.get(..4).ok_or(Malformed::ShortBody)?)?;
+    let rest = body.get(ADDRESS_BODY..).unwrap_or_default();
     let size = match family {
         AF_INET => 4,
         AF_INET6 => 16,
-        _ => return Err(Malformed::BadValue),
+        _ => {
+            for attribute in (Attributes { rest }) {
+                attribute?;
+            }
+            return Ok(None);
+        }
     };
     let index = u32_at(fixed, 4)?;
     let mut flags = u32::from(short_flags);
     let mut prefix = None;
     let mut local = None;
-    let rest = body.get(ADDRESS_BODY..).unwrap_or_default();
     for attribute in (Attributes { rest }) {
         let (kind, value) = attribute?;
         match kind {
@@ -372,16 +405,18 @@ fn address(body: &[u8]) -> Result<Address, Malformed> {
         }
     }
     let address = local.or(prefix).ok_or(Malformed::NoAddress)?;
-    Ok(Address {
+    let peer = prefix.unwrap_or(address);
+    Ok(Some(Address {
         key: AddressKey {
             family,
             index,
             prefix_length,
             address,
+            peer,
         },
         flags,
         scope,
-    })
+    }))
 }
 
 /// A request to dump every link or every address, of every family, with

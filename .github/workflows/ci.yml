@@ -244,6 +244,7 @@ jobs:
         linux_statvfs::tests::kernel::the_answer_for_proc_is_what_stat_says
         linux_statvfs::tests::kernel::the_answer_for_the_root_and_temporary_directories_is_what_stat_says
         linux_rtnetlink::tests::kernel::a_dump_is_answered_on_the_request_socket_ending_in_done
+        linux_rtnetlink::tests::kernel::an_address_dump_of_every_family_returns_the_host_s_addresses
         linux_rtnetlink::tests::kernel::a_dump_datagram_larger_than_the_buffer_is_truncated
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -341,7 +342,7 @@ jobs:
           cat statvfs.log
           grep -q ' 2 passed' statvfs.log
       - name: Run the network-change monitor's unprivileged tests
-        # The monitor (ironafs-net) over the target's route sockets: four
+        # The monitor (ironafs-net) over the target's route sockets: six
         # tests, before any step builds as root. Each is checked by name.
         run: |
           cargo nextest run -p ironafs-net --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked \
@@ -350,7 +351,9 @@ jobs:
           for test in the_first_snapshot_publishes_a_generation \
             a_resume_moves_the_generation_then_a_snapshot_moves_it_again \
             a_hook_that_panics_leaves_nothing_readable_and_the_source_halted \
-            dropping_the_handle_stops_the_source_and_ends_both_threads; do
+            dropping_the_handle_stops_the_source_and_ends_both_threads \
+            a_hook_that_panics_on_the_stop_still_lets_both_threads_end \
+            a_hook_that_drops_the_handle_stops_the_source_and_both_threads_end; do
             grep -Eq "PASS .* ironafs-net::it monitor::$test\$" monitor.log
           done
       - name: Run linux-udp6's kernel tests at bindv6only 0 and at 1, each in a network namespace of its own
@@ -420,6 +423,7 @@ jobs:
         linux_statvfs::tests::kernel::the_answer_for_proc_is_what_stat_says
         linux_statvfs::tests::kernel::a_descriptor_that_is_not_a_directory_s_is_refused_and_nothing_stays_open
         linux_rtnetlink::tests::kernel::a_dump_is_answered_on_the_request_socket_ending_in_done
+        linux_rtnetlink::tests::kernel::an_address_dump_of_every_family_returns_the_host_s_addresses
         linux_rtnetlink::tests::kernel::a_dump_datagram_larger_than_the_buffer_is_truncated
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

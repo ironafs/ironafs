@@ -3,7 +3,8 @@
 
 //! The tests of `linux-rtnetlink` (ADR 0005, sheet 23) that need the
 //! running kernel, so Miri does not build them. Unprivileged: a dump
-//! answered on the request socket, ending in `NLMSG_DONE`; a dump datagram
+//! answered on the request socket, ending in `NLMSG_DONE`; an address dump
+//! of every family returning the host's addresses; a dump datagram
 //! read into a buffer too small for it, refused as truncated; a notify
 //! socket joins its groups. In a network namespace of their own, with
 //! `CAP_NET_ADMIN` there (ignored tests, run so): an address, a route and
@@ -37,6 +38,7 @@ const RTM_NEWLINK: u16 = 16;
 const RTM_GETLINK: u16 = 18;
 const RTM_NEWADDR: u16 = 20;
 const RTM_DELADDR: u16 = 21;
+const RTM_GETADDR: u16 = 22;
 const RTM_NEWROUTE: u16 = 24;
 const RTM_DELROUTE: u16 = 25;
 const RTM_NEWRULE: u16 = 32;
@@ -57,9 +59,15 @@ const NLM_F_DUMP: u16 = 0x300;
 /// A request to dump every link: a header and a `struct rtgenmsg` of
 /// family `AF_UNSPEC`, padded to four bytes.
 fn dump_links() -> Vec<u8> {
+    dump(RTM_GETLINK)
+}
+
+/// A request of type `kind` to dump every object of every family, as
+/// [`dump_links`].
+fn dump(kind: u16) -> Vec<u8> {
     let mut request = Vec::new();
     request.extend_from_slice(&20_u32.to_ne_bytes());
-    request.extend_from_slice(&RTM_GETLINK.to_ne_bytes());
+    request.extend_from_slice(&kind.to_ne_bytes());
     request.extend_from_slice(&(NLM_F_REQUEST | NLM_F_DUMP).to_ne_bytes());
     request.extend_from_slice(&1_u32.to_ne_bytes());
     request.extend_from_slice(&0_u32.to_ne_bytes());
@@ -231,6 +239,20 @@ fn a_dump_is_answered_on_the_request_socket_ending_in_done() {
         assert!(!seen.contains(&NLMSG_ERROR), "{seen:?}");
     }
     assert!(seen.contains(&RTM_NEWLINK), "{seen:?}");
+}
+
+#[test]
+fn an_address_dump_of_every_family_returns_the_host_s_addresses() {
+    let socket = RouteSocket::request().unwrap();
+    socket.send(&dump(RTM_GETADDR)).unwrap();
+    let mut buffer = vec![0_u8; 32_768];
+    let mut seen = Vec::new();
+    while !seen.contains(&NLMSG_DONE) {
+        let count = socket.receive(&mut buffer).unwrap();
+        seen.extend(types(&buffer[..count]));
+        assert!(!seen.contains(&NLMSG_ERROR), "{seen:?}");
+    }
+    assert!(seen.contains(&RTM_NEWADDR), "{seen:?}");
 }
 
 #[test]

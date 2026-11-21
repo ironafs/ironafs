@@ -8,7 +8,7 @@
 
 use alloc::string::ToString;
 
-use super::{NetworkGeneration, Publisher, Stopped, UNAVAILABLE, Unavailable};
+use super::{HaltOnUnwind, NetworkGeneration, Publisher, Stopped, UNAVAILABLE, Unavailable};
 use crate::consumer::probe::probes;
 use crate::consumer::{Cause, Change, Loss};
 
@@ -147,6 +147,25 @@ fn halt_makes_reads_fail_and_tells_no_consumer() {
         publisher.advance(Cause::Changed(Change::Route)),
         Err(Stopped)
     );
+    drop(publisher);
+    for each in &seen {
+        assert_eq!((each.moves(), each.stops()), (1, 0));
+    }
+}
+
+#[test]
+fn a_hook_unwinding_from_a_move_halts_the_source_and_the_drop_tells_no_one() {
+    // What a hook's unwinding drops while the move is told: the guard,
+    // armed. (The crate has no standard library to catch an unwinding.)
+    let (consumers, seen) = probes();
+    let (mut publisher, reader) = Publisher::new(consumers);
+    publisher.advance(Cause::Snapshot).unwrap();
+    drop(HaltOnUnwind {
+        cell: &publisher.cell,
+        stopped: &mut publisher.stopped,
+    });
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(publisher.advance(Cause::Snapshot), Err(Stopped));
     drop(publisher);
     for each in &seen {
         assert_eq!((each.moves(), each.stops()), (1, 0));

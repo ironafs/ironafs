@@ -21,14 +21,15 @@ use crate::consumer::Change;
 use crate::consumer::{Cause, Consumers, Loss};
 use crate::generation::{Publisher, Stopped};
 use crate::netlink::{
-    AddressKey, Dump, Event, LinkState, acknowledged_noop, dump_request, event, messages,
+    AddressKey, Dump, Event, LinkState, NLMSG_NOOP, acknowledged_noop, dump_request, event,
+    messages,
 };
 
 #[cfg(test)]
 mod tests;
 
 /// Snapshots that may fail in a row before the source stops (5.5,
-/// point 4).
+/// point 4). A dirty snapshot taken again is not a failure.
 pub(crate) const SNAPSHOT_ATTEMPTS: u32 = 8;
 
 /// The tables' caps (5.5, point 3).
@@ -138,6 +139,9 @@ struct Snapshot {
     /// Once both dumps are complete, the barrier sent on the notify
     /// socket, whose acknowledgement publishes the snapshot.
     barrier: Option<u32>,
+    /// A link or address notification arrived while it ran: when its
+    /// barrier comes back it is taken again instead of published.
+    dirty: bool,
     links: Table<i32, LinkState>,
     addresses: Table<AddressKey, AddressState>,
 }
@@ -247,53 +251,68 @@ impl Monitor {
     /// [`Stopped`] once the source has stopped.
     pub fn notification(&mut self, datagram: &[u8]) -> Result<(), Stopped> {
         self.live()?;
-        // A link or address message while a snapshot runs may describe a
-        // state the dump read before or after it: the snapshot is dirty and
-        // is taken again, never merged.
-        let mut dirty = false;
+        // The barrier's acknowledgement publishes only from a whole
+        // datagram: a bad message after it is a loss, which abandons the
+        // snapshot anyway.
+        let whole = messages(datagram).all(|message| {
+            message
+                .and_then(|message| event(&message))
+                .is_ok_and(|found| found != Event::Overrun)
+        });
+        let mut refused = false;
         for message in messages(datagram) {
             let Ok((sequence, found)) =
                 message.and_then(|message| Ok((message.sequence, event(&message)?)))
             else {
                 return self.lost(Loss::Malformed);
             };
+            // A link or address message while a snapshot runs may describe
+            // a state the dump read before or after it: the snapshot is
+            // dirty, and is taken again once its barrier comes back, never
+            // merged.
+            if matches!(
+                found,
+                Event::Link(_) | Event::LinkGone(_) | Event::Address(_) | Event::AddressGone(_)
+            ) && let Some(snapshot) = self.snapshot.as_mut()
+            {
+                snapshot.dirty = true;
+            }
             let change = match found {
                 Event::Route => Some(Change::Route),
                 Event::Rule => Some(Change::Rule),
                 Event::Nexthop => Some(Change::Nexthop),
-                Event::Link(link) => {
-                    dirty = true;
-                    self.links
-                        .put(link.index, link.state)
-                        .then_some(Change::Link)
-                }
+                Event::Link(link) => self
+                    .links
+                    .put(link.index, link.state)
+                    .then_some(Change::Link),
                 Event::LinkGone(index) => {
-                    dirty = true;
                     self.links.entries.remove(&index);
                     if let Ok(index) = u32::try_from(index) {
                         self.addresses.entries.retain(|key, _| key.index != index);
                     }
                     Some(Change::Link)
                 }
-                Event::Address(address) => {
-                    dirty = true;
-                    self.addresses
-                        .put(address.key, (address.flags, address.scope))
-                        .then_some(Change::Address)
-                }
+                Event::Address(address) => self
+                    .addresses
+                    .put(address.key, (address.flags, address.scope))
+                    .then_some(Change::Address),
                 Event::AddressGone(address) => {
-                    dirty = true;
                     self.addresses.entries.remove(&address.key);
                     Some(Change::Address)
                 }
                 Event::Overrun => return self.lost(Loss::Malformed),
-                Event::Error(_) => {
-                    if !dirty
-                        && self
-                            .barrier()
-                            .is_some_and(|barrier| barrier.sequence == sequence)
+                Event::Error(_) | Event::Acknowledged(_) => {
+                    if self
+                        .barrier()
+                        .is_some_and(|barrier| barrier.sequence == sequence)
                     {
-                        self.complete()?;
+                        // Only an acknowledgement of the barrier's own
+                        // request, error 0, is its answer.
+                        if found != Event::Acknowledged(NLMSG_NOOP) {
+                            refused = true;
+                        } else if whole {
+                            self.barrier_back()?;
+                        }
                     }
                     None
                 }
@@ -303,8 +322,8 @@ impl Monitor {
                 self.advance(Cause::Changed(change))?;
             }
         }
-        if dirty && self.snapshot.is_some() {
-            return self.dump_failed(Loss::Interrupted);
+        if refused {
+            return self.dump_failed(Loss::Refused);
         }
         Ok(())
     }
@@ -338,7 +357,9 @@ impl Monitor {
             }
             if sequence == current.sequence {
                 match found {
-                    Event::Error(_) => return self.dump_failed(Loss::Refused),
+                    Event::Error(_) | Event::Acknowledged(_) => {
+                        return self.dump_failed(Loss::Refused);
+                    }
                     _ if ended => return self.dump_failed(Loss::Malformed),
                     Event::Done => ended = true,
                     _ => {}
@@ -368,7 +389,12 @@ impl Monitor {
                         .addresses
                         .put(address.key, (address.flags, address.scope));
                 }
-                Ok(Event::Error(_)) => return self.dump_failed(Loss::Refused),
+                Ok(Event::Error(_) | Event::Acknowledged(_)) => {
+                    return self.dump_failed(Loss::Refused);
+                }
+                // Nothing after the terminator is applied: the next dump's
+                // sequence was checked by nobody, and its request is not
+                // yet sent.
                 Ok(Event::Done) => match snapshot.request.dump {
                     Dump::Links => {
                         self.sequence = next_after(self.sequence);
@@ -376,6 +402,7 @@ impl Monitor {
                             dump: Dump::Addresses,
                             sequence: self.sequence,
                         };
+                        return Ok(());
                     }
                     Dump::Addresses => {
                         self.sequence = next_after(self.sequence);
@@ -443,7 +470,8 @@ impl Monitor {
     }
 
     /// Moves the generation, once a snapshot has completed; before that
-    /// nothing is published, and the first completion's move covers it.
+    /// nothing is published and no consumer has been given a generation,
+    /// so none is told, and the first completion's move covers it.
     fn advance(&mut self, cause: Cause) -> Result<(), Stopped> {
         if !self.started {
             return Ok(());
@@ -463,9 +491,26 @@ impl Monitor {
                 sequence,
             },
             barrier: None,
+            dirty: false,
             links: Table::new(LINKS_MAX),
             addresses: Table::new(ADDRESSES_MAX),
         });
+    }
+
+    /// The barrier came back: the snapshot is published or, if dirty,
+    /// taken again. A retake is not a failed snapshot, and moves nothing:
+    /// nothing is readable while a snapshot runs, and each change that made
+    /// it dirty moved the generation itself.
+    fn barrier_back(&mut self) -> Result<(), Stopped> {
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.dirty)
+        {
+            self.begin_snapshot();
+            return Ok(());
+        }
+        self.complete()
     }
 
     /// The fresh tables replace the live ones, and the generation moves.

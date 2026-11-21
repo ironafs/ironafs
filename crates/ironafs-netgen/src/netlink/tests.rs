@@ -12,6 +12,13 @@ use super::{
 };
 use crate::netlink::build::{self, AF_INET, AF_INET6};
 
+/// An `NLMSG_ERROR` body: `error`, then a zeroed request header.
+fn error_body(error: i32) -> Vec<u8> {
+    let mut body = error.to_ne_bytes().to_vec();
+    body.extend([0; 16]);
+    body
+}
+
 /// Every event of a datagram, or the first error.
 fn events(datagram: &[u8]) -> Result<Vec<Event>, Malformed> {
     let mut found = Vec::new();
@@ -72,6 +79,7 @@ fn golden_address_decodes_its_local_address_and_flags() {
                 index: 2,
                 prefix_length: 24,
                 address: local,
+                peer: local,
             },
             flags: 0x80,
             scope: 0,
@@ -107,6 +115,24 @@ fn golden_done_reports_an_interrupted_dump() {
     assert!(message.interrupted());
     assert_eq!(message.sequence, 9);
     assert_eq!(event(&message), Ok(Event::Done));
+}
+
+#[test]
+fn a_done_with_a_negative_status_is_the_dump_s_error() {
+    let datagram = build::message(3, 2, 9, &(-12_i32).to_ne_bytes());
+    assert_eq!(events(&datagram), Ok(alloc::vec![Event::Error(-12)]));
+    let datagram = build::message(3, 2, 9, &1_i32.to_ne_bytes());
+    assert_eq!(events(&datagram), Ok(alloc::vec![Event::Done]));
+}
+
+#[test]
+fn an_error_of_zero_acknowledges_the_request_it_echoes() {
+    let mut body = 0_i32.to_ne_bytes().to_vec();
+    body.extend(build::message(1, 5, 4, &[]));
+    assert_eq!(
+        events(&build::message(2, 0x100, 4, &body)),
+        Ok(alloc::vec![Event::Acknowledged(1)])
+    );
 }
 
 #[test]
@@ -156,7 +182,7 @@ fn removed_link_and_address_route_rule_nexthop_and_control_types_are_told_apart(
     for kind in [24, 25, 32, 33, 104, 105] {
         datagram.extend(build::message(kind, 0, 0, &[0; 12]));
     }
-    datagram.extend(build::message(2, 0, 0, &(-105_i32).to_ne_bytes()));
+    datagram.extend(build::message(2, 0, 0, &error_body(-105)));
     datagram.extend(build::message(4, 0, 0, &[]));
     datagram.extend(build::message(1, 0, 0, &[]));
     datagram.extend(build::message(99, 0, 0, &[1, 2, 3]));
@@ -239,8 +265,14 @@ fn a_short_link_or_address_body_is_refused() {
         events(&build::message(20, 0, 0, &[0; 7])),
         Err(Malformed::ShortBody)
     );
+    // An error without the request's header, and a terminator without
+    // its status.
     assert_eq!(
-        events(&build::message(2, 0, 0, &[0; 3])),
+        events(&build::message(2, 0, 0, &[0; 19])),
+        Err(Malformed::ShortBody)
+    );
+    assert_eq!(
+        events(&build::message(3, 0, 0, &[0; 3])),
         Err(Malformed::ShortBody)
     );
 }
@@ -275,13 +307,37 @@ fn a_value_of_the_wrong_size_is_refused() {
 }
 
 #[test]
-fn an_address_of_another_family_or_with_none_is_refused() {
-    let datagram = build::address(20, 7, 1, 8, 0, |body| {
-        build::attribute(body, 1, &[10, 0, 0, 1]);
-    });
-    assert_eq!(events(&datagram), Err(Malformed::BadValue));
+fn an_address_of_another_family_is_skipped_and_one_with_none_is_refused() {
+    // A dump of every family also returns addresses of other families.
+    for kind in [20, 21] {
+        let datagram = build::address(kind, 45, 1, 8, 0, |body| {
+            build::attribute(body, 1, &[10]);
+        });
+        assert_eq!(events(&datagram), Ok(alloc::vec![Event::Skipped]));
+    }
+    // Its attributes are still walked.
+    let datagram = build::address(20, 45, 1, 8, 0, |body| body.extend([9, 0, 1, 0]));
+    assert_eq!(events(&datagram), Err(Malformed::BadAttribute));
     let datagram = build::address(20, AF_INET, 1, 8, 0, |_| {});
     assert_eq!(events(&datagram), Err(Malformed::NoAddress));
+}
+
+#[test]
+fn a_point_to_point_address_is_told_apart_by_its_peer() {
+    let with_peer = |peer: u8| {
+        build::address(20, AF_INET, 5, 32, 0x80, |body| {
+            build::attribute(body, 2, &[10, 0, 0, 1]);
+            build::attribute(body, 1, &[10, 0, 0, peer]);
+        })
+    };
+    let key = |datagram: &[u8]| match events(datagram).unwrap().as_slice() {
+        [Event::Address(address)] => address.key,
+        found => panic!("{found:?}"),
+    };
+    let first = key(&with_peer(2));
+    assert_eq!(first.address[..4], [10, 0, 0, 1]);
+    assert_eq!(first.peer[..4], [10, 0, 0, 2]);
+    assert_ne!(first, key(&with_peer(3)));
 }
 
 #[test]

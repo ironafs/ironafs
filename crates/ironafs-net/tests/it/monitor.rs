@@ -4,7 +4,8 @@
 //! The network-change monitor on the running kernel
 //! (docs/specs/network-generation.md, section 10, point 4). Unprivileged:
 //! the first snapshot publishes a generation, and a resume moves it and is
-//! followed by a snapshot. In a network namespace of their own, with
+//! followed by a snapshot; a hook that panics, on a move or on the stop,
+//! and a hook that drops the handle, leave both threads to end. In a network namespace of their own, with
 //! `CAP_NET_ADMIN` there (ignored tests, run so, one at a time): an
 //! address, a route and a policy rule, each added and removed, move the
 //! generation; an
@@ -20,28 +21,40 @@ use std::process::Stdio;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use ironafs_net::spawn;
+use ironafs_net::{MonitorHandle, spawn};
 use ironafs_netgen::{Cause, Change, Consumer, Consumers, Loss, Move, NetworkGeneration, Reader};
 
 /// What a hook saw: its consumer's place in the order, the move, and the
 /// generation it read during the call.
 type Seen = (usize, Move, Option<NetworkGeneration>);
 
+/// A planted panic in a hook: on a move of this cause, or on the stop.
+#[derive(Clone, Copy)]
+enum Planted {
+    On(Cause),
+    OnStop,
+}
+
 struct Hook {
     place: usize,
     reader: Reader,
     sender: Sender<Seen>,
     pause: Arc<Mutex<()>>,
-    /// A cause whose move makes this hook panic.
-    panic_on: Option<Cause>,
+    panic_on: Option<Planted>,
 }
 
 impl Consumer for Hook {
     fn moved(&mut self, change: Move) {
         // A test holding the pause stalls the monitor's thread here.
         drop(self.pause.lock().unwrap_or_else(PoisonError::into_inner));
-        if let (Some(cause), Move::To(_, seen)) = (self.panic_on, change) {
-            assert_ne!(cause, seen, "a planted panic in a hook");
+        match (self.panic_on, change) {
+            (Some(Planted::On(cause)), Move::To(_, seen)) => {
+                assert_ne!(cause, seen, "a planted panic in a hook");
+            }
+            (Some(Planted::OnStop), _) => {
+                assert_ne!(change, Move::Stopped, "a planted panic in a hook");
+            }
+            _ => {}
         }
         let read = self.reader.current().ok();
         let _ = self.sender.send((self.place, change, read));
@@ -64,7 +77,7 @@ fn hooks(
     sender: &Sender<Seen>,
     reader: &Reader,
     pause: &Arc<Mutex<()>>,
-    panic_on: Option<Cause>,
+    panic_on: Option<Planted>,
 ) -> Consumers {
     let hook = |place: usize| -> Box<dyn Consumer> {
         Box::new(Hook {
@@ -171,7 +184,7 @@ fn a_resume_moves_the_generation_then_a_snapshot_moves_it_again() {
 fn a_hook_that_panics_leaves_nothing_readable_and_the_source_halted() {
     let (sender, moves) = channel();
     let pause = Arc::new(Mutex::new(()));
-    let panic_on = Some(Cause::Lost(Loss::Resumed));
+    let panic_on = Some(Planted::On(Cause::Lost(Loss::Resumed)));
     let (reader, handle) = spawn(|reader| hooks(&sender, reader, &pause, panic_on)).unwrap();
     wait_for(&moves, &reader, Cause::Snapshot);
     let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle.resumed()));
@@ -190,6 +203,71 @@ fn dropping_the_handle_stops_the_source_and_ends_both_threads() {
     // The drop returns once both threads have ended, which drops the
     // monitor and its hooks: the channel then closes. A quiet network
     // must not keep a thread blocked in its receive.
+    let mut stopped = Vec::new();
+    while let Ok((place, change, _)) = moves.recv() {
+        if change == Move::Stopped {
+            stopped.push(place);
+        }
+    }
+    assert_eq!(stopped, (0..7).collect::<Vec<_>>());
+    assert!(reader.current().is_err());
+}
+
+#[test]
+fn a_hook_that_panics_on_the_stop_still_lets_both_threads_end() {
+    let (sender, moves) = channel();
+    let pause = Arc::new(Mutex::new(()));
+    let panic_on = Some(Planted::OnStop);
+    let (reader, handle) = spawn(|reader| hooks(&sender, reader, &pause, panic_on)).unwrap();
+    drop(sender);
+    wait_for(&moves, &reader, Cause::Snapshot);
+    let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(handle)));
+    assert!(dropped.is_err());
+    // Both threads end, which drops the monitor and its hooks: the channel
+    // then closes. A thread left blocked in its receive keeps it open.
+    while moves.recv().is_ok() {}
+    assert!(reader.current().is_err());
+}
+
+/// A hook that, told of the second snapshot, waits for the handle and
+/// drops it: on the notify thread, under the monitor's lock.
+struct Dropper {
+    handles: Receiver<MonitorHandle>,
+    snapshots: usize,
+    sender: Sender<Seen>,
+}
+
+impl Consumer for Dropper {
+    fn moved(&mut self, change: Move) {
+        if let Move::To(_, Cause::Snapshot) = change {
+            self.snapshots += 1;
+            if self.snapshots == 2 {
+                drop(self.handles.recv());
+            }
+        }
+        let _ = self.sender.send((0, change, None));
+    }
+}
+
+#[test]
+fn a_hook_that_drops_the_handle_stops_the_source_and_both_threads_end() {
+    let (sender, moves) = channel();
+    let (give, handles) = channel();
+    let pause = Arc::new(Mutex::new(()));
+    let (reader, handle) = spawn(|reader| Consumers {
+        negative_cache: Box::new(Dropper {
+            handles,
+            snapshots: 0,
+            sender: sender.clone(),
+        }),
+        ..hooks(&sender, reader, &pause, None)
+    })
+    .unwrap();
+    drop(sender);
+    wait_for(&moves, &reader, Cause::Snapshot);
+    // The resume's snapshot, on the notify thread, drops the handle.
+    handle.resumed().unwrap();
+    give.send(handle).unwrap();
     let mut stopped = Vec::new();
     while let Ok((place, change, _)) = moves.recv() {
         if change == Move::Stopped {

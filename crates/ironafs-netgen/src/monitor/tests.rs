@@ -83,6 +83,14 @@ fn ack(sequence: u32) -> Vec<u8> {
     build::message(2, 0x100, sequence, &body)
 }
 
+/// The kernel's refusal of a request of `sequence`: `NLMSG_ERROR` with
+/// `code` and the request's header.
+fn refusal(sequence: u32, code: i32) -> Vec<u8> {
+    let mut body = code.to_ne_bytes().to_vec();
+    body.extend(build::message(18, 0x301, sequence, &[]));
+    build::message(2, 0, sequence, &body)
+}
+
 /// A monitor whose driver has subscribed, and its reader.
 fn fresh(make: impl FnOnce(&Reader) -> crate::Consumers) -> (Monitor, Reader) {
     let (mut monitor, reader) = Monitor::new(make);
@@ -295,7 +303,7 @@ fn control_and_unknown_messages_on_the_notify_socket_move_nothing() {
     let (mut monitor, reader, _) = started();
     let mut datagram = build::message(1, 0, 0, &[]);
     datagram.extend(build::message(3, 0, 0, &[0; 4]));
-    datagram.extend(build::message(2, 0, 0, &[0; 4]));
+    datagram.extend(ack(0));
     datagram.extend(build::message(68, 0, 0, &[0; 8]));
     monitor.notification(&datagram).unwrap();
     assert_eq!(current(&reader), 1);
@@ -418,17 +426,23 @@ fn a_dump_answered_with_an_error_is_refused_and_starts_again() {
     monitor.lost(Loss::Overflow).unwrap();
     resubscribe(&mut monitor);
     let links = monitor.request().unwrap();
-    monitor
-        .reply(&build::message(
-            2,
-            0,
-            links.sequence,
-            &(-16_i32).to_ne_bytes(),
-        ))
-        .unwrap();
+    monitor.reply(&refusal(links.sequence, -16)).unwrap();
     assert_eq!(reader.current(), Err(Unavailable));
     assert_eq!(seen[0].moves(), 3);
     assert_eq!(seen[0].last_loss(), loss_code(Loss::Refused));
+    // A dump that fails part-way ends in `NLMSG_DONE` with its error.
+    let links = monitor.request().unwrap();
+    monitor
+        .reply(&build::message(
+            3,
+            MULTI,
+            links.sequence,
+            &(-12_i32).to_ne_bytes(),
+        ))
+        .unwrap();
+    assert_eq!(seen[0].moves(), 4);
+    assert_eq!(seen[0].last_loss(), loss_code(Loss::Refused));
+    assert_ne!(monitor.request().unwrap().sequence, links.sequence);
 }
 
 #[test]
@@ -667,8 +681,17 @@ fn a_loss_before_the_barrier_publishes_nothing() {
     assert_eq!(reader.current(), Err(Unavailable));
 }
 
+/// Answers the outstanding snapshot's dumps with nothing and returns its
+/// barrier, unacknowledged.
+fn dump_to_barrier(monitor: &mut Monitor) -> u32 {
+    while let Some(dump) = monitor.request() {
+        monitor.reply(&done(dump.sequence, MULTI)).unwrap();
+    }
+    monitor.barrier().unwrap().sequence
+}
+
 #[test]
-fn a_link_or_address_notification_during_a_snapshot_discards_it() {
+fn a_link_or_address_notification_during_a_snapshot_has_it_taken_again() {
     for phase in 0..3 {
         let (mut monitor, reader, seen) = started();
         monitor.lost(Loss::Resumed).unwrap();
@@ -683,14 +706,100 @@ fn a_link_or_address_notification_during_a_snapshot_discards_it() {
         }
         let outstanding = monitor.request();
         monitor.notification(&v4_address(0, 21, 0x80)).unwrap();
-        assert_eq!(seen[0].last_loss(), loss_code(Loss::Interrupted), "{phase}");
+        // The snapshot runs on: one move for the change, and no loss.
+        assert_eq!(monitor.request(), outstanding, "{phase}");
+        assert_eq!(seen[0].moves(), 3);
+        assert_eq!(seen[0].losses(), 1);
+        // Its barrier comes back, and it is taken again, not published.
+        let barrier = if phase > 1 {
+            monitor.barrier().unwrap().sequence
+        } else {
+            dump_to_barrier(&mut monitor)
+        };
+        monitor.notification(&ack(barrier)).unwrap();
         assert_eq!(monitor.barrier(), None);
         let again = monitor.request().unwrap();
         assert!(again.is_links());
-        assert_ne!(Some(again), outstanding);
         assert_ne!(again.sequence, links.sequence);
         assert_eq!(reader.current(), Err(Unavailable));
+        assert_eq!((seen[0].moves(), seen[0].losses()), (3, 1));
+        answer_snapshot(&mut monitor);
+        assert_eq!(current(&reader), 4);
     }
+}
+
+#[test]
+fn churn_during_snapshots_never_stops_the_source() {
+    let (mut monitor, reader, seen) = started();
+    monitor.lost(Loss::Resumed).unwrap();
+    // More dirty snapshots than the failures that stop the source, each
+    // with more notifications than that.
+    for round in 0..=SNAPSHOT_ATTEMPTS {
+        let barrier = dump_to_barrier(&mut monitor);
+        for _ in 0..=SNAPSHOT_ATTEMPTS {
+            monitor.notification(&up_link(0, 2)).unwrap();
+        }
+        monitor.notification(&ack(barrier)).unwrap();
+        assert!(!monitor.is_stopped(), "{round}");
+    }
+    assert_eq!(seen[0].losses(), 1);
+    answer_snapshot(&mut monitor);
+    assert!(reader.current().is_ok());
+}
+
+#[test]
+fn a_barrier_refused_or_acknowledged_for_another_request_fails_the_snapshot() {
+    for answer in [refusal(0, -105), {
+        let mut body = 0_i32.to_ne_bytes().to_vec();
+        body.extend(build::message(18, 5, 0, &[]));
+        build::message(2, 0x100, 0, &body)
+    }] {
+        let (mut monitor, reader, seen) = started();
+        monitor.lost(Loss::Resumed).unwrap();
+        let barrier = dump_to_barrier(&mut monitor);
+        let mut datagram = answer.clone();
+        datagram[8..12].copy_from_slice(&barrier.to_ne_bytes());
+        monitor.notification(&datagram).unwrap();
+        assert_eq!(reader.current(), Err(Unavailable));
+        assert_eq!(seen[0].last_loss(), loss_code(Loss::Refused));
+        assert_eq!(monitor.barrier(), None);
+        assert!(monitor.request().unwrap().is_links());
+    }
+}
+
+#[test]
+fn a_barrier_s_acknowledgement_before_bad_bytes_publishes_nothing() {
+    let (mut monitor, reader, seen) = started();
+    monitor.lost(Loss::Resumed).unwrap();
+    let barrier = dump_to_barrier(&mut monitor);
+    let mut datagram = ack(barrier);
+    datagram.extend(build::message(4, 0, 0, &[]));
+    monitor.notification(&datagram).unwrap();
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(seen[0].snapshots(), 1);
+    assert_eq!(seen[0].last_loss(), loss_code(Loss::Malformed));
+}
+
+#[test]
+fn nothing_after_the_link_dump_s_terminator_is_applied_under_the_next_sequence() {
+    let (mut monitor, reader, _) = started();
+    monitor.lost(Loss::Resumed).unwrap();
+    let links = monitor.request().unwrap();
+    // The address dump's terminator, before its request was sent.
+    let mut datagram = done(links.sequence, MULTI);
+    datagram.extend(done(super::next_after(links.sequence), MULTI));
+    monitor.reply(&datagram).unwrap();
+    let addresses = monitor.request().unwrap();
+    assert_eq!(addresses.dump, Dump::Addresses);
+    assert_eq!(monitor.barrier(), None);
+    assert_eq!(reader.current(), Err(Unavailable));
+}
+
+#[test]
+fn a_snapshot_s_tables_hold_what_its_dumps_returned() {
+    let (monitor, _reader, _) = started();
+    assert_eq!(monitor.links.entries.len(), 1);
+    assert_eq!(monitor.addresses.entries.len(), 2);
 }
 
 #[test]
@@ -712,12 +821,7 @@ fn an_error_or_any_message_after_the_terminator_of_the_dump_refuses_it() {
     // The link dump: its terminator, then an error of the same sequence.
     let links = monitor.request().unwrap();
     let mut datagram = done(links.sequence, MULTI);
-    datagram.extend(build::message(
-        2,
-        0,
-        links.sequence,
-        &(-16_i32).to_ne_bytes(),
-    ));
+    datagram.extend(refusal(links.sequence, -16));
     monitor.reply(&datagram).unwrap();
     assert_eq!(seen[0].last_loss(), loss_code(Loss::Refused));
     assert!(monitor.request().unwrap().is_links());

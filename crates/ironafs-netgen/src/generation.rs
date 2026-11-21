@@ -122,7 +122,14 @@ impl Publisher {
             }
         };
         let generation = NetworkGeneration(next);
+        // A hook that unwinds halts the source: nothing stays readable, and
+        // no hook is called again, not even by the drop.
+        let telling = HaltOnUnwind {
+            cell: &self.cell,
+            stopped: &mut self.stopped,
+        };
         self.consumers.tell(Move::To(generation, cause));
+        telling.disarm();
         self.value = next;
         if !self.withheld {
             self.cell.store(next, Ordering::Release);
@@ -164,6 +171,27 @@ impl Publisher {
         self.stopped = true;
         self.cell.store(UNAVAILABLE, Ordering::Release);
         self.consumers.tell(Move::Stopped);
+    }
+}
+
+/// Halts the source when dropped armed: while hooks are told of a move,
+/// only a hook's unwinding drops it so.
+struct HaltOnUnwind<'a> {
+    cell: &'a AtomicU64,
+    stopped: &'a mut bool,
+}
+
+impl HaltOnUnwind<'_> {
+    /// The hooks returned.
+    fn disarm(self) {
+        core::mem::forget(self);
+    }
+}
+
+impl Drop for HaltOnUnwind<'_> {
+    fn drop(&mut self) {
+        *self.stopped = true;
+        self.cell.store(UNAVAILABLE, Ordering::Release);
     }
 }
 
