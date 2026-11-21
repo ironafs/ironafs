@@ -233,6 +233,7 @@ fn member(root: &Path, name: &str, files: &[(&str, &str)]) -> Member {
         dir,
         target_kinds: vec!["lib".into(), "test".into()],
         editions: vec!["2024".into()],
+        declared_dependencies: Vec::new(),
     }
 }
 
@@ -325,6 +326,7 @@ fn scan_fails_ironafs_client_without_a_library_or_with_unreadable_source() {
             lib_root: None,
             target_kinds: vec!["bin".into(), "custom-build".into()],
             editions: vec!["2024".into()],
+            declared_dependencies: Vec::new(),
         }]
     });
     let (violations, _) = scan(&broken).unwrap();

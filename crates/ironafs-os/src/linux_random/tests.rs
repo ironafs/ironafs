@@ -36,6 +36,23 @@ fn fill_random_draws_different_bytes_each_time() {
     assert_ne!(first, second);
 }
 
+/// The stand-in's promise that each call's bytes differ from the last
+/// call's holds past the 255th call, where a wrapping byte counter would
+/// repeat itself.
+#[cfg(miri)]
+#[test]
+fn stand_in_never_repeats_the_last_call_s_byte_or_writes_zero() {
+    let mut last = [0_u8; 1];
+    fill_random(&mut last).unwrap();
+    for _ in 0..300 {
+        let mut next = [0_u8; 1];
+        fill_random(&mut next).unwrap();
+        assert_ne!(next, [0]);
+        assert_ne!(next, last);
+        last = next;
+    }
+}
+
 #[test]
 fn getrandom_reports_a_full_piece_of_at_most_256_bytes() {
     let mut piece = [0_u8; 256];

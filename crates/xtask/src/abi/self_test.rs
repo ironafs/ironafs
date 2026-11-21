@@ -15,8 +15,8 @@
 //!   wrong size or sign. Each must fail with the assertion that names it;
 //! - by the declaration reader, which refuses what C cannot be compared
 //!   with: another ABI string, an attribute on a foreign function (such as
-//!   `link_name`), a `packed` struct, a renaming import, and a C type name
-//!   not imported from `core::ffi`.
+//!   `link_name`), a `packed` struct, a renaming import, a type alias, and
+//!   a C type name not imported from `core::ffi`.
 //!
 //! On Linux a second fixture, `struct sockaddr` from `<sys/socket.h>`
 //! (whose `sa_data` is `char[14]` in glibc and musl, while macOS adds a
@@ -130,6 +130,12 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
 /// Declarations the reader must refuse: the case, the text it replaces,
 /// and a phrase of the reader's error.
 const READER: &[(&str, &str, &str, &str)] = &[
+    (
+        "a type alias",
+        "const EINTR",
+        "type c_ulong = u32;\nconst EINTR",
+        "a type alias",
+    ),
     (
         "another ABI string",
         "unsafe extern \"C\" {",

@@ -240,7 +240,34 @@ fn assert_caught(text: &str, cases: &[(&str, String, &str)]) {
 #[test]
 fn problems_bind_the_recorded_code_to_the_adr_row() {
     let text = inventory_text();
-    let cases: [(&str, String, &str); 5] = [
+    let cases: [(&str, String, &str); 8] = [
+        (
+            "the volatile write swapped for an unsafe impl, recorded alike",
+            text.replacen(
+                "\"blocks\": [\n          {\n            \"kind\": \"write\",\n            \"operation\": \"core::ptr::write_volatile\",\n            \"arguments\": [\n              \"byte\",\n              \"0\"\n            ]\n          }\n        ],\n        \"impls\": 0",
+                "\"blocks\": [],\n        \"impls\": 1",
+                1,
+            ),
+            "records 1 unsafe impls; the ADR's row names none",
+        ),
+        (
+            "the volatile write removed, recorded alike",
+            text.replacen(
+                "\"blocks\": [\n          {\n            \"kind\": \"write\",\n            \"operation\": \"core::ptr::write_volatile\",\n            \"arguments\": [\n              \"byte\",\n              \"0\"\n            ]\n          }\n        ],",
+                "\"blocks\": [],",
+                1,
+            ),
+            "no write block of zero is recorded",
+        ),
+        (
+            "a syscall call with three variadic arguments, recorded alike",
+            text.replacen(
+                "\"flags\",\n              \"unused3\",\n              \"unused4\",\n              \"unused5\"",
+                "\"flags\"",
+                1,
+            ),
+            "calls syscall with 4 arguments",
+        ),
         (
             "a volatile write of a value other than zero",
             text.replacen("\"byte\",\n              \"0\"", "\"byte\",\n              \"1\"", 1),
@@ -268,7 +295,7 @@ fn problems_bind_the_recorded_code_to_the_adr_row() {
                 "\"blocks\": [\n          {\n            \"kind\": \"write\", \"operation\": \"core::ptr::write_volatile\", \"arguments\": [\"byte\", \"0\"]\n          },\n          {\n            \"kind\": \"write\"",
                 1,
             ),
-            "holds 2 unsafe blocks and impls",
+            "holds 2 unsafe blocks;",
         ),
         (
             "the open flag differing from the ADR",
@@ -286,6 +313,9 @@ fn adopting(module: &str) -> Code {
         headers: Vec::new(),
         defines: Vec::new(),
         expressions: Vec::new(),
+        structs: Vec::new(),
+        constants: Vec::new(),
+        stand_in: None,
         extern_blocks: Vec::new(),
         blocks: vec![Block {
             kind: BlockKind::Adopt,

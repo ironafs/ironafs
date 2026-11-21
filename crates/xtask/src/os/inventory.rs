@@ -100,6 +100,24 @@ pub(crate) struct Code {
     pub(crate) extern_blocks: Vec<ExternBlock>,
     pub(crate) blocks: Vec<Block>,
     pub(crate) impls: usize,
+    /// The C facts the row's declaration files must state, by name, beside
+    /// its functions: its structs and its constants. `check-abi` requires
+    /// each among the declarations the target compiles, so a fact moved out
+    /// of the module cannot drop out of the proof unseen.
+    pub(crate) structs: Vec<String>,
+    pub(crate) constants: Vec<String>,
+    /// The row's Miri stand-in (ADR 0005, point 6.5), if it has one: how
+    /// many `unsafe fn`s it defines and its `unsafe` blocks, each a call as
+    /// written with its arguments. `check-os` holds `stand_in.rs` to it.
+    pub(crate) stand_in: Option<StandIn>,
+}
+
+/// What a row's Miri stand-in holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StandIn {
+    pub(crate) functions: usize,
+    /// Each block's call and arguments, as `(operation, arguments)`.
+    pub(crate) blocks: Vec<(String, Vec<String>)>,
 }
 
 /// One row of the copy.
@@ -287,6 +305,19 @@ fn parse_code(code: &Value) -> Result<Code, String> {
             .map_err(|_| "`impls` is not a count".to_owned())?,
         _ => return Err("`impls` is missing or not a number".to_owned()),
     };
+    let facts = code.get("c_facts").ok_or("`c_facts` is missing")?;
+    let names = |key: &str| -> Result<Vec<String>, String> {
+        array(facts, key)?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or(format!("`c_facts.{key}` holds a non-string"))
+            })
+            .collect()
+    };
+    let stand_in = parse_stand_in(code)?;
     Ok(Code {
         module: text(code, "module")?.to_owned(),
         headers: strings("headers")?,
@@ -295,6 +326,9 @@ fn parse_code(code: &Value) -> Result<Code, String> {
         extern_blocks,
         blocks,
         impls,
+        structs: names("structs")?,
+        constants: names("constants")?,
+        stand_in,
     })
 }
 
@@ -359,6 +393,36 @@ fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
 
 /// The feature macros a row may ask the ABI check to define.
 const FEATURE_MACROS: &[&str] = &["_GNU_SOURCE"];
+
+/// A row's recorded Miri stand-in, if any.
+fn parse_stand_in(code: &Value) -> Result<Option<StandIn>, String> {
+    let stand_in = match code.get("stand_in") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(stand_in) => stand_in,
+    };
+    let functions = match stand_in.get("functions") {
+        Some(Value::Number(number)) => number
+            .parse()
+            .map_err(|_| "`stand_in.functions` is not a count".to_owned())?,
+        _ => return Err("`stand_in.functions` is missing".to_owned()),
+    };
+    let blocks = array(stand_in, "blocks")?
+        .iter()
+        .map(|block| {
+            let arguments = array(block, "arguments")?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or("a non-string argument".to_owned())
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok((text(block, "operation")?.to_owned(), arguments))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Some(StandIn { functions, blocks }))
+}
 
 /// The rows of the ADR's table: the lines starting `| <number> |` in the
 /// section that holds it, split at each `|` not escaped as `\|`, with the
@@ -602,12 +666,53 @@ fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
             ));
         }
     }
-    let says_one = blocks == "one" || blocks.starts_with("one,") || blocks.starts_with("one (");
-    let held = code.blocks.len() + code.impls;
-    if says_one && held != 1 {
+    // Blocks and impls are bound apart. Only the row whose block column
+    // names `unsafe impl`s may hold any (ADR 0005, point 6.3: the two of
+    // windows-dns); a row whose column says "one" holds one block.
+    if code.impls > 0 && !blocks.contains("`unsafe impl`") {
         found.push(format!(
-            "{id}: holds {held} unsafe blocks and impls; the ADR's row says \"{blocks}\""
+            "{id}: records {} unsafe impls; the ADR's row names none (point 6.3)",
+            code.impls
         ));
+    }
+    let says_one = blocks == "one" || blocks.starts_with("one,") || blocks.starts_with("one (");
+    if says_one && code.blocks.len() != 1 {
+        found.push(format!(
+            "{id}: holds {} unsafe blocks; the ADR's row says \"{blocks}\"",
+            code.blocks.len()
+        ));
+    }
+    // A row whose foreign item is the volatile write holds that write, of
+    // zero, as a write block (sheet 24).
+    let volatile = foreign.contains("write_volatile");
+    let writes = code.blocks.iter().any(|block| {
+        block.kind == BlockKind::Write
+            && block.callee() == "write_volatile"
+            && block.arguments.last().map(String::as_str) == Some("0")
+    });
+    if volatile && !writes {
+        found.push(format!(
+            "{id}: the ADR's row is the volatile zero write, but no write block of zero is recorded"
+        ));
+    }
+    // `syscall` reads up to six `long`s after the number, so a call passes
+    // all six (the declaration's argument, in `linux_random::abi`); the
+    // count is held here, not in the editable copy.
+    for block in code
+        .blocks
+        .iter()
+        .filter(|block| block.callee() == "syscall")
+    {
+        if block.arguments.len() != SYSCALL_ARGUMENTS {
+            found.push(format!(
+                "{id}: calls syscall with {} arguments; a syscall call passes the number and six \
+                 longs ({SYSCALL_ARGUMENTS})",
+                block.arguments.len()
+            ));
+        }
     }
     found
 }
+
+/// The arguments of every `syscall` call: the number and six `long`s.
+const SYSCALL_ARGUMENTS: usize = 7;
