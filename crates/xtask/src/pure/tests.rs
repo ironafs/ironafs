@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use super::{
     Violation, closure_violations, config_files, config_words, extern_lines, file_macro_words,
-    first_error, library_names, root_no_std, toolchain_targets,
+    first_error, library_names, root_alloc, root_cfg_lines, root_no_std, toolchain_targets,
 };
 use crate::metadata::{Member, Package, Workspace};
 use crate::rust_source;
@@ -124,6 +124,61 @@ fn root_no_std_wants_the_unconditional_inner_attribute_at_the_start() {
     assert_eq!(root(""), None);
 }
 
+fn alloc(source: &str) -> bool {
+    root_alloc(&rust_source::tokens(source).unwrap())
+}
+
+#[test]
+fn root_alloc_wants_the_unconditional_line_at_the_top_level() {
+    assert!(alloc("#![no_std]\nextern crate alloc;\n"));
+    assert!(alloc(
+        "//! Doc.\n#![no_std]\n#![forbid(unsafe_code)]\nextern crate alloc;\n"
+    ));
+    assert!(alloc(
+        "#![no_std]\nmod a {}\n/// Doc.\nextern crate alloc;\nuse alloc::vec::Vec;\n"
+    ));
+    assert!(!alloc("#![no_std]\n"));
+    assert!(!alloc(
+        "#![no_std]\n#[cfg(not(panic = \"abort\"))]\nextern crate alloc;\n"
+    ));
+    assert!(!alloc(
+        "#![no_std]\n#[cfg(all())] /* c */ extern crate alloc;\n"
+    ));
+    assert!(!alloc("#![no_std]\nmod inner { extern crate alloc; }\n"));
+    assert!(!alloc(
+        "#![no_std]\nmacro_rules! m { () => { extern crate alloc; } }\n"
+    ));
+    assert!(!alloc("#![no_std]\npub extern crate alloc;\n"));
+    assert!(!alloc("#![no_std]\nextern crate alloc as a;\n"));
+    assert!(!alloc("#![no_std]\n// extern crate alloc;\n"));
+}
+
+fn root_cfg(source: &str) -> Vec<usize> {
+    root_cfg_lines(&rust_source::tokens(source).unwrap())
+}
+
+#[test]
+fn root_cfg_lines_find_a_crate_level_cfg_in_any_form() {
+    assert_eq!(root_cfg("#![no_std]\n#![cfg(unix)]\n"), [2]);
+    assert_eq!(root_cfg("#![cfg(not(test))]\n#![no_std]\n"), [1]);
+    assert_eq!(
+        root_cfg("#![no_std]\n#![cfg_attr(windows, cfg(any()))]\n"),
+        [2]
+    );
+    assert_eq!(
+        root_cfg("#![no_std]\n#![cfg_attr(test, allow(dead_code))]\n"),
+        [] as [usize; 0]
+    );
+    assert_eq!(
+        root_cfg("#![no_std]\n#![doc = \"cfg\"]\n#[cfg(test)]\nmod tests;\n"),
+        [] as [usize; 0]
+    );
+    assert_eq!(
+        root_cfg("#![no_std]\nmod m {\n    #![cfg(unix)]\n}\n"),
+        [] as [usize; 0]
+    );
+}
+
 fn names(source: &str, allowed: Option<usize>) -> Vec<(usize, String)> {
     library_names(&rust_source::tokens(source).unwrap(), allowed)
         .into_iter()
@@ -172,7 +227,9 @@ fn library_names_hold_for_every_cfg() {
             (14, "#[$".into()),
             (14, "$c!".into()),
             (15, "unsafe".into()),
+            (15, "arch".into()),
             (15, "asm!".into()),
+            (16, "arch".into()),
             (16, "global_asm!".into()),
             (17, "unsafe".into()),
             (17, "extern".into()),
@@ -199,9 +256,31 @@ fn library_names_refuse_macro_names_anywhere() {
             (4, "include_str".into()),
             (4, "include_bytes".into()),
             (5, "asm".into()),
+            (6, "arch".into()),
             (6, "global_asm".into()),
             (6, "naked_asm".into()),
             (7, "include".into()),
+        ]
+    );
+}
+
+#[test]
+fn library_names_refuse_the_processor_s_own_interfaces_in_every_form() {
+    let source = "#![no_std]\n\
+                  #[cfg(target_arch = \"x86_64\")]\n\
+                  pub fn id() -> u32 { core::arch::x86_64::__cpuid(0).eax }\n\
+                  use core::arch::x86_64::__cpuid_count as count;\n\
+                  use core::{arch as a};\n\
+                  pub const R: u8 = r#arch;\n\
+                  // core::arch in a comment\n\
+                  pub fn ok(archive: u8, my_arch: u8) {}\n";
+    assert_eq!(
+        names(source, Some(3)),
+        [
+            (3, "arch".into()),
+            (4, "arch".into()),
+            (5, "arch".into()),
+            (6, "arch".into()),
         ]
     );
 }
