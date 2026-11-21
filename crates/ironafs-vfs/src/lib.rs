@@ -12,6 +12,7 @@ mod capability;
 mod commit;
 mod error;
 mod extension;
+mod invalidation;
 mod name;
 mod reserved;
 
@@ -21,5 +22,8 @@ pub use capability::{
 pub use commit::CommitReason;
 pub use error::{Surface, VfsError};
 pub use extension::{Extension, ExtensionError, Extensions, MAX_EXTENSION_BYTES, MAX_EXTENSIONS};
+pub use invalidation::{
+    Ack, Effects, Entries, Event, Invalidation, NodeId, Overflow, Revision, Rights, Scope,
+};
 pub use name::{MAX_NAME_BYTES, Name, NameError, linux};
 pub use reserved::Reserved;
