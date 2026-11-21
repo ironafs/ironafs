@@ -685,14 +685,18 @@ impl<'a> Decoder<'a, '_> {
         Ok(buffer)
     }
 
-    /// Turns a buffer holding exactly `N` elements into a box. A
-    /// reservation may give more capacity than it was asked for (5.2,
-    /// point 9.4), which the conversion then gives back by shrinking the
-    /// block in place: a smaller request than the one the ledger counted,
-    /// never a larger one.
+    /// Turns a buffer holding exactly `N` elements into a box, in place.
+    /// The conversion keeps the block only when the capacity equals the
+    /// length; otherwise it shrinks it, an allocator request the ledger
+    /// never saw (5.2, point 9.4). So a buffer whose reservation gave more
+    /// capacity than it asked for is refused with `AllocationFailed`
+    /// instead. A zero-sized type has no block, whatever its capacity.
     fn boxed<T, const N: usize>(&self, buffer: Vec<T>, at: usize) -> Result<Box<[T; N]>, Error> {
-        Box::<[T; N]>::try_from(buffer)
-            .map_err(|_| self.locate(Error::new(ErrorKind::AllocationFailed), at, None))
+        let failed = || self.locate(Error::new(ErrorKind::AllocationFailed), at, None);
+        if size_of::<T>() != 0 && buffer.capacity() != N {
+            return Err(failed());
+        }
+        Box::<[T; N]>::try_from(buffer).map_err(|_| failed())
     }
 
     /// Reserves `count` slots of `T` through the ledger, for the item whose

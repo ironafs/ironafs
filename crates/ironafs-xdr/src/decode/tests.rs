@@ -869,7 +869,8 @@ fn array_whose_cap_is_the_largest_word_has_a_limit_on_every_target() {
 }
 
 #[test]
-fn boxed_accepts_a_reservation_with_excess_capacity() {
+fn boxed_refuses_a_buffer_with_excess_capacity() {
+    // Converting it would shrink the block, a request the ledger never saw.
     let mut buffer: Vec<u32> = Vec::with_capacity(8);
     buffer.push(7);
     let input = [0; 4];
@@ -878,7 +879,42 @@ fn boxed_accepts_a_reservation_with_excess_capacity() {
         decoder.read_u32()?;
         Ok(held)
     });
-    assert_eq!(*result.unwrap(), [7]);
+    assert_error(
+        &result.unwrap_err(),
+        ErrorKind::AllocationFailed,
+        None,
+        Some(0),
+    );
+}
+
+#[test]
+fn boxed_keeps_the_reserved_block() {
+    let mut buffer: Vec<u32> = Vec::new();
+    buffer.try_reserve_exact(2).unwrap();
+    buffer.extend([7, 8]);
+    let before = buffer.as_ptr();
+    let input = [0; 4];
+    let (result, _) = decode_with!(&MESSAGE, &input, |decoder| {
+        let held = decoder.boxed::<u32, 2>(buffer, 0)?;
+        decoder.read_u32()?;
+        Ok(held)
+    });
+    let held = result.unwrap();
+    assert_eq!(*held, [7, 8]);
+    assert_eq!(held.as_ptr(), before);
+}
+
+#[test]
+fn boxed_takes_a_zero_sized_type_whatever_its_capacity() {
+    let mut buffer: Vec<()> = Vec::new();
+    buffer.push(());
+    let input = [0; 4];
+    let (result, _) = decode_with!(&MESSAGE, &input, |decoder| {
+        let held = decoder.boxed::<(), 1>(buffer, 0)?;
+        decoder.read_u32()?;
+        Ok(held)
+    });
+    assert_eq!(*result.unwrap(), [()]);
 }
 
 /// An element that owns a 100-byte fixed-length opaque out of line, and has
