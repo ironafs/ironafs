@@ -1905,10 +1905,13 @@ the callback service's tests carry (#66); A3 carries Rx's part of test
   pause slot shows the latest of `Pause` and `Resume` with the number of
   each, a matching call-0 ABORT and a matching call-level ABORT on an
   outgoing connection are still queued as `AbortHint` and
-  `AbortReceived` with `eligible`, `DropCounts` and `IcmpHint` counts
-  refused for room go out with the next one queued and add up to the
-  packets and errors sent, and a `ChallengeReceived` not queued sends no
-  RESPONSE. Every call outcome in the run is returned with its call.
+  `AbortReceived` with `eligible`, a `DropCounts` and an `IcmpHint`
+  refused for room zero no count and are counted as deferred in
+  `EventsDropped`, and a `ChallengeReceived` not queued sends no
+  RESPONSE. Then the user takes the queued events, which frees room:
+  the next `DropCounts` and `IcmpHint` are queued, and with the earlier
+  ones their counts add up to the packets and errors sent. Every call
+  outcome in the run is returned with its call.
   (d) With the user never taking events and outgoing connections
   retiring with an ABORT event each: their identities stay reserved,
   and opens fail with `IdentityExhausted` once `rx.identity_bound` is
@@ -2058,5 +2061,6 @@ here (section 13, Q1).
 
 ## 14. Review
 
-Reviewed by GLM and DeepSeek in three rounds on 2026-11-21; the record
-is [2026-11-21-m2a-55-rx](../reviews/2026-11-21-m2a-55-rx.md).
+Reviewed by GLM and DeepSeek in three rounds on 2026-11-21, and by GLM
+in a fourth check of the third round's fixes; the record is
+[2026-11-21-m2a-55-rx](../reviews/2026-11-21-m2a-55-rx.md).
