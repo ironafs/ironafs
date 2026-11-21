@@ -6,8 +6,9 @@
 **How this note was made.**
 
 - Evidence labelled as in the [research index](README.md).
-  - Every claim here is about operating systems and published studies,
-    not about IronAFS, which has no working client yet.
+  - Sections 1 to 3 are about operating systems and published studies,
+    not about IronAFS, which has no working client yet. The last part of
+    section 3 states IronAFS's planned settings from ADR 0004.
   - A vendor's own page, documentation or repository is INSPECTED for
     what the vendor says about its own product. A figure the vendor
     states without a published method is marked "vendor's figure".
@@ -81,16 +82,12 @@
     requires the user's approval and restarting of the macOS".
   - The same page: "By running in user space, system extensions increase
     the stability and security of macOS" [7].
-- **What a user does** [8]:
-  1. Shut down, then press and hold the power button until "Loading
-     startup options" appears.
-  2. Choose Options and continue into Recovery.
-  3. Open Startup Security Utility from the Utilities menu, select the
-     system, and open its security policy.
-  4. Choose Reduced Security, and enable "Allow user management of kernel
-     extensions from identified developers" ("Allows installation of
-     software that uses legacy kernel extensions").
-  5. Authorise the change with an administrator's password, and restart.
+- **What a user does** [8]: start up into Recovery by holding the power
+  button, open Startup Security Utility, choose Reduced Security for the
+  system, and enable "Allow user management of kernel extensions from
+  identified developers" ("Allows installation of software that uses
+  legacy kernel extensions"). An administrator authenticates, and the Mac
+  restarts. Apple's guide gives every step.
 
   Reduced Security "Allows any version of signed operating system software
   ever trusted by Apple to run" [8].
@@ -136,9 +133,10 @@
     vice-president for it ("Short 2003"), so the figure itself is RELAYED.
   - It counts reported failures, not crashes.
   - No later Microsoft percentage was found.
-- **Isolating drivers.** In the same paper's fault-injection tests: "Of
-  the 317 crashes observed with native Linux, Nooks eliminated 313, or
-  99%" [15].
+- **Isolating extensions inside the kernel.** In the same paper's
+  fault-injection tests, on drivers, a file system and a web server that
+  Nooks isolated within the kernel: "Of the 317 crashes observed with
+  native Linux, Nooks eliminated 313, or 99%" [15].
 - **Driver error rates (2001), and ten years later.**
   - Chou et al. found, in Linux, that drivers "have error rates up to
     three to seven times higher than the rest of the kernel", depending
@@ -210,8 +208,8 @@
     maximum performance", while warning that the two implementations
     differ.
 - **FSKit (macOS)** [24]. In a forum thread about a minimal FSKit file
-  system whose `getdirentries` call averaged 121 µs, Apple's engineer
-  replied: "that's about where things stand at the moment", "most of
+  system on macOS 15.5 whose `getdirentries` call averaged 121 µs,
+  Apple's engineer replied: "that's about where things stand at the moment", "most of
   this is overhead of repeated XPC traffic, which probably could be
   avoided", and "the performance is definitely being looked at"
   (RELAYED: a forum post, not documentation).

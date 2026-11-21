@@ -37,11 +37,15 @@ The rounds were a refute-first fact check:
 Alongside round 1, the author re-read every cited source a second time;
 for the papers, that meant their full text. This was not a review seat.
 
-| Round | Range | Seat | Served model | Effort | Verdict |
-|---|---|---|---|---|---|
-| 1, review | `1f44f21..addb23a` | GPT read-only | gpt-6.2-sol | high | FAIL: 1 blocker, about 20 majors, minors |
-| 2, fix verification | `addb23a..9864326` | GPT read-only, same session | gpt-6.2-sol | high | FAIL: 5 majors (partial fixes), 6 minors |
-| 3, fix verification | `9864326..f54c6e6` | GPT read-only, same session | gpt-6.2-sol | high | PASS: 2 minors |
+| Round | Range | What was read | Seat | Served model | Effort | Verdict |
+|---|---|---|---|---|---|---|
+| 1, review | `1f44f21..addb23a` | the note, and the website answers | GPT read-only | gpt-6.2-sol | high | FAIL: 1 blocker, about 20 majors, minors |
+| 2, fix verification | `addb23a..9864326` | the fixes to both | GPT read-only, same session | gpt-6.2-sol | high | FAIL: 5 majors (partial fixes), 6 minors |
+| 3, fix verification | `9864326..f54c6e6` | the fixes to both | GPT read-only, same session | gpt-6.2-sol | high | PASS: 2 minors |
+| 4, final-state check | `1f44f21..b67430f` | the whole change: README, indexes, heading, the note, this record | GPT read-only, same session | gpt-6.2-sol | high | FAIL: 3 majors, 4 minors |
+
+Round 4's fixes were made in one batch after it; their verification is
+recorded below when it runs.
 
 ## Findings
 
@@ -80,13 +84,31 @@ for the papers, that meant their full text. This was not a review seat.
   client as the reference for maximum performance. With Ceph's own
   documentation ("the kernel client will always give better
   performance"), it replaces an unsourced anecdote.
+- **Also major, fixed:** a sentence in the website answers turned "this
+  search found no study" into a claim about the whole literature.
 - **Minors, fixed:** reference titles and sections, a man-pages
-  attribution, the FUSE recovery methods' limits, and a misleading "no
-  study found" sentence.
+  attribution, and the FUSE recovery methods' limits.
+- **Round 3's two minors, fixed in the website answers** (not tracked
+  here):
+  - a relayed claim about macOS's name cache was cited so that its label
+    seemed to cover the caller-identity evidence too;
+  - the answers' summary called every finding fixed while one was open.
+- **Round 4, fixed:**
+  - **Major:** the README called the Cloud Files replica the Windows
+    surface if the SMB gate fails, without L15's rule that, if both fail,
+    Windows has no surface until one passes.
+  - **Major:** this record did not say what each round read.
+  - **Major:** this record did not give round 3's dispositions.
+  - **Minors:**
+    - the note's preface claimed it said nothing about IronAFS;
+    - Apple's steps are now a summary that points to Apple's guide;
+    - the Nooks result covers extensions isolated inside the kernel, not
+      drivers alone;
+    - the FSKit forum timing was on macOS 15.5.
 - **Left as stated** (raised as uncertain, not findings):
   - Apple's canonical pages rate-limited the checker, which read indexed
     copies; the author's reads of the canonical pages are the evidence.
   - Whether Microsoft's automatic driver recovery started in September
     2026 is marked NOT VERIFIED in the note.
 
-The review stopped there: no blocker or major finding remains.
+Not yet complete: round 4's fixes await verification.

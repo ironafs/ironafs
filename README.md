@@ -95,7 +95,8 @@ local machine beside Windows' own file sharing, on Windows 10 22H2 and
 Windows 11 24H2 and 26H2, to the client's first packet. A full SMB session has not been
 measured yet ([the UNC note](docs/research/2026-11-19-windows-unc-without-a-driver.md)).
 A Cloud Files replica may follow later as an optional offline companion,
-and is the Windows surface if the gate fails. ADR 0004 records this
+and becomes the Windows surface if the gate fails; if both fail,
+Windows has no surface until one passes. ADR 0004 records this
 decision ([part 2](docs/adr/0004-architecture-2-os-layers.md), L15).
 
 ## Compatibility
