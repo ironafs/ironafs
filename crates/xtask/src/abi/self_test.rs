@@ -3,10 +3,11 @@
 
 //! `check-abi --self-test`: a fixture of declarations whose C facts are the
 //! same on every Unix target of the allowlist (`struct timespec`, `EINTR`,
-//! `close` and `strlen`) must compile, and each planted mismatch ADR 0005,
+//! `close`, `strlen`, and `struct rlimit` through the typedef `rlim_t`,
+//! whose spelling differs between C libraries at one size) must compile, and each planted mismatch ADR 0005,
 //! point 5.6, names must not: a member type changed at the same size and
 //! offset, a constant changed by one, a parameter's type changed and a
-//! return type changed. Each runs through the same reader, generator and
+//! return type changed; and an alias of the wrong size or sign. Each runs through the same reader, generator and
 //! compiler as the real check.
 
 use std::io::Write;
@@ -18,12 +19,21 @@ use crate::rust_source::tokens;
 
 const CHECK: &str = "check-abi";
 
-const HEADERS: &[&str] = &["errno.h", "string.h", "time.h", "unistd.h"];
+const HEADERS: &[&str] = &[
+    "errno.h",
+    "string.h",
+    "sys/resource.h",
+    "time.h",
+    "unistd.h",
+];
 
 const FIXTURE: &str = "use core::ffi::{c_char, c_int, c_long};\n\
                        #[repr(C)]\n\
                        struct timespec {\n    tv_sec: c_long,\n    tv_nsec: c_long,\n}\n\
                        const EINTR: c_int = 4;\n\
+                       type rlim_t = u64;\n\
+                       #[repr(C)]\n\
+                       struct rlimit {\n    rlim_cur: rlim_t,\n    rlim_max: rlim_t,\n}\n\
                        unsafe extern \"C\" {\n\
                        \x20   fn close(fd: c_int) -> c_int;\n\
                        \x20   fn strlen(s: *const c_char) -> usize;\n\
@@ -52,6 +62,16 @@ const PLANTED: &[(&str, &str, &str)] = &[
         "*const c_char) -> isize",
     ),
     ("a member's size changed", "tv_sec: c_long", "tv_sec: c_int"),
+    (
+        "an alias of the wrong size",
+        "type rlim_t = u64",
+        "type rlim_t = u32",
+    ),
+    (
+        "an alias of the wrong sign",
+        "type rlim_t = u64",
+        "type rlim_t = i64",
+    ),
 ];
 
 /// Compiles the fixture, then each planted case.

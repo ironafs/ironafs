@@ -163,3 +163,89 @@ fn c_source_refuses_a_type_it_has_no_c_name_for() {
     let found = read("#[repr(C)]\nstruct odd { a: String }\n");
     assert!(c_source("row", &[], &found, DataModel::Lp64).is_err());
 }
+
+const RLIMIT: &str = "use core::ffi::c_int;\n\
+                      pub(super) type rlim_t = u64;\n\
+                      #[repr(C)]\n\
+                      pub(super) struct rlimit {\n pub(super) rlim_cur: rlim_t,\n pub(super) rlim_max: rlim_t,\n}\n\
+                      pub(super) const RLIMIT_CORE: c_int = 4;\n\
+                      unsafe extern \"C\" {\n\
+                      pub(super) fn setrlimit(resource: c_int, rlim: *const rlimit) -> c_int;\n}\n";
+
+#[test]
+fn declarations_read_a_type_alias_of_a_scalar() {
+    let found = read(RLIMIT);
+    assert_eq!(
+        found.aliases,
+        [("rlim_t".to_owned(), CType::Named("u64".into()))]
+    );
+    assert_eq!(
+        found.structs,
+        [Struct {
+            name: "rlimit".into(),
+            fields: vec![
+                ("rlim_cur".into(), CType::Named("rlim_t".into())),
+                ("rlim_max".into(), CType::Named("rlim_t".into())),
+            ],
+        }]
+    );
+}
+
+#[test]
+fn declarations_refuse_an_alias_of_anything_but_a_scalar() {
+    for source in [
+        "type handle = *mut c_void;",
+        "type stamp = timespec;",
+        "type pair = (u8, u8);",
+    ] {
+        let mut found = Declarations::default();
+        assert!(
+            declarations(&tokens(source).unwrap(), &mut found).is_err(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn c_source_names_an_alias_by_its_c_typedef_and_asserts_its_size_alignment_and_sign() {
+    let source = c_source(
+        "unix-nodump",
+        &["sys/resource.h".into()],
+        &read(RLIMIT),
+        DataModel::Lp64,
+    )
+    .unwrap();
+    for line in [
+        "_Static_assert(sizeof(rlim_t) == 8, \"unix-nodump: sizeof(rlim_t)\");",
+        "_Static_assert(_Alignof(rlim_t) == 8, \"unix-nodump: _Alignof(rlim_t)\");",
+        "_Static_assert((rlim_t)-1 > 0, \"unix-nodump: rlim_t is unsigned\");",
+        "_Static_assert(sizeof(struct rlimit) == 16, \"unix-nodump: sizeof(struct rlimit)\");",
+        "_Static_assert(_Generic(((struct rlimit *)0)->rlim_max, rlim_t: 1), \"unix-nodump: type of rlimit.rlim_max\");",
+        "_Static_assert(_Generic(&setrlimit, int (*)(int, const struct rlimit *): 1), \"unix-nodump: type of setrlimit\");",
+    ] {
+        assert!(
+            source.lines().any(|found| found == line),
+            "{line}\n{source}"
+        );
+    }
+}
+
+#[test]
+fn c_source_asserts_a_signed_alias_is_signed() {
+    let source = c_source("row", &[], &read("type ssize_t = isize;"), DataModel::Lp64).unwrap();
+    assert!(
+        source
+            .lines()
+            .any(|line| line == "_Static_assert((ssize_t)-1 < 0, \"row: ssize_t is signed\");"),
+        "{source}"
+    );
+}
+
+#[test]
+fn c_source_asks_for_the_posix_prototypes_not_the_gnu_ones() {
+    // Under _GNU_SOURCE glibc declares setrlimit's resource as an enum,
+    // whose compatible type is not `int`; POSIX and musl declare `int`.
+    let source = c_source("row", &[], &Declarations::default(), DataModel::Lp64).unwrap();
+    assert!(source.contains("#define _DEFAULT_SOURCE 1\n"), "{source}");
+    assert!(!source.contains("_GNU_SOURCE"), "{source}");
+}

@@ -10,7 +10,8 @@
 //! foreign item, this check reads the row's declarations from the Rust
 //! source the compiler read for that target (every file under the row's
 //! module directory, `src/<module>/`: its `#[repr(C)]` structs, its
-//! constants and its extern blocks' functions, each named as C names it),
+//! constants, its type aliases and its extern blocks' functions, each
+//! named as C names it),
 //! generates a C11 file of compile-time assertions from them, and compiles
 //! it with the platform's own compiler and headers, warnings as errors:
 //!
@@ -19,15 +20,22 @@
 //! - each field's type, by a `_Generic` selection with no default, so a
 //!   field of the wrong type with the right size and offset fails;
 //! - each constant's value;
+//! - each type alias's size, alignment and sign: an alias names a C
+//!   typedef whose spelling differs between C libraries at one size
+//!   (`rlim_t`), and a member of that type is checked against the typedef;
 //! - each function's type, by a `_Generic` selection with no default on
 //!   its address against a pointer to the declared prototype.
 //!
-//! The C file is never linked into anything. The check proves the host
+//! The file asks for the POSIX and default declarations
+//! (`_DEFAULT_SOURCE`), not the GNU ones: under `_GNU_SOURCE` glibc
+//! declares `setrlimit`'s resource as an enum, where POSIX and musl declare
+//! `int`. The C file is never linked into anything. The check proves the host
 //! target only: a target on which it has not run is MISSING evidence, and
 //! its sites do not ship there. `--self-test` compiles a host-portable
 //! fixture of the same shape and plants a member type changed at the same
-//! size and offset, a constant changed by one, a parameter's type changed
-//! and a return type changed, each of which must fail to compile.
+//! size and offset, a constant changed by one, a parameter's type changed,
+//! a return type changed and an alias of the wrong size or sign, each of
+//! which must fail to compile.
 
 mod self_test;
 
@@ -78,6 +86,8 @@ pub(crate) struct Declarations {
     /// negative).
     pub(crate) constants: Vec<(String, String)>,
     pub(crate) functions: Vec<Function>,
+    /// Each `type NAME = <scalar>;`: a C typedef the declarations name.
+    pub(crate) aliases: Vec<(String, CType)>,
 }
 
 /// The sizes of C's integer types on the target.
@@ -122,6 +132,13 @@ pub(crate) fn declarations(tokens: &[Token], found: &mut Declarations) -> Result
                 let (item, next) = read_struct(tokens, at)
                     .ok_or_else(|| format!("line {line}: a struct that cannot be read"))?;
                 found.structs.push(item);
+                at = next;
+            }
+            Some("type") if !token.raw => {
+                let (alias, next) = read_alias(tokens, at).ok_or_else(|| {
+                    format!("line {line}: a type alias that is not `NAME = <C scalar>;`")
+                })?;
+                found.aliases.push(alias);
                 at = next;
             }
             Some("const") if !token.raw => {
@@ -286,6 +303,26 @@ fn read_constant(tokens: &[Token], at: usize) -> Option<((String, String), usize
     Some(((name, value), next + 2))
 }
 
+/// Reads `type NAME = <scalar>;` at `at`: a C typedef whose type differs
+/// between C libraries at one size (`rlim_t` is `unsigned long` in glibc
+/// and `unsigned long long` in musl), so the C side names the typedef and
+/// asserts its size, alignment and sign instead of one spelling.
+fn read_alias(tokens: &[Token], at: usize) -> Option<((String, CType), usize)> {
+    let name = ident(tokens.get(at + 1))?.to_owned();
+    if punct(tokens.get(at + 2)) != Some('=') {
+        return None;
+    }
+    let (aliased, next) = read_type(tokens, at + 3)?;
+    let CType::Named(scalar_name) = &aliased else {
+        return None;
+    };
+    scalar(scalar_name, DataModel::Lp64)?;
+    if punct(tokens.get(next)) != Some(';') {
+        return None;
+    }
+    Some(((name, aliased), next + 1))
+}
+
 /// Reads the functions of an extern block's body.
 fn read_functions(body: &[Token], found: &mut Declarations) -> Option<()> {
     let mut at = 0;
@@ -393,6 +430,7 @@ fn scalar(name: &str, model: DataModel) -> Option<(&'static str, usize)> {
 fn c_name(found: &CType, declarations: &Declarations, model: DataModel) -> Result<String, String> {
     match found {
         CType::Named(name) if name == "c_void" => Ok("void".to_owned()),
+        CType::Named(name) if alias(declarations, name).is_some() => Ok(name.clone()),
         CType::Named(name) => scalar(name, model)
             .map(|(spelling, _)| spelling.to_owned())
             .or_else(|| {
@@ -414,6 +452,26 @@ fn c_name(found: &CType, declarations: &Declarations, model: DataModel) -> Resul
     }
 }
 
+/// The scalar a declared alias names, if `name` is one.
+fn alias<'a>(declarations: &'a Declarations, name: &str) -> Option<&'a CType> {
+    declarations
+        .aliases
+        .iter()
+        .find(|(alias, _)| alias == name)
+        .map(|(_, aliased)| aliased)
+}
+
+/// Whether a scalar is unsigned (`Some(true)`), signed (`Some(false)`), or
+/// differs by target (`c_char`).
+fn unsigned(name: &str) -> Option<bool> {
+    match name {
+        "c_char" => None,
+        "u8" | "u16" | "u32" | "u64" | "usize" | "c_uchar" | "c_ushort" | "c_uint" | "c_ulong"
+        | "c_ulonglong" => Some(true),
+        _ => Some(false),
+    }
+}
+
 /// The size and alignment of a type under `repr(C)`.
 fn layout(
     found: &CType,
@@ -424,6 +482,9 @@ fn layout(
     match found {
         CType::Pointer { .. } => Ok((8, 8)),
         CType::Named(name) => {
+            if let Some(aliased) = alias(declarations, name) {
+                return layout(aliased, declarations, model, depth);
+            }
             if let Some((_, size)) = scalar(name, model) {
                 return Ok((size, size));
             }
@@ -474,7 +535,7 @@ pub(crate) fn c_source(
 ) -> Result<String, String> {
     let mut source = format!(
         "/* Generated by `cargo xtask check-abi` for ironafs-os site {row}; never linked. */\n\
-         #define _GNU_SOURCE 1\n#define _DARWIN_C_SOURCE 1\n\
+         #define _DEFAULT_SOURCE 1\n#define _DARWIN_C_SOURCE 1\n\
          #include <stddef.h>\n#include <stdint.h>\n"
     );
     if model == DataModel::Lp64 {
@@ -486,6 +547,25 @@ pub(crate) fn c_source(
     let mut assert = |condition: String, what: String| {
         let _ = writeln!(source, "_Static_assert({condition}, \"{row}: {what}\");");
     };
+    for (name, aliased) in &declarations.aliases {
+        let (size, align) = layout(aliased, declarations, model, 0)?;
+        assert(
+            format!("sizeof({name}) == {size}"),
+            format!("sizeof({name})"),
+        );
+        assert(
+            format!("_Alignof({name}) == {align}"),
+            format!("_Alignof({name})"),
+        );
+        let CType::Named(scalar_name) = aliased else {
+            return Err(format!("`{name}` aliases a type that is not a scalar"));
+        };
+        match unsigned(scalar_name) {
+            Some(true) => assert(format!("({name})-1 > 0"), format!("{name} is unsigned")),
+            Some(false) => assert(format!("({name})-1 < 0"), format!("{name} is signed")),
+            None => {}
+        }
+    }
     for item in &declarations.structs {
         let name = &item.name;
         let (size, align, offsets) = struct_layout(item, declarations, model, 0)?;
