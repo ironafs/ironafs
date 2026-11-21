@@ -435,10 +435,11 @@ impl<R: Repo> Guard<'_, R> {
             }
             "env" => self.env(args, stdin, scope, env, depth),
             "sh" | "bash" | "zsh" | "dash" | "ksh" => self.shell(args, stdin, scope, depth),
-            "source" | "." => match self.script_file(args.first(), scope) {
-                Some(script) => self.script(&script, scope, depth + 1),
-                None => (),
-            },
+            "source" | "." => {
+                if let Some(script) = self.script_file(args.first(), scope) {
+                    self.script(&script, scope, depth + 1);
+                }
+            }
             "export" | "declare" | "typeset" | "local" | "readonly" => {
                 for word in args {
                     if let Some((name, value)) = assignment(word)
@@ -580,9 +581,7 @@ impl<R: Repo> Guard<'_, R> {
     /// The text of a script file a shell or `source` runs; blocks when the
     /// guard cannot read it.
     fn script_file(&mut self, operand: Option<&Word>, scope: &Scope) -> Option<String> {
-        let Some(operand) = operand else {
-            return None;
-        };
+        let operand = operand?;
         let Some(path) = operand.literal() else {
             self.block("write the script file a shell runs literally so the guard can read it");
             return None;
@@ -821,10 +820,7 @@ const WRAPPERS: &[Wrapper] = &[
 impl Wrapper {
     /// The options before the command, with their values, and the words
     /// from the command on; or the fix for an option it does not know.
-    fn options<'w>(
-        &self,
-        args: &'w [Word],
-    ) -> Result<(Vec<(&'w str, Option<&'w str>)>, &'w [Word]), String> {
+    fn options<'w>(&self, args: &'w [Word]) -> Result<Unwrapped<'w>, String> {
         let unknown = |option: &str| {
             format!(
                 "{} {option}: the guard does not know this wrapper option, so it cannot tell which command runs; write the command without it",
@@ -896,6 +892,9 @@ impl Wrapper {
         Ok((found, args.get(index..).unwrap_or(&[])))
     }
 }
+
+/// A wrapper's options with their values, and the words from its command on.
+type Unwrapped<'w> = (Vec<(&'w str, Option<&'w str>)>, &'w [Word]);
 
 /// Whether a word that expands at run time starts like an option.
 fn word_is_option(word: &Word) -> bool {

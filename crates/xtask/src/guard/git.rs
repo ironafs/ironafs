@@ -367,7 +367,7 @@ impl<R: Repo> Guard<'_, R> {
             return;
         }
         let words = positionals(rest, REBASE_VALUES);
-        let branch = words.get(if has(&["--root"]) { 0 } else { 1 });
+        let branch = words.get(usize::from(!has(&["--root"])));
         match branch.map(|word| word.literal()) {
             Some(Some(branch)) if names_main(branch) => self.block(
                 "this git rebase rewrites main: rebase your task branch; main changes only through an approved squash merge (ADR 0002, ADR 0003)",
