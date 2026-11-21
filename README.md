@@ -29,13 +29,15 @@ to ship everywhere.
 - **On Linux,** the kernel keeps no stable interface for modules, some
   symbols are only for GPL-tagged modules, and on Debian, for example,
   Secure Boot blocks unsigned modules built outside the kernel tree. FUSE
-  lets a file system run in user space instead. IronAFS starts with FUSE's
-  caches off and its fast paths unused, for per-user correctness, so it
-  expects to be slower on metadata-heavy work until that is measured.
-- **On Windows,** new kernel drivers must be signed through Microsoft, and
-  trust in older cross-signed drivers is being removed. IronAFS plans a
-  small SMB server of its own on the local machine instead, reached as
-  `\\afs` through Windows' own SMB client (see below).
+  lets a file system run in user space instead. For per-user correctness,
+  IronAFS starts with FUSE's entry and attribute caching off and uses
+  neither passthrough nor the writeback cache, so it expects
+  metadata-heavy work to be slower than it could be, until measured.
+- **On Windows,** new kernel drivers must, with some exceptions, be signed
+  through Microsoft, and current releases are removing trust in older
+  cross-signed drivers. IronAFS plans a small SMB server of its own on the
+  local machine instead, reached through Windows' own SMB client (see
+  below).
 
 All three systems offer a way to expose files without third-party kernel
 code: FUSE and FSKit as supported filesystem interfaces, and on Windows, if
@@ -49,7 +51,7 @@ and [AFS clients without kernel code](docs/research/2026-11-18-driverless-afs-cl
 - **Do what users of an AFS client rely on.** `/afs`, tokens and `aklog`,
   the `fs` commands, mount points, ACLs and volume access, against existing
   cells; then add what a client written today can. Where IronAFS will
-  differ (no PAGs, no set-uid programs from AFS),
+  differ (no PAGs; programs in AFS never gain set-uid privileges),
   [ADR 0004](docs/adr/0004-architecture.md) says so.
 - **Share as much as possible.** One core does everything that is not
   operating-system specific; each platform adds only a thin layer.
@@ -107,13 +109,16 @@ decision ([part 2](docs/adr/0004-architecture-2-os-layers.md), L15).
 **Planned platforms** ([part 2](docs/adr/0004-architecture-2-os-layers.md),
 L37 to L39):
 
-- tier 1: Ubuntu 24.04 and 26.04 (x86_64 and aarch64); macOS 27 on Apple
-  silicon; Windows 11 Pro 26H2 (x64);
-- tier 2: Windows 11 Pro 26H2 (Arm64); Windows 10 Pro 22H2 (x86_64), SMB
-  only, until 2027-10-12;
-- candidates (RHEL 7.9 to 10, Debian 12 and 13, other Windows 11
-  editions, static musl builds and FreeBSD) become targets only once a
-  named test venue qualifies them.
+- tier 1: Ubuntu 24.04 and 26.04 (x86_64 and aarch64), on the kernels of
+  GitHub's hosted runners; macOS 27 on Apple silicon; Windows 11 Pro 26H2
+  (x64), in a workgroup at first;
+- tier 2: Windows 11 Pro 26H2 (Arm64), in a workgroup at first; Windows 10
+  Pro 22H2 (x86_64), in a workgroup, SMB only, with Extended Security
+  Updates, until 2027-10-12;
+- candidates: Ubuntu's generic kernels; RHEL 7.9, 8.10, 9 and 10; Debian 12
+  and 13; other Windows 11 versions and editions; static musl builds; and
+  FreeBSD. Each becomes a target only on the conditions L39 names, such as
+  a named test venue that qualifies it.
 
 **Order of work** ([part 3](docs/adr/0004-architecture-3-operations.md),
 O50). A plan, with no dates:
