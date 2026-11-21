@@ -114,6 +114,14 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             &["check-pure", "--self-test"][..],
             Task::CheckPure { self_test: true },
         ),
+        (
+            &["check-retries"][..],
+            Task::CheckRetries { self_test: false },
+        ),
+        (
+            &["check-retries", "--self-test"][..],
+            Task::CheckRetries { self_test: true },
+        ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Ok(task));
     }

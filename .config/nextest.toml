@@ -8,8 +8,10 @@
 # runs pass --retries 0 explicitly. CI selects --profile ci.
 # slow-timeout terminates instead of only warning: a deadlocked test
 # otherwise shows up as a job that never ends while the runner keeps
-# printing SLOW. A suite that needs longer gets its own override with the
-# reason, never a global increase.
+# printing SLOW. A suite that needs longer gets its own override citing
+# its measured times, never a global increase; heavy tests join a
+# thread-capped test group instead. `cargo xtask check-retries` fails on
+# a profile or override with retries above 0.
 
 [profile.default]
 retries = 0
