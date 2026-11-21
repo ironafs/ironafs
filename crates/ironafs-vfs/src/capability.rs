@@ -149,8 +149,11 @@ pub enum Attestation {
 /// `cargo xtask check-deps` does: only `ironafs-vfs`, the composition
 /// (`ironafsd`), the core (`ironafs-client`) and the test-only crates
 /// (`ironafs-sim`, `ironafs-test-support`) may name it, and none of them
-/// but this crate hands it out publicly, within the limits that check
-/// states.
+/// but this crate hands it out through a public item that names it. An
+/// allowed crate can still hand it out under another spelling (an alias,
+/// a default type parameter, a macro); that stays open until the
+/// specification's type and method ban (5.11, point 3) is built, as the
+/// check's documentation records.
 ///
 /// It implements neither `Default`, `Clone` nor `Copy`: [`Mint::new`] is
 /// its one constructor (the contract specification, 5.11, point 1).

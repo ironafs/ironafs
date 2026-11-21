@@ -190,9 +190,12 @@ pub enum Event {
 }
 
 /// A binding's acknowledgement that it applied an event's purge, sent only
-/// after the operating system's purge was applied (C17, point 2). It clears
-/// effects up to the revision it names; an event that arrived during the
-/// purge stays pending under its higher revision (C17, point 6).
+/// after the operating system's purge was applied (C17, point 2). Like a
+/// [`PurgeFailed`] report it is untrusted and acts only if it answers an
+/// open delivery; a repeat is ignored (the contract specification, 5.10,
+/// point 6). It clears effects merged at or below the revision it names;
+/// an event that arrived during the purge stays pending under its higher
+/// revision (C17, point 6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Ack {
     /// A node's purge, up to `revision`.
@@ -216,7 +219,12 @@ pub enum Ack {
 /// Under an overflow, the binding reports each node that failed as an
 /// `OverflowNode` and then acknowledges the overflow, which clears it for
 /// every node not reported. A report is untrusted: the core acts on it only
-/// if it names a delivery it made to this binding (5.10, point 6).
+/// if it answers an open delivery, one it made to this binding and that no
+/// acknowledgement or report has answered yet. A second answer to a
+/// delivery, or a revision at or below the latest the core delivered for
+/// that node or overflow, is a repeat: ignored, never acted on, and never
+/// a fault (the contract specification, 5.10, point 6). Only a
+/// demonstrated purge failure revokes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PurgeFailed {
     /// The purge of a delivery of the node's slot failed.
