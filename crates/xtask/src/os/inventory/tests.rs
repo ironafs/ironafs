@@ -368,3 +368,29 @@ fn an_owned_fd_adoption_is_approved_by_a_row_that_adopts_its_descriptor_as_an_ow
         ]
     );
 }
+
+#[test]
+fn a_row_that_adopts_one_descriptor_holds_exactly_one_adoption() {
+    let inventory = parse(&inventory_text()).unwrap();
+    for id in ["linux-udp6", "linux-rtnetlink", "linux-fdpass"] {
+        let row = inventory.rows.iter().find(|row| row.id == id).unwrap();
+        let code = row.code.clone().unwrap();
+        assert_eq!(adr_binding_problems(row, &code), [] as [String; 0], "{id}");
+        let adoption = code
+            .blocks
+            .iter()
+            .find(|block| block.kind == BlockKind::Adopt)
+            .cloned()
+            .unwrap();
+        let mut none = code.clone();
+        none.blocks.retain(|block| block.kind != BlockKind::Adopt);
+        let mut two = code.clone();
+        two.blocks.push(adoption);
+        for (case, planted, held) in [("none", none, 0), ("two", two, 2)] {
+            let found = adr_binding_problems(row, &planted);
+            let expected =
+                format!("{id}: holds {held} adoptions; the ADR's row adopts one descriptor");
+            assert!(found.contains(&expected), "{id}, {case}: {found:?}");
+        }
+    }
+}

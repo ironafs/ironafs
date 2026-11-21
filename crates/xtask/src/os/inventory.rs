@@ -675,7 +675,8 @@ fn row_problems(row: &Row) -> Vec<String> {
 /// row that says its descriptor is "adopted as an `OwnedFd`", as point 6.3
 /// spells it); the `safe fn` declarations are those the declared
 /// column allows; a row whose block column says "one" holds one site in
-/// `unsafe`; and the copy's open flag is the ADR's (an open owner
+/// `unsafe`, and one that says "one that adopts" exactly one adoption;
+/// and the copy's open flag is the ADR's (an open owner
 /// decision). The prose of other block counts is bound by review.
 fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
     let mut found = Vec::new();
@@ -745,6 +746,21 @@ fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
             "{id}: records {} unsafe impls; the ADR's row names none (point 6.3)",
             code.impls
         ));
+    }
+    // A row whose block column says it adopts one descriptor ("one that
+    // adopts the descriptor", "one that adopts a received descriptor")
+    // holds exactly one adoption.
+    if blocks.contains("one that adopts") {
+        let held = code
+            .blocks
+            .iter()
+            .filter(|block| block.kind == BlockKind::Adopt)
+            .count();
+        if held != 1 {
+            found.push(format!(
+                "{id}: holds {held} adoptions; the ADR's row adopts one descriptor"
+            ));
+        }
     }
     let says_one = blocks == "one" || blocks.starts_with("one,") || blocks.starts_with("one (");
     if says_one && code.blocks.len() != 1 {
