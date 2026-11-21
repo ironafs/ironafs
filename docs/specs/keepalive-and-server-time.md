@@ -578,11 +578,11 @@ point 7). Then, in order; the first failure decides `[OWN]`:
 
    | Field | Type | Written by | Meaning |
    |---|---|---|---|
-   | `trust` | none, or trusted until an instant on the boot clock (callbacks.md's field) | raised only here (point 6); lowered by callbacks.md, 5.6, point 11, and by point 7's end | C32, points 1 and 3 |
+   | `trust` | none, or trusted until an instant on the boot clock, with the network generation and the episode count in force at the raise (callbacks.md's field) | raised only here (point 6); lowered by callbacks.md, 5.6, point 11, and by point 7's end | C32, points 1 and 3 |
    | `lowerings` | `u64`, rises by 1 at every lowering, checked (callbacks.md's field, 5.6, point 1) | callbacks.md, 5.6, point 11, which includes point 7's end | the lowering count; recorded by every call that records a fence tuple (callbacks.md, 5.6, point 3), so a raise can tell which promises it covers (point 7) |
    | `ka_due` | none, or a boot-clock deadline | points 4 and 5 | when the next keepalive may be sent |
    | `ka_in_flight` | none, or the call's record: the K values it recorded (callbacks.md, 5.6, point 3), the network generation, and `lowerings`, all as at the send | point 4 | at most one keepalive in flight per K |
-   | `ka_from` | none, or the stamp the next due time counts from (point 5) | point 5 | the reply's send stamp after a `Completed` outcome; otherwise the arrival of the housekeeping step that handled the outcome |
+   | `ka_from` | none, or the stamp the next due time counts from (point 5) | point 5 | the reply's send stamp after a `Completed` outcome that has one; otherwise the arrival of the housekeeping step that handled the outcome, or that made an attempt which sent nothing |
    | `ka_conn` | none, or the keepalive connection and the count of its channels used (0 to 4) | point 4 | the connection's identity is Rx's; this field never holds it |
    | `ka_failures` | `u8`, saturating at 255 | points 6 and 8 | consecutive failed keepalives, for the gap of point 5 |
    | `ka_last` | none, or the receive stamp and round trip of the last keepalive that raised trust | point 6 | `afs status` (5.9) |
@@ -594,7 +594,8 @@ point 7). Then, in order; the first failure decides `[OWN]`:
    boot-clock instant (the instant the connection was closed plus R,
    [rx.md](rx.md), 5.6, point 2). A slot whose instant has passed is
    free. Opening a keepalive connection takes a free slot; closing it
-   marks the slot reserved. Rx keeps its own reservations (rx.md, 5.6,
+   marks the slot reserved; an open that fails (`IdentityExhausted`)
+   frees the slot at once, since no identity was used. Rx keeps its own reservations (rx.md, 5.6,
    point 2); this table only keeps keepalives within their share, and
    errs on the side of holding a slot longer.
    Every field is fixed-size. No field is persisted: callbacks never
@@ -650,7 +651,8 @@ point 7). Then, in order; the first failure decides `[OWN]`:
      no keepalive is sent: K's trust lapses at its end (point 7) and K
      stays in bounded revalidation, which is safe and costs only
      revalidation `[ADR 0006 D2.1: Working]`. The skip is counted
-     (`identity_skip`) and the keepalive is due again after `ka.min_gap`;
+     (`identity_skip`), the housekeeping step's arrival becomes
+     `ka_from`, and the keepalive is due again `ka.min_gap` after it;
    - the keepalive connection is closed, and never reused, when K's
      record retires (callbacks.md, 5.6, point 10), when K stops being
      active and its last keepalive has ended, or when the address the
@@ -696,9 +698,12 @@ point 7). Then, in order; the first failure decides `[OWN]`:
    sampling function (#71, its 5.3, point 2). After a `Completed`
    outcome, `ka_from` is the reply's send stamp, `first_sent` (#71, its
    5.4, point 1), a source that function accepts. After any other
-   outcome, no send stamp exists (#71's `RpcError` carries none), and
-   `ka_from` is the arrival the housekeeping step that handles the
-   outcome records, as any ingress records its request's arrival; that
+   outcome, after a `Completed` one whose `first_sent` is none (its
+   hand-off sample failed: condition 7 fails, and the reply is dropped
+   as stale, point 6), and after any attempt that sends nothing (no
+   identity slot, a failed deadline build), no send stamp exists (#71's
+   `RpcError` carries none), and `ka_from` is the arrival the
+   housekeeping step that handles the outcome or the attempt records, as any ingress records its request's arrival; that
    step runs after the call ended, so after any packet of it was sent,
    and the gap from it is never shorter than the gap from the true send.
    Before K's first keepalive, `ka_from` is none and a keepalive is due
@@ -745,9 +750,11 @@ point 7). Then, in order; the first failure decides `[OWN]`:
       since the receipt and the same episode count as the receipt.
    Conditions 3 to 7, the end check of point 7 and the write of `trust`
    are one K step (point 10), so no lowering can fall between the check
-   and the raise. Then `trust` becomes "trusted until the receive stamp's boot instant
-   plus E", or stays at a later instant it already holds `[OWN]`: a raise
-   never moves the instant earlier. `ka_failures` becomes 0, and
+   and the raise. Then `trust` becomes "trusted until the receive
+   stamp's boot instant plus E", recorded with the current network
+   generation and the receive stamp's episode count, or keeps a later
+   instant it already holds, with the generation and count taken now
+   `[OWN]`: a raise never moves the instant earlier. `ka_failures` becomes 0, and
    `ka_last` records the receive stamp and the round trip.
    If any condition fails, nothing is raised, the failing condition is
    counted (5.9), and:
@@ -786,7 +793,10 @@ point 7). Then, in order; the first failure decides `[OWN]`:
      (C32, point 4: "trust lapses when no reply has arrived within E"),
      when the network generation changes (C32, point 1: trust holds only
      "since the last network change"), and at an episode (the seams
-     specification, #71, its 5.4, point 1). Each end is a lowering: `trust` becomes none and
+     specification, #71, its 5.4, point 1). A check sees the second and
+     third by comparing the current network generation and episode count
+     with those recorded with `trust` at the raise (point 1). Each end is
+     a lowering: `trust` becomes none and
      `lowerings` rises `[OWN]`, so a lapse, which may hide a dropped
      break, needs every entry revalidated as any other lowering does.
      The end is applied at the first check that sees it, and every serve
@@ -847,8 +857,11 @@ point 7). Then, in order; the first failure decides `[OWN]`:
    client learns of a lost callback "no later than its next call to that
    server". The keepalive is such a call. While A14 holds, a promise the
    server dropped is served under trust until the earlier of the next
-   keepalive's outcome, which shows the loss (a failure or a reset, and
-   so a lowering, callbacks.md, 5.8), and the end of the trust the last
+   keepalive's outcome, which shows the loss (a failure, or a reply that
+   shows a reset of the client's callback state, each a lowering,
+   callbacks.md, 5.6, point 11; a reset call from the server, rows R1
+   and B0, advances K's suspect epoch instead, which fences every entry
+   and lowers no trust), and the end of the trust the last
    raise set, E after its receipt (point 7). When keepalives go out on
    schedule, the first is at most `ka.interval` plus `ka.deadline` after
    the loss; when one is not sent (no identity slot, a failed clock
@@ -1271,8 +1284,13 @@ bounded revalidation.
 - **KA22 Local outcomes.** A keepalive start refused (`StartRefused`),
   an open with no identity slot, a `NotSent(Admission)` and a
   connection retired by Rx before the next keepalive: trust is not
-  lowered by any of them, `ka_failures` is unchanged, and the next
-  keepalive is due `ka.min_gap` later; a `Timeout` after the request was
+  lowered by any of them, `ka_failures` is unchanged, the housekeeping
+  step's arrival becomes `ka_from`, and the next keepalive is due
+  `ka.min_gap` later; a failed open frees its identity slot, so 3 000
+  failed opens in a row leave the table's free slots as they were; a
+  `Completed` reply whose send stamp is missing raises nothing, is not a
+  failure, and the next keepalive is due `ka.min_gap` after the step
+  that handled it; a `Timeout` after the request was
   sent is a failed keepalive and lowers trust.
 - **KA20 Hostile replies.** Every reply of the reject corpus, in turn:
   no panic, the outcomes of 10.3.
@@ -1447,7 +1465,13 @@ server release, date, scenario and the evidence label EXECUTED.
   `Rpc::keepalive` call (same arguments and `Reply`, so only the
   keepalive owner can ask for a random call number on an unused
   channel), and with housekeeping's tick recorded as an arrival, so a
-  due time counts from a recorded stamp like any other deadline.
+  due time counts from a recorded stamp like any other deadline. A
+  third gap: #71's `Rpc::open` takes no idle time, while the keepalive
+  connection is opened with `ka.conn_idle` (5.2); add it to the same
+  amendment (an idle-time argument to `open`, or to `Rpc::keepalive`'s
+  connection). Until then a connection Rx retires early is a local
+  outcome (5.6, point 8), which costs a new connection and never
+  lowers trust.
 - **Q6. The keepalive's connection key.** C30, point 3, names a
   credential context in every connection key; the keepalive belongs to
   none (5.6, point 4). Recommendation: the client's connection

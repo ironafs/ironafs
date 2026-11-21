@@ -787,7 +787,7 @@ point 7). The service never sends a datagram itself.
    | `suspect_epoch` | `u64`, taken from one client-wide counter that only rises; a new record starts at that counter's next value, and every advance takes the next value again. The counter is one atomic fetch-and-add with sequentially consistent ordering, the only way any thread takes a value, whether it creates a record or advances one; the value is taken before the record is published or the advance is visible, so no two takers ever get the same value `[OWN]` | this specification (points 6 to 9) | the server's break counter of C16, point 2. No value is ever used twice, by any record, so an entry recorded under a retired record can never match a later one `[OWN]` |
    | `recorded_since_advance` | `bool` | the cache, when a call records the current tuple (point 3); cleared by an advance | whether any call to the server has recorded the current suspect epoch |
    | `advance_pending` | `bool` | this specification (point 7) | an advance waits for the next tick |
-   | `trust` | none, or trusted until an instant on the boot clock | raised only by the keepalive specification (#81, under C32, point 1); lowered here (point 11) | C32, points 1 and 3 |
+   | `trust` | none, or trusted until an instant on the boot clock, with the network generation and episode count in force at the raise (#81, its 5.6, point 1) | raised only by the keepalive specification (#81, under C32, point 1); lowered here (point 11) | C32, points 1 and 3 |
    | `lowerings` | `u64`, from 0, rising by 1 at every lowering, checked (section 6); read and changed, with `trust`, only in a K step (point 11) | this specification (point 11) | the lowering count: an entry is served under trust only if its recorded lowering count equals it (point 5), so a raise of trust never covers an entry validated before a lowering (the keepalive specification, #81, its 5.6, point 7) `[OWN]` |
    | `hold` | count of live outgoing connections to the server, on any family, that fail ADR 0006 decision 1, point 9's condition | the connection layer, from each connection's `eligible` flag ([rx.md](rx.md), 5.6, point 1) | ADR 0006 D2.5 (point 12) |
    | `bucket` | the rate state of `cb.rate.key_units` | this specification (point 8) | C31, point 2 |
@@ -987,10 +987,22 @@ point 7). The service never sends a datagram itself.
       suspect against the new tuple, which is stronger;
     - a call outcome that shows a loss of callback continuity `[ADR 0004
       C32.3: Working]`: in this version, every call to the server on K
-      that ends without a valid reply (`Timeout`, `DeadlineExceeded`,
-      `Aborted`, `KeyExhausted`; [rx.md](rx.md), section 7), and every
-      abort code the server returns, **except** an ABORT that ADR 0006
-      excludes. That is: a matching ABORT, call-level or call 0, on a
+      that was handed to the transport and ended without a valid reply
+      (`Timeout`; `DeadlineExceeded` and `KeyExhausted` with `sent_any`
+      set; `Aborted`; `ReplyTooLarge`; [rx.md](rx.md), section 7; in the
+      seams specification's terms, #71, its 5.4, point 2, `Aborted` and
+      `NoReply` with the causes `Deadline`, `PeerLost`, `ReplyTooLarge`
+      and `Security`), a keepalive's reply that fails to decode, and
+      every abort code the server returns. A local outcome, where the
+      server was not asked or the client itself ended the call (every
+      `NotSent` cause; `NoReply` with `Cancelled`, `Closed`,
+      `NetworkChanged` or `ClockFailed`; `Fenced`, `Cancelled`,
+      `StartRefused`, `IdentityExhausted`, `DeadlineInvalid`,
+      `ProtocolViolation`; `DeadlineExceeded` and `KeyExhausted` with
+      `sent_any` clear), is not one: the keepalive specification's split
+      (#81, its 5.6, point 8), applied to every call. A network change
+      and a clock failure end trust through the last bullet below. The
+      one other exception is an ABORT that ADR 0006 excludes: a matching ABORT, call-level or call 0, on a
       connection that fails decision 1, point 9's condition changes only
       counters `[ADR 0006 D1.6, D1.9: Firm; D2.5: Working]`. Which codes
       a server uses to report a lost callback is A14's question; until
