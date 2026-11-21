@@ -152,7 +152,8 @@ pub struct FileServer {
     delivered: Vec<(ClientId, CbProc)>,
     failed: Vec<(ClientId, Fid)>,
     lost: BTreeSet<ClientId>,
-    resetting: BTreeSet<ClientId>,
+    /// Per client, the resets in flight, whoever started them.
+    resetting: BTreeMap<ClientId, u32>,
     held: Vec<Held>,
     released: Vec<(u64, Option<Answer>)>,
     a14: bool,
@@ -187,7 +188,7 @@ impl FileServer {
             delivered: Vec::new(),
             failed: Vec::new(),
             lost: BTreeSet::new(),
-            resetting: BTreeSet::new(),
+            resetting: BTreeMap::new(),
             held: Vec::new(),
             released: Vec::new(),
             a14: true,
@@ -386,6 +387,10 @@ impl FileServer {
     fn send(&mut self, client: ClientId, procedure: CbProc) {
         let id = self.next_out;
         self.next_out = id.saturating_add(1);
+        if let CbProc::InitState(_) = procedure {
+            let count = self.resetting.entry(client).or_insert(0);
+            *count = count.saturating_add(1);
+        }
         self.in_flight.insert(id, (client, procedure.clone()));
         self.outgoing.push(Outgoing {
             id,
@@ -408,7 +413,8 @@ impl FileServer {
     /// `docs/specs/callbacks.md` 5.8): the promise was already ended by
     /// the write that owed the break, and the client's next call waits
     /// for a reset. A reset that is answered clears the loss and answers
-    /// the client's held calls; one that fails drops them.
+    /// the client's held calls; once every reset in flight to it has
+    /// failed, they are dropped.
     pub fn settled(&mut self, id: u64, answer: Option<CbAnswer>) {
         let Some((client, procedure)) = self.in_flight.remove(&id) else {
             return;
@@ -422,12 +428,12 @@ impl FileServer {
                 }
             }
             (CbProc::InitState(_), true) => {
+                self.reset_settled(client);
                 self.lost.remove(&client);
-                self.resetting.remove(&client);
                 self.release(client, true);
             }
             (CbProc::InitState(_), false) => {
-                if self.resetting.remove(&client) {
+                if self.reset_settled(client) == 0 {
                     self.release(client, false);
                 }
             }
@@ -436,6 +442,21 @@ impl FileServer {
         if reached {
             self.delivered.push((client, procedure));
         }
+    }
+
+    /// Counts one reset of `client` settled; returns how many remain in
+    /// flight.
+    fn reset_settled(&mut self, client: ClientId) -> u32 {
+        let left = self
+            .resetting
+            .get(&client)
+            .map_or(0, |count| count.saturating_sub(1));
+        if left == 0 {
+            self.resetting.remove(&client);
+        } else {
+            self.resetting.insert(client, left);
+        }
+        left
     }
 
     /// Answers, or drops, every call `client` has held.
@@ -470,7 +491,9 @@ impl FileServer {
         if !self.lost.contains(&client) {
             return Some(self.serve(client, context, procedure));
         }
-        if self.resetting.insert(client) {
+        // Any reset in flight, a scenario's included, is the one the
+        // call waits on.
+        if !self.resetting.contains_key(&client) {
             self.send(client, CbProc::InitState(Reset::One));
         }
         self.held.push(Held {

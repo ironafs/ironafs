@@ -561,3 +561,57 @@ fn the_data_version_is_readable_without_a_call() {
     assert_eq!(server.data_version(Fid::new(100, 9, 9)), None);
     assert_eq!(server.promise_holders(small()), []);
 }
+
+/// Makes `ME` lost: its promise on `small()` is broken by a peer's write
+/// and the break fails.
+fn lost_server() -> FileServer {
+    let mut server = server();
+    server.serve(ME, CTX, &status_call());
+    peer_write(&mut server, small());
+    server.deliver_breaks();
+    let id = server.take_outgoing().first().unwrap().id;
+    server.settled(id, None);
+    server
+}
+
+#[test]
+fn a_scenario_reset_in_flight_stands_for_the_reset_a_held_call_waits_on() {
+    let mut server = lost_server();
+    server.reset(ME);
+    let scenario = server.take_outgoing().first().unwrap().id;
+    assert_eq!(server.serve_call(1, ME, CTX, &status_call()), None);
+    assert_eq!(server.take_outgoing(), [], "no second reset");
+    server.settled(scenario, None);
+    assert_eq!(server.take_released(), [(1, None)]);
+    assert_eq!(server.lost_clients(), [ME]);
+}
+
+#[test]
+fn held_calls_are_dropped_only_when_every_reset_in_flight_has_failed() {
+    let mut server = lost_server();
+    assert_eq!(server.serve_call(1, ME, CTX, &status_call()), None);
+    let automatic = server.take_outgoing().first().unwrap().id;
+    server.reset(ME);
+    let scenario = server.take_outgoing().first().unwrap().id;
+    server.settled(automatic, None);
+    assert_eq!(
+        server.take_released(),
+        [],
+        "the scenario reset may still reach it"
+    );
+    server.settled(scenario, Some(CbAnswer::Empty));
+    let released = server.take_released();
+    assert_eq!(released.len(), 1);
+    assert_eq!(status_of(released[0].1.as_ref().unwrap()).data_version, 2);
+    assert_eq!(server.lost_clients(), []);
+
+    let mut server = lost_server();
+    assert_eq!(server.serve_call(1, ME, CTX, &status_call()), None);
+    let automatic = server.take_outgoing().first().unwrap().id;
+    server.reset(ME);
+    let scenario = server.take_outgoing().first().unwrap().id;
+    server.settled(scenario, None);
+    assert_eq!(server.take_released(), []);
+    server.settled(automatic, None);
+    assert_eq!(server.take_released(), [(1, None)]);
+}
