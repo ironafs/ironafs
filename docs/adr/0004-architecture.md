@@ -5,7 +5,7 @@
 
 Status: accepted (2026-11-20), by the owner, after the review rounds
 recorded below. Raised in issue #20. Amended 2026-11-20 (#32) and
-2026-11-21 (#53).
+2026-11-21 (#101, #53).
 
 ## Context
 
@@ -705,6 +705,75 @@ The full record, with every finding and its disposition, is
   - Checked and unchanged: `README.md`, `AGENTS.md`, `CONTRIBUTING.md`,
     `AI.md`, the skills, and `docs/workflow.md` §2 and §6, which earlier
     pull requests brought in line (#23, #35, #36, #37, #39).
+- **Amendment, 2026-11-21 (#101, issue #49, with ADR 0005 in the
+  same pull request): C5, point 5, and C4, point 3's row for
+  `ironafs-os`.**
+  - What changed: C5, point 5's list of calls with no safe route gains
+    what ADR 0005's closed list holds and the point did not name: the
+    operating system's random source (C5, point 1); the resolver calls
+    of C33, point 2; the Windows control pipe's creation, I/O and
+    caller's token (C45, point 1), and the pipe server's process token
+    checked by the sender (C43, points 1, 2 and 4); the Linux mount
+    call and FUSE descriptor hand-off (L7, point 1); the IPv6-only
+    callback socket (C34, point 2), the free-space query (C27, point 3)
+    and network-change notification (C23, point 2) on Linux; a safe
+    module that carries encoded messages to the log sinks (O8); and the
+    volatile wipe of key material and token buffers (O28, point 2).
+    C5's "Revisit if" gains "or the `ironafs-os` ADR's closed list adds
+    a kind of call this point does not name". C4, point 3's row for
+    `ironafs-os` names the safe log transport, and C4's "Revisit if"
+    gains "or no log sink outside Linux still needs a site in
+    `ironafs-os` (then the safe log transport could live in a crate
+    without `unsafe`)". No firm decision changes; C4 and C5 are working
+    decisions.
+  - Evidence: ADR 0005's sweep of the M2a work found these calls with
+    no stable safe route in `std` (its Context and Decision, point 2),
+    and the owner decided on 2026-11-20 that they belong in
+    `ironafs-os`. For the log transport (ADR 0005, Decision 1, point 7;
+    owner, 2026-11-20): the Linux journald and syslog writes need no
+    `unsafe`, but the macOS shim and, later, the Windows Event Log are
+    sinks of the same module and need sites, and `ironafsd` and `afs`
+    share one transport (O4, point 1), so it sits beside those sites as
+    a module that forbids `unsafe` itself.
+  - Sweep: the repository was searched for "C5, point 5", "C5.5",
+    "few calls that have no safe route", "small operating-system
+    bindings", "closed list", "ironafs-os" and the ADR's number,
+    "0004". The files that state C4's or C5's rule for this crate were
+    then read in full, at `aef2fac`: `AGENTS.md`,
+    `docs/coding-standards.md`, `crates/xtask/src/deps.rs`,
+    `crates/xtask/src/deps/pure_source.rs` and
+    `crates/ironafs-time/src/lib.rs`. None restates C5, point 5's list
+    or C4, point 3's row, so none changes for this amendment. Coding
+    standards rule 5 does change in the same pull request, for a
+    different reason: it names `ironafs-os` as the one crate that does
+    not inherit the workspace lints (ADR 0005, point 1.5). The tests of
+    the dependency check (`crates/xtask/src/deps/tests.rs` and
+    `self_test.rs`) were read at their hits only: they use the name
+    `ironafs-os` in planted fixtures and state no rule. `README.md` and
+    `docs/workflow.md` cite ADR 0004 for other decisions; the other hits
+    are review records and research notes, which record their own dates
+    and are not rewritten.
+    - C5, point 5, its "Revisit if" and C4, point 3's row (part 1):
+      rewritten as above.
+    - C4, point 7, C37, point 2, and Consequences, point 4 (part 1),
+      and O8, point 2, and O31, point 4 (part 3): name `ironafs-os`
+      for calls that are on the new list. Unchanged.
+    - ADR 0005's Context describes C4, point 3, and C5, point 5, as
+      accepted before this amendment, and says so.
+    - `crates/xtask/src/deps.rs`: the lint-table exception list stays
+      empty until ADR 0005 is accepted, and its message cites C5,
+      point 5, for the workspace lints, which still hold. Unchanged.
+    - ADR 0002's "closed list" of agent ids and C24, point 6's closed
+      list are unrelated. Unchanged.
+    - The rule binds the same actors as before (the maintainer's
+      session, contributors and their agents); no bot acts on it.
+  - Review rounds: class S, from families that wrote neither the
+    amendment nor the decision: ADR 0005's scoped rounds 15 to 17, GPT
+    `gpt-6.2-sol` (xhigh; the owner's choice over the strongest row's
+    `gpt-6.2-astra`, recorded in that review record) and GLM `glm-5.3` (high); the last round passed.
+    The owner accepted the amendment with ADR 0005 on 2026-11-21. The
+    record is
+    [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md).
 - **Amendment, 2026-11-21 (#53): eight working decisions for M2a.
   O50, points 1, 3 and 4, and its "Revisit if"; O12, point 2; O40,
   point 2; C34, point 2; C4, points 1 and 3; N46, point 3; C5, point 1,
