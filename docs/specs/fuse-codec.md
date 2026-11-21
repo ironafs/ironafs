@@ -794,5 +794,5 @@ None yet. Section 13 lists what is to be observed.
 
 ## 14. Review
 
-No review record yet. It will be in `docs/reviews/` when the specification
-is reviewed.
+The review record is
+[2026-11-21-m2a-92-fuse-codec](../reviews/2026-11-21-m2a-92-fuse-codec.md).
