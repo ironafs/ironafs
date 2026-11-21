@@ -174,7 +174,7 @@ jobs:
       contents: read
     env:
       TARGET: ${{ matrix.target }}
-      SITES: linux-clock linux-random
+      SITES: linux-clock linux-random unix-nodump linux-dontdump
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -242,9 +242,10 @@ jobs:
       - name: Run ironafs-os under Miri, host and aarch64 Linux
         # A run that ran nothing, or ignored a test, proves nothing: each
         # must report every test passed and none ignored, and the named
-        # wrapper and wipe tests must be among them. The random site passes
-        # its buffer's exposed address, as the C call needs, so Miri runs
-        # with permissive provenance, which only silences its warning about
+        # wrapper and wipe tests must be among them. Tests that need the
+        # kernel itself (child processes, /proc) are not built under Miri.
+        # The random site passes its buffer's exposed address, as the C call
+        # needs, so Miri runs with permissive provenance, which only silences its warning about
         # that integer-to-pointer cast (the cast is the design, not a bug).
         env:
           MIRIFLAGS: -Zmiri-permissive-provenance
@@ -257,6 +258,8 @@ jobs:
               linux_clock::tests::read_clock_boot_advances_and_never_goes_back \
               linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names \
               linux_random::tests::arguments_pass_the_buffer_address_and_length_and_zeros_each_as_a_long \
+              unix_nodump::tests::disable_dumps_in_this_process_reads_back_not_dumpable \
+              linux_dontdump::tests::secret_buffer_new_advises_its_whole_block_through_the_call \
               mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257; do
               grep -q "^test $test \.\.\. ok$" "miri-$target.log"
             done

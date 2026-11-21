@@ -36,17 +36,15 @@ pub(super) const PR_GET_DUMPABLE: c_int = 3;
 /// `PR_SET_DUMPABLE`: sets the dumpable attribute to 0 or 1.
 pub(super) const PR_SET_DUMPABLE: c_int = 4;
 
-// SAFETY: `int setrlimit(int resource, const struct rlimit *rlim)`, as
-// `setrlimit(2)` and POSIX declare it (glibc's GNU mode spells the
-// resource as an enum of the same size; musl writes `int`), and `int
-// prctl(int op, ...)`, as `prctl(2)` and `<sys/prctl.h>` declare it in
-// glibc and musl. Both are in the C library itself, so no `#[link]` is
-// needed beyond the C library the standard library links. Both are
-// declared unsafe to call: `setrlimit` reads one `struct rlimit` through
-// its pointer, and `prctl` reads its variadic arguments as `unsigned long`
-// values, which `super` passes as `c_ulong`.
-#[expect(unsafe_code, reason = "unix-nodump")]
-unsafe extern "C" {
-    pub(super) fn setrlimit(resource: c_int, rlim: *const rlimit) -> c_int;
-    pub(super) fn prctl(option: c_int, ...) -> c_int;
-}
+// The foreign functions, or under Miri, which cannot call them, the
+// in-crate stand-ins of ADR 0005, point 6.5, which the same calls reach,
+// so the wrappers' arguments and the read-back run unchanged.
+#[cfg(not(miri))]
+mod foreign;
+#[cfg(miri)]
+mod stand_in;
+
+#[cfg(not(miri))]
+pub(super) use foreign::{prctl, setrlimit};
+#[cfg(miri)]
+pub(super) use stand_in::{prctl, setrlimit};

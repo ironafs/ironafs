@@ -244,15 +244,33 @@
         "blocks": [
           {
             "kind": "call",
-            "operation": "setrlimit"
+            "operation": "abi::setrlimit",
+            "arguments": [
+              "resource",
+              "pointer"
+            ]
           },
           {
             "kind": "call",
-            "operation": "prctl"
+            "operation": "abi::prctl",
+            "arguments": [
+              "option",
+              "NOT_DUMPABLE",
+              "UNUSED",
+              "UNUSED",
+              "UNUSED"
+            ]
           },
           {
             "kind": "call",
-            "operation": "prctl"
+            "operation": "abi::prctl",
+            "arguments": [
+              "option",
+              "UNUSED",
+              "UNUSED",
+              "UNUSED",
+              "UNUSED"
+            ]
           }
         ],
         "impls": 0
@@ -292,7 +310,12 @@
         "blocks": [
           {
             "kind": "call",
-            "operation": "madvise"
+            "operation": "abi::madvise",
+            "arguments": [
+              "address",
+              "length",
+              "advice"
+            ]
           }
         ],
         "impls": 0

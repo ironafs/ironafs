@@ -18,7 +18,8 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 
-#[cfg(test)]
+// The child-process harness of the kernel tests, which Miri cannot run.
+#[cfg(all(test, not(miri)))]
 pub(crate) mod harness;
 #[cfg(test)]
 mod tests;
