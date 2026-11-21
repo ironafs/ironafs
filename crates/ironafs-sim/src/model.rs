@@ -12,6 +12,7 @@
 //! scheduler's server seam in the simulator's own [`envelope`], which no
 //! client crate reads and which shares no code with any client codec.
 
+pub mod callback;
 pub mod cell;
 pub mod codes;
 pub mod envelope;
