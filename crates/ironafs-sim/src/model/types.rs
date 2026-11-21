@@ -439,3 +439,26 @@ pub enum Answer {
     /// An abort code, classified by the procedure and service (5.9).
     Abort(i32),
 }
+
+/// A busy spell: the next `calls` requests a model serves are answered
+/// with the abort `code` (5.9, rows R4, R11 and R19's busy cases).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Busy {
+    /// The abort code.
+    pub code: i32,
+    /// How many more requests it answers.
+    pub calls: u32,
+}
+
+impl Busy {
+    /// The code to answer with now, if the spell lasts, counting the call.
+    pub fn take(spell: &mut Option<Self>) -> Option<i32> {
+        let busy = spell.as_mut()?;
+        let code = busy.code;
+        busy.calls = busy.calls.saturating_sub(1);
+        if busy.calls == 0 {
+            *spell = None;
+        }
+        Some(code)
+    }
+}
