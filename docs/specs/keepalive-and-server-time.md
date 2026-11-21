@@ -1517,5 +1517,5 @@ server release, date, scenario and the evidence label EXECUTED.
 
 ## 14. Review
 
-Not yet reviewed. The review record goes in `docs/reviews/` before this
-specification leaves draft.
+Reviewed by GLM and DeepSeek in three rounds on 2026-11-21; the record
+is [2026-11-21-m2a-81-keepalive](../reviews/2026-11-21-m2a-81-keepalive.md).

@@ -33,6 +33,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-01-xdr-spec](2026-11-21-m2a-01-xdr-spec.md) | Issue #42: `docs/specs/`, its template and the XDR profile with caps |
 | [2026-11-21-m2a-55-rx](2026-11-21-m2a-55-rx.md) | Issue #55: the Rx transport and null class specification, first version from documents only |
 | [2026-11-21-m2a-66-callbacks](2026-11-21-m2a-66-callbacks.md) | Issue #66: the callback service specification, procedures and allowlist, first version from documents only |
+| [2026-11-21-m2a-81-keepalive](2026-11-21-m2a-81-keepalive.md) | Issue #81: the keepalive, callback trust and server time specification, first version from documents only, with the callback specification's lowering count |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
