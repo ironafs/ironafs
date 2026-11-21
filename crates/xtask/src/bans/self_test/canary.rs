@@ -16,8 +16,8 @@ use crate::{Command, Error, metadata};
 mod tests;
 
 /// One planted evasion: its name, the files it writes under the
-/// workspace (`{root}` in a text stands for the workspace's directory),
-/// the variables it sets for cargo, and the violation it must give.
+/// workspace and the variables it sets for cargo (`{root}` in either
+/// stands for the workspace's directory), and the violation it must give.
 struct Case {
     name: &'static str,
     files: &'static [(&'static str, &'static str)],
@@ -66,7 +66,7 @@ const WARNING_SCRIPT_QUIET: &[(&str, &str)] = &[
     (".cargo/config.toml", "[term]\nquiet = true\n"),
 ];
 
-fn feature_gated(violation: &Violation) -> bool {
+fn banned_call_linted(violation: &Violation) -> bool {
     matches!(violation, Violation::Lint(line) if line.contains("disallowed method"))
 }
 
@@ -85,15 +85,22 @@ const FEATURE_GATED: &[(&str, &str)] = &[
     ),
 ];
 
-/// A compiler wrapper that drops clippy and runs the compiler alone.
-const WRAPPER: &str = "#!/bin/sh\nfor arg; do shift; case \"$arg\" in *clippy-driver*) ;; *) set -- \"$@\" \"$arg\";; esac; done\nexec \"$@\"\n";
+/// A compiler wrapper that runs clippy for the canary alone, and drops it
+/// to run the compiler alone for every other crate.
+const WRAPPER: &str = "#!/bin/sh\ncase \" $* \" in *\" --crate-name ironafs_bans_canary \"*) exec \"$@\";; esac\nfor arg; do shift; case \"$arg\" in *clippy-driver*) ;; *) set -- \"$@\" \"$arg\";; esac; done\nexec \"$@\"\n";
+
+/// A second member that calls a banned item.
+const BANNED_CALL: (&str, &str) = (
+    "crates/planted/src/lib.rs",
+    "#[must_use]\npub fn now() -> std::time::Instant {\n    std::time::Instant::now()\n}\n",
+);
 
 const CASES: &[Case] = &[
     Case {
         name: "a banned call behind a feature no build enables",
         files: FEATURE_GATED,
         env: &[],
-        needs: feature_gated,
+        needs: banned_call_linted,
     },
     Case {
         // Cargo prints its own warnings on standard error, not as JSON.
@@ -156,16 +163,28 @@ const CASES: &[Case] = &[
         needs: silent,
     },
     Case {
-        name: "a compiler wrapper that runs the compiler without clippy",
+        name: "a configured compiler wrapper that runs another member without clippy",
         files: &[
             ("wrap.sh", WRAPPER),
             (
                 ".cargo/config.toml",
                 "[build]\nrustc-wrapper = \"{root}/wrap.sh\"\n",
             ),
+            ("crates/planted/Cargo.toml", PLANTED_MANIFEST),
+            BANNED_CALL,
         ],
         env: &[],
-        needs: silent,
+        needs: banned_call_linted,
+    },
+    Case {
+        name: "an inherited compiler wrapper that runs another member without clippy",
+        files: &[
+            ("wrap.sh", WRAPPER),
+            ("crates/planted/Cargo.toml", PLANTED_MANIFEST),
+            BANNED_CALL,
+        ],
+        env: &[("RUSTC_WRAPPER", "{root}/wrap.sh")],
+        needs: banned_call_linted,
     },
     Case {
         name: "a byte-order-marked cargo configuration whose [env] sets CLIPPY_CONF_DIR",
@@ -244,7 +263,7 @@ fn lint_planted(
     let workspace = metadata::load(Some(&dir.join("Cargo.toml")), &[])?;
     lint(&workspace, |command: &mut Command| {
         for (name, value) in env {
-            command.env(name, value);
+            command.env(name, value.replace("{root}", &root));
         }
     })
 }

@@ -146,6 +146,39 @@ fn verdict_needs_the_diagnostic_on_the_canary_line_and_file() {
 }
 
 #[test]
+fn verdict_credits_a_canary_line_only_for_a_warning_from_the_library() {
+    let index = 4;
+    for moved in [
+        fired(index).replace("\"level\":\"warning\"", "\"level\":\"error\""),
+        fired(index).replace("\"level\":\"warning\"", "\"level\":\"note\""),
+        fired(index).replace("\"kind\":[\"lib\"]", "\"kind\":[\"custom-build\"]"),
+        fired(index).replace("\"kind\":[\"lib\"]", "\"kind\":[\"test\"]"),
+    ] {
+        let messages = run(Some(index)).replace(FINISHED, &format!("{moved}\n{FINISHED}"));
+        let found = verdict(&messages, CANARY, &members());
+        assert!(
+            found.contains(&Violation::CanaryMissing {
+                path: BANS[index].path,
+                line: line(index)
+            }),
+            "{moved}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn verdict_does_not_count_a_build_script_s_artifact_as_its_member_built() {
+    let script = artifact(OTHER).replace("\"kind\":[\"lib\"]", "\"kind\":[\"custom-build\"]");
+    let messages = run(None).replace(&artifact(OTHER), &script);
+    assert_eq!(
+        verdict(&messages, CANARY, &members()),
+        [Violation::Unbuilt(format!(
+            "cargo reported no artifact of the member {OTHER}"
+        ))]
+    );
+}
+
+#[test]
 fn verdict_reports_any_other_warning() {
     let other = diagnostic(
         OTHER,
@@ -241,6 +274,7 @@ fn package(id: &str, dependencies: &[&str]) -> Package {
         path: None,
         member: true,
         dependencies: dependencies.iter().map(|id| (*id).to_owned()).collect(),
+        dev_dependencies: Vec::new(),
         target_kinds: vec!["lib".to_owned()],
         links: None,
         features: Vec::new(),
@@ -257,5 +291,14 @@ fn depended_on_reports_a_package_that_depends_on_the_canary() {
     assert_eq!(
         depended_on(&[package(CANARY, &[]), package(OTHER, &[])], CANARY),
         []
+    );
+    // A development dependency is an edge too.
+    let dev = Package {
+        dev_dependencies: vec![CANARY.to_owned()],
+        ..package(OTHER, &[])
+    };
+    assert_eq!(
+        depended_on(&[package(CANARY, &[]), dev], CANARY),
+        [Violation::Canary(format!("{OTHER} depends on the canary"))]
     );
 }

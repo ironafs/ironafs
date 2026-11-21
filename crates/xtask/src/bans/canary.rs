@@ -153,12 +153,19 @@ pub(crate) fn files(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Error> {
     Ok(found)
 }
 
-/// Each package of `packages` that depends on the canary, `canary_id`:
-/// the canary stays out of every other crate's graph.
+/// Each package of `packages` that depends on the canary, `canary_id`,
+/// as a development dependency too: the canary stays out of every other
+/// crate's graph.
 pub(crate) fn depended_on(packages: &[Package], canary_id: &str) -> Vec<Violation> {
     packages
         .iter()
-        .filter(|package| package.dependencies.iter().any(|id| id == canary_id))
+        .filter(|package| {
+            package
+                .dependencies
+                .iter()
+                .chain(&package.dev_dependencies)
+                .any(|id| id == canary_id)
+        })
         .map(|package| Violation::Canary(format!("{} depends on the canary", package.id)))
         .collect()
 }
@@ -193,9 +200,23 @@ fn canary_ban(diagnostic: &json::Value) -> Option<usize> {
     })
 }
 
+/// The kinds of the target a cargo JSON `message` is about; none if it
+/// names none.
+fn target_kinds(message: &json::Value) -> Vec<&str> {
+    message
+        .get("target")
+        .and_then(|target| target.get("kind"))
+        .and_then(json::Value::as_array)
+        .map_or_else(Vec::new, |kinds| {
+            kinds.iter().filter_map(json::Value::as_str).collect()
+        })
+}
+
 /// What cargo's JSON `messages` from the workspace's lint show: each
 /// canary line whose ban drew no diagnostic there, every other warning or
-/// error, and each member in `member_ids` cargo reported no artifact of.
+/// error, and each member in `member_ids` cargo reported no artifact of
+/// other than its build script's. A canary line counts as fired only by a
+/// warning from the canary's library.
 /// The canary's diagnostics prove the run linted with the bans, whatever
 /// could have changed that (an alias for `clippy`, a compiler wrapper, a
 /// variable or configuration); the rest is the lint's own gate: no other
@@ -206,8 +227,12 @@ pub(crate) fn verdict(messages: &str, canary_id: &str, member_ids: &[String]) ->
     let mut built = Vec::new();
     for message in messages.lines().filter_map(|line| json::parse(line).ok()) {
         let package = message.get("package_id").and_then(json::Value::as_str);
+        let kinds = target_kinds(&message);
         match message.get("reason").and_then(json::Value::as_str) {
-            Some("compiler-artifact") => built.extend(package.map(str::to_owned)),
+            // A build script's artifact is not its crate linted.
+            Some("compiler-artifact") if !kinds.contains(&"custom-build") => {
+                built.extend(package.map(str::to_owned));
+            }
             Some("compiler-message") => {
                 let Some(diagnostic) = message.get("message") else {
                     found.push(Violation::Lint(
@@ -215,14 +240,17 @@ pub(crate) fn verdict(messages: &str, canary_id: &str, member_ids: &[String]) ->
                     ));
                     continue;
                 };
+                let level = diagnostic.get("level").and_then(json::Value::as_str);
+                // Credit only the warning the ban gives, from the library.
                 if package == Some(canary_id)
+                    && level == Some("warning")
+                    && kinds.contains(&"lib")
                     && let Some(index) = canary_ban(diagnostic)
                     && let Some(slot) = fired.get_mut(index)
                 {
                     *slot = true;
                     continue;
                 }
-                let level = diagnostic.get("level").and_then(json::Value::as_str);
                 if !matches!(level, Some("note" | "help" | "failure-note")) {
                     let rendered = diagnostic
                         .get("rendered")

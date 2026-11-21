@@ -51,8 +51,11 @@
 //! it, and require each canary line's disallowed-item warning, on that
 //! line, and no other warning. A missing one fails whatever its cause. The
 //! canary must be exactly the text check-bans writes, with no other file
-//! (a `clippy.toml`, a build script), and no crate may depend on it. It
-//! proves the lint ran with the root configuration's bans on one member;
+//! (a `clippy.toml`, a build script), and no crate may depend on it, as a
+//! development dependency either. The lint also turns off any compiler
+//! wrapper (`no_wrapper`), so none can run plain rustc for another member
+//! while the canary is linted with clippy. The canary proves the lint ran
+//! with the root configuration's bans on one member;
 //! a member's own configuration is proved by the fixture, and a change
 //! that reaches only some members' compilation (a build script's variable
 //! for its own crate, a configuration written and restored around one
@@ -761,6 +764,7 @@ pub(crate) fn check(
     for name in CLEARED_ENVIRONMENT {
         command.env_remove(name);
     }
+    no_wrapper(&mut command);
     let output = command.output().map_err(Error::io("cargo clippy"))?;
     if output.status.success() {
         violations.extend(fired_violations(&String::from_utf8_lossy(&output.stderr)));
@@ -1029,6 +1033,7 @@ pub(crate) fn lint(
     // Over anything the caller set, so cargo's own warnings on standard
     // error are printed, each on its own line, in plain text.
     plain_terminal(&mut command);
+    no_wrapper(&mut command);
     let output = command.output().map_err(Error::io("cargo clippy"))?;
     let messages = String::from_utf8_lossy(&output.stdout);
     violations.extend(build_overrides(&messages));
@@ -1093,6 +1098,16 @@ pub(crate) fn plain_terminal(command: &mut Command) {
     for (name, value) in TERMINAL {
         command.env(name, value);
     }
+}
+
+/// Runs cargo with no compiler wrapper around clippy's. An empty
+/// `RUSTC_WRAPPER` turns off one set by the environment
+/// (`CARGO_BUILD_RUSTC_WRAPPER` too) or by any cargo configuration, and
+/// `cargo clippy` sets the workspace wrapper to its own driver over one
+/// set either way; so no wrapper can run plain rustc for some members
+/// while the canary is linted. Set over anything the caller set.
+fn no_wrapper(command: &mut Command) {
+    command.env("RUSTC_WRAPPER", "");
 }
 
 /// A refusal for each of `paths` that holds a line break.

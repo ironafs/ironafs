@@ -14,7 +14,7 @@ mod self_test;
 
 use std::fmt;
 use std::fs;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::fixture;
@@ -40,8 +40,14 @@ pub(crate) enum Violation {
     /// A line of the manifest that declares a target, or a `[[bin]]` table,
     /// whose name this reader cannot read: refused, never skipped.
     UnreadableTarget { line: usize },
+    /// The manifest leaves Cargo free to find targets it declares nowhere.
+    AutoBins,
     /// A target has no tracked seed.
     NoSeeds { target: String },
+    /// An entry under a target's seed directory that is not a tracked
+    /// seed as git's index holds it: untracked, changed, deleted, or not a
+    /// regular file. What would be replayed is not what is tracked.
+    UntrackedSeed { target: String, entry: PathBuf },
     /// The engine exited successfully but did not report running a seed.
     NotExecuted { target: String, seed: PathBuf },
     /// The engine reported a failure: only the target and the reproducer's
@@ -64,6 +70,17 @@ impl fmt::Display for Violation {
                 "{FUZZ_DIR}/{MANIFEST}:{line}: a fuzz target whose name this check cannot read, \
                  so it would not be replayed: declare each target as a [[bin]] table with one \
                  line name = \"<crate>_<subject>\""
+            ),
+            Self::AutoBins => write!(
+                formatter,
+                "{FUZZ_DIR}/{MANIFEST}: [package] does not set autobins = false, so Cargo could \
+                 build a target from src/main.rs or src/bin/ that this check never replays"
+            ),
+            Self::UntrackedSeed { target, entry } => write!(
+                formatter,
+                "{target}: {} is not a tracked seed as git's index holds it (untracked, changed, deleted or \
+                 not a regular file), so what would be replayed is not what is tracked",
+                entry.display()
             ),
             Self::NoSeeds { target } => write!(
                 formatter,
@@ -95,8 +112,9 @@ impl fmt::Display for Violation {
 /// It reads `name = "…"` or `name = '…'`, with an optional trailing
 /// comment, and refuses every other way of declaring a target: a name it
 /// cannot read, a `[[bin]]` table without exactly one name, a `bin` key,
-/// or a spaced `[[ bin ]]` header. A target it skipped would never be
-/// replayed while the step still reported green.
+/// a spaced or quoted `[[ "bin" ]]` header, and any multi-line string,
+/// whose lines it could not tell from keys and headers. A target it
+/// skipped would never be replayed while the step still reported green.
 ///
 /// # Errors
 ///
@@ -111,10 +129,16 @@ pub(crate) fn targets(manifest: &str) -> Result<Vec<String>, Violation> {
             continue;
         }
         let refused = Violation::UnreadableTarget { line };
+        if text.contains("\"\"\"") || text.contains("'''") {
+            return Err(refused);
+        }
         if text.starts_with('[') {
             close_bin(bin.take(), &mut names)?;
             let header = text.split('#').next().unwrap_or_default().trim();
-            let bare: String = header.chars().filter(|c| !c.is_whitespace()).collect();
+            let bare: String = header
+                .chars()
+                .filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
+                .collect();
             if header == "[[bin]]" {
                 bin = Some((line, None));
             } else if bare == "[[bin]]" || bare == "[bin]" {
@@ -174,14 +198,35 @@ fn quoted_name(value: &str) -> Option<&str> {
     clean.then_some(name)
 }
 
-/// The targets to replay, or why there are none.
+/// The targets to replay, or why there are none, or why the manifest
+/// could hold one this reader does not see.
 pub(crate) fn plan(manifest: &str) -> Result<Vec<String>, Violation> {
     let targets = targets(manifest)?;
     if targets.is_empty() {
         Err(Violation::NoTargets)
+    } else if !autobins_off(manifest) {
+        Err(Violation::AutoBins)
     } else {
         Ok(targets)
     }
+}
+
+/// Whether the manifest's `[package]` table sets `autobins = false`, so
+/// that every target Cargo builds is a `[[bin]]` table `targets` reads.
+fn autobins_off(manifest: &str) -> bool {
+    let mut package = false;
+    for text in manifest.lines() {
+        let text = text.split('#').next().unwrap_or_default().trim();
+        if text.starts_with('[') {
+            package = text == "[package]";
+        } else if package
+            && let Some((key, value)) = text.split_once('=')
+            && key.trim() == "autobins"
+        {
+            return value.trim() == "false";
+        }
+    }
+    false
 }
 
 /// The seed the engine was running when it stopped: the last one it
@@ -232,9 +277,8 @@ pub(crate) fn verdict(
 
 /// A seed's git object id, which names it without its bytes; `None` if
 /// git cannot read it or answers with anything but one hexadecimal id.
-fn git_digest(fuzz_dir: &Path, seed: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .current_dir(fuzz_dir)
+pub(crate) fn git_digest(fuzz_dir: &Path, seed: &Path) -> Option<String> {
+    let output = git_in(fuzz_dir)
         .args(["hash-object", "--no-filters", "--"])
         .arg(seed)
         .output()
@@ -248,24 +292,87 @@ fn git_digest(fuzz_dir: &Path, seed: &Path) -> Option<String> {
 }
 
 /// The tracked seeds of one target, sorted, as paths relative to the fuzz
-/// crate. A missing directory has none.
-fn seeds(fuzz_dir: &Path, target: &str) -> Result<Vec<PathBuf>, Error> {
-    let relative = Path::new(SEEDS).join(target);
-    let dir = fuzz_dir.join(&relative);
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(Error::path_io("list seeds", &dir)(error)),
+/// crate: each regular file git's index holds under its seed directory,
+/// read in `fuzz_dir`. Any entry there that the working tree holds
+/// otherwise (untracked, changed or deleted) or that is not a regular
+/// file is refused (`seed_list`).
+///
+/// # Errors
+///
+/// Returns an error if git cannot run or answers unexpectedly.
+fn seeds(fuzz_dir: &Path, target: &str) -> Result<Result<Vec<PathBuf>, Violation>, Error> {
+    let dir = Path::new(SEEDS).join(target);
+    let tracked = git_ls_files(fuzz_dir, &["--stage"], &dir)?;
+    let stray = git_ls_files(fuzz_dir, &["--others", "--modified"], &dir)?;
+    Ok(seed_list(target, &tracked, &stray))
+}
+
+/// Git, run in `dir` on the repository that holds it: a hook's exported
+/// `GIT_DIR` and its kin would otherwise name another one, or the same one
+/// relative to another directory.
+pub(crate) fn git_in(dir: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.current_dir(dir);
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+    ] {
+        command.env_remove(name);
+    }
+    command
+}
+
+/// `git ls-files -z` with `options`, for the paths under `dir`, relative
+/// to `fuzz_dir`, in which it runs.
+fn git_ls_files(fuzz_dir: &Path, options: &[&str], dir: &Path) -> Result<Vec<u8>, Error> {
+    const COMMAND: &str = "git ls-files";
+    let output = git_in(fuzz_dir)
+        .args(["ls-files", "-z"])
+        .args(options)
+        .arg("--")
+        .arg(dir)
+        .output()
+        .map_err(Error::io(COMMAND))?;
+    Error::check_status(COMMAND, output.status)?;
+    Ok(output.stdout)
+}
+
+/// One target's seeds from `git ls-files -z --stage` (`tracked`) and
+/// `git ls-files -z --others --modified` (`stray`): each tracked regular
+/// file, sorted, when nothing is stray and every tracked entry is a
+/// regular file; otherwise the first entry that is not.
+pub(crate) fn seed_list(
+    target: &str,
+    tracked: &[u8],
+    stray: &[u8],
+) -> Result<Vec<PathBuf>, Violation> {
+    let refused = |entry: &str| Violation::UntrackedSeed {
+        target: target.to_owned(),
+        entry: PathBuf::from(entry),
     };
+    let entries = |bytes: &[u8]| -> Vec<String> {
+        bytes
+            .split(|byte| *byte == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| String::from_utf8_lossy(entry).into_owned())
+            .collect()
+    };
+    if let Some(entry) = entries(stray).first() {
+        return Err(refused(entry));
+    }
     let mut seeds = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(Error::path_io("list seeds", &dir))?;
-        let kind = entry
-            .file_type()
-            .map_err(Error::path_io("read seed type", &entry.path()))?;
-        if kind.is_file() {
-            seeds.push(relative.join(entry.file_name()));
+    for entry in entries(tracked) {
+        // `<mode> <object> <stage>\t<path>`.
+        let Some((info, path)) = entry.split_once('\t') else {
+            return Err(refused(&entry));
+        };
+        let regular = matches!(info.split(' ').next(), Some("100644" | "100755"));
+        if !regular || !info.ends_with(" 0") {
+            return Err(refused(path));
         }
+        seeds.push(PathBuf::from(path));
     }
     seeds.sort();
     Ok(seeds)
@@ -322,7 +429,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     let workspace = metadata::load(None, &[])?;
     let fuzz_dir = workspace.root.join(FUZZ_DIR);
     if self_test {
-        return self_test::run(&fuzz_dir, output);
+        return self_test::run(&fuzz_dir, &workspace.target_dir, output);
     }
     let manifest_path = fuzz_dir.join(MANIFEST);
     let manifest = fs::read_to_string(&manifest_path)
@@ -344,30 +451,45 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     Error::check_status("cargo fuzz build in fuzz/", status)?;
 
     let artefacts = fixture::fresh_dir(&workspace.target_dir, CHECK)?;
+    // Removed whatever the replay returned, an error included.
+    let result = replay_all(&fuzz_dir, &targets, &artefacts, output);
+    fixture::remove_dir(&artefacts)?;
+    result
+}
+
+/// Replays every seed of each of `targets`, each target's artefacts under
+/// `artefacts`, and reports.
+fn replay_all(
+    fuzz_dir: &Path,
+    targets: &[String],
+    artefacts: &Path,
+    output: &mut impl Write,
+) -> Result<(), Error> {
     let mut violations = Vec::new();
     let mut replayed = 0_usize;
-    for target in &targets {
-        let seeds = seeds(&fuzz_dir, target)?;
+    for target in targets {
+        let seeds = match seeds(fuzz_dir, target)? {
+            Ok(seeds) => seeds,
+            Err(violation) => {
+                violations.push(violation);
+                continue;
+            }
+        };
         if seeds.is_empty() {
             violations.push(Violation::NoSeeds {
                 target: target.clone(),
             });
             continue;
         }
-        match replay(&fuzz_dir, target, &seeds, &artefacts.join(target)) {
-            Ok(Ok(())) => {
+        match replay(fuzz_dir, target, &seeds, &artefacts.join(target))? {
+            Ok(()) => {
                 replayed += seeds.len();
                 writeln!(output, "{CHECK}: {target}: {} seeds ran clean", seeds.len())
                     .map_err(Error::io("report fuzz"))?;
             }
-            Ok(Err(violation)) => violations.push(violation),
-            Err(error) => {
-                fixture::remove_dir(&artefacts)?;
-                return Err(error);
-            }
+            Err(violation) => violations.push(violation),
         }
     }
-    fixture::remove_dir(&artefacts)?;
     if !violations.is_empty() {
         return Err(rules(&violations));
     }

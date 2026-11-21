@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use std::path::Path;
 
-use super::{Violation, failing_seed, targets, verdict};
+use super::{Violation, failing_seed, plan, seed_list, targets, verdict};
 
 const DIGEST: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -87,6 +87,13 @@ fn targets_refuses_a_bin_table_without_a_name_or_bins_in_another_form() {
         targets("[[ bin ]]\nname = \"one_a\"\n"),
         Err(Violation::UnreadableTarget { line: 1 })
     );
+    for header in ["[[\"bin\"]]", "[['bin']]", "[[ \"bin\" ]]", "[\"bin\"]"] {
+        assert_eq!(
+            targets(&format!("{header}\nname = \"one_a\"\n")),
+            Err(Violation::UnreadableTarget { line: 1 }),
+            "{header}"
+        );
+    }
     assert_eq!(
         targets("[[bin]]\nname = \"one_a\"\nname = \"two_b\"\n"),
         Err(Violation::UnreadableTarget { line: 3 })
@@ -183,5 +190,89 @@ fn fuzz_crate_commands_run_on_the_crate_s_own_toolchain() {
     assert_eq!(
         command.get_current_dir(),
         Some(std::path::Path::new("fuzz"))
+    );
+}
+
+#[test]
+fn targets_refuses_a_multi_line_string() {
+    for opening in ["\"\"\"", "'''"] {
+        let manifest = format!(
+            "[package]\ndescription = {opening}\n[[bin]]\nname = \"phantom\"\n{opening}\n\n\
+             [[bin]]\nname = \"one_a\"\n"
+        );
+        assert_eq!(
+            targets(&manifest),
+            Err(Violation::UnreadableTarget { line: 2 }),
+            "{opening}"
+        );
+    }
+}
+
+#[test]
+fn plan_requires_autobins_off_in_the_package_table() {
+    let bins = "\n[[bin]]\nname = \"one_a\"\n";
+    assert_eq!(
+        plan(&format!(
+            "[package]\nname = \"x\"\nautobins = false # only [[bin]]\n{bins}"
+        )),
+        Ok(vec!["one_a".to_owned()])
+    );
+    for package in [
+        "[package]\nname = \"x\"\n",
+        "[package]\nautobins = true\n",
+        "[package]\n# autobins = false\n",
+        "[package]\n\n[package.metadata]\nautobins = false\n",
+    ] {
+        assert_eq!(
+            plan(&format!("{package}{bins}")),
+            Err(Violation::AutoBins),
+            "{package}"
+        );
+    }
+}
+
+/// An entry of `git ls-files -z --stage`.
+fn staged(mode: &str, path: &str) -> String {
+    format!("{mode} 0123456789abcdef0123456789abcdef01234567 0\t{path}\0")
+}
+
+#[test]
+fn seed_list_keeps_the_tracked_regular_files_sorted() {
+    let tracked = staged("100644", "seeds/t/b") + &staged("100755", "seeds/t/a");
+    assert_eq!(
+        seed_list("t", tracked.as_bytes(), b""),
+        Ok(vec![PathBuf::from("seeds/t/a"), PathBuf::from("seeds/t/b")])
+    );
+    assert_eq!(seed_list("t", b"", b""), Ok(Vec::new()));
+}
+
+#[test]
+fn seed_list_refuses_a_stray_entry_or_a_tracked_entry_that_is_no_regular_file() {
+    let tracked = staged("100644", "seeds/t/a");
+    let refused = |entry: &str| {
+        Err(Violation::UntrackedSeed {
+            target: "t".to_owned(),
+            entry: PathBuf::from(entry),
+        })
+    };
+    // Untracked, changed or deleted: `--others --modified` names it.
+    assert_eq!(
+        seed_list("t", tracked.as_bytes(), b"seeds/t/new\0"),
+        refused("seeds/t/new")
+    );
+    // A link, or a submodule.
+    for mode in ["120000", "160000"] {
+        let with = tracked.clone() + &staged(mode, "seeds/t/odd");
+        assert_eq!(
+            seed_list("t", with.as_bytes(), b""),
+            refused("seeds/t/odd"),
+            "{mode}"
+        );
+    }
+    // An unmerged entry.
+    let unmerged = "100644 0123456789abcdef0123456789abcdef01234567 2\tseeds/t/c\0";
+    assert_eq!(
+        seed_list("t", unmerged.as_bytes(), b""),
+        refused("seeds/t/c")
     );
 }
