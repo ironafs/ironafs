@@ -5,6 +5,10 @@ version = 4
 [[package]]
 name = "ironafs-cache"
 version = "0.0.0"
+dependencies = [
+ "ironafs-test-support",
+ "ironafs-vfs",
+]
 
 [[package]]
 name = "ironafs-cli"
@@ -27,6 +31,14 @@ dependencies = [
 [[package]]
 name = "ironafs-time"
 version = "0.0.0"
+
+[[package]]
+name = "ironafs-vfs"
+version = "0.0.0"
+dependencies = [
+ "ironafs-test-support",
+ "ironafs-time",
+]
 
 [[package]]
 name = "xtask"

@@ -18,6 +18,8 @@ publish = false
 # as a wildcard.
 [workspace.dependencies]
 ironafs-time = { path = "crates/ironafs-time", version = "=0.0.0" }
+ironafs-test-support = { path = "crates/ironafs-test-support", version = "=0.0.0" }
+ironafs-vfs = { path = "crates/ironafs-vfs", version = "=0.0.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
