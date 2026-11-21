@@ -66,10 +66,35 @@ const WARNING_SCRIPT_QUIET: &[(&str, &str)] = &[
     (".cargo/config.toml", "[term]\nquiet = true\n"),
 ];
 
+fn feature_gated(violation: &Violation) -> bool {
+    matches!(violation, Violation::Lint(line) if line.contains("disallowed method"))
+}
+
+/// A second member that calls a banned item only behind a feature no
+/// build enables.
+const FEATURE_GATED: &[(&str, &str)] = &[
+    (
+        "crates/planted/Cargo.toml",
+        "[package]\nname = \"planted\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+         [features]\nhidden = []\n\n[lints]\nworkspace = true\n",
+    ),
+    (
+        "crates/planted/src/lib.rs",
+        "#[cfg(feature = \"hidden\")]\n#[must_use]\npub fn hidden() -> std::time::Instant {\n    \
+         std::time::Instant::now()\n}\n",
+    ),
+];
+
 /// A compiler wrapper that drops clippy and runs the compiler alone.
 const WRAPPER: &str = "#!/bin/sh\nfor arg; do shift; case \"$arg\" in *clippy-driver*) ;; *) set -- \"$@\" \"$arg\";; esac; done\nexec \"$@\"\n";
 
 const CASES: &[Case] = &[
+    Case {
+        name: "a banned call behind a feature no build enables",
+        files: FEATURE_GATED,
+        env: &[],
+        needs: feature_gated,
+    },
     Case {
         // Cargo prints its own warnings on standard error, not as JSON.
         name: "a member's manifest with a key cargo does not use",

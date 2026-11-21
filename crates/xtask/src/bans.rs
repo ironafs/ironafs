@@ -881,16 +881,17 @@ fn clippy_json() -> Command {
     command
 }
 
-/// The feature that builds the canary's planted lines.
-const CANARY_FEATURE: &str = "ironafs-bans-canary/planted";
-
 /// The workspace's lint, the one `cargo xtask check` gates on: clippy on
-/// every target of every member, the canary's planted lines among them.
-/// Its warnings are not denied by cargo, since the canary's must appear;
-/// `lint` denies every other one.
+/// every target of every member with every feature on. That turns on the
+/// canary's `planted` feature, and it compiles code behind a feature no
+/// build enables, which no ban could otherwise reach. The pure crates have
+/// no features (ADR 0004, C4), so no feature can be one that only some
+/// builds may combine; one that cannot build with the others fails the
+/// lint, which is the safe side. Its warnings are not denied by cargo,
+/// since the canary's must appear; `lint` denies every other one.
 pub(crate) fn workspace_clippy() -> Command {
     let mut command = clippy_json();
-    command.args(["--workspace", "--features", CANARY_FEATURE]);
+    command.args(["--workspace", "--all-features"]);
     command
 }
 
@@ -1019,6 +1020,7 @@ pub(crate) fn lint(
         .chain(workspace.members.iter().map(|member| member.dir.as_path()))
         .collect();
     violations.extend(line_breaks(&paths));
+    violations.extend(outside_root(&workspace.root, &member_dirs(workspace)));
     let mut command = workspace_clippy();
     // Cargo reads its configuration from the directory it runs in up, so
     // it runs in the root, whose configuration check-bans reads.
@@ -1105,6 +1107,25 @@ pub(crate) fn line_breaks(paths: &[&Path]) -> Vec<Violation> {
                 "the path \"{}\" holds a line break, which cargo's text output cannot carry \
                  unambiguously: move the workspace",
                 path.to_string_lossy().escape_debug()
+            ))
+        })
+        .collect()
+}
+
+/// A refusal for each of `member_dirs` outside the workspace's `root`.
+///
+/// The configurations a member is linted with are read only from its
+/// directory up to the root (`config_files`), so one outside it would be
+/// linted with a configuration nothing checks.
+pub(crate) fn outside_root(root: &Path, member_dirs: &[PathBuf]) -> Vec<Violation> {
+    member_dirs
+        .iter()
+        .filter(|dir| !dir.starts_with(root))
+        .map(|dir| {
+            Violation::Unbuilt(format!(
+                "the member at {} is outside the workspace root, so the clippy configuration \
+                 it is linted with is not checked: move it under the root",
+                dir.display()
             ))
         })
         .collect()
