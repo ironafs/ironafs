@@ -21,7 +21,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ironafs_net::spawn;
-use ironafs_netgen::{Cause, Consumer, Consumers, Loss, Move, NetworkGeneration, Reader};
+use ironafs_netgen::{Cause, Change, Consumer, Consumers, Loss, Move, NetworkGeneration, Reader};
 
 /// What a hook saw: its consumer's place in the order, the move, and the
 /// generation it read during the call.
@@ -137,8 +137,8 @@ fn started() -> (
     let (sender, moves) = channel();
     let pause = Arc::new(Mutex::new(()));
     let (reader, handle) = spawn(|reader| hooks(&sender, reader, &pause, None)).unwrap();
-    let first = wait_for(&moves, &reader, Cause::Snapshot);
-    assert_eq!(first.get(), 1);
+    // On a shared host other changes may already have moved it past 1.
+    wait_for(&moves, &reader, Cause::Snapshot);
     (handle, reader, moves, pause)
 }
 
@@ -152,9 +152,9 @@ fn ip(arguments: &str) {
 }
 
 #[test]
-fn the_first_snapshot_publishes_generation_one() {
+fn the_first_snapshot_publishes_a_generation() {
     let (_handle, reader, _moves, _pause) = started();
-    assert_eq!(reader.current().unwrap().get(), 1);
+    assert!(reader.current().unwrap().get() >= 1);
 }
 
 #[test]
@@ -184,14 +184,19 @@ fn a_hook_that_panics_leaves_nothing_readable_and_the_source_halted() {
 }
 
 #[test]
-fn dropping_the_handle_stops_the_source() {
+fn dropping_the_handle_stops_the_source_and_ends_both_threads() {
     let (handle, reader, moves, _pause) = started();
     drop(handle);
-    // Every hook is told the source stopped, and nothing is readable.
-    for place in 0..7 {
-        let (seen_place, change, _) = moves.recv().unwrap();
-        assert_eq!((seen_place, change), (place, Move::Stopped));
+    // The drop returns once both threads have ended, which drops the
+    // monitor and its hooks: the channel then closes. A quiet network
+    // must not keep a thread blocked in its receive.
+    let mut stopped = Vec::new();
+    while let Ok((place, change, _)) = moves.recv() {
+        if change == Move::Stopped {
+            stopped.push(place);
+        }
     }
+    assert_eq!(stopped, (0..7).collect::<Vec<_>>());
     assert!(reader.current().is_err());
 }
 
@@ -199,28 +204,34 @@ fn dropping_the_handle_stops_the_source() {
 #[ignore = "needs CAP_NET_ADMIN in a network namespace of its own, and iproute2: run there, one test at a time"]
 fn an_address_a_route_and_a_policy_rule_each_move_the_generation() {
     ip("link set lo up");
-    for (add, delete) in [
+    for (change, add, delete) in [
         (
+            Change::Address,
             "address add 192.0.2.1/24 dev lo",
             "address del 192.0.2.1/24 dev lo",
         ),
         (
+            Change::Route,
             "route add 198.51.100.0/24 dev lo",
             "route del 198.51.100.0/24 dev lo",
         ),
         (
+            Change::Rule,
             "rule add from 203.0.113.0/24 table 100",
             "rule del from 203.0.113.0/24 table 100",
         ),
         (
+            Change::Address,
             "-6 address add 2001:db8:1::1/64 dev lo nodad",
             "-6 address del 2001:db8:1::1/64 dev lo",
         ),
         (
+            Change::Route,
             "-6 route add 2001:db8:2::/64 dev lo",
             "-6 route del 2001:db8:2::/64 dev lo",
         ),
         (
+            Change::Rule,
             "-6 rule add from 2001:db8:3::/64 table 100",
             "-6 rule del from 2001:db8:3::/64 table 100",
         ),
@@ -229,11 +240,14 @@ fn an_address_a_route_and_a_policy_rule_each_move_the_generation() {
         // as it was. Each change gets a monitor of its own, subscribed after
         // the last change's notifications were sent (`ip` returns after the
         // kernel's answer), so only this change can move it.
-        for change in [add, delete] {
+        for command in [add, delete] {
             let (_handle, reader, moves, _pause) = started();
-            ip(change);
-            let after = wait_for(&moves, &reader, Cause::Changed);
-            assert!(after.get() > 1, "{change}");
+            let before = reader.current().unwrap();
+            ip(command);
+            // The move of this kind of change: an address command's own
+            // prefix route does not satisfy it.
+            let after = wait_for(&moves, &reader, Cause::Changed(change));
+            assert!(after > before, "{command}");
         }
     }
 }

@@ -6,35 +6,44 @@
 //! two route sockets of `ironafs-os` and feed `ironafs-netgen`'s
 //! [`Monitor`], which decides every move.
 //!
-//! - The **notify thread** owns the notify socket. It is made, and joins
-//!   its groups, before the monitor may ask for a snapshot; after a loss
-//!   on it (an overflow, a truncated or malformed datagram, a failed
-//!   receive) it is made again before the next snapshot, so no record
-//!   queued before the loss is applied to fresh tables. A datagram from a
-//!   sender other than the kernel is ignored: it moves nothing.
-//! - The **snapshot thread** owns the request socket. It waits for the
-//!   monitor to ask for a dump, then sends and receives without holding
-//!   the lock, which it takes only to hand each datagram over. A dump that
-//!   does not end in order (links, then addresses, then nothing) may still
-//!   run in the kernel on that socket, so the socket is made again.
+//! - The **notify thread** receives on the notify socket. The socket is
+//!   made, and joins its groups, before the monitor may ask for a
+//!   snapshot; after a loss on it (an overflow, a truncated or malformed
+//!   datagram, a failed receive) it is made again before the next
+//!   snapshot, so no record queued before the loss is applied to fresh
+//!   tables. A datagram from a sender other than the kernel is ignored:
+//!   it moves nothing. The snapshot is published by this thread too, when
+//!   it reads the acknowledgement of the snapshot's barrier, which the
+//!   kernel queues after every notification before it.
+//! - The **snapshot thread** receives on the request socket. It waits for
+//!   the monitor to ask for a dump, then sends and receives without
+//!   holding the lock, which it takes only to hand each datagram over;
+//!   when the dumps are complete it sends the barrier on the notify
+//!   socket. A dump that does not end in order (links, then addresses,
+//!   then the barrier) may still run in the kernel on that socket, so the
+//!   socket is made again.
 //!
-//! The lock is held only while the monitor applies a datagram or a loss,
-//! hooks included, so neither a pending dump nor a quiet notify socket
-//! keeps [`MonitorHandle::resumed`] waiting. While a dump is outstanding
-//! the generation is unavailable, so a kernel that never answered would
-//! leave it unavailable, never stale.
+//! Both sockets live in the locked state, so the thread that changes the
+//! monitor can reach the other thread's socket. **No receive blocks for
+//! ever:** whoever needs a blocked thread to look again (a stop, a loss
+//! that abandons a dump, a resume) sends that thread's socket a wake
+//! ([`ironafs_netgen::wake`]), which the kernel answers on it. A socket
+//! is replaced only under the lock, and a stop is decided under the lock
+//! before the wakes are sent to the sockets then in place, so no thread
+//! can start a receive that the stop's wake misses.
 //!
-//! When either thread ends, or the handle is dropped, the source stops.
-//! A thread unwinding from a hook's panic, or finding the lock poisoned
-//! by one, halts it instead: the hooks are not called again.
+//! When either thread ends, or the handle is dropped, the source stops;
+//! the handle's drop joins both threads. A thread unwinding from a hook's
+//! panic, or finding the lock poisoned by one, halts it instead: the
+//! hooks are not called again.
 
 use std::error::Error;
 use std::fmt;
 use std::io;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::thread;
+use std::thread::{self, JoinHandle, ThreadId};
 
-use ironafs_netgen::{Consumers, Loss, Monitor, Reader, Request, Stopped};
+use ironafs_netgen::{Consumers, Loss, Monitor, Reader, Request, Stopped, wake};
 use ironafs_os::{RouteError, RouteSocket};
 
 /// The receive buffer, in bytes (docs/specs/network-generation.md, 5.5,
@@ -78,30 +87,56 @@ impl Error for MonitorError {
     }
 }
 
-/// The monitor, and the signal that wakes the snapshot thread.
+/// The monitor and both sockets, under one lock.
+#[derive(Debug)]
+struct State {
+    monitor: Monitor,
+    notify: Arc<RouteSocket>,
+    request: Arc<RouteSocket>,
+}
+
+/// The state, and the signal that wakes the snapshot thread while it waits
+/// for work.
 #[derive(Debug)]
 struct Shared {
-    monitor: Mutex<Monitor>,
-    wake: Condvar,
+    state: Mutex<State>,
+    work: Condvar,
 }
 
 impl Shared {
-    /// The monitor. If a hook panicked while it was held, the source is
+    /// The state. If a hook panicked while it was held, the source is
     /// halted first: its state can no longer be trusted, and its hooks are
     /// not called again.
-    fn lock(&self) -> MutexGuard<'_, Monitor> {
-        self.monitor.lock().unwrap_or_else(|poisoned| {
-            let mut monitor = poisoned.into_inner();
-            monitor.halt();
-            monitor
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|poisoned| {
+            let mut state = poisoned.into_inner();
+            state.monitor.halt();
+            state
         })
+    }
+
+    /// Wakes both threads: the snapshot thread's wait, and each receive on
+    /// the sockets now in place. Called after the change it signals, with
+    /// the lock released.
+    fn wake_all(&self) {
+        let (notify, request) = {
+            let state = self.lock();
+            (Arc::clone(&state.notify), Arc::clone(&state.request))
+        };
+        self.work.notify_all();
+        // A failed wake leaves that thread to its next datagram; the
+        // source's state is already decided.
+        let _ = notify.send(&wake());
+        let _ = request.send(&wake());
     }
 }
 
-/// The running monitor. Dropping it stops the source.
+/// The running monitor. Dropping it stops the source and joins both
+/// threads.
 #[derive(Debug)]
 pub struct MonitorHandle {
     shared: Arc<Shared>,
+    threads: Vec<JoinHandle<()>>,
 }
 
 impl MonitorHandle {
@@ -114,15 +149,37 @@ impl MonitorHandle {
     ///
     /// [`Stopped`] once the source has stopped.
     pub fn resumed(&self) -> Result<(), Stopped> {
-        let result = self.shared.lock().lost(Loss::Resumed);
-        self.shared.wake.notify_all();
-        result
+        // The wake is sent even if a hook unwinds.
+        let _wake = WakeOnDrop(&self.shared);
+        self.shared.lock().monitor.lost(Loss::Resumed)
     }
 }
 
 impl Drop for MonitorHandle {
     fn drop(&mut self) {
         stop(&self.shared);
+        let ids: Vec<ThreadId> = self
+            .threads
+            .iter()
+            .map(|thread| thread.thread().id())
+            .collect();
+        // A hook that drops the handle runs on one of the threads, which
+        // cannot join itself; it ends at its next look instead.
+        if ids.contains(&thread::current().id()) {
+            return;
+        }
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Wakes both threads when dropped, unwinding included.
+struct WakeOnDrop<'a>(&'a Shared);
+
+impl Drop for WakeOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.wake_all();
     }
 }
 
@@ -151,21 +208,25 @@ pub fn spawn(
     };
     monitor.subscribed();
     let shared = Arc::new(Shared {
-        monitor: Mutex::new(monitor),
-        wake: Condvar::new(),
+        state: Mutex::new(State {
+            monitor,
+            notify: Arc::new(notify),
+            request: Arc::new(request),
+        }),
+        work: Condvar::new(),
     });
-    let handle = MonitorHandle {
+    let mut handle = MonitorHandle {
         shared: Arc::clone(&shared),
+        threads: Vec::new(),
     };
-    // On an error below, dropping the handle stops the source.
-    start("network-notify", &shared, move |shared| {
-        follow(shared, notify)
-    })
-    .map_err(MonitorError::Thread)?;
-    start("network-snapshot", &shared, move |shared| {
-        snapshots(shared, request)
-    })
-    .map_err(MonitorError::Thread)?;
+    // On an error below, dropping the handle stops the source and joins
+    // what started.
+    handle
+        .threads
+        .push(start("network-notify", &shared, follow).map_err(MonitorError::Thread)?);
+    handle
+        .threads
+        .push(start("network-snapshot", &shared, snapshots).map_err(MonitorError::Thread)?);
     Ok((reader, handle))
 }
 
@@ -174,46 +235,53 @@ pub fn spawn(
 fn start(
     name: &str,
     shared: &Arc<Shared>,
-    body: impl FnOnce(&Shared) -> Result<(), Stopped> + Send + 'static,
-) -> io::Result<()> {
+    body: fn(&Shared) -> Result<(), Stopped>,
+) -> io::Result<JoinHandle<()>> {
     let shared = Arc::clone(shared);
-    thread::Builder::new()
-        .name(name.into())
-        .spawn(move || {
-            let guard = StopOnExit(shared);
-            let _ = body(&guard.0);
-        })
-        .map(drop)
+    thread::Builder::new().name(name.into()).spawn(move || {
+        let guard = StopOnExit(shared);
+        let _ = body(&guard.0);
+    })
 }
 
-/// Stops the source when a thread ends, however it ends.
+/// Stops the source when a thread ends, however it ends, and wakes the
+/// other thread so it ends too.
 struct StopOnExit(Arc<Shared>);
 
 impl Drop for StopOnExit {
     fn drop(&mut self) {
         if thread::panicking() {
-            self.0.lock().halt();
-            self.0.wake.notify_all();
+            self.0.lock().monitor.halt();
+            self.0.wake_all();
         } else {
             stop(&self.0);
         }
     }
 }
 
-/// Stops the source and wakes the snapshot thread, which then ends.
+/// Stops the source, then wakes both threads, which then end.
 fn stop(shared: &Shared) {
-    shared.lock().stop();
-    shared.wake.notify_all();
+    shared.lock().monitor.stop();
+    shared.wake_all();
 }
 
-/// The notify thread: one notification at a time, and a fresh
-/// subscription after any loss on its socket. Returns only when the source
-/// stops.
-fn follow(shared: &Shared, mut notify: RouteSocket) -> Result<(), Stopped> {
+/// The notify thread: one datagram at a time, a fresh subscription after
+/// any loss on its socket, and a wake for the snapshot thread whenever the
+/// monitor's request changed. Returns only when the source stops.
+fn follow(shared: &Shared) -> Result<(), Stopped> {
     let mut buffer = vec![0_u8; BUFFER];
     loop {
+        let notify = {
+            let state = shared.lock();
+            if state.monitor.is_stopped() {
+                return Err(Stopped);
+            }
+            Arc::clone(&state.notify)
+        };
         let received = notify.receive(&mut buffer);
-        let mut monitor = shared.lock();
+        let mut state = shared.lock();
+        let before = (state.monitor.request(), state.monitor.barrier());
+        let monitor = &mut state.monitor;
         match received {
             Ok(count) => monitor.notification(buffer.get(..count).unwrap_or_default())?,
             Err(RouteError::Overflow(_)) => monitor.lost(Loss::Overflow)?,
@@ -221,33 +289,66 @@ fn follow(shared: &Shared, mut notify: RouteSocket) -> Result<(), Stopped> {
             Err(RouteError::BadSender | RouteError::NotKernel(_)) => {}
             Err(_) => monitor.lost(Loss::Failed)?,
         }
-        if monitor.needs_subscription() {
+        if state.monitor.needs_subscription() {
             let Ok(fresh) = RouteSocket::notify() else {
-                monitor.stop();
+                state.monitor.stop();
                 return Err(Stopped);
             };
-            notify = fresh;
-            monitor.subscribed();
+            state.notify = Arc::new(fresh);
+            state.monitor.subscribed();
         }
-        drop(monitor);
-        shared.wake.notify_all();
+        let changed = (state.monitor.request(), state.monitor.barrier()) != before;
+        let request = Arc::clone(&state.request);
+        drop(state);
+        if changed {
+            shared.work.notify_all();
+            // The snapshot thread may be blocked on a dump just abandoned.
+            let _ = request.send(&wake());
+        }
     }
 }
 
 /// The snapshot thread: each dump the monitor asks for, sent and received
-/// without the lock. Returns only when the source stops.
-fn snapshots(shared: &Shared, mut request: RouteSocket) -> Result<(), Stopped> {
+/// without the lock, then the barrier on the notify socket. Returns only
+/// when the source stops.
+fn snapshots(shared: &Shared) -> Result<(), Stopped> {
     let mut buffer = vec![0_u8; BUFFER];
+    let mut barrier_sent = None;
     loop {
-        let asked = wait_for_request(shared)?;
+        let (asked, request) = {
+            let mut state = shared.lock();
+            loop {
+                if state.monitor.is_stopped() {
+                    return Err(Stopped);
+                }
+                if let Some(asked) = state.monitor.request() {
+                    break (asked, Arc::clone(&state.request));
+                }
+                if let Some(barrier) = state.monitor.barrier()
+                    && barrier_sent != Some(barrier)
+                {
+                    barrier_sent = Some(barrier);
+                    if state.notify.send(&barrier.bytes()).is_err() {
+                        state.monitor.dump_failed(Loss::Failed)?;
+                    }
+                    continue;
+                }
+                state = shared.work.wait(state).unwrap_or_else(|poisoned| {
+                    let mut state = poisoned.into_inner();
+                    state.monitor.halt();
+                    state
+                });
+            }
+        };
         if request.send(&asked.bytes()).is_err() {
-            shared.lock().dump_failed(Loss::Failed)?;
-            renew(shared, &mut request)?;
+            shared.lock().monitor.dump_failed(Loss::Failed)?;
+            renew(shared)?;
             continue;
         }
         let next = loop {
             let received = request.receive(&mut buffer);
-            let mut monitor = shared.lock();
+            let mut state = shared.lock();
+            let monitor = &mut state.monitor;
             match received {
                 Ok(count) => monitor.reply(buffer.get(..count).unwrap_or_default())?,
                 Err(RouteError::BadSender | RouteError::NotKernel(_)) => {}
@@ -255,37 +356,23 @@ fn snapshots(shared: &Shared, mut request: RouteSocket) -> Result<(), Stopped> {
                 Err(RouteError::Truncated) => monitor.dump_failed(Loss::Truncated)?,
                 Err(_) => monitor.dump_failed(Loss::Failed)?,
             }
+            if monitor.is_stopped() {
+                return Err(Stopped);
+            }
             let next = monitor.request();
             if next != Some(asked) {
                 break next;
             }
         };
         if !follows(asked, next) {
-            renew(shared, &mut request)?;
+            renew(shared)?;
         }
-    }
-}
-
-/// Waits until the monitor asks for a dump, or the source stops.
-fn wait_for_request(shared: &Shared) -> Result<Request, Stopped> {
-    let mut monitor = shared.lock();
-    loop {
-        if monitor.is_stopped() {
-            return Err(Stopped);
-        }
-        if let Some(asked) = monitor.request() {
-            return Ok(asked);
-        }
-        monitor = shared.wake.wait(monitor).unwrap_or_else(|poisoned| {
-            let mut monitor = poisoned.into_inner();
-            monitor.halt();
-            monitor
-        });
     }
 }
 
 /// Whether `next` is what a dump that ended in order asks for after
-/// `asked`: the address dump after the link dump, nothing after that.
+/// `asked`: the address dump after the link dump, nothing (the barrier)
+/// after that.
 fn follows(asked: Request, next: Option<Request>) -> bool {
     match next {
         None => !asked.is_links(),
@@ -294,12 +381,12 @@ fn follows(asked: Request, next: Option<Request>) -> bool {
 }
 
 /// Makes the request socket again, so no abandoned dump answers on it.
-fn renew(shared: &Shared, request: &mut RouteSocket) -> Result<(), Stopped> {
+fn renew(shared: &Shared) -> Result<(), Stopped> {
     match RouteSocket::request() {
         Ok(fresh) => {
-            *request = fresh;
+            shared.lock().request = Arc::new(fresh);
             Ok(())
         }
-        Err(_) => shared.lock().dump_failed(Loss::Failed),
+        Err(_) => shared.lock().monitor.dump_failed(Loss::Failed),
     }
 }

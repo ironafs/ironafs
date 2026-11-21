@@ -347,10 +347,10 @@ jobs:
           cargo nextest run -p ironafs-net --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked \
             > monitor.log 2>&1 || { cat monitor.log; exit 1; }
           cat monitor.log
-          for test in the_first_snapshot_publishes_generation_one \
+          for test in the_first_snapshot_publishes_a_generation \
             a_resume_moves_the_generation_then_a_snapshot_moves_it_again \
             a_hook_that_panics_leaves_nothing_readable_and_the_source_halted \
-            dropping_the_handle_stops_the_source; do
+            dropping_the_handle_stops_the_source_and_ends_both_threads; do
             grep -Eq "PASS .* ironafs-net::it monitor::$test\$" monitor.log
           done
       - name: Run linux-udp6's kernel tests at bindv6only 0 and at 1, each in a network namespace of its own
