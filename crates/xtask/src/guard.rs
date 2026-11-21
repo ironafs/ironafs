@@ -488,16 +488,31 @@ impl<R: Repo> Guard<'_, R> {
         let mut local = scope.clone();
         let mut index = 0;
         while let Some(word) = args.get(index) {
-            match word.literal() {
-                Some("-i" | "-0" | "--ignore-environment" | "--null" | "--") => (),
-                Some("-u" | "--unset") => index += 1,
+            let text = word.literal();
+            // The directory of `-C dir`, `-Cdir` or `--chdir=dir`.
+            let chdir = match text {
                 Some("-C" | "--chdir") => {
                     index += 1;
-                    local.cwd = match (local.cwd, args.get(index).and_then(Word::literal)) {
-                        (Some(cwd), Some(dir)) => Some(normalize(&cwd.join(dir))),
-                        _ => None,
-                    };
+                    Some(args.get(index).and_then(Word::literal))
                 }
+                Some(text) => text
+                    .strip_prefix("--chdir=")
+                    .or_else(|| text.strip_prefix("-C"))
+                    .map(Some),
+                None => None,
+            };
+            if let Some(dir) = chdir {
+                local.cwd = match (local.cwd, dir) {
+                    (Some(cwd), Some(dir)) => Some(normalize(&cwd.join(dir))),
+                    _ => None,
+                };
+                index += 1;
+                continue;
+            }
+            match text {
+                Some("-i" | "-0" | "--ignore-environment" | "--null" | "--") => (),
+                Some("-u" | "--unset") => index += 1,
+                Some(unset) if unset.starts_with("--unset=") || unset.starts_with("-u") => (),
                 Some(split) if split.starts_with("-S") || split.starts_with("--split-string") => {
                     self.block(
                         "env -S hides the command from the guard: write the command directly",

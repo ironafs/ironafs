@@ -437,6 +437,11 @@ fn guard_blocks_wrappers_it_cannot_read() {
         blocked(command, TO_MAIN);
     }
     blocked(&format!("sudo -D /repo/main {COMMIT_OK}"), ON_MAIN);
+    blocked(&format!("env --chdir=/repo/main {COMMIT_OK}"), ON_MAIN);
+    blocked(&format!("env -C/repo/main {COMMIT_OK}"), ON_MAIN);
+    allowed("env --chdir=/repo/feature cargo test");
+    allowed("env --unset=FOO cargo test");
+    allowed("env -uFOO cargo test");
     allowed("sudo -u me git status");
     allowed("nice -n 5 cargo build");
     allowed("timeout 60 cargo nextest run");
