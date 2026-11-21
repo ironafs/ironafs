@@ -13,8 +13,8 @@
 //!   with the assertion that names it;
 //! - by the declaration reader, which refuses what C cannot be compared
 //!   with: another ABI string, an attribute on a foreign function (such as
-//!   `link_name`), a `packed` struct, a renaming import, and a C type name
-//!   not imported from `core::ffi`.
+//!   `link_name`), a `packed` struct, a renaming import, a type alias, and
+//!   a C type name not imported from `core::ffi`.
 //!
 //! The fixture's headers are Unix headers. On a Windows host, which has no
 //! row with a foreign item yet, the self-test says so and passes; the
@@ -78,6 +78,12 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
 /// Declarations the reader must refuse: the case, the text it replaces,
 /// and a phrase of the reader's error.
 const READER: &[(&str, &str, &str, &str)] = &[
+    (
+        "a type alias",
+        "const EINTR",
+        "type c_ulong = u32;\nconst EINTR",
+        "a type alias",
+    ),
     (
         "another ABI string",
         "unsafe extern \"C\" {",

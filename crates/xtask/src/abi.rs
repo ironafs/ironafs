@@ -137,6 +137,11 @@ pub(crate) fn declarations(
                 found.constants.push(constant);
                 at = next;
             }
+            Some("type") => {
+                return Err(format!(
+                    "line {line}: a type alias, under which a name would not mean what it says"
+                ));
+            }
             Some("use") => {
                 let end = tokens
                     .get(at..)
@@ -689,6 +694,114 @@ fn abi_of(model: DataModel) -> &'static str {
     }
 }
 
+/// One file's declarations with every type name rewritten to its identity
+/// in that file's own scope: a name the file imports from `core::ffi`
+/// becomes `core::ffi::<name>`, a primitive stays itself, and any other
+/// name must be one of the row's structs. So an import in one file never
+/// vouches for a name in another.
+fn canonical(file: &Declarations, structs: &[String]) -> Result<Declarations, String> {
+    let rewrite = |found: &CType| -> Result<CType, String> {
+        fn walk(found: &CType, file: &Declarations, structs: &[String]) -> Result<CType, String> {
+            match found {
+                CType::Pointer { constant, to } => Ok(CType::Pointer {
+                    constant: *constant,
+                    to: Box::new(walk(to, file, structs)?),
+                }),
+                CType::Named(name) => {
+                    if name.starts_with("core::ffi::") || PRIMITIVES.contains(&name.as_str()) {
+                        Ok(CType::Named(name.clone()))
+                    } else if file.ffi_names.iter().any(|imported| imported == name) {
+                        Ok(CType::Named(format!("core::ffi::{name}")))
+                    } else if structs.iter().any(|item| item == name) {
+                        Ok(CType::Named(name.clone()))
+                    } else {
+                        Err(format!(
+                            "`{name}` is neither imported from core::ffi in its own file, a \
+                             primitive integer, nor a struct of the declaration files"
+                        ))
+                    }
+                }
+            }
+        }
+        walk(found, file, structs)
+    };
+    let mut out = Declarations::default();
+    for item in &file.structs {
+        let fields = item
+            .fields
+            .iter()
+            .map(|(name, field)| Ok((name.clone(), rewrite(field)?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        out.structs.push(Struct {
+            name: item.name.clone(),
+            fields,
+        });
+    }
+    for function in &file.functions {
+        out.functions.push(Function {
+            name: function.name.clone(),
+            parameters: function
+                .parameters
+                .iter()
+                .map(&rewrite)
+                .collect::<Result<Vec<_>, String>>()?,
+            variadic: function.variadic,
+            returns: function.returns.as_ref().map(&rewrite).transpose()?,
+        });
+    }
+    out.constants.clone_from(&file.constants);
+    Ok(out)
+}
+
+/// The recorded structs and constants that `found` does not declare.
+pub(crate) fn missing_facts(
+    structs: &[String],
+    constants: &[String],
+    found: &Declarations,
+) -> Vec<String> {
+    structs
+        .iter()
+        .filter(|name| !found.structs.iter().any(|item| &item.name == *name))
+        .chain(constants.iter().filter(|name| {
+            !found
+                .constants
+                .iter()
+                .any(|(constant, _)| constant == *name)
+        }))
+        .cloned()
+        .collect()
+}
+
+/// C preprocessor checks that the compiler compiling the generated file is
+/// the target's: its architecture, and its C library (`__GLIBC__` for
+/// glibc; for musl, no `__GLIBC__` and musl's own `__DEFINED_ssize_t`,
+/// which its `<sys/types.h>` defines). Empty for a target this check
+/// cannot identify that way.
+pub(crate) fn identity(target: &str) -> String {
+    let arch = if target.starts_with("x86_64-") {
+        "__x86_64__"
+    } else if target.starts_with("aarch64-") {
+        "__aarch64__"
+    } else {
+        return String::new();
+    };
+    let mut checks = format!(
+        "#if !defined({arch})\n#error \"the C compiler is not {target}'s: wrong architecture\"\n#endif\n"
+    );
+    if target.ends_with("-linux-gnu") {
+        let _ = write!(
+            checks,
+            "#if !defined(__GLIBC__)\n#error \"the C compiler is not {target}'s: not glibc's headers\"\n#endif\n"
+        );
+    } else if target.ends_with("-linux-musl") {
+        let _ = write!(
+            checks,
+            "#if defined(__GLIBC__) || !defined(__DEFINED_ssize_t)\n#error \"the C compiler is not {target}'s: not musl's headers\"\n#endif\n"
+        );
+    }
+    checks
+}
+
 /// The declarations of a row's module on one target: every file under
 /// `src/<module>/` that the compiler read.
 fn row_declarations(
@@ -698,7 +811,7 @@ fn row_declarations(
     abi: &str,
 ) -> Result<Result<Declarations, String>, Error> {
     let directory = Path::new("src").join(module);
-    let mut found = Declarations::default();
+    let mut files = Vec::new();
     for file in read.iter().filter(|file| file.starts_with(&directory)) {
         let path = crate_dir.join(file);
         let text = fs::read_to_string(&path).map_err(Error::path_io("read source file", &path))?;
@@ -706,8 +819,25 @@ fn row_declarations(
             Ok(tokens) => tokens,
             Err(error) => return Ok(Err(format!("{}: {error}", file.display()))),
         };
-        if let Err(error) = declarations(&tokens, abi, &mut found) {
+        let mut one = Declarations::default();
+        if let Err(error) = declarations(&tokens, abi, &mut one) {
             return Ok(Err(format!("{}: {error}", file.display())));
+        }
+        files.push((file.clone(), one));
+    }
+    let structs: Vec<String> = files
+        .iter()
+        .flat_map(|(_, one)| one.structs.iter().map(|item| item.name.clone()))
+        .collect();
+    let mut found = Declarations::default();
+    for (file, one) in files {
+        match canonical(&one, &structs) {
+            Ok(one) => {
+                found.structs.extend(one.structs);
+                found.constants.extend(one.constants);
+                found.functions.extend(one.functions);
+            }
+            Err(error) => return Ok(Err(format!("{}: {error}", file.display()))),
         }
     }
     Ok(Ok(found))
@@ -816,7 +946,6 @@ fn check_target(
         Built::Files(files) => files,
         Built::Refused(error) => return Err(fail(vec![format!("{target}: {error}")])),
     };
-    let model = DataModel::of(target);
     let mut checked = Vec::new();
     let mut violations = Vec::new();
     for row in inventory
@@ -824,54 +953,10 @@ fn check_target(
         .iter()
         .filter(|row| to_prove.contains(&row.id))
     {
-        let Some(code) = row.code.as_ref() else {
-            continue;
-        };
-        let found = match row_declarations(&crate_dir, &code.module, &read, abi_of(model))? {
-            Ok(found) => found,
-            Err(error) => {
-                violations.push(format!("{}: {error}", row.id));
-                continue;
-            }
-        };
-        let declared: Vec<&str> = code
-            .extern_blocks
-            .iter()
-            .flat_map(|block| &block.items)
-            .map(|item| item.name.as_str())
-            .collect();
-        let read_names: Vec<&str> = found
-            .functions
-            .iter()
-            .map(|item| item.name.as_str())
-            .collect();
-        if declared.iter().any(|name| !read_names.contains(name)) {
-            violations.push(format!(
-                "{}: the declaration files under src/{}/ do not declare every function \
-                 sites.json records ({}); found {}",
-                row.id,
-                code.module,
-                declared.join(", "),
-                read_names.join(", ")
-            ));
-            continue;
-        }
-        let source = match c_source(&row.id, &code.headers, &found, model) {
-            Ok(source) => source,
-            Err(error) => {
-                violations.push(format!("{}: {error}", row.id));
-                continue;
-            }
-        };
-        match compile(&source, &dir.join(format!("{}.c", row.id)))? {
-            Ok(()) => checked.push(format!(
-                "{} ({} structs, {} constants, {} functions)",
-                row.id,
-                found.structs.len(),
-                found.constants.len(),
-                found.functions.len()
-            )),
-            Err(error) => violations.push(format!("{}: {error}", row.id)),
+        match prove_row(row, &crate_dir, &read, target, dir)? {
+            Some(Ok(proved)) => checked.push(proved),
+            Some(Err(problem)) => violations.push(problem),
+            None => {}
         }
     }
     if !violations.is_empty() {
@@ -883,4 +968,70 @@ fn check_target(
         checked.join("; ")
     )
     .map_err(Error::io("report check-abi"))
+}
+
+/// Proves one row's declarations on `target`: `Ok` names what the C
+/// compiler accepted, `Err` says why the row failed; `None` for a row with
+/// no code.
+fn prove_row(
+    row: &os::inventory::Row,
+    crate_dir: &Path,
+    read: &std::collections::BTreeSet<PathBuf>,
+    target: &str,
+    dir: &Path,
+) -> Result<Option<Result<String, String>>, Error> {
+    let Some(code) = row.code.as_ref() else {
+        return Ok(None);
+    };
+    let model = DataModel::of(target);
+    let failed = |problem: String| Ok(Some(Err(format!("{}: {problem}", row.id))));
+    let found = match row_declarations(crate_dir, &code.module, read, abi_of(model))? {
+        Ok(found) => found,
+        Err(error) => return failed(error),
+    };
+    let missing = missing_facts(&code.structs, &code.constants, &found);
+    if !missing.is_empty() {
+        return failed(format!(
+            "the declaration files the compiler read under src/{}/ state no {}, which \
+             sites.json records as the row's C facts",
+            code.module,
+            missing.join(", ")
+        ));
+    }
+    let declared: Vec<&str> = code
+        .extern_blocks
+        .iter()
+        .flat_map(|block| &block.items)
+        .map(|item| item.name.as_str())
+        .collect();
+    let read_names: Vec<&str> = found
+        .functions
+        .iter()
+        .map(|item| item.name.as_str())
+        .collect();
+    if declared.iter().any(|name| !read_names.contains(name)) {
+        return failed(format!(
+            "the declaration files under src/{}/ do not declare every function sites.json \
+             records ({}); found {}",
+            code.module,
+            declared.join(", "),
+            read_names.join(", ")
+        ));
+    }
+    let source = match c_source(&row.id, &code.headers, &found, model) {
+        Ok(source) => format!("{source}{}", identity(target)),
+        Err(error) => return failed(error),
+    };
+    Ok(Some(
+        match compile(&source, &dir.join(format!("{}.c", row.id)))? {
+            Ok(()) => Ok(format!(
+                "{} ({} structs, {} constants, {} functions)",
+                row.id,
+                found.structs.len(),
+                found.constants.len(),
+                found.functions.len()
+            )),
+            Err(error) => Err(format!("{}: {error}", row.id)),
+        },
+    ))
 }

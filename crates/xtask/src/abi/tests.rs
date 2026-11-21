@@ -3,7 +3,10 @@
 
 //! Tests for the declaration reader and the C it generates.
 
-use super::{CType, DataModel, Declarations, Function, Struct, c_source, declarations};
+use super::{
+    CType, DataModel, Declarations, Function, Struct, c_source, canonical, declarations, identity,
+    missing_facts,
+};
 use crate::rust_source::tokens_with_strings;
 
 const CLOCK: &str = "use core::ffi::{c_char, c_int, c_long};\n\
@@ -221,4 +224,56 @@ fn c_source_resolves_type_names_by_identity_not_spelling() {
             .unwrap()
             .contains("_Generic(((struct ok *)0)->a, long: 1)")
     );
+}
+
+#[test]
+fn declarations_refuse_a_type_alias() {
+    assert!(refused("type c_long = u32;").starts_with("line 1: a type alias"));
+}
+
+#[test]
+fn canonical_resolves_each_file_by_its_own_imports() {
+    let importing = read("use core::ffi::c_long;\nconst A: c_long = 1;\n");
+    assert!(canonical(&importing, &[]).is_ok());
+    let using = read("#[repr(C)]\nstruct s { a: c_long }\n");
+    assert_eq!(
+        canonical(&using, &["s".to_owned()]).map(|found| found.structs.len()),
+        Err(
+            "`c_long` is neither imported from core::ffi in its own file, a primitive integer, \
+             nor a struct of the declaration files"
+                .to_owned()
+        )
+    );
+    let mut imported = read("use core::ffi::c_long;\n#[repr(C)]\nstruct s { a: c_long }\n");
+    imported = canonical(&imported, &["s".to_owned()]).unwrap();
+    assert_eq!(
+        imported.structs.first().map(|item| item.fields.clone()),
+        Some(vec![("a".into(), CType::Named("core::ffi::c_long".into()))])
+    );
+}
+
+#[test]
+fn missing_facts_names_a_recorded_constant_or_struct_not_declared() {
+    let found = read("use core::ffi::c_int;\nconst EINTR: c_int = 4;\n");
+    assert_eq!(
+        missing_facts(
+            &["timespec".into()],
+            &["EINTR".into(), "SYS_getrandom".into()],
+            &found
+        ),
+        ["timespec", "SYS_getrandom"]
+    );
+}
+
+#[test]
+fn identity_names_the_architecture_and_c_library_of_the_target() {
+    let musl = identity("aarch64-unknown-linux-musl");
+    assert!(musl.contains("#if !defined(__aarch64__)"), "{musl}");
+    assert!(
+        musl.contains("#if defined(__GLIBC__) || !defined(__DEFINED_ssize_t)"),
+        "{musl}"
+    );
+    let gnu = identity("x86_64-unknown-linux-gnu");
+    assert!(gnu.contains("#if !defined(__x86_64__)"), "{gnu}");
+    assert!(gnu.contains("#if !defined(__GLIBC__)"), "{gnu}");
 }
