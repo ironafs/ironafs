@@ -1056,12 +1056,18 @@ pub(crate) struct BuildResult {
     pub(crate) compiled: BTreeSet<Triple>,
 }
 
+/// What cargo reported while building a plan, before the dependency-info
+/// files are read: the failed builds, each library it reported, and each
+/// crate and profile whose build failed.
+pub(crate) struct Compiled {
+    pub(crate) violations: Vec<Violation>,
+    pub(crate) reported: Vec<Built>,
+    failed: Vec<(String, &'static str)>,
+}
+
 /// Checks each library of `plan` for its targets, in its profiles, against
 /// the sysroot at `sysroot`, with `unsafe_code` forbidden, and requires the
-/// triples compiled to be exactly `expected`. A crate and profile whose
-/// build failed is left out of the comparison: its failure is reported.
-/// Builds go to `build_dir`, apart from the workspace's own, so the changed
-/// flags do not rebuild everything else.
+/// triples compiled to be exactly `expected`.
 ///
 /// # Errors
 ///
@@ -1075,12 +1081,30 @@ pub(crate) fn build_violations(
     expected: &BTreeSet<Triple>,
     build_dir: &Path,
 ) -> Result<BuildResult, Error> {
+    let compiled = compile(workspace, cargo, sysroot, plan, build_dir)?;
+    judge(workspace, compiled, expected)
+}
+
+/// Builds each library of `plan` and collects what cargo reports. Builds go
+/// to `build_dir`, apart from the workspace's own, so the changed flags do
+/// not rebuild everything else.
+///
+/// # Errors
+///
+/// Returns an error if cargo cannot be started.
+pub(crate) fn compile(
+    workspace: &Workspace,
+    cargo: &Cargo<'_>,
+    sysroot: &Path,
+    plan: &Plan<'_>,
+    build_dir: &Path,
+) -> Result<Compiled, Error> {
     let mut flags = std::ffi::OsString::from("--sysroot=");
     flags.push(sysroot);
     flags.push("\u{1f}-Funsafe_code");
     let mut violations = Vec::new();
     let mut reported: Vec<Built> = Vec::new();
-    let mut failed: Vec<(&str, &str)> = Vec::new();
+    let mut failed = Vec::new();
     for member in &plan.members {
         for profile in &plan.profiles {
             let mut command = cargo.command(&workspace.root, "check");
@@ -1110,7 +1134,7 @@ pub(crate) fn build_violations(
                 }
             }
             if !output.status.success() {
-                failed.push((member.name.as_str(), profile));
+                failed.push((member.name.clone(), *profile));
                 violations.push(Violation::Build {
                     name: member.name.clone(),
                     profile,
@@ -1119,11 +1143,37 @@ pub(crate) fn build_violations(
             }
         }
     }
-    let mut compiled = BTreeSet::new();
+    Ok(Compiled {
+        violations,
+        reported,
+        failed,
+    })
+}
+
+/// Reads each reported library's dependency-info file, which must list its
+/// library root, and compares the triples compiled with `expected`. A crate
+/// and profile whose build failed is left out of the comparison: its
+/// failure is reported.
+///
+/// # Errors
+///
+/// Returns an error if a dependency-info file cannot be read for a reason
+/// other than its absence.
+pub(crate) fn judge(
+    workspace: &Workspace,
+    compiled: Compiled,
+    expected: &BTreeSet<Triple>,
+) -> Result<BuildResult, Error> {
+    let Compiled {
+        mut violations,
+        reported,
+        failed,
+    } = compiled;
+    let mut triples = BTreeSet::new();
     for found in reported {
-        let read = match fs::read_to_string(&found.dep_info) {
-            Ok(text) => matrix::files_read(&text, &workspace.root),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        let text = match fs::read_to_string(&found.dep_info) {
+            Ok(text) => Some(text),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => {
                 return Err(Error::PathIo {
                     operation: "read dependency-info file",
@@ -1132,18 +1182,18 @@ pub(crate) fn build_violations(
                 });
             }
         };
-        if !read.iter().any(|file| same_file(file, &found.lib_root)) {
-            violations.push(Violation::Matrix(Gap::NothingRead {
-                triple: found.triple.clone(),
-                dep_info: found.dep_info,
-            }));
+        if let Some(gap) = matrix::read_gap(&found, text.as_deref(), &workspace.root) {
+            violations.push(Violation::Matrix(gap));
         }
-        compiled.insert(found.triple);
+        triples.insert(found.triple);
     }
-    let compared =
-        |triple: &&Triple| !failed.contains(&(triple.name.as_str(), triple.profile.as_str()));
+    let compared = |triple: &&Triple| {
+        !failed
+            .iter()
+            .any(|(name, profile)| *name == triple.name && *profile == triple.profile)
+    };
     let want: BTreeSet<Triple> = expected.iter().filter(compared).cloned().collect();
-    let got: BTreeSet<Triple> = compiled.iter().filter(compared).cloned().collect();
+    let got: BTreeSet<Triple> = triples.iter().filter(compared).cloned().collect();
     violations.extend(
         matrix::compare(&want, &got)
             .into_iter()
@@ -1151,17 +1201,8 @@ pub(crate) fn build_violations(
     );
     Ok(BuildResult {
         violations,
-        compiled,
+        compiled: triples,
     })
-}
-
-/// Whether two paths name the same file, comparing their canonical forms
-/// where both exist.
-fn same_file(one: &Path, other: &Path) -> bool {
-    match (fs::canonicalize(one), fs::canonicalize(other)) {
-        (Ok(one), Ok(other)) => one == other,
-        _ => one == other,
-    }
 }
 
 /// Checks this repository's pure crates, or with `self_test` proves on

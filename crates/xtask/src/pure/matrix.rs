@@ -13,6 +13,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use crate::deps::{self, Kind};
@@ -205,6 +206,22 @@ pub(crate) fn files_read(text: &str, root: &Path) -> Vec<PathBuf> {
         }
     }
     found
+}
+
+/// The gap a build shows when its dependency-info file, `text` (`None`
+/// when the file is missing), does not list its library root among the
+/// files the compiler read; paths are compared in their canonical forms
+/// where both exist.
+pub(crate) fn read_gap(found: &Built, text: Option<&str>, root: &Path) -> Option<Gap> {
+    let read = text.map_or_else(Vec::new, |text| files_read(text, root));
+    let same = |file: &PathBuf| match (fs::canonicalize(file), fs::canonicalize(&found.lib_root)) {
+        (Ok(one), Ok(other)) => one == other,
+        _ => *file == found.lib_root,
+    };
+    (!read.iter().any(same)).then(|| Gap::NothingRead {
+        triple: found.triple.clone(),
+        dep_info: found.dep_info.clone(),
+    })
 }
 
 /// The triples expected and not compiled, then those compiled and not

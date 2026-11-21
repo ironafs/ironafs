@@ -15,9 +15,9 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::Path;
 
-use super::matrix::{Gap, Triple};
+use super::matrix::{Built, Gap, Triple};
 use super::{
-    Cargo, Plan, Violation, build_violations, core_sysroot, pure_members, report, static_violations,
+    Cargo, Plan, Violation, compile, core_sysroot, judge, pure_members, report, static_violations,
 };
 use crate::Error;
 use crate::fixture::{self, Fixture};
@@ -722,6 +722,9 @@ pub(super) fn run(
 struct Control {
     name: &'static str,
     change: for<'a> fn(&mut Plan<'a>, &'a Workspace),
+    /// Run on what cargo reported, before the dependency-info files are
+    /// read.
+    tamper: Option<Tamper>,
     expect: fn(&Gap) -> bool,
 }
 
@@ -729,6 +732,7 @@ const CONTROLS: &[Control] = &[
     Control {
         name: "a run with one pure crate skipped",
         change: |plan, _| plan.members.retain(|member| member.name != TOP),
+        tamper: None,
         expect: |gap| matches!(gap, Gap::Missing(triple) if triple.name == TOP),
     },
     Control {
@@ -736,11 +740,13 @@ const CONTROLS: &[Control] = &[
         change: |plan, _| {
             plan.targets.pop();
         },
+        tamper: None,
         expect: |gap| matches!(gap, Gap::Missing(_)),
     },
     Control {
         name: "a run with the release profile skipped",
         change: |plan, _| plan.profiles.retain(|profile| *profile != "release"),
+        tamper: None,
         expect: |gap| matches!(gap, Gap::Missing(triple) if triple.profile == "release"),
     },
     Control {
@@ -753,9 +759,35 @@ const CONTROLS: &[Control] = &[
                     .filter(|member| member.name == EXTRA),
             );
         },
+        tamper: None,
         expect: |gap| matches!(gap, Gap::Extra(triple) if triple.name == EXTRA),
     },
+    Control {
+        name: "a run whose dependency-info file is gone",
+        change: |_, _| {},
+        tamper: Some(remove_first_dep_info),
+        expect: |gap| matches!(gap, Gap::NothingRead { triple, .. } if triple.name == TOP),
+    },
 ];
+
+/// Changes what cargo left behind before the check reads it.
+type Tamper = fn(&[Built]) -> Result<(), Error>;
+
+/// Removes the dependency-info file of the first library of the planted
+/// crate cargo reported, so that build shows nothing it read.
+fn remove_first_dep_info(reported: &[Built]) -> Result<(), Error> {
+    let Some(found) = reported.iter().find(|found| found.triple.name == TOP) else {
+        return Err(Error::SelfTest {
+            check: CHECK,
+            case: "a run whose dependency-info file is gone",
+            found: vec![format!("cargo reported no library of {TOP}")],
+        });
+    };
+    std::fs::remove_file(&found.dep_info).map_err(Error::path_io(
+        "remove dependency-info file",
+        &found.dep_info,
+    ))
+}
 
 /// A crate on no pure list that builds against core alone, which the
 /// extra-crate control builds as if it were pure.
@@ -843,11 +875,12 @@ fn run_controls(build: &Build<'_>, dir: &Path, output: &mut impl Write) -> Resul
         let mut fixture = clean();
         fixture.add_crate(EXTRA, &[]);
         fixture.file(EXTRA, "src/lib.rs", Some("#![no_std]\npub fn f() {}\n"));
-        let run = build.check(
+        let run = build.check_with(
             &fixture,
             &dir.join(format!("control-{index}")),
             control.name,
             Some(control.change),
+            control.tamper,
         )?;
         let gaps: Vec<&Gap> = run
             .found
@@ -969,6 +1002,19 @@ impl Build<'_> {
         case: &'static str,
         change: Option<for<'a> fn(&mut Plan<'a>, &'a Workspace)>,
     ) -> Result<Run, Error> {
+        self.check_with(fixture, dir, case, change, None)
+    }
+
+    /// As `check`, with `tamper` run on what cargo reported before the
+    /// dependency-info files are read.
+    fn check_with(
+        &self,
+        fixture: &Fixture,
+        dir: &Path,
+        case: &'static str,
+        change: Option<for<'a> fn(&mut Plan<'a>, &'a Workspace)>,
+        tamper: Option<Tamper>,
+    ) -> Result<Run, Error> {
         let workspace = fixture.load(dir, CHECK, case)?;
         let (mut found, configs) = static_violations(&workspace)?;
         let manifest = workspace.root.join("Cargo.toml");
@@ -983,14 +1029,11 @@ impl Build<'_> {
         if let Some(change) = change {
             change(&mut plan, &workspace);
         }
-        let built = build_violations(
-            &workspace,
-            &cargo,
-            self.sysroot,
-            &plan,
-            &expected,
-            &dir.join("build"),
-        )?;
+        let compiled = compile(&workspace, &cargo, self.sysroot, &plan, &dir.join("build"))?;
+        if let Some(tamper) = tamper {
+            tamper(&compiled.reported)?;
+        }
+        let built = judge(&workspace, compiled, &expected)?;
         found.extend(built.violations);
         let pure = pure_members(&workspace).len();
         Ok(Run {

@@ -7,7 +7,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use super::{Gap, Triple, built, compare, expected, files_read, matrix_lines, pure_list};
+use super::{
+    Built, Gap, Triple, built, compare, expected, files_read, matrix_lines, pure_list, read_gap,
+};
 use crate::json;
 use crate::metadata::{Member, Workspace};
 
@@ -178,4 +180,25 @@ fn gaps_say_what_is_missing_or_extra() {
     }
     .to_string();
     assert!(shown.contains("x.d"));
+}
+
+#[test]
+fn read_gap_wants_the_library_root_among_the_files_read() {
+    let found = Built {
+        triple: triple("ironafs-xdr", "a", "dev"),
+        dep_info: "/t/out/ironafs_xdr-1.d".into(),
+        lib_root: "/w/crates/ironafs-xdr/src/lib.rs".into(),
+    };
+    let gap = Some(Gap::NothingRead {
+        triple: found.triple.clone(),
+        dep_info: found.dep_info.clone(),
+    });
+    let root = Path::new("/w");
+    let read = "/t/out/libironafs_xdr-1.rmeta: crates/ironafs-xdr/src/lib.rs\n";
+    assert_eq!(read_gap(&found, Some(read), root), None);
+    // Missing, empty, or naming only another file.
+    assert_eq!(read_gap(&found, None, root), gap);
+    assert_eq!(read_gap(&found, Some(""), root), gap);
+    let other = "/t/out/libironafs_xdr-1.rmeta: crates/ironafs-xdr/src/other.rs\n";
+    assert_eq!(read_gap(&found, Some(other), root), gap);
 }
