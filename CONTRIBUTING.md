@@ -57,10 +57,11 @@ The command refuses if that path is already in use. Use
 
 If you use Claude Code, the project's `.claude/settings.json` runs
 `cargo xtask guard` before each Bash command the agent runs. It blocks a
-commit or push on `main`, a branch commit without `Assisted-by:`, published
-text (an issue, pull request, comment, review or release notes) without its
-disclosure line, and `gh pr merge` without `--match-head-commit` and
-`--body-file`, and says what to fix. It fails closed: a command it cannot
+commit, push, pull, rebase or ref update that moves `main`, a branch commit
+without `Assisted-by:`, published text (an issue, pull request, comment,
+review or release notes) without its disclosure line, and `gh pr merge`
+without `--squash`, `--match-head-commit` and `--body-file`, and says what
+to fix. It fails closed: a command it cannot
 read, or a guard that cannot build, blocks the command. It checks only that
 a disclosure line is present and well formed, never who wrote the text.
 

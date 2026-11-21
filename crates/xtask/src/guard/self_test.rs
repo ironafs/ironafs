@@ -73,6 +73,36 @@ const CASES: &[Case] = &[
         fix: "pushes to main",
     },
     Case {
+        name: "a push to main behind sudo's assignment",
+        command: "sudo FOO=1 git push origin main",
+        fix: "assignments after a wrapper",
+    },
+    Case {
+        name: "a push to main behind a wrapper option the guard does not know",
+        command: "nice --wobble 5 git push origin main",
+        fix: "wrapper option",
+    },
+    Case {
+        name: "a pull on main",
+        command: "git -C /planted/main pull origin main",
+        fix: "is on main",
+    },
+    Case {
+        name: "a rebase of main",
+        command: "git rebase origin/main main",
+        fix: "rewrites main",
+    },
+    Case {
+        name: "a ref write to main",
+        command: "git update-ref refs/heads/main HEAD",
+        fix: "writes main",
+    },
+    Case {
+        name: "a forced move of main",
+        command: "git branch -f main HEAD",
+        fix: "main",
+    },
+    Case {
         name: "a comment without its disclosure line",
         command: "gh issue comment 1 --body 'text'",
         fix: "disclosure line",

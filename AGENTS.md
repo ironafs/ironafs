@@ -48,10 +48,11 @@ Spec first: a new phase starts with an ADR or spec, not code.
   `cargo xtask hooks uninstall` removes the managed hooks. Keep repository
   automation in `xtask`.
 - guard: in Claude Code, `.claude/settings.json` runs `cargo xtask guard`
-  before every Bash command. It blocks a commit or push on `main`, a branch
-  commit without its `Assisted-by:` trailer, an issue, pull request,
-  comment, review or release text without its disclosure line, and
-  `gh pr merge` without `--match-head-commit` and `--body-file`. Each block
+  before every Bash command. It blocks a commit, push, pull, rebase or ref
+  update that moves `main`, a branch commit without its `Assisted-by:`
+  trailer, an issue, pull request, comment, review or release text without
+  its disclosure line, and `gh pr merge` without `--squash`,
+  `--match-head-commit` and `--body-file`. Each block
   says what to fix. It reads only the command line, so it is a guardrail,
   not a proof: these rules hold whether or not it runs.
 
