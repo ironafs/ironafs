@@ -198,7 +198,7 @@ proof, and the rules hold whether or not it runs.
 
 ## Evidence
 
-- At `02da253`: `cargo xtask check`, `cargo nextest run --workspace
+- On `02da253`'s code, with this record committed on top: `cargo xtask check`, `cargo nextest run --workspace
   --retries 0 --no-tests fail` (391 tests passed), `cargo clippy
   --all-targets --workspace` (no warnings) and `cargo xtask guard
   --self-test` (19 planted commands ended as planted), each exit 0
