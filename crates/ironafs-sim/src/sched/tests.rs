@@ -667,3 +667,44 @@ fn a_late_respond_after_expiry_changes_nothing() {
     assert!(!outcome.trace.contains(" world answer p0"));
     assert_eq!(world.settled(), vec![(7, None)]);
 }
+
+/// A world that releases a call it never held, at its first step.
+struct BadRelease;
+
+impl World for BadRelease {
+    fn serve(&mut self, _call: u64, _request: &[u8]) -> Served {
+        Served::Reply(b"ok".to_vec())
+    }
+
+    fn admit(&mut self, _token: u64, _attempt: u32) -> bool {
+        true
+    }
+
+    fn settled(&mut self, _token: u64, _response: Option<Vec<u8>>) {}
+
+    fn poll(&mut self) -> Polled {
+        Polled {
+            pushes: Vec::new(),
+            releases: vec![(99, Some(b"x".to_vec()))],
+        }
+    }
+}
+
+#[test]
+fn a_world_releasing_a_call_it_never_held_is_a_misuse() {
+    let outcome = run_with(&Config::new("bad-release", 1), |setup| {
+        setup.world(BadRelease);
+        setup.task("caller", |cx: &TaskCx| {
+            let _ = cx.call(b"go", boot_in(cx, Duration::from_secs(1)));
+        });
+    });
+    assert_eq!(
+        outcome.failure,
+        Some(Failure::Misuse("release-unheld-call"))
+    );
+    assert!(!outcome.trace.contains(" world reply c99 "));
+    assert_eq!(
+        terminal(&outcome.trace),
+        Some("end failed misuse:release-unheld-call")
+    );
+}
