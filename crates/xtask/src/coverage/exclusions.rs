@@ -102,36 +102,76 @@ impl Pattern {
     }
 }
 
-fn match_segments(segments: &[Segment], parts: &[&str]) -> bool {
-    match segments.split_first() {
-        None => parts.is_empty(),
-        Some((Segment::Any, [])) => !parts.is_empty(),
-        Some((Segment::Any, rest)) => (0..=parts.len()).any(|skip| {
-            parts
-                .get(skip..)
-                .is_some_and(|tail| match_segments(rest, tail))
-        }),
-        Some((Segment::Glob(name), rest)) => match parts.split_first() {
-            Some((part, tail)) => {
-                match_name(name.as_bytes(), part.as_bytes()) && match_segments(rest, tail)
+/// Matches `input` against `pattern`, where items for which `is_star`
+/// holds match any run of input items (none included) and other items
+/// match one input item each by `eq`.
+///
+/// Two pointers with one saved backtrack point: each mismatch moves the
+/// last star's start forward by one, so the work is at most the product of
+/// the two lengths, never exponential in the number of stars.
+fn wildcard<P, S>(
+    pattern: &[P],
+    input: &[S],
+    is_star: impl Fn(&P) -> bool,
+    eq: impl Fn(&P, &S) -> bool,
+) -> bool {
+    let (mut next, mut at) = (0, 0);
+    // The pattern index after the last star seen, and where its run ends.
+    let mut backtrack: Option<(usize, usize)> = None;
+    while at < input.len() {
+        match (pattern.get(next), input.get(at)) {
+            (Some(item), _) if is_star(item) => {
+                backtrack = Some((next + 1, at));
+                next += 1;
             }
-            None => false,
-        },
+            (Some(item), Some(value)) if eq(item, value) => {
+                next += 1;
+                at += 1;
+            }
+            _ => match backtrack {
+                Some((after, end)) => {
+                    backtrack = Some((after, end + 1));
+                    next = after;
+                    at = end + 1;
+                }
+                None => return false,
+            },
+        }
+    }
+    pattern
+        .get(next..)
+        .is_some_and(|rest| rest.iter().all(is_star))
+}
+
+fn match_segments(segments: &[Segment], parts: &[&str]) -> bool {
+    let run = |parts: &[&str]| {
+        wildcard(
+            segments,
+            parts,
+            |segment| *segment == Segment::Any,
+            |segment, part| match segment {
+                Segment::Glob(name) => match_name(name.as_bytes(), part.as_bytes()),
+                Segment::Any => false,
+            },
+        )
+    };
+    // A trailing `**` matches at least one segment: the pattern, its `**`
+    // matching none or more, must then match all but the last segment.
+    if matches!(segments.last(), Some(Segment::Any)) {
+        parts.split_last().is_some_and(|(_, head)| run(head))
+    } else {
+        run(parts)
     }
 }
 
 /// Matches one name against a glob whose only wildcard is `*`.
 fn match_name(glob: &[u8], name: &[u8]) -> bool {
-    match glob.split_first() {
-        None => name.is_empty(),
-        Some((b'*', rest)) => {
-            (0..=name.len()).any(|skip| name.get(skip..).is_some_and(|tail| match_name(rest, tail)))
-        }
-        Some((byte, rest)) => match name.split_first() {
-            Some((first, tail)) => first == byte && match_name(rest, tail),
-            None => false,
-        },
-    }
+    wildcard(
+        glob,
+        name,
+        |byte| *byte == b'*',
+        |byte, value| byte == value,
+    )
 }
 
 /// One entry of the exclusion list.

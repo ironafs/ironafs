@@ -3,7 +3,20 @@
 
 //! Tests for `cargo xtask coverage`'s command layer.
 
-use super::{JOB_VARIABLE, host_target, job_violation, self_test, tool_version_violation};
+use std::fs;
+use std::path::PathBuf;
+
+use super::{
+    JOB_VARIABLE, host_target, job_violation, prepare_export_path, read_export, self_test,
+    tool_version_violation,
+};
+use crate::Error;
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("xtask-coverage-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    dir
+}
 
 #[test]
 fn only_the_pinned_tool_version_is_accepted() {
@@ -49,6 +62,12 @@ fn self_test_catches_every_planted_case_and_passes_the_clean_one() {
         "an export counting a planted test file",
         "an excluded file in the export",
         "an export from another tool version",
+        "function records that disagree with the file summaries",
+        "a function record for a library file without a summary",
+        "a measured crate with no instrumented line",
+        "an export with no workspace library file",
+        "a crate with only generated files",
+        "a crate listed as not built that has files",
         "a crate in no table",
         "a crate in two tables",
         "an exclusion without a reason",
@@ -73,4 +92,35 @@ fn the_real_run_refuses_outside_the_coverage_job() {
             "{value:?}: {violation:?}"
         );
     }
+}
+
+#[test]
+fn the_export_path_is_prepared_on_a_fresh_runner_and_a_stale_export_removed() {
+    let dir = scratch("prepare");
+    let path = dir.join("xtask-coverage").join("export.json");
+
+    prepare_export_path(&path).unwrap();
+    assert!(path.parent().unwrap().is_dir());
+    fs::write(&path, "stale").unwrap();
+    prepare_export_path(&path).unwrap();
+    assert!(!path.exists());
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_export_over_the_size_limit_is_refused_unread() {
+    let dir = scratch("bounded");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("export.json");
+    fs::write(&path, "x".repeat(17)).unwrap();
+
+    assert_eq!(read_export(&path, 17).unwrap(), "x".repeat(17));
+    let refused = read_export(&path, 16).unwrap_err();
+    assert!(
+        matches!(&refused, Error::Rules { violations, .. } if violations[0].contains("16 bytes")),
+        "{refused}"
+    );
+
+    fs::remove_dir_all(&dir).unwrap();
 }

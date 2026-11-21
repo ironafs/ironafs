@@ -197,3 +197,18 @@ fn parse_takes_the_first_region_in_the_functions_own_file() {
 
     assert_eq!((found.line, found.column), (7, 5));
 }
+
+#[test]
+fn parse_takes_the_earliest_start_of_the_functions_own_file() {
+    let text = export(
+        &[file("/w/a.rs", (1, 1))],
+        Some(&[r#"{"count": 2, "filenames": ["/w/a.rs"], "name": "f",
+                  "regions": [[9, 1, 9, 8, 2, 0, 0, 0], [7, 5, 9, 2, 2, 0, 0, 0], [7, 2, 7, 4, 2, 0, 0, 0]]}"#
+            .to_owned()]),
+        "0.9.1",
+    );
+
+    let found = &parse(&text).unwrap().functions[0];
+
+    assert_eq!((found.line, found.column), (7, 2));
+}

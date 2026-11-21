@@ -23,15 +23,13 @@ const CLEAN: &str = "the clean export";
 const TARGET: &str = "x86_64-unknown-linux-gnu";
 
 /// The fixture workspace: one crate from each table that has crates.
-const LIBRARIES: [&str; 3] = ["ironafs-xdr", "ironafs-client", "xtask"];
+const LIBRARIES: &[&str] = &["ironafs-xdr", "ironafs-client", "xtask"];
 
-fn libraries(extra: Option<&str>) -> Vec<Library> {
-    LIBRARIES
+fn libraries(names: &[&str]) -> Vec<Library> {
+    names
         .iter()
-        .copied()
-        .chain(extra)
         .map(|name| Library {
-            name: name.to_owned(),
+            name: (*name).to_owned(),
             dir: format!("crates/{name}/src"),
         })
         .collect()
@@ -41,14 +39,19 @@ fn counts(count: u64, covered: u64) -> String {
     format!(r#"{{"count": {count}, "covered": {covered}, "percent": 0.0}}"#)
 }
 
-fn file(relative: &str) -> String {
+/// A file summary: 10 lines (8 covered) and 2 functions (1 run), or nothing
+/// instrumented.
+fn file(relative: &str, instrumented: bool) -> String {
+    let (lines, functions) = if instrumented {
+        (counts(10, 8), counts(2, 1))
+    } else {
+        (counts(0, 0), counts(0, 0))
+    };
     format!(
         r#"{{"filename": "{ROOT}/{relative}", "segments": [], "branches": [], "expansions": [],
-            "summary": {{"branches": {none}, "functions": {f}, "instantiations": {f},
-                         "lines": {l}, "regions": {r}}}}}"#,
+            "summary": {{"branches": {none}, "functions": {functions}, "instantiations": {functions},
+                         "lines": {lines}, "regions": {r}}}}}"#,
         none = counts(0, 0),
-        f = counts(2, 1),
-        l = counts(10, 8),
         r = counts(6, 5),
     )
 }
@@ -61,22 +64,50 @@ fn function(relative: &str, line: u64, count: u64) -> String {
     )
 }
 
-/// An export of `files` (relative paths) with one run and one unrun
-/// function in the first file, written by `version`.
-fn export(files: &[&str], version: &str) -> String {
-    let first = files.first().copied().unwrap_or("none.rs");
+/// How a planted export departs from a clean one.
+#[derive(Default)]
+struct Plant {
+    /// Leave out every function record.
+    no_records: bool,
+    /// A file with function records but no summary.
+    record_without_file: Option<&'static str>,
+    /// A file with nothing instrumented.
+    uninstrumented: Option<&'static str>,
+}
+
+/// An export of `files` (relative paths), written by `version`. Each
+/// instrumented file has one run and one unrun function record, matching
+/// its summary.
+fn export_planted(files: &[&str], version: &str, plant: &Plant) -> String {
+    let mut records = Vec::new();
+    let summaries: Vec<String> = files
+        .iter()
+        .map(|path| {
+            let instrumented = plant.uninstrumented != Some(*path);
+            if instrumented {
+                records.push(function(path, 3, 1));
+                records.push(function(path, 9, 0));
+            }
+            file(path, instrumented)
+        })
+        .collect();
+    if let Some(path) = plant.record_without_file {
+        records.push(function(path, 1, 0));
+    }
+    if plant.no_records {
+        records.clear();
+    }
     format!(
-        r#"{{"data": [{{"files": [{}], "functions": [{}, {}], "totals": {{}}}}],
+        r#"{{"data": [{{"files": [{}], "functions": [{}], "totals": {{}}}}],
             "type": "llvm.coverage.json.export", "version": "3.1.0",
             "cargo_llvm_cov": {{"version": "{version}", "manifest_path": "{ROOT}/Cargo.toml"}}}}"#,
-        files
-            .iter()
-            .map(|path| file(path))
-            .collect::<Vec<_>>()
-            .join(", "),
-        function(first, 3, 1),
-        function(first, 9, 0),
+        summaries.join(", "),
+        records.join(", "),
     )
+}
+
+fn export(files: &[&str], version: &str) -> String {
+    export_planted(files, version, &Plant::default())
 }
 
 const CLEAN_FILES: [&str; 4] = [
@@ -90,6 +121,10 @@ fn clean() -> String {
     export(&CLEAN_FILES, TOOL_VERSION)
 }
 
+fn planted(plant: &Plant) -> String {
+    export_planted(&CLEAN_FILES, TOOL_VERSION, plant)
+}
+
 const TWICE: &[(&str, Table)] = &[
     ("ironafs-xdr", Table::One),
     ("ironafs-client", Table::Three),
@@ -97,12 +132,12 @@ const TWICE: &[(&str, Table)] = &[
     ("ironafs-client", Table::Four),
 ];
 
-/// A planted case: the export, the workspace's extra crate, the exclusion
+/// A planted case: the export, the workspace's libraries, the exclusion
 /// list, the tables, and the text every violation must contain.
 struct Case {
     name: &'static str,
     export: String,
-    extra: Option<&'static str>,
+    libraries: &'static [&'static str],
     exclusions: &'static str,
     tables: Tables<'static>,
     expect: &'static str,
@@ -112,7 +147,7 @@ fn cases() -> Vec<Case> {
     let case = |name, export, expect| Case {
         name,
         export,
-        extra: None,
+        libraries: LIBRARIES,
         exclusions: "",
         tables: TABLES,
         expect,
@@ -167,8 +202,71 @@ fn cases() -> Vec<Case> {
             export(&CLEAN_FILES, "0.9.2"),
             "not the pinned 0.9.1",
         ),
+        case(
+            "function records that disagree with the file summaries",
+            planted(&Plant {
+                no_records: true,
+                ..Plant::default()
+            }),
+            "function records give 0/0 run",
+        ),
+        case(
+            "a function record for a library file without a summary",
+            planted(&Plant {
+                record_without_file: Some("crates/ironafs-xdr/src/lost.rs"),
+                ..Plant::default()
+            }),
+            "function record for crates/ironafs-xdr/src/lost.rs, which has no file summary",
+        ),
+        case(
+            "a measured crate with no instrumented line",
+            planted(&Plant {
+                uninstrumented: Some("crates/ironafs-client/src/lib.rs"),
+                ..Plant::default()
+            }),
+            "crate `ironafs-client` has no instrumented line",
+        ),
         Case {
-            extra: Some("ironafs-unassigned"),
+            libraries: &[],
+            tables: Tables {
+                crates: &[],
+                ..TABLES
+            },
+            ..case(
+                "an export with no workspace library file",
+                clean(),
+                "no library file of the workspace was measured",
+            )
+        },
+        Case {
+            tables: Tables {
+                generated: &["crates/ironafs-xdr/src/**"],
+                ..TABLES
+            },
+            ..case(
+                "a crate with only generated files",
+                clean(),
+                "expected crate `ironafs-xdr` has no file in the export",
+            )
+        },
+        Case {
+            tables: Tables {
+                not_measured: &[("ironafs-client", TARGET)],
+                ..TABLES
+            },
+            ..case(
+                "a crate listed as not built that has files",
+                clean(),
+                "crate `ironafs-client` is listed as not built",
+            )
+        },
+        Case {
+            libraries: &[
+                "ironafs-xdr",
+                "ironafs-client",
+                "xtask",
+                "ironafs-unassigned",
+            ],
             ..case(
                 "a crate in no table",
                 clean(),
@@ -204,7 +302,7 @@ fn outcome(case: &Case) -> Result<String, Vec<String>> {
         &case.export,
         ROOT,
         TARGET,
-        &libraries(case.extra),
+        &libraries(case.libraries),
         &exclusions,
         &case.tables,
     )
@@ -214,7 +312,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     let mut say =
         |line: String| writeln!(output, "{line}").map_err(Error::io("report coverage self-test"));
 
-    let text = report(&clean(), ROOT, TARGET, &libraries(None), &[], &TABLES)
+    let text = report(&clean(), ROOT, TARGET, &libraries(LIBRARIES), &[], &TABLES)
         .map_err(|found| failure(CLEAN, found))?;
     let rows: Vec<&str> = text
         .lines()

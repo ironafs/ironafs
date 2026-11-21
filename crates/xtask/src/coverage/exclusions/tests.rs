@@ -163,3 +163,14 @@ fn test_files_follow_the_tools_default_rule() {
         assert!(!is_test_file(path), "{path}");
     }
 }
+
+#[test]
+fn matching_many_wildcards_against_a_long_name_takes_bounded_time() {
+    let name = format!("crates/{}.rs", "a".repeat(4000));
+    let wildcards = pattern("crates/*a*a*a*a*a*a*a*b.rs");
+    let segments = pattern("**/**/**/**/**/**/x/**/y.rs");
+    let path = format!("{}y.rs", "d/".repeat(2000));
+
+    assert!(!wildcards.matches(&name));
+    assert!(!segments.matches(&path));
+}

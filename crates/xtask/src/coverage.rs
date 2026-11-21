@@ -21,7 +21,7 @@ mod self_test;
 mod tables;
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -44,6 +44,11 @@ const TOOL_VERSION: &str = "0.9.1";
 /// without it, so the tool is never run on a development machine or in a
 /// pull request's jobs by accident.
 const JOB_VARIABLE: &str = "IRONAFS_COVERAGE_JOB";
+
+/// The largest export read. A full export of this workspace is a few
+/// megabytes; the bound keeps a runaway or hostile file from being read
+/// into memory whole.
+const MAX_EXPORT_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The exclusion list, relative to the workspace root.
 const EXCLUSIONS: &str = "tests/coverage/exclusions.txt";
@@ -79,8 +84,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         .join("xtask-coverage")
         .join("export.json");
     run_tool(&workspace, &exclusions, &export_path)?;
-    let text = fs::read_to_string(&export_path)
-        .map_err(Error::path_io("read coverage export", &export_path))?;
+    let text = read_export(&export_path, MAX_EXPORT_BYTES)?;
 
     let libraries = libraries(&workspace)?;
     let root = workspace
@@ -135,11 +139,7 @@ fn report(
 /// branch or doc-test option is passed: both need a nightly compiler.
 fn run_tool(workspace: &Workspace, exclusions: &[Exclusion], path: &Path) -> Result<(), Error> {
     const NAME: &str = "cargo llvm-cov nextest";
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(Error::path_io("remove old coverage export", path)(error)),
-    }
+    prepare_export_path(path)?;
     let mut command = Command::new("cargo");
     command
         .current_dir(&workspace.root)
@@ -164,6 +164,40 @@ fn run_tool(workspace: &Workspace, exclusions: &[Exclusion], path: &Path) -> Res
     command.args(["--profile", "ci", "--retries", "0", "--no-tests", "fail"]);
     let status = command.status().map_err(Error::io(NAME))?;
     Error::check_status(NAME, status)
+}
+
+/// Creates the export's directory, which a fresh runner lacks, and removes
+/// an export left by an earlier run, so a failed run cannot be read as
+/// this one's.
+fn prepare_export_path(path: &Path) -> Result<(), Error> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(Error::path_io("create coverage export directory", parent))?;
+    }
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::path_io("remove old coverage export", path)(error)),
+    }
+}
+
+/// Reads the export, refusing one larger than `limit` bytes.
+fn read_export(path: &Path, limit: u64) -> Result<String, Error> {
+    let file = fs::File::open(path).map_err(Error::path_io("open coverage export", path))?;
+    let mut text = String::new();
+    file.take(limit.saturating_add(1))
+        .read_to_string(&mut text)
+        .map_err(Error::path_io("read coverage export", path))?;
+    if u64::try_from(text.len()).map_or(true, |length| length > limit) {
+        return Err(Error::Rules {
+            check: CHECK,
+            violations: vec![format!(
+                "the export at {} is larger than {limit} bytes",
+                path.display()
+            )],
+        });
+    }
+    Ok(text)
 }
 
 /// The workspace crates that have a library, with their library directory

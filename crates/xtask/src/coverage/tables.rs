@@ -164,16 +164,27 @@ pub(super) fn check(input: &Input<'_>) -> Result<Report, Vec<String>> {
         ));
     }
     let table_of = assign_tables(input, &mut violations);
-    let prefix = format!("{}/", input.root);
-    let measured = measure(input, &prefix, &table_of, &mut violations);
-    let rows = rows(input, &table_of, &measured, &mut violations);
+    let generated = generated_patterns(input, &mut violations);
+    let places = Places {
+        input,
+        prefix: format!("{}/", input.root),
+        table_of,
+        generated,
+    };
+    let measured = measure(&places, &mut violations);
+    let groups = function_groups(input);
+    reconcile(&places, &measured, &groups, &mut violations);
+    let rows = rows(&places, &measured, &mut violations);
+    if measured.placements.is_empty() {
+        violations.push("no library file of the workspace was measured".to_owned());
+    }
     if !violations.is_empty() {
         return Err(violations);
     }
     Ok(Report {
         target: input.target.to_owned(),
         rows,
-        uncovered: uncovered_functions(input, &prefix, &measured.placements),
+        uncovered: uncovered_functions(&places, &measured, &groups),
     })
 }
 
@@ -204,26 +215,8 @@ fn assign_tables<'a>(input: &Input<'a>, violations: &mut Vec<String>) -> BTreeMa
     table_of
 }
 
-/// The export's library files, summed per (table, crate).
-#[derive(Default)]
-struct Measured<'a> {
-    figures: BTreeMap<(usize, &'a str), Figures>,
-    /// Each placed file's absolute path and table.
-    placements: BTreeMap<&'a str, Table>,
-    /// Crates with at least one library file in the export.
-    seen: BTreeSet<&'a str>,
-}
-
-/// Places each export file in its crate's table (or table 2 if generated).
-/// A test file or an excluded file is a violation; files outside the
-/// workspace, outside every library and binary code are left out.
-fn measure<'a>(
-    input: &Input<'a>,
-    prefix: &str,
-    table_of: &BTreeMap<&'a str, Table>,
-    violations: &mut Vec<String>,
-) -> Measured<'a> {
-    let generated: Vec<Pattern> = input
+fn generated_patterns(input: &Input<'_>, violations: &mut Vec<String>) -> Vec<Pattern> {
+    input
         .tables
         .generated
         .iter()
@@ -234,42 +227,107 @@ fn measure<'a>(
                 None
             }
         })
-        .collect();
-    let mut measured = Measured::default();
-    for file in &input.export.files {
-        let Some(relative) = file.path.strip_prefix(prefix) else {
-            continue;
-        };
+        .collect()
+}
+
+/// What decides where a file's code is reported.
+struct Places<'a> {
+    input: &'a Input<'a>,
+    /// The workspace root with a trailing `/`.
+    prefix: String,
+    table_of: BTreeMap<&'a str, Table>,
+    generated: Vec<Pattern>,
+}
+
+/// Where one file's code is reported.
+enum Place<'a> {
+    /// The file must not be in the export at all.
+    Refused(String),
+    /// Outside the workspace, outside every library, or binary code.
+    Elsewhere,
+    Library {
+        library: &'a str,
+        table: Table,
+    },
+}
+
+impl<'a> Places<'a> {
+    fn relative<'p>(&self, path: &'p str) -> Option<&'p str> {
+        path.strip_prefix(self.prefix.as_str())
+    }
+
+    fn place(&self, relative: &str) -> Place<'a> {
         if is_test_file(relative) {
-            violations.push(format!("test file counted as covered code: {relative}"));
-            continue;
+            return Place::Refused(format!("test file counted as covered code: {relative}"));
         }
-        if let Some(entry) = input
+        if let Some(entry) = self
+            .input
             .exclusions
             .iter()
             .find(|entry| entry.pattern.matches(relative))
         {
-            violations.push(format!(
+            return Place::Refused(format!(
                 "excluded file in the export: {relative} (excluded for: {})",
                 entry.reason
             ));
-            continue;
         }
-        let Some((library, inside)) = library_of(input.libraries, relative) else {
-            continue;
+        let Some((library, inside)) = library_of(self.input.libraries, relative) else {
+            return Place::Elsewhere;
         };
         if inside == "main.rs" || inside.starts_with("bin/") {
-            continue;
+            return Place::Elsewhere;
         }
-        let Some(&crate_table) = table_of.get(library) else {
-            continue;
+        let Some(&crate_table) = self.table_of.get(library) else {
+            return Place::Elsewhere;
         };
-        measured.seen.insert(library);
-        let table = if generated.iter().any(|pattern| pattern.matches(relative)) {
+        let table = if self
+            .generated
+            .iter()
+            .any(|pattern| pattern.matches(relative))
+        {
             Table::Two
         } else {
             crate_table
         };
+        Place::Library { library, table }
+    }
+}
+
+/// The export's library files, summed per (table, crate).
+#[derive(Default)]
+struct Measured<'a> {
+    figures: BTreeMap<(usize, &'a str), Figures>,
+    /// Each placed file's absolute path, its table and its summary's
+    /// function counts.
+    placements: BTreeMap<&'a str, (Table, Counts)>,
+    /// Crates with at least one hand-written (not generated) library file
+    /// in the export.
+    seen: BTreeSet<&'a str>,
+    /// Instrumented lines per crate, generated files included.
+    lines: BTreeMap<&'a str, u64>,
+}
+
+/// Places each export file in its crate's table (or table 2 if generated).
+/// A test file or an excluded file is a violation.
+fn measure<'a>(places: &Places<'a>, violations: &mut Vec<String>) -> Measured<'a> {
+    let mut measured = Measured::default();
+    for file in &places.input.export.files {
+        let Some(relative) = places.relative(&file.path) else {
+            continue;
+        };
+        let (library, table) = match places.place(relative) {
+            Place::Refused(violation) => {
+                violations.push(violation);
+                continue;
+            }
+            Place::Elsewhere => continue,
+            Place::Library { library, table } => (library, table),
+        };
+        if table != Table::Two {
+            measured.seen.insert(library);
+        }
+        let lines = measured.lines.entry(library).or_default();
+        *lines = lines.saturating_add(file.lines.count);
         measured
             .figures
             .entry((index(table), library))
@@ -279,24 +337,82 @@ fn measure<'a>(
                 regions: file.regions,
                 functions: file.functions,
             });
-        measured.placements.insert(file.path.as_str(), table);
+        measured
+            .placements
+            .insert(file.path.as_str(), (table, file.functions));
     }
     measured
 }
 
+/// Function records grouped per file by start position, each group run if
+/// any of its records ran: a generic function's instantiations (and its
+/// copies in other test binaries) share a start, and LLVM groups them the
+/// same way for each file's function count.
+fn function_groups<'a>(input: &Input<'a>) -> BTreeMap<&'a str, BTreeMap<(u64, u64), bool>> {
+    let mut groups: BTreeMap<&str, BTreeMap<(u64, u64), bool>> = BTreeMap::new();
+    for record in &input.export.functions {
+        *groups
+            .entry(record.file.as_str())
+            .or_default()
+            .entry((record.line, record.column))
+            .or_default() |= record.executed;
+    }
+    groups
+}
+
+/// Each placed file's function records must give exactly its summary's
+/// function counts, and a library file with function records must have a
+/// summary: otherwise records were dropped or the export is inconsistent.
+fn reconcile(
+    places: &Places<'_>,
+    measured: &Measured<'_>,
+    groups: &BTreeMap<&str, BTreeMap<(u64, u64), bool>>,
+    violations: &mut Vec<String>,
+) {
+    for (path, (_, summary)) in &measured.placements {
+        let found = groups.get(path).map_or(Counts::default(), |starts| Counts {
+            count: u64::try_from(starts.len()).unwrap_or(u64::MAX),
+            covered: u64::try_from(starts.values().filter(|ran| **ran).count()).unwrap_or(u64::MAX),
+        });
+        if found != *summary {
+            violations.push(format!(
+                "{}: function records give {}/{} run, its summary says {}/{}",
+                places.relative(path).unwrap_or(path),
+                found.covered,
+                found.count,
+                summary.covered,
+                summary.count
+            ));
+        }
+    }
+    for path in groups.keys() {
+        if measured.placements.contains_key(path) {
+            continue;
+        }
+        if let Some(relative) = places.relative(path)
+            && let Place::Library { .. } = places.place(relative)
+        {
+            violations.push(format!(
+                "function record for {relative}, which has no file summary in the export"
+            ));
+        }
+    }
+}
+
 /// One row per library in its table, plus a table 2 row for a crate with
 /// generated files, sorted by table and crate. An expected crate with no
-/// file in the export is a violation.
+/// hand-written file, a measured crate with no instrumented line, and a
+/// crate listed as not built that has files are violations.
 fn rows(
-    input: &Input<'_>,
-    table_of: &BTreeMap<&str, Table>,
+    places: &Places<'_>,
     measured: &Measured<'_>,
     violations: &mut Vec<String>,
 ) -> Vec<(Table, Row)> {
+    let input = places.input;
     let mut rows = Vec::new();
     for library in input.libraries {
         let name = library.name.as_str();
-        let Some(&table) = table_of.get(name) else {
+        let Some(&table) = places.table_of.get(name) else {
             continue;
         };
         let not_built = input
@@ -304,8 +420,18 @@ fn rows(
             .not_measured
             .iter()
             .any(|(crate_name, target)| *crate_name == name && *target == input.target);
-        if !measured.seen.contains(name) && !not_built {
+        let has_files = measured.lines.contains_key(name);
+        if not_built && has_files {
+            violations.push(format!(
+                "crate `{name}` is listed as not built on {} but has files in the export",
+                input.target
+            ));
+        } else if !not_built && !measured.seen.contains(name) {
             violations.push(format!("expected crate `{name}` has no file in the export"));
+        } else if !not_built && measured.lines.get(name).is_some_and(|lines| *lines == 0) {
+            violations.push(format!(
+                "crate `{name}` has no instrumented line in the export"
+            ));
         }
         let figures = (!not_built).then(|| {
             measured
@@ -359,33 +485,33 @@ fn library_of<'a, 'b>(libraries: &'a [Library], relative: &'b str) -> Option<(&'
         .map(|(library, inside)| (library.name.as_str(), inside))
 }
 
-/// Table 1's functions that never ran. A generic function's instantiations
-/// share where they start, so they are grouped by file, line and column
-/// (as LLVM groups them) and count as run if any instantiation ran.
+/// Table 1's functions that never ran, one per start position (see
+/// [`function_groups`]). Functions a `macro_rules!` macro generates start
+/// inside the macro's definition, so LLVM gives every expansion of one
+/// definition the same start and counts them as one function; they are one
+/// entry here too, run if any expansion ran.
 fn uncovered_functions(
-    input: &Input<'_>,
-    prefix: &str,
-    placements: &BTreeMap<&str, Table>,
+    places: &Places<'_>,
+    measured: &Measured<'_>,
+    groups: &BTreeMap<&str, BTreeMap<(u64, u64), bool>>,
 ) -> Vec<String> {
-    let mut ran: BTreeMap<(&str, u64, u64), bool> = BTreeMap::new();
-    for record in &input.export.functions {
-        let placed = placements
-            .get(record.file.as_str())
-            .is_some_and(|table| *table == Table::One);
-        if placed {
-            *ran.entry((record.file.as_str(), record.line, record.column))
-                .or_default() |= record.executed;
+    let mut uncovered = Vec::new();
+    for (path, starts) in groups {
+        let in_table_one = measured
+            .placements
+            .get(path)
+            .is_some_and(|(table, _)| *table == Table::One);
+        if !in_table_one {
+            continue;
+        }
+        let relative = places.relative(path).unwrap_or(path);
+        for ((line, column), ran) in starts {
+            if !ran {
+                uncovered.push(format!("{relative}:{line}:{column}"));
+            }
         }
     }
-    ran.into_iter()
-        .filter(|(_, executed)| !executed)
-        .map(|((file, line, column), _)| {
-            format!(
-                "{}:{line}:{column}",
-                file.strip_prefix(prefix).unwrap_or(file)
-            )
-        })
-        .collect()
+    uncovered
 }
 
 fn cell(counts: Counts) -> String {

@@ -179,7 +179,9 @@ fn file_summary(file: &Value) -> Result<FileSummary, ExportError> {
 
 /// A region is `[line start, column start, line end, column end, count,
 /// file id, expanded file id, kind]`; file id 0 is the function's own file,
-/// `filenames[0]`.
+/// `filenames[0]`, and the function starts at the earliest of its regions
+/// there: the start position LLVM groups instantiations by
+/// (`FunctionInstantiationSetCollector` in its `CoverageMapping.cpp`).
 fn function_record(function: &Value) -> Result<FunctionRecord, ExportError> {
     let name = function
         .get("name")
@@ -210,7 +212,9 @@ fn function_record(function: &Value) -> Result<FunctionRecord, ExportError> {
             }
         };
         if let [line, column, _, _, _, 0, _, _] = fields.as_slice() {
-            start.get_or_insert((*line, *column));
+            start = Some(start.map_or((*line, *column), |earliest: (u64, u64)| {
+                earliest.min((*line, *column))
+            }));
         }
     }
     let (line, column) =

@@ -34,7 +34,9 @@ fn libraries() -> Vec<Library> {
         .collect()
 }
 
-fn summary(relative: &str, lines: (u64, u64)) -> FileSummary {
+/// A file's summary. `functions` is (count, covered), grouped by start as
+/// the records below give them.
+fn summary(relative: &str, lines: (u64, u64), functions: (u64, u64)) -> FileSummary {
     FileSummary {
         path: format!("{ROOT}/{relative}"),
         lines: Counts {
@@ -46,8 +48,8 @@ fn summary(relative: &str, lines: (u64, u64)) -> FileSummary {
             covered: 3,
         },
         functions: Counts {
-            count: 2,
-            covered: 1,
+            count: functions.0,
+            covered: functions.1,
         },
     }
 }
@@ -65,12 +67,12 @@ fn clean_export() -> Export {
     Export {
         tool_version: "0.9.1".to_owned(),
         files: vec![
-            summary("crates/ironafs-xdr/src/lib.rs", (10, 7)),
-            summary("crates/ironafs-xdr/src/decode.rs", (5, 5)),
-            summary("crates/ironafs-xdr/src/generated/fs.rs", (20, 2)),
-            summary("crates/ironafs-client/src/lib.rs", (8, 8)),
-            summary("crates/xtask/src/lib.rs", (30, 10)),
-            summary("crates/xtask/src/bin/xtask/main.rs", (3, 3)),
+            summary("crates/ironafs-xdr/src/lib.rs", (10, 7), (3, 2)),
+            summary("crates/ironafs-xdr/src/decode.rs", (5, 5), (1, 1)),
+            summary("crates/ironafs-xdr/src/generated/fs.rs", (20, 2), (1, 0)),
+            summary("crates/ironafs-client/src/lib.rs", (8, 8), (1, 1)),
+            summary("crates/xtask/src/lib.rs", (30, 10), (2, 1)),
+            summary("crates/xtask/src/bin/xtask/main.rs", (3, 3), (1, 1)),
         ],
         functions: vec![
             record("crates/ironafs-xdr/src/lib.rs", 3, true),
@@ -78,7 +80,12 @@ fn clean_export() -> Export {
             record("crates/ironafs-xdr/src/lib.rs", 20, false),
             record("crates/ironafs-xdr/src/lib.rs", 20, true),
             record("crates/ironafs-xdr/src/lib.rs", 9, false),
+            record("crates/ironafs-xdr/src/decode.rs", 4, true),
+            record("crates/ironafs-xdr/src/generated/fs.rs", 5, false),
+            record("crates/ironafs-client/src/lib.rs", 6, true),
             record("crates/xtask/src/lib.rs", 4, false),
+            record("crates/xtask/src/lib.rs", 8, true),
+            record("crates/xtask/src/bin/xtask/main.rs", 2, true),
         ],
     }
 }
@@ -119,10 +126,10 @@ fn clean_export_renders_four_tables_with_targets_and_no_branch_figure() {
         assert!(report.contains(heading), "{heading} missing:\n{report}");
     }
     assert!(report.contains(&format!(
-        "| ironafs-xdr | {TARGET} | 12/15 (3 uncovered) | 6/8 (2 uncovered) | 2/4 (2 uncovered) | not available |"
+        "| ironafs-xdr | {TARGET} | 12/15 (3 uncovered) | 6/8 (2 uncovered) | 3/4 (1 uncovered) | not available |"
     )), "{report}");
     assert!(report.contains(&format!(
-        "| ironafs-xdr | {TARGET} | 2/20 (18 uncovered) | 3/4 (1 uncovered) | 1/2 (1 uncovered) | not available |"
+        "| ironafs-xdr | {TARGET} | 2/20 (18 uncovered) | 3/4 (1 uncovered) | 0/1 (1 uncovered) | not available |"
     )), "generated row:\n{report}");
     assert!(
         report.contains(&format!("| ironafs-client | {TARGET} | 8/8 (0 uncovered)")),
@@ -181,7 +188,7 @@ fn a_test_file_in_the_export_fails() {
         "crates/ironafs-xdr/tests/it/main.rs",
     ] {
         let mut export = clean_export();
-        export.files.push(summary(relative, (4, 4)));
+        export.files.push(summary(relative, (4, 4), (0, 0)));
 
         let found = violations(&export, &libraries(), &tables(), "");
 
@@ -215,6 +222,9 @@ fn a_missing_expected_crate_fails() {
     export
         .files
         .retain(|file| !file.path.contains("ironafs-client"));
+    export
+        .functions
+        .retain(|record| !record.file.contains("ironafs-client"));
 
     let found = violations(&export, &libraries(), &tables(), "");
 
@@ -231,6 +241,9 @@ fn a_crate_not_built_on_the_target_is_not_measured() {
     export
         .files
         .retain(|file| !file.path.contains("ironafs-client"));
+    export
+        .functions
+        .retain(|record| !record.file.contains("ironafs-client"));
     let tables = Tables {
         not_measured: &[("ironafs-client", TARGET)],
         ..tables()
@@ -336,5 +349,118 @@ fn table_one_is_the_specifications_list() {
             "ironafs-vfs",
             "ironafs-xdr",
         ]
+    );
+}
+
+#[test]
+fn function_records_that_disagree_with_a_file_summary_fail() {
+    let mut empty = clean_export();
+    empty.functions.clear();
+    let found = violations(&empty, &libraries(), &tables(), "");
+    assert_eq!(found.len(), 5, "{found:?}");
+    assert!(
+        found
+            .iter()
+            .all(|v| v.contains("function records give 0/0") && v.contains("summary")),
+        "{found:?}"
+    );
+
+    let mut dropped = clean_export();
+    dropped.functions.retain(|record| record.line != 9);
+    let found = violations(&dropped, &libraries(), &tables(), "");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].contains("crates/ironafs-xdr/src/lib.rs")
+            && found[0].contains("function records give 2/2")
+            && found[0].contains("summary says 2/3"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_function_record_for_a_library_file_without_a_summary_fails() {
+    let mut export = clean_export();
+    export
+        .functions
+        .push(record("crates/ironafs-xdr/src/lost.rs", 1, false));
+
+    let found = violations(&export, &libraries(), &tables(), "");
+
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].contains("crates/ironafs-xdr/src/lost.rs") && found[0].contains("no file summary"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_measured_crate_with_no_instrumented_line_fails() {
+    let mut export = clean_export();
+    for file in &mut export.files {
+        if file.path.contains("ironafs-client") {
+            file.lines = Counts::default();
+        }
+    }
+
+    let found = violations(&export, &libraries(), &tables(), "");
+
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].contains("ironafs-client") && found[0].contains("no instrumented line"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn an_export_with_no_workspace_library_file_fails() {
+    let mut export = clean_export();
+    for file in &mut export.files {
+        file.path = file.path.replace("/w/", "/elsewhere/");
+    }
+    export.functions.clear();
+
+    let found = violations(&export, &[], &tables(), "");
+
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].contains("no library file of the workspace"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_crate_with_only_generated_files_is_missing_its_hand_written_code() {
+    let mut export = clean_export();
+    export.files.retain(|file| {
+        !file.path.ends_with("ironafs-xdr/src/lib.rs") && !file.path.ends_with("decode.rs")
+    });
+    export.functions.retain(|record| {
+        !record.file.ends_with("ironafs-xdr/src/lib.rs") && !record.file.ends_with("decode.rs")
+    });
+
+    let found = violations(&export, &libraries(), &tables(), "");
+
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].contains("ironafs-xdr") && found[0].contains("no file in the export"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_crate_listed_as_not_built_but_measured_fails() {
+    let tables = Tables {
+        not_measured: &[("ironafs-client", TARGET)],
+        ..tables()
+    };
+
+    let found = violations(&clean_export(), &libraries(), &tables, "");
+
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].contains("ironafs-client")
+            && found[0].contains("not built")
+            && found[0].contains(TARGET),
+        "{found:?}"
     );
 }
