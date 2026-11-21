@@ -339,6 +339,10 @@ jobs:
               linux_rtnetlink::tests::stand_in::a_reply_from_another_port_is_refused \
               linux_rtnetlink::tests::stand_in::a_reply_longer_than_the_buffer_is_truncated \
               route::tests::the_sweep_of_every_field_returns_only_the_kernel_s_whole_datagram \
+              linux_udp6::tests::stand_in::a_missing_family_and_an_address_in_use_are_told_apart_through_the_calls \
+              linux_statvfs::tests::stand_in::an_interrupted_query_is_made_again \
+              linux_rtnetlink::tests::stand_in::an_interrupted_send_and_receive_are_each_made_again \
+              linux_rtnetlink::tests::stand_in::an_overflow_and_another_failure_are_told_apart_through_the_receive \
               linux_peercred::tests::stand_in::a_short_and_an_over_long_length_from_the_call_are_refused \
               linux_dontdump::tests::stand_in::a_failed_exclusion_hands_out_no_buffer \
               linux_dontdump::tests::stand_in::a_dropped_buffer_is_all_zero_when_its_memory_is_released \
