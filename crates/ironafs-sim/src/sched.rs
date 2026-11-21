@@ -110,6 +110,10 @@ pub struct Wait {
 /// Test plants in the scheduler itself (specification, 10.5, point 6).
 /// Each is off in every evidence run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each plant is an independent test switch, any combination of them meaningful"
+)]
 pub struct SchedPlants {
     /// Post each task's first grant before its thread exists.
     pub grant_before_spawn: bool,
