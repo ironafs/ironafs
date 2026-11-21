@@ -75,6 +75,14 @@ seat never reviews codex-written code. A same-family review (for example
 never counts as a required seat. A finding raised by one family is
 refuted, if at all, by a family that neither wrote the change nor raised it.
 
+- **The controller's rulings are reviewed.** When the controller refutes,
+  downgrades or defers a blocker or major, a refutation seat reviews that
+  ruling before it closes the finding: a family that wrote none of the
+  change, did not raise the finding, and is not the controller's.
+- **Runtime claims are settled by running code.** A disputed claim about
+  what code does when it runs is settled by a seat that runs it (a
+  reproduction, §3c's EXECUTED), never by reading alone.
+
 ### Seats by class
 
 **Rule:** every required seat comes from a family that did not write the
@@ -153,8 +161,9 @@ Disagreements are settled on evidence, never by counting.
 - **When it runs.** Two seats disagree on something the work depends on (a
   finding, a design choice, a research conclusion), and the controller cannot
   settle it from evidence it has checked itself. Also for a finding still
-  disputed after the fix rounds. **A pending or inconclusive judgement blocks
-  the merge**, like an open confirmed finding (§3, step 8), and a reproduced
+  disputed after the fix rounds, and for a single seat's tail of one or two
+  majors (§3, step 7), where it rules whether each one blocks. **A pending
+  or inconclusive judgement blocks the merge**, like an open confirmed finding (§3, step 8), and a reproduced
   failure blocks whatever the ruling says (§4).
 - **Who sits it.** A family that is independent of the dispute: it wrote
   neither the work nor either position, and has not taken a side in it. The
@@ -245,6 +254,10 @@ other model pin in this file, `AI.md` and the skills.
   cases, misses, false findings, refusals and cost, a pass threshold, and a
   comparison with the current pin. Check `agy models` and the other lanes'
   model lists before pinning; ids change.
+- **Uncalibrated pins.** Until a pin has passed a calibration on IronAFS
+  material (known defects planted in IronAFS code or documents, measured as
+  "Changing a pin" requires), every verdict from it is recorded with
+  "uncalibrated on IronAFS" beside it.
 - **Claude seats** run at the lane's default effort, which is recorded with
   the served model; the other lanes pass their effort as pinned.
 - **Every dispatch and resume** passes the model and effort explicitly, and
@@ -285,14 +298,44 @@ authoritative.
    - A function the seat missed, or a site it did not compare, is asked about
      again.
 6. **Review seats** for the class (§1, §2), each with a bounded brief: the
-   commit range pinned by sha, the question, what is already known.
+   commit range pinned by sha from the merge base, the question, what is
+   already known. Neither the reviewed files nor the lane tooling change
+   while a round runs.
 7. **Fix rounds**: fix confirmed correctness and contract findings; review
-   only the fix's changes. After two fix rounds on one change, stop patching:
-   split it, redesign it, or record the blocker.
+   only the fix's changes. Round 1 is the first review; each fix round's
+   verification is the next round.
+   - **Fix rounds add no mechanism.** A fix does only what its finding
+     names. A mechanism the finding shows is needed becomes a specification
+     item (an open item named in the change and tracked in an issue,
+     reviewed when its specification is written) or a change of its own.
+     A fix-round brief says so.
+   - **Every finding is tagged** in the review record by origin
+     (pre-existing, or introduced by fix round N) and by kind
+     (correctness, contract, consistency between parts, missing
+     mechanism, or other).
+   - **A convergence note comes before any round after the second.** It
+     gives each seat's trend of blocker and major counts, how many of the
+     last round's findings the last fix introduced, and whether the kind of
+     defect found has drifted. It goes in the review record.
+   - **After two fix rounds, stop patching** unless the note shows the
+     counts falling, few findings introduced by the fixes, and the kinds
+     narrowing. Otherwise, or whenever the note cannot show it: split the
+     change, move the mechanism into specification items, redesign it, or
+     record the blocker.
+   - **A single seat's tail**, one or two majors and no blocker from one
+     seat alone, goes to the judgement seat (§2), which rules whether each
+     blocks, or, when a major asks for mechanism the change need not
+     decide, into specification items; never into another full round.
+     A specification item never takes a defect in what the change does
+     decide.
+   - **Converged parts are split off.** A part that every required seat has
+     passed, with no open finding, may be accepted or land on its own while
+     the rest continues.
 8. **Merge** when the class's checks are met, no confirmed correctness or
-   contract finding is open, and no judgement is pending or inconclusive
-   (one recorded as moot is closed): a pull request, squash-merged after the owner's
-   approval, with the trailer block and sign-off of ADR 0002 (the root commit
+   contract finding is open (one moved into a specification item is
+   closed in the change and stays open in its issue), and no judgement is
+   pending or inconclusive (one recorded as moot is closed): a pull
+   request, squash-merged after the owner's approval, with the trailer block and sign-off of ADR 0002 (the root commit
    of the public history is the one exception; ADR 0002 gives its checklist). R also needs the owner's
    decision.
 
