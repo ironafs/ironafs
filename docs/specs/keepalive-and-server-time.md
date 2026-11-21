@@ -594,8 +594,10 @@ point 7). Then, in order; the first failure decides `[OWN]`:
    boot-clock instant (the instant the connection was closed plus R,
    [rx.md](rx.md), 5.6, point 2). A slot whose instant has passed is
    free. Opening a keepalive connection takes a free slot; closing it
-   marks the slot reserved; an open that fails (`IdentityExhausted`)
-   frees the slot at once, since no identity was used. Rx keeps its own reservations (rx.md, 5.6,
+   marks the slot reserved; an open that fails, for any cause
+   (`IdentityExhausted` in [rx.md](rx.md)'s terms, or any error #71's
+   `Rpc::open` returns), frees the slot at once, since nothing was sent
+   on it. Rx keeps its own reservations (rx.md, 5.6,
    point 2); this table only keeps keepalives within their share, and
    errs on the side of holding a slot longer.
    Every field is fixed-size. No field is persisted: callbacks never
@@ -1469,7 +1471,10 @@ server release, date, scenario and the evidence label EXECUTED.
   third gap: #71's `Rpc::open` takes no idle time, while the keepalive
   connection is opened with `ka.conn_idle` (5.2); add it to the same
   amendment (an idle-time argument to `open`, or to `Rpc::keepalive`'s
-  connection). Until then a connection Rx retires early is a local
+  connection). A fourth: `Rpc::open`'s error has no cause for rx.md's
+  `IdentityExhausted`; add one (a `NotSent` cause), so an identity skip
+  is counted as such. Every failed open frees its slot whatever its
+  cause (5.6, point 1), so the slot table does not wait on it. Until then a connection Rx retires early is a local
   outcome (5.6, point 8), which costs a new connection and never
   lowers trust.
 - **Q6. The keepalive's connection key.** C30, point 3, names a
