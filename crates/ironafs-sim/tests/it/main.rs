@@ -6,6 +6,7 @@
 //! Integration tests for `ironafs-sim`: every evidence run is a child
 //! process under the supervisor.
 
+mod callbacks;
 mod golden;
 mod models;
 mod replay;

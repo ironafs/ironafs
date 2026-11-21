@@ -5,6 +5,7 @@
 //! truncation and any trailing byte.
 
 use super::{EnvelopeError, decode_answer, decode_request, encode_answer, encode_request};
+use crate::model::callback::{CbProc, Reset};
 use crate::model::types::{
     Addr, Answer, ClientId, ContextId, Fid, FileKind, Procedure, Promise, Release, Request,
     Results, ServerUuid, Service, Site, SiteServer, Status, VlEntry, VolSync, VolumeId, VolumeIds,
@@ -46,6 +47,23 @@ fn requests() -> Vec<Request> {
             fid,
             offset: 3,
             bytes: vec![1, 2, 3],
+        },
+        Procedure::SimDeliverBreaks,
+        Procedure::SimReset {
+            client: ClientId(4),
+        },
+        Procedure::SimProbe {
+            client: ClientId(5),
+        },
+        Procedure::SimForge {
+            from: Addr([192, 0, 2, 9]),
+            to: ClientId(0),
+            procedure: CbProc::CallBack { fids: vec![fid] },
+        },
+        Procedure::SimForge {
+            from: Addr([10, 0, 0, 2]),
+            to: ClientId(0),
+            procedure: CbProc::InitState(Reset::Three),
         },
     ];
     procedures
@@ -140,6 +158,7 @@ fn answers() -> Vec<Answer> {
             motd: b"hi".to_vec(),
         })),
         Answer::Result(Results::Wrote { data_version: 2 }),
+        Answer::Result(Results::Started { pushes: 3 }),
     ]
 }
 

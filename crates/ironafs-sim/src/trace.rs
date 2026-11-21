@@ -25,7 +25,7 @@ mod tests;
 /// The first line of every trace: the trace format's version. A change to
 /// what a trace says, or how, moves it, and the golden fixtures are
 /// regenerated in the same commit.
-pub const VERSION_LINE: &str = "ironafs-sim trace 2";
+pub const VERSION_LINE: &str = "ironafs-sim trace 3";
 
 /// The most bytes a golden fixture may hold (specification, 5.6, point
 /// 11; section 13, Q15).
@@ -47,16 +47,25 @@ impl fmt::Display for TaskId {
 pub enum EventKind {
     /// A server model's reply delivered to a waiting call.
     Delivery,
+    /// An attempt of a world call reaching its endpoint, or lost.
+    Arrive,
+    /// An acceptor's answer reaching the world.
+    Answer,
+    /// A world call's timeout.
+    Expire,
 }
 
 impl EventKind {
-    const ALL: [Self; 1] = [Self::Delivery];
+    const ALL: [Self; 4] = [Self::Delivery, Self::Arrive, Self::Answer, Self::Expire];
 
     /// The kind's name in a trace.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Delivery => "delivery",
+            Self::Arrive => "arrive",
+            Self::Answer => "answer",
+            Self::Expire => "expire",
         }
     }
 

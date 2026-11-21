@@ -12,11 +12,19 @@
 //! specification (`docs/specs/callbacks.md`) states the client's service,
 //! not a server's bookkeeping.
 //!
+//! It sends breaks, resets and probes to a client's callback service on
+//! demand (`docs/specs/callbacks.md`, 5.1.2), and keeps callback
+//! continuity as that specification's 5.8 states assumption A14: a break
+//! that never reaches its client ends the promise, and the client's next
+//! call to this server is answered only after a reset has reached it, or
+//! not at all.
+//!
 //! A file's bytes are computed from its id and offset, with the writes
 //! laid over them, so files of 4 GiB and more cost no memory.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::callback::{CbAnswer, CbProc, CbRequest, Reset};
 use super::codes::{
     MARSHALLING, NO_VNODE, NOT_ON_SERVER, UNKNOWN_PROCEDURE, VOLUME_MOVED, VOLUME_OFFLINE,
 };
@@ -35,6 +43,15 @@ pub const PROMISE_LIFETIME: u32 = 7_200;
 /// (`fs.fetch.chunk_max`, 5.2). A real server's bound is unknown; the
 /// client never asks for more.
 pub const FETCH_MAX: u64 = 1_048_576;
+
+/// A callback call the server wants sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outgoing {
+    /// The server's own number for it.
+    pub id: u64,
+    /// The call.
+    pub request: CbRequest,
+}
 
 /// What a new file is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,6 +146,26 @@ pub struct FileServer {
     promises: BTreeSet<(Fid, ClientId)>,
     owed: Vec<(ClientId, Fid)>,
     clock: u64,
+    outgoing: Vec<Outgoing>,
+    next_out: u64,
+    in_flight: BTreeMap<u64, (ClientId, CbProc)>,
+    delivered: Vec<(ClientId, CbProc)>,
+    failed: Vec<(ClientId, Fid)>,
+    lost: BTreeSet<ClientId>,
+    /// Per client, the resets in flight, whoever started them.
+    resetting: BTreeMap<ClientId, u32>,
+    held: Vec<Held>,
+    released: Vec<(u64, Option<Answer>)>,
+    a14: bool,
+}
+
+/// A call held until its client has been reset.
+#[derive(Clone, Debug)]
+struct Held {
+    call: u64,
+    client: ClientId,
+    context: ContextId,
+    procedure: Procedure,
 }
 
 impl FileServer {
@@ -145,6 +182,16 @@ impl FileServer {
             promises: BTreeSet::new(),
             owed: Vec::new(),
             clock: 0,
+            outgoing: Vec::new(),
+            next_out: 0,
+            in_flight: BTreeMap::new(),
+            delivered: Vec::new(),
+            failed: Vec::new(),
+            lost: BTreeSet::new(),
+            resetting: BTreeMap::new(),
+            held: Vec::new(),
+            released: Vec::new(),
+            a14: true,
         }
     }
 
@@ -281,6 +328,13 @@ impl FileServer {
         Some(bytes)
     }
 
+    /// The data version of `fid` as the server holds it now, for a
+    /// scenario's checks: no promise is granted.
+    #[must_use]
+    pub fn data_version(&self, fid: Fid) -> Option<u64> {
+        self.files.get(&fid).map(|file| file.data_version)
+    }
+
     /// The clients holding a callback promise on `fid`.
     #[must_use]
     pub fn promise_holders(&self, fid: Fid) -> Vec<ClientId> {
@@ -295,6 +349,185 @@ impl FileServer {
     #[must_use]
     pub fn owed_breaks(&self) -> &[(ClientId, Fid)] {
         &self.owed
+    }
+
+    /// Sends every break owed now: one `cb.callback` per client, naming
+    /// each file it owes that client a break on, in the order owed.
+    /// Returns the number of calls started.
+    pub fn deliver_breaks(&mut self) -> u32 {
+        let mut by_client: BTreeMap<ClientId, Vec<Fid>> = BTreeMap::new();
+        for (client, fid) in std::mem::take(&mut self.owed) {
+            let fids = by_client.entry(client).or_default();
+            if !fids.contains(&fid) {
+                fids.push(fid);
+            }
+        }
+        let mut started = 0_u32;
+        for (client, fids) in by_client {
+            self.send(client, CbProc::CallBack { fids });
+            started = started.saturating_add(1);
+        }
+        started
+    }
+
+    /// Resets `client`'s callback state now (`cb.init_state`). Returns
+    /// the number of calls started: 1.
+    pub fn reset(&mut self, client: ClientId) -> u32 {
+        self.send(client, CbProc::InitState(Reset::One));
+        1
+    }
+
+    /// Probes `client` now (`cb.probe`). Returns the number of calls
+    /// started: 1.
+    pub fn probe(&mut self, client: ClientId) -> u32 {
+        self.send(client, CbProc::Probe);
+        1
+    }
+
+    fn send(&mut self, client: ClientId, procedure: CbProc) {
+        let id = self.next_out;
+        self.next_out = id.saturating_add(1);
+        if let CbProc::InitState(_) = procedure {
+            let count = self.resetting.entry(client).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+        self.in_flight.insert(id, (client, procedure.clone()));
+        self.outgoing.push(Outgoing {
+            id,
+            request: CbRequest {
+                from: self.addr,
+                to: client,
+                procedure,
+            },
+        });
+    }
+
+    /// The callback calls started since the last take.
+    pub fn take_outgoing(&mut self) -> Vec<Outgoing> {
+        std::mem::take(&mut self.outgoing)
+    }
+
+    /// Callback call `id` ended: answered, or failed with no answer.
+    ///
+    /// A break that failed ends with its client lost (assumption A14,
+    /// `docs/specs/callbacks.md` 5.8): the promise was already ended by
+    /// the write that owed the break, and the client's next call waits
+    /// for a reset. A reset that is answered clears the loss and answers
+    /// the client's held calls; once every reset in flight to it has
+    /// failed, they are dropped.
+    pub fn settled(&mut self, id: u64, answer: Option<CbAnswer>) {
+        let Some((client, procedure)) = self.in_flight.remove(&id) else {
+            return;
+        };
+        let reached = answer.is_some();
+        match (&procedure, reached) {
+            (CbProc::CallBack { fids }, false) => {
+                self.failed.extend(fids.iter().map(|fid| (client, *fid)));
+                if self.a14 {
+                    self.lost.insert(client);
+                }
+            }
+            (CbProc::InitState(_), true) => {
+                self.reset_settled(client);
+                self.lost.remove(&client);
+                self.release(client, true);
+            }
+            (CbProc::InitState(_), false) => {
+                if self.reset_settled(client) == 0 {
+                    self.release(client, false);
+                }
+            }
+            (CbProc::CallBack { .. } | CbProc::Probe, true) | (CbProc::Probe, false) => {}
+        }
+        if reached {
+            self.delivered.push((client, procedure));
+        }
+    }
+
+    /// Counts one reset of `client` settled; returns how many remain in
+    /// flight.
+    fn reset_settled(&mut self, client: ClientId) -> u32 {
+        let left = self
+            .resetting
+            .get(&client)
+            .map_or(0, |count| count.saturating_sub(1));
+        if left == 0 {
+            self.resetting.remove(&client);
+        } else {
+            self.resetting.insert(client, left);
+        }
+        left
+    }
+
+    /// Answers, or drops, every call `client` has held.
+    fn release(&mut self, client: ClientId, answer: bool) {
+        let (mine, others): (Vec<Held>, Vec<Held>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|held| held.client == client);
+        self.held = others;
+        for held in mine {
+            let reply = answer.then(|| self.serve(held.client, held.context, &held.procedure));
+            self.released.push((held.call, reply));
+        }
+    }
+
+    /// Held calls answered, or dropped, since the last take, by call
+    /// number.
+    pub fn take_released(&mut self) -> Vec<(u64, Option<Answer>)> {
+        std::mem::take(&mut self.released)
+    }
+
+    /// The answer to call number `call`, or `None` if the server holds
+    /// it: a call from a lost client waits until a reset has reached
+    /// that client (A14), so the client learns of the loss no later than
+    /// its next call to this server.
+    pub fn serve_call(
+        &mut self,
+        call: u64,
+        client: ClientId,
+        context: ContextId,
+        procedure: &Procedure,
+    ) -> Option<Answer> {
+        if !self.lost.contains(&client) {
+            return Some(self.serve(client, context, procedure));
+        }
+        // Any reset in flight, a scenario's included, is the one the
+        // call waits on.
+        if !self.resetting.contains_key(&client) {
+            self.send(client, CbProc::InitState(Reset::One));
+        }
+        self.held.push(Held {
+            call,
+            client,
+            context,
+            procedure: procedure.clone(),
+        });
+        None
+    }
+
+    /// The callback calls that reached their client, in the order their
+    /// answers came back.
+    #[must_use]
+    pub fn delivered(&self) -> &[(ClientId, CbProc)] {
+        &self.delivered
+    }
+
+    /// The breaks that never reached their client, by client and file.
+    #[must_use]
+    pub fn failed_breaks(&self) -> &[(ClientId, Fid)] {
+        &self.failed
+    }
+
+    /// The clients the server owes a reset before it answers them.
+    #[must_use]
+    pub fn lost_clients(&self) -> Vec<ClientId> {
+        self.lost.iter().copied().collect()
+    }
+
+    /// A plant: a break that never reached its client is forgotten, as a
+    /// server for which A14 is false would. Off in every evidence run.
+    pub fn plant_no_a14(&mut self) {
+        self.a14 = false;
     }
 
     /// The answer to `procedure` from `client` in `context`: a busy spell
@@ -369,7 +602,17 @@ impl FileServer {
             Procedure::PeerWrite { fid, offset, bytes } => self.write(client, *fid, *offset, bytes),
             Procedure::VlGetEntryByName { .. }
             | Procedure::VlGetEntryById { .. }
-            | Procedure::VlGetAddrs { .. } => Err(UNKNOWN_PROCEDURE),
+            | Procedure::VlGetAddrs { .. }
+            | Procedure::SimForge { .. } => Err(UNKNOWN_PROCEDURE),
+            Procedure::SimDeliverBreaks => Ok(Results::Started {
+                pushes: self.deliver_breaks(),
+            }),
+            Procedure::SimReset { client } => Ok(Results::Started {
+                pushes: self.reset(*client),
+            }),
+            Procedure::SimProbe { client } => Ok(Results::Started {
+                pushes: self.probe(*client),
+            }),
         }
     }
 

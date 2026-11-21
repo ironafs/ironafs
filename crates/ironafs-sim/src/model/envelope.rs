@@ -12,6 +12,7 @@
 //! total: every count is checked against the bytes left before anything
 //! is allocated, and trailing bytes are an error.
 
+use super::callback::{read_cb_proc, write_cb_proc};
 use super::types::{
     Addr, Answer, ClientId, ContextId, Fid, FileKind, Procedure, Promise, Release, Request,
     Results, ServerUuid, Service, Site, SiteServer, Status, Uniquifier, VlEntry, Vnode, VolSync,
@@ -99,6 +100,25 @@ pub fn encode_request(request: &Request) -> Vec<u8> {
             out.u64(*offset);
             out.bytes(bytes);
         }
+        Procedure::SimDeliverBreaks => out.u8(10),
+        Procedure::SimReset { client } => {
+            out.u8(11);
+            out.u32(client.0);
+        }
+        Procedure::SimProbe { client } => {
+            out.u8(12);
+            out.u32(client.0);
+        }
+        Procedure::SimForge {
+            from,
+            to,
+            procedure,
+        } => {
+            out.u8(13);
+            out.addr(*from);
+            out.u32(to.0);
+            write_cb_proc(&mut out, procedure);
+        }
     }
     out.0
 }
@@ -161,6 +181,18 @@ pub fn decode_request(bytes: &[u8]) -> Result<Request, EnvelopeError> {
             fid: input.fid()?,
             offset: input.u64()?,
             bytes: input.bytes()?,
+        },
+        10 => Procedure::SimDeliverBreaks,
+        11 => Procedure::SimReset {
+            client: ClientId(input.u32()?),
+        },
+        12 => Procedure::SimProbe {
+            client: ClientId(input.u32()?),
+        },
+        13 => Procedure::SimForge {
+            from: input.addr()?,
+            to: ClientId(input.u32()?),
+            procedure: read_cb_proc(&mut input)?,
         },
         _ => return Err(EnvelopeError::Tag),
     };
@@ -263,6 +295,10 @@ pub fn encode_answer(answer: &Answer) -> Vec<u8> {
             out.u8(6);
             out.u64(*data_version);
         }
+        Results::Started { pushes } => {
+            out.u8(7);
+            out.u32(*pushes);
+        }
     }
     out.0
 }
@@ -290,20 +326,25 @@ const SITE_MIN: usize = 11;
 /// The bytes every status record encodes to.
 const STATUS_MIN: usize = 70;
 
-/// Appends envelope values to a buffer.
+/// Appends envelope values to a buffer; shared with the callback
+/// envelope.
 #[derive(Default)]
-struct Writer(Vec<u8>);
+pub(super) struct Writer(Vec<u8>);
 
 impl Writer {
-    fn u8(&mut self, value: u8) {
+    pub(super) fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+
+    pub(super) fn u8(&mut self, value: u8) {
         self.0.push(value);
     }
 
-    fn u32(&mut self, value: u32) {
+    pub(super) fn u32(&mut self, value: u32) {
         self.0.extend_from_slice(&value.to_be_bytes());
     }
 
-    fn i32(&mut self, value: i32) {
+    pub(super) fn i32(&mut self, value: i32) {
         self.0.extend_from_slice(&value.to_be_bytes());
     }
 
@@ -326,7 +367,7 @@ impl Writer {
         self.raw(bytes);
     }
 
-    fn addr(&mut self, addr: Addr) {
+    pub(super) fn addr(&mut self, addr: Addr) {
         self.raw(&addr.0);
     }
 
@@ -336,7 +377,7 @@ impl Writer {
         self.u32(fid.unique.0);
     }
 
-    fn fids(&mut self, fids: &[Fid]) {
+    pub(super) fn fids(&mut self, fids: &[Fid]) {
         self.count(fids.len());
         for fid in fids {
             self.fid(*fid);
@@ -395,10 +436,15 @@ impl Writer {
     }
 }
 
-/// Reads envelope values from the front of a byte slice.
-struct Reader<'a>(&'a [u8]);
+/// Reads envelope values from the front of a byte slice; shared with
+/// the callback envelope.
+pub(super) struct Reader<'a>(&'a [u8]);
 
-impl Reader<'_> {
+impl<'a> Reader<'a> {
+    pub(super) const fn new(bytes: &'a [u8]) -> Self {
+        Self(bytes)
+    }
+
     fn take(&mut self, count: usize) -> Result<&[u8], EnvelopeError> {
         let Some((head, rest)) = self.0.split_at_checked(count) else {
             return Err(EnvelopeError::Truncated);
@@ -413,7 +459,7 @@ impl Reader<'_> {
             .map_err(|_| EnvelopeError::Truncated)
     }
 
-    fn end(&self) -> Result<(), EnvelopeError> {
+    pub(super) fn end(&self) -> Result<(), EnvelopeError> {
         if self.0.is_empty() {
             Ok(())
         } else {
@@ -421,16 +467,16 @@ impl Reader<'_> {
         }
     }
 
-    fn u8(&mut self) -> Result<u8, EnvelopeError> {
+    pub(super) fn u8(&mut self) -> Result<u8, EnvelopeError> {
         let [value] = self.array()?;
         Ok(value)
     }
 
-    fn u32(&mut self) -> Result<u32, EnvelopeError> {
+    pub(super) fn u32(&mut self) -> Result<u32, EnvelopeError> {
         Ok(u32::from_be_bytes(self.array()?))
     }
 
-    fn i32(&mut self) -> Result<i32, EnvelopeError> {
+    pub(super) fn i32(&mut self) -> Result<i32, EnvelopeError> {
         Ok(i32::from_be_bytes(self.array()?))
     }
 
@@ -453,7 +499,7 @@ impl Reader<'_> {
         Ok(self.take(count)?.to_vec())
     }
 
-    fn addr(&mut self) -> Result<Addr, EnvelopeError> {
+    pub(super) fn addr(&mut self) -> Result<Addr, EnvelopeError> {
         Ok(Addr(self.array()?))
     }
 
@@ -465,7 +511,7 @@ impl Reader<'_> {
         })
     }
 
-    fn fids(&mut self) -> Result<Vec<Fid>, EnvelopeError> {
+    pub(super) fn fids(&mut self) -> Result<Vec<Fid>, EnvelopeError> {
         let count = self.count(12)?;
         (0..count).map(|_| self.fid()).collect()
     }
@@ -597,6 +643,9 @@ impl Reader<'_> {
             }),
             6 => Results::Wrote {
                 data_version: self.u64()?,
+            },
+            7 => Results::Started {
+                pushes: self.u32()?,
             },
             _ => return Err(EnvelopeError::Tag),
         })

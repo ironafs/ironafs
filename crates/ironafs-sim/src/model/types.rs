@@ -6,6 +6,8 @@
 //! typed fields, never wire words. Access masks are carried raw and
 //! never interpreted by a model (5.7, point 2: no bit position is known).
 
+use super::callback::CbProc;
+
 /// A volume id (ADR 0004, N38, point 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VolumeId(pub u32);
@@ -305,6 +307,30 @@ pub enum Procedure {
         /// The bytes.
         bytes: Vec<u8>,
     },
+    /// The simulator's own: the fileserver sends every break it owes now.
+    SimDeliverBreaks,
+    /// The simulator's own: the fileserver resets `client`'s callback
+    /// state now (`docs/specs/callbacks.md`, 5.1.2).
+    SimReset {
+        /// The client host.
+        client: ClientId,
+    },
+    /// The simulator's own: the fileserver probes `client` now.
+    SimProbe {
+        /// The client host.
+        client: ClientId,
+    },
+    /// The simulator's own: the network forges a callback call from
+    /// `from`, which no server sent. Served by the cell, whatever the
+    /// request's address.
+    SimForge {
+        /// The source address the forged call carries.
+        from: Addr,
+        /// The client host called.
+        to: ClientId,
+        /// The procedure.
+        procedure: CbProc,
+    },
 }
 
 /// A procedure's name, without its arguments.
@@ -330,6 +356,14 @@ pub enum ProcName {
     FsGetVolumeStatus,
     /// The simulator's peer write.
     PeerWrite,
+    /// The simulator's break delivery.
+    SimDeliverBreaks,
+    /// The simulator's reset.
+    SimReset,
+    /// The simulator's probe.
+    SimProbe,
+    /// The simulator's forged callback.
+    SimForge,
 }
 
 impl ProcName {
@@ -347,6 +381,10 @@ impl ProcName {
             Self::FsFetchData64 => "fs.fetch_data64",
             Self::FsGetVolumeStatus => "fs.get_volume_status",
             Self::PeerWrite => "sim.peer_write",
+            Self::SimDeliverBreaks => "sim.deliver_breaks",
+            Self::SimReset => "sim.reset",
+            Self::SimProbe => "sim.probe",
+            Self::SimForge => "sim.forge",
         }
     }
 }
@@ -366,6 +404,10 @@ impl Procedure {
             Self::FsFetchData64 { .. } => ProcName::FsFetchData64,
             Self::FsGetVolumeStatus { .. } => ProcName::FsGetVolumeStatus,
             Self::PeerWrite { .. } => ProcName::PeerWrite,
+            Self::SimDeliverBreaks => ProcName::SimDeliverBreaks,
+            Self::SimReset { .. } => ProcName::SimReset,
+            Self::SimProbe { .. } => ProcName::SimProbe,
+            Self::SimForge { .. } => ProcName::SimForge,
         }
     }
 }
@@ -428,6 +470,11 @@ pub enum Results {
     Wrote {
         /// The file's data version after the write.
         data_version: u64,
+    },
+    /// A simulator procedure started this many callback calls.
+    Started {
+        /// How many.
+        pushes: u32,
     },
 }
 

@@ -22,7 +22,7 @@
 
 mod task;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io::Write;
 use std::panic::{self, AssertUnwindSafe};
@@ -53,6 +53,91 @@ pub type Check = Box<dyn FnMut() -> Result<(), &'static str> + Send>;
 /// A server model: the reply to one request's bytes, or `None` for a
 /// request it drops, as a server that is down or unreachable would.
 pub type Server = Box<dyn FnMut(&[u8]) -> Option<Vec<u8>> + Send>;
+
+/// What a world does with a task's call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Served {
+    /// The reply, delivered at once.
+    Reply(Vec<u8>),
+    /// No reply: the caller's wait ends at its deadline.
+    Drop,
+    /// Held: the world answers or drops it later, through [`World::poll`].
+    Hold,
+}
+
+/// A call the world starts toward a task's [`TaskCx::accept`]: a
+/// server-initiated call, such as a fileserver's callback.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Push {
+    /// The world's own name for it, handed back by [`World::admit`] and
+    /// [`World::settled`].
+    pub token: u64,
+    /// The endpoint whose acceptor takes it.
+    pub endpoint: u32,
+    /// The request bytes.
+    pub request: Vec<u8>,
+    /// How many times the request is sent before the world gives up.
+    pub attempts: u32,
+    /// The time between a lost attempt and the next.
+    pub interval: Duration,
+    /// The time from the push's start after which it is failed if no
+    /// answer has arrived.
+    pub timeout: Duration,
+}
+
+/// What a world hands the scheduler after each of its steps.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Polled {
+    /// Calls to start now.
+    pub pushes: Vec<Push>,
+    /// Held calls, by number, now answered with these bytes, or dropped.
+    pub releases: Vec<(u64, Option<Vec<u8>>)>,
+}
+
+/// The simulated world beyond the tasks: the servers and the network
+/// between them and the tasks. The scheduler runs it only in world
+/// events, one at a time, so it is deterministic if its own code is.
+pub trait World: Send {
+    /// The world's answer to call number `call`.
+    fn serve(&mut self, call: u64, request: &[u8]) -> Served;
+    /// Whether attempt `attempt` (from 1) of the push named `token`
+    /// reaches its endpoint, or is lost on the way.
+    fn admit(&mut self, token: u64, attempt: u32) -> bool;
+    /// The push named `token` ended: answered with these bytes, or
+    /// failed (every attempt lost, or no answer before its timeout).
+    fn settled(&mut self, token: u64, response: Option<Vec<u8>>);
+    /// What the world wants done after its step: pushes to start and held
+    /// calls to release.
+    fn poll(&mut self) -> Polled;
+}
+
+/// A world call as an acceptor sees it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Incoming {
+    /// The push's number in the trace.
+    pub push: u64,
+    /// The request bytes.
+    pub request: Vec<u8>,
+}
+
+/// A server closure as a world: it answers or drops, and never pushes.
+struct Closure(Server);
+
+impl World for Closure {
+    fn serve(&mut self, _call: u64, request: &[u8]) -> Served {
+        (self.0)(request).map_or(Served::Drop, Served::Reply)
+    }
+
+    fn admit(&mut self, _token: u64, _attempt: u32) -> bool {
+        true
+    }
+
+    fn settled(&mut self, _token: u64, _response: Option<Vec<u8>>) {}
+
+    fn poll(&mut self) -> Polled {
+        Polled::default()
+    }
+}
 
 /// A deadline on one of the two monotonic clocks. No wait counts on wall
 /// time (ADR 0004, C37, point 1).
@@ -267,7 +352,7 @@ pub struct Outcome {
 /// What a scenario sets up before the first decision.
 pub struct Setup {
     tasks: Vec<(&'static str, Body)>,
-    server: Option<Server>,
+    server: Option<Box<dyn World>>,
     each_step: Vec<Check>,
     at_end: Vec<Check>,
 }
@@ -291,7 +376,9 @@ impl Setup {
 
     /// Sets the server model that answers every [`TaskCx::call`].
     pub fn server(&mut self, mut server: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static) {
-        self.server = Some(Box::new(move |request: &[u8]| Some(server(request))));
+        self.world(Closure(Box::new(move |request: &[u8]| {
+            Some(server(request))
+        })));
     }
 
     /// Sets a server model that answers a call, or drops it: a dropped
@@ -300,7 +387,13 @@ impl Setup {
         &mut self,
         server: impl FnMut(&[u8]) -> Option<Vec<u8>> + Send + 'static,
     ) {
-        self.server = Some(Box::new(server));
+        self.world(Closure(Box::new(server)));
+    }
+
+    /// Sets the world that answers every [`TaskCx::call`] and may start
+    /// calls of its own toward tasks' [`TaskCx::accept`].
+    pub fn world(&mut self, world: impl World + 'static) {
+        self.server = Some(Box::new(world));
     }
 
     /// Adds a check run after every step (ADR 0004, O45, point 3).
@@ -387,7 +480,20 @@ struct Slot {
 struct Pending {
     due: BootInstant,
     since: Option<u64>,
-    action: Delivery,
+    action: Action,
+}
+
+/// What a world event does.
+enum Action {
+    /// A task's call reaches the world.
+    Deliver(Delivery),
+    /// Attempt `attempt` of world call `push` reaches its endpoint, or is
+    /// lost.
+    Arrive { push: u64, attempt: u32 },
+    /// An acceptor's answer to world call `push` reaches the world.
+    Answer { push: u64, reply: Vec<u8> },
+    /// World call `push`'s timeout.
+    Expire { push: u64 },
 }
 
 /// A delivery: the server model's reply to a call, put in its slot, or
@@ -396,6 +502,15 @@ struct Delivery {
     call: u64,
     signal: SignalId,
     request: Vec<u8>,
+}
+
+/// A world call that has not settled.
+struct LivePush {
+    token: u64,
+    endpoint: u32,
+    request: Vec<u8>,
+    attempts: u32,
+    interval: Duration,
 }
 
 struct State {
@@ -407,7 +522,15 @@ struct State {
     next_call: u64,
     events: BTreeMap<(EventKind, u64), Pending>,
     next_event: u64,
-    server: Option<Server>,
+    server: Option<Box<dyn World>>,
+    /// World calls not yet settled, by number.
+    pushes: BTreeMap<u64, LivePush>,
+    next_push: u64,
+    /// Per endpoint, the world calls that arrived and wait for an
+    /// acceptor, in arrival order, and the signal raised while any does.
+    inboxes: BTreeMap<u32, (SignalId, VecDeque<u64>)>,
+    /// Calls the world holds, with their callers' signals.
+    held: BTreeMap<u64, SignalId>,
     network: Stream,
     latency: (u64, u64),
     /// The number of the current decision: lines a step writes carry it.
@@ -470,6 +593,49 @@ impl State {
         signal.is_some_and(|id| self.signals.get(&id).copied().unwrap_or(false))
     }
 
+    /// Queues a world event of `kind`, due at `due`.
+    fn queue(&mut self, kind: EventKind, due: BootInstant, action: Action) {
+        let creation = self.next_event;
+        self.next_event = creation.saturating_add(1);
+        self.events.insert(
+            (kind, creation),
+            Pending {
+                due,
+                since: None,
+                action,
+            },
+        );
+    }
+
+    /// A latency drawn from the network stream.
+    fn latency(&mut self) -> Duration {
+        let (low, high) = self.latency;
+        Duration::from_nanos(self.network.u64_in(low..=high).unwrap_or(low))
+    }
+
+    /// The signal of `endpoint`'s queue, created lowered on first use.
+    fn inbox_signal(&mut self, endpoint: u32) -> SignalId {
+        if let Some((signal, _)) = self.inboxes.get(&endpoint) {
+            return *signal;
+        }
+        let signal = self.new_signal();
+        self.inboxes.insert(endpoint, (signal, VecDeque::new()));
+        signal
+    }
+
+    /// Takes the first world call waiting at `endpoint`, lowering the
+    /// queue's signal when it empties.
+    fn take_incoming(&mut self, endpoint: u32) -> Option<(u64, Vec<u8>)> {
+        let (signal, queue) = self.inboxes.get_mut(&endpoint)?;
+        let signal = *signal;
+        let push = queue.pop_front()?;
+        if queue.is_empty() {
+            self.signals.insert(signal, false);
+        }
+        let request = self.pushes.get(&push)?.request.clone();
+        Some((push, request))
+    }
+
     /// How a wait on `wait` ends now, if it does, by the precedence of
     /// 5.3, point 4.
     fn outcome(&self, wait: &Wait, clock: &SeededClock) -> Option<Waited> {
@@ -501,7 +667,7 @@ impl Run {
         config: &Config,
         sink: Option<Box<dyn Write + Send>>,
         replay: Option<Replay>,
-        server: Option<Server>,
+        server: Option<Box<dyn World>>,
     ) -> Self {
         let seed = config.plants.fixed_seed.unwrap_or(config.seed);
         let incarnation = config.incarnation;
@@ -515,6 +681,10 @@ impl Run {
             events: BTreeMap::new(),
             next_event: 0,
             server,
+            pushes: BTreeMap::new(),
+            next_push: 0,
+            inboxes: BTreeMap::new(),
+            held: BTreeMap::new(),
             network: Stream::new(seed, "network", incarnation),
             latency: config.latency,
             decision: 0,
@@ -677,7 +847,12 @@ impl Run {
                 }
                 Entry::Event { kind, creation } => {
                     self.last = None;
-                    Self::run_event(&mut state, kind, creation);
+                    let now = self
+                        .shared
+                        .clock
+                        .boot()
+                        .unwrap_or(BootInstant::from_nanos(0));
+                    Self::run_event(&mut state, now, kind, creation);
                     state
                 }
             };
@@ -854,28 +1029,160 @@ impl Run {
         Ok(state)
     }
 
-    /// Runs a world event on the scheduler's thread.
-    fn run_event(state: &mut State, kind: EventKind, creation: u64) {
+    /// Runs a world event on the scheduler's thread, then takes what the
+    /// world asks for after it.
+    fn run_event(state: &mut State, now: BootInstant, kind: EventKind, creation: u64) {
         let Some(pending) = state.events.remove(&(kind, creation)) else {
             return;
         };
+        let decision = state.decision;
+        match pending.action {
+            Action::Deliver(delivery) => Self::deliver(state, delivery),
+            Action::Arrive { push, attempt } => Self::arrive(state, now, push, attempt),
+            Action::Answer { push, reply } => {
+                if let Some(live) = state.pushes.remove(&push) {
+                    state.emit(format!("d{decision} world answer p{push} {}", hex(&reply)));
+                    if let Some(world) = state.server.as_mut() {
+                        world.settled(live.token, Some(reply));
+                    }
+                }
+            }
+            Action::Expire { push } => {
+                if let Some(live) = state.pushes.remove(&push) {
+                    if let Some((signal, queue)) = state.inboxes.get_mut(&live.endpoint) {
+                        queue.retain(|waiting| *waiting != push);
+                        if queue.is_empty() {
+                            let signal = *signal;
+                            state.signals.insert(signal, false);
+                        }
+                    }
+                    state.emit(format!("d{decision} world expire p{push}"));
+                    if let Some(world) = state.server.as_mut() {
+                        world.settled(live.token, None);
+                    }
+                }
+            }
+        }
+        Self::take_polled(state, now);
+    }
+
+    /// A task's call reaches the world: answered, dropped or held.
+    fn deliver(state: &mut State, delivery: Delivery) {
         let Delivery {
             call,
             signal,
             request,
-        } = pending.action;
-        let reply = state
+        } = delivery;
+        let served = state
             .server
             .as_mut()
-            .map_or_else(|| Some(Vec::new()), |server| server(&request));
+            .map_or(Served::Reply(Vec::new()), |world| {
+                world.serve(call, &request)
+            });
         let decision = state.decision;
-        let Some(reply) = reply else {
-            state.emit(format!("d{decision} world drop c{call}"));
-            return;
-        };
+        match served {
+            Served::Reply(reply) => Self::reply(state, call, signal, reply),
+            Served::Drop => state.emit(format!("d{decision} world drop c{call}")),
+            Served::Hold => {
+                state.emit(format!("d{decision} world hold c{call}"));
+                state.held.insert(call, signal);
+            }
+        }
+    }
+
+    fn reply(state: &mut State, call: u64, signal: SignalId, reply: Vec<u8>) {
+        let decision = state.decision;
         state.emit(format!("d{decision} world reply c{call} {}", hex(&reply)));
         state.replies.insert(call, reply);
         state.signals.insert(signal, true);
+    }
+
+    /// Attempt `attempt` of world call `push`: the world's network admits
+    /// it to its endpoint's queue, or loses it, and a lost attempt with
+    /// attempts left is sent again after the push's interval.
+    fn arrive(state: &mut State, now: BootInstant, push: u64, attempt: u32) {
+        let Some(live) = state.pushes.get(&push) else {
+            return;
+        };
+        let (token, endpoint, attempts, interval) =
+            (live.token, live.endpoint, live.attempts, live.interval);
+        let admitted = state
+            .server
+            .as_mut()
+            .is_none_or(|world| world.admit(token, attempt));
+        let decision = state.decision;
+        if admitted {
+            state.emit(format!("d{decision} world arrive p{push} try {attempt}"));
+            let signal = state.inbox_signal(endpoint);
+            if let Some((_, queue)) = state.inboxes.get_mut(&endpoint) {
+                queue.push_back(push);
+            }
+            state.signals.insert(signal, true);
+            return;
+        }
+        state.emit(format!("d{decision} world lose p{push} try {attempt}"));
+        if attempt < attempts {
+            let due = now.checked_add(interval).unwrap_or(now);
+            state.queue(
+                EventKind::Arrive,
+                due,
+                Action::Arrive {
+                    push,
+                    attempt: attempt.saturating_add(1),
+                },
+            );
+        }
+    }
+
+    /// Starts the pushes and releases the held calls the world asks for.
+    fn take_polled(state: &mut State, now: BootInstant) {
+        let Some(polled) = state.server.as_mut().map(|world| world.poll()) else {
+            return;
+        };
+        let decision = state.decision;
+        for push in polled.pushes {
+            let number = state.next_push;
+            state.next_push = number.saturating_add(1);
+            state.emit(format!(
+                "d{decision} world push p{number} e{} {}",
+                push.endpoint,
+                hex(&push.request)
+            ));
+            let latency = state.latency();
+            if push.attempts > 0 {
+                let due = now.checked_add(latency).unwrap_or(now);
+                state.queue(
+                    EventKind::Arrive,
+                    due,
+                    Action::Arrive {
+                        push: number,
+                        attempt: 1,
+                    },
+                );
+            }
+            let expiry = now.checked_add(push.timeout).unwrap_or(now);
+            state.queue(EventKind::Expire, expiry, Action::Expire { push: number });
+            state.pushes.insert(
+                number,
+                LivePush {
+                    token: push.token,
+                    endpoint: push.endpoint,
+                    request: push.request,
+                    attempts: push.attempts,
+                    interval: push.interval,
+                },
+            );
+        }
+        for (call, release) in polled.releases {
+            let Some(signal) = state.held.remove(&call) else {
+                state.fail(Failure::Misuse("release-unheld-call"));
+                continue;
+            };
+            match release {
+                Some(reply) => Self::reply(state, call, signal, reply),
+                None => state.emit(format!("d{decision} world drop c{call}")),
+            }
+        }
     }
 
     /// Ends the run: tears down every task still alive, joins every

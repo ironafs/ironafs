@@ -6,6 +6,7 @@
 //! records promises and the breaks a peer's write owes.
 
 use super::{BulkFault, FETCH_MAX, FileServer, FileSpec, PROMISE_LIFETIME, VolumeState};
+use crate::model::callback::{CbAnswer, CbProc, CbRequest, Reset};
 use crate::model::codes::{
     NO_VNODE, NOT_ON_SERVER, UNKNOWN_PROCEDURE, VOLUME_BUSY, VOLUME_MOVED, VOLUME_OFFLINE,
 };
@@ -373,4 +374,244 @@ fn volume_status_names_the_volume_asked() {
     };
     assert_eq!(status.volume, VolumeId(100));
     assert_eq!(status.name, b"user.a");
+}
+
+fn peer_write(server: &mut FileServer, fid: Fid) {
+    server.serve(
+        PEER,
+        CTX,
+        &Procedure::PeerWrite {
+            fid,
+            offset: 0,
+            bytes: b"new".to_vec(),
+        },
+    );
+}
+
+fn status_call() -> Procedure {
+    Procedure::FsFetchStatus { fid: small() }
+}
+
+#[test]
+fn owed_breaks_are_sent_on_demand_one_call_per_client() {
+    let mut server = server();
+    server.serve(ME, CTX, &status_call());
+    server.serve(ME, CTX, &Procedure::FsFetchStatus { fid: big() });
+    peer_write(&mut server, small());
+    peer_write(&mut server, big());
+    assert_eq!(server.take_outgoing(), [], "nothing is sent unasked");
+    assert_eq!(server.deliver_breaks(), 1);
+    let sent = server.take_outgoing();
+    assert_eq!(
+        sent.iter().map(|out| &out.request).collect::<Vec<_>>(),
+        vec![&CbRequest {
+            from: server.addr(),
+            to: ME,
+            procedure: CbProc::CallBack {
+                fids: vec![small(), big()],
+            },
+        }]
+    );
+    assert_eq!(server.owed_breaks(), []);
+    assert_eq!(server.deliver_breaks(), 0);
+    let id = sent.first().unwrap().id;
+    server.settled(id, Some(CbAnswer::Empty));
+    assert_eq!(
+        server.delivered(),
+        &[(
+            ME,
+            CbProc::CallBack {
+                fids: vec![small(), big()]
+            }
+        )]
+    );
+    assert_eq!(server.lost_clients(), []);
+}
+
+#[test]
+fn resets_and_probes_are_sent_on_demand() {
+    let mut server = server();
+    assert_eq!(server.reset(ME), 1);
+    assert_eq!(server.probe(PEER), 1);
+    let sent: Vec<CbRequest> = server
+        .take_outgoing()
+        .into_iter()
+        .map(|out| out.request)
+        .collect();
+    assert_eq!(
+        sent,
+        vec![
+            CbRequest {
+                from: server.addr(),
+                to: ME,
+                procedure: CbProc::InitState(Reset::One),
+            },
+            CbRequest {
+                from: server.addr(),
+                to: PEER,
+                procedure: CbProc::Probe,
+            },
+        ]
+    );
+}
+
+/// A14 as `docs/specs/callbacks.md` 5.8 states it: a break the server
+/// cannot deliver ends its promise, and the client learns of the loss
+/// at its next call, by a reset delivered before that call's answer.
+#[test]
+fn a_break_never_delivered_makes_the_next_call_wait_for_a_reset() {
+    let mut server = server();
+    server.serve(ME, CTX, &status_call());
+    peer_write(&mut server, small());
+    server.deliver_breaks();
+    let id = server.take_outgoing().first().unwrap().id;
+    server.settled(id, None);
+    assert_eq!(server.failed_breaks(), &[(ME, small())]);
+    assert_eq!(server.lost_clients(), vec![ME]);
+    assert_eq!(server.promise_holders(small()), []);
+
+    // The next call is held, and a reset goes out first.
+    assert_eq!(server.serve_call(5, ME, CTX, &status_call()), None);
+    let reset = server.take_outgoing();
+    assert_eq!(
+        reset
+            .iter()
+            .map(|out| &out.request.procedure)
+            .collect::<Vec<_>>(),
+        vec![&CbProc::InitState(Reset::One)]
+    );
+    // A second call meanwhile is held too, with no second reset.
+    assert_eq!(server.serve_call(6, ME, CTX, &status_call()), None);
+    assert_eq!(server.take_outgoing(), []);
+    assert_eq!(server.take_released(), []);
+    // Another client is served at once.
+    assert!(server.serve_call(7, PEER, CTX, &status_call()).is_some());
+
+    server.settled(reset.first().unwrap().id, Some(CbAnswer::Empty));
+    let released = server.take_released();
+    assert_eq!(
+        released.iter().map(|(call, _)| *call).collect::<Vec<_>>(),
+        vec![5, 6]
+    );
+    for (_, answer) in &released {
+        assert_eq!(status_of(answer.as_ref().unwrap()).data_version, 2);
+    }
+    assert_eq!(server.lost_clients(), []);
+    assert!(server.serve_call(8, ME, CTX, &status_call()).is_some());
+}
+
+#[test]
+fn a_reset_that_fails_too_drops_the_held_call_and_the_client_stays_lost() {
+    let mut server = server();
+    server.serve(ME, CTX, &status_call());
+    peer_write(&mut server, small());
+    server.deliver_breaks();
+    let id = server.take_outgoing().first().unwrap().id;
+    server.settled(id, None);
+    assert_eq!(server.serve_call(1, ME, CTX, &status_call()), None);
+    let reset = server.take_outgoing().first().unwrap().id;
+    server.settled(reset, None);
+    assert_eq!(server.take_released(), vec![(1, None)]);
+    assert_eq!(server.lost_clients(), vec![ME]);
+    assert_eq!(server.serve_call(2, ME, CTX, &status_call()), None);
+    assert_eq!(server.take_outgoing().len(), 1, "a new reset");
+}
+
+#[test]
+fn with_a14_planted_off_a_lost_break_is_forgotten() {
+    let mut server = server();
+    server.plant_no_a14();
+    server.serve(ME, CTX, &status_call());
+    peer_write(&mut server, small());
+    server.deliver_breaks();
+    let id = server.take_outgoing().first().unwrap().id;
+    server.settled(id, None);
+    assert_eq!(server.failed_breaks(), &[(ME, small())]);
+    assert_eq!(server.lost_clients(), []);
+    assert!(server.serve_call(1, ME, CTX, &status_call()).is_some());
+    assert_eq!(server.take_outgoing(), []);
+}
+
+#[test]
+fn simulator_procedures_start_deliveries_through_serve() {
+    let mut server = server();
+    server.serve(ME, CTX, &status_call());
+    peer_write(&mut server, small());
+    assert_eq!(
+        server.serve(PEER, CTX, &Procedure::SimDeliverBreaks),
+        Answer::Result(Results::Started { pushes: 1 })
+    );
+    assert_eq!(
+        server.serve(PEER, CTX, &Procedure::SimReset { client: ME }),
+        Answer::Result(Results::Started { pushes: 1 })
+    );
+    assert_eq!(
+        server.serve(PEER, CTX, &Procedure::SimProbe { client: ME }),
+        Answer::Result(Results::Started { pushes: 1 })
+    );
+    assert_eq!(server.take_outgoing().len(), 3);
+}
+
+#[test]
+fn the_data_version_is_readable_without_a_call() {
+    let mut server = server();
+    assert_eq!(server.data_version(small()), Some(1));
+    peer_write(&mut server, small());
+    assert_eq!(server.data_version(small()), Some(2));
+    assert_eq!(server.data_version(Fid::new(100, 9, 9)), None);
+    assert_eq!(server.promise_holders(small()), []);
+}
+
+/// Makes `ME` lost: its promise on `small()` is broken by a peer's write
+/// and the break fails.
+fn lost_server() -> FileServer {
+    let mut server = server();
+    server.serve(ME, CTX, &status_call());
+    peer_write(&mut server, small());
+    server.deliver_breaks();
+    let id = server.take_outgoing().first().unwrap().id;
+    server.settled(id, None);
+    server
+}
+
+#[test]
+fn a_scenario_reset_in_flight_stands_for_the_reset_a_held_call_waits_on() {
+    let mut server = lost_server();
+    server.reset(ME);
+    let scenario = server.take_outgoing().first().unwrap().id;
+    assert_eq!(server.serve_call(1, ME, CTX, &status_call()), None);
+    assert_eq!(server.take_outgoing(), [], "no second reset");
+    server.settled(scenario, None);
+    assert_eq!(server.take_released(), [(1, None)]);
+    assert_eq!(server.lost_clients(), [ME]);
+}
+
+#[test]
+fn held_calls_are_dropped_only_when_every_reset_in_flight_has_failed() {
+    let mut server = lost_server();
+    assert_eq!(server.serve_call(1, ME, CTX, &status_call()), None);
+    let automatic = server.take_outgoing().first().unwrap().id;
+    server.reset(ME);
+    let scenario = server.take_outgoing().first().unwrap().id;
+    server.settled(automatic, None);
+    assert_eq!(
+        server.take_released(),
+        [],
+        "the scenario reset may still reach it"
+    );
+    server.settled(scenario, Some(CbAnswer::Empty));
+    let released = server.take_released();
+    assert_eq!(released.len(), 1);
+    assert_eq!(status_of(released[0].1.as_ref().unwrap()).data_version, 2);
+    assert_eq!(server.lost_clients(), []);
+
+    let mut server = lost_server();
+    assert_eq!(server.serve_call(1, ME, CTX, &status_call()), None);
+    let automatic = server.take_outgoing().first().unwrap().id;
+    server.reset(ME);
+    let scenario = server.take_outgoing().first().unwrap().id;
+    server.settled(scenario, None);
+    assert_eq!(server.take_released(), []);
+    server.settled(automatic, None);
+    assert_eq!(server.take_released(), [(1, None)]);
 }
