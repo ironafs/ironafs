@@ -36,11 +36,14 @@
 //! interfaces of `ironafs-time` for tests and the simulator: virtual clocks
 //! that move only when the test moves them, and random bytes from a seed.
 //! Neither is ever a production source (coding standards rule 7).
+//! [`Flag`] is a watched flag a test sets by hand, for a cancel token or a
+//! signal that a wait never blocks on.
 //!
 //! This crate is a dev-dependency only: no shipped crate depends on it.
 
 mod capture;
 mod clock;
+mod flag;
 mod property;
 mod rng;
 mod shrink;
@@ -50,6 +53,7 @@ mod sweep;
 pub mod wire;
 
 pub use clock::{SeededClock, TimeOverflow};
+pub use flag::Flag;
 pub use property::{Counterexample, Property, Verdict};
 pub use rng::SeededRng;
 pub use source::Source;
