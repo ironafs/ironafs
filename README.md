@@ -121,7 +121,7 @@ L37 to L39):
   Updates and the current cumulative update, until 2027-10-12;
 - candidates: Ubuntu's generic kernels, until tested on a native kernel
   (L37); and RHEL 7.9, 8.10, 9 and 10, Debian 12 and 13, Windows 11 Pro
-  25H2 and other Windows 11 editions, static musl builds, and FreeBSD
+  25H2, Windows 11 Home, Enterprise and Education, static musl builds, and FreeBSD
   (L39). Each becomes a target only on the conditions its decision names,
   such as a named test venue that qualifies it.
 
