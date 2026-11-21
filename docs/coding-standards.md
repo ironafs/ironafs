@@ -342,8 +342,9 @@ number and is marked retired; new rules are appended.
     - **Written in IronAFS:**
       - the protocols: Rx and its security classes (including rxkad's fcrypt),
         XDR, the RPC clients, and the FUSE wire protocol over `/dev/fuse`;
-      - the event loop and concurrency (threads first; an async runtime only
-        if the architecture ADR shows it is needed);
+      - the event loop and concurrency: blocking code on standard-library
+        threads, and no async runtime, neither a third-party one nor one of
+        our own (ADR 0004, C3);
       - CLI parsing, error types, logging, configuration parsing, and test
         helpers.
     - **A dependency only where writing it ourselves would be less safe:**
