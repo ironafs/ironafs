@@ -31,6 +31,7 @@ the evidence that refutes it.
 | [2026-11-20-workflow-milestones](2026-11-20-workflow-milestones.md) | Milestones follow ADR 0004, O50 |
 | [2026-11-20-workflow-implementer](2026-11-20-workflow-implementer.md) | Issue #40: Claude implements from M2a; label rules and triage |
 | [2026-11-21-adr-0005-review](2026-11-21-adr-0005-review.md) | Issues #43 and #49: ADR 0005 (`ironafs-os`) and the ADR 0004 C5 amendment |
+| [2026-11-21-m2a-10-clock-seam](2026-11-21-m2a-10-clock-seam.md) | Issue #58: the clock and randomness seam, `ironafs-time`, and the bans that keep rule 7 |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
