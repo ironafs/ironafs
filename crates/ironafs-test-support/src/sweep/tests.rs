@@ -4,9 +4,8 @@
 //! Tests for the exhaustive sweep: every input once, in choice order,
 //! within the printed bound.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::fmt::Debug;
-use std::hash::Hash;
 use std::panic::{self, AssertUnwindSafe};
 
 use super::{Exhaustive, SweepFailure};
@@ -29,8 +28,8 @@ fn sweep_all<T: Clone>(
 }
 
 #[track_caller]
-fn assert_distinct<T: Eq + Hash + Debug>(values: &[T]) {
-    let distinct: HashSet<&T> = values.iter().collect();
+fn assert_distinct<T: Ord + Debug>(values: &[T]) {
+    let distinct: BTreeSet<&T> = values.iter().collect();
     assert_eq!(distinct.len(), values.len(), "{values:?}");
 }
 
