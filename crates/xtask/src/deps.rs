@@ -154,6 +154,12 @@ const CRYPTO_HOMES: &[&str] = &["ironafs-crypto", "ironafs-os"];
 /// library (ADR 0004, C5, point 4).
 const NAMED_FFI: &[&str] = &["ironafs-gss"];
 
+/// Crates whose ADR lets them keep their own `[lints]` table, such as the
+/// `unsafe` bindings of `ironafs-os` once its ADR is accepted (ADR 0004,
+/// C5, point 5). Empty until such an ADR exists. A pure crate is never
+/// listed: `check-pure` forbids its unsafe code on the command line.
+const OWN_LINTS: &[&str] = &[];
+
 /// Known cryptography and foreign-function crates, which only the crates
 /// in `CRYPTO_HOMES` may reach.
 const CRYPTO_AND_FFI: &[&str] = &[
@@ -394,8 +400,8 @@ impl fmt::Display for Violation {
             Self::NoWorkspaceLints { name, manifest } => write!(
                 formatter,
                 "{}: {name} does not inherit the workspace lints: write `[lints]` with \
-                 `workspace = true`, so `unsafe` stays forbidden (AGENTS.md; ADR 0004, C5, \
-                 point 5)",
+                 `workspace = true`, and no multi-line string, so `unsafe` stays forbidden \
+                 (AGENTS.md; ADR 0004, C5, point 5)",
                 manifest.display()
             ),
             Self::ForbiddenSource {
@@ -405,7 +411,7 @@ impl fmt::Display for Violation {
                 reason,
             } => write!(
                 formatter,
-                "{}:{line}: names {name}: {reason} (ADR 0004, C3, point 1, and C4, points 1 and 2)",
+                "{}:{line}: names {name}: {reason} (ADR 0004, C4, point 2; coding standards rule 7)",
                 file.display()
             ),
             Self::NoLibrary(name) => write!(
@@ -610,15 +616,18 @@ fn direct_violations(
 }
 
 /// Every workspace member inherits the workspace lints, which forbid
-/// `unsafe` (`AGENTS.md`). A crate with its own `[lints]` table, even an
-/// empty one, would drop that.
+/// `unsafe` (`AGENTS.md`), unless `own_lints` names it. A crate with its
+/// own `[lints]` table, even an empty one, would drop that.
 ///
 /// # Errors
 ///
 /// Returns an error if a manifest cannot be read.
-fn lint_violations(workspace: &Workspace) -> Result<Vec<Violation>, Error> {
+fn lint_violations(workspace: &Workspace, own_lints: &[&str]) -> Result<Vec<Violation>, Error> {
     let mut violations = Vec::new();
     for member in &workspace.members {
+        if own_lints.contains(&member.name.as_str()) {
+            continue;
+        }
         let manifest = member.dir.join("Cargo.toml");
         let text = fs::read_to_string(&manifest)
             .map_err(Error::path_io("read crate manifest", &manifest))?;
@@ -638,8 +647,14 @@ fn lint_violations(workspace: &Workspace) -> Result<Vec<Violation>, Error> {
 /// Whether a manifest's `[lints]` table is exactly `workspace = true`, or
 /// it says `lints.workspace = true` or `lints = { workspace = true }` before
 /// its first table. Whitespace and comments are ignored; any other spelling
-/// is refused rather than guessed at.
+/// is refused rather than guessed at. The manifest is read line by line,
+/// so one with a multi-line string, whose lines could look like a table,
+/// is refused; so is any table other than `[lints]` whose name mentions
+/// lints, such as a target-scoped one.
 fn inherits_workspace_lints(manifest: &str) -> bool {
+    if manifest.contains("\"\"\"") || manifest.contains("'''") {
+        return false;
+    }
     let mut table: Option<String> = None;
     let mut inherits = false;
     let mut other_lints = false;
@@ -656,7 +671,7 @@ fn inherits_workspace_lints(manifest: &str) -> bool {
         }
         if let Some(header) = line.strip_prefix('[') {
             let name = header.trim_start_matches('[').trim_end_matches(']');
-            if name.starts_with("lints.") {
+            if name != "lints" && name.contains("lints") {
                 other_lints = true;
             }
             table = Some(name.to_owned());
@@ -678,7 +693,7 @@ fn inherits_workspace_lints(manifest: &str) -> bool {
 /// The packages reachable from the package `start`, in breadth-first
 /// order, each with the packages between `start` and it on one shortest
 /// path. A package `expand` refuses is listed but not followed.
-fn reachable<'a>(
+pub(crate) fn reachable<'a>(
     workspace: &'a Workspace,
     start: &str,
     expand: &dyn Fn(&Package) -> bool,
@@ -740,7 +755,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         .collect();
     writeln!(
         output,
-        "check-deps: {} crates passed ({}); {} source files of pure crates and ironafs-client read",
+        "check-deps: {} crates passed ({}); {} source files of ironafs-client read",
         names.len(),
         names.join(", "),
         scanned.len()
@@ -759,7 +774,7 @@ fn check(
     third_party: ThirdPartyLists,
 ) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
     let mut violations = graph_violations(workspace, third_party);
-    violations.extend(lint_violations(workspace)?);
+    violations.extend(lint_violations(workspace, OWN_LINTS)?);
     let (found, scanned) = pure_source::scan(workspace)?;
     violations.extend(found);
     Ok((violations, scanned))

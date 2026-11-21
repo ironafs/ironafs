@@ -25,10 +25,9 @@ const FIXTURE_THIRD_PARTY: ThirdPartyLists = &[
 
 /// A workspace the rules allow, with one crate of each kind, a development
 /// dependency on a test-only crate, a foreign-function crate in
-/// `ironafs-os` and, through a crate its list names, in `ironafs-gss`,
-/// pure crates that name allowed standard-library paths and gated
-/// unit-test modules that name forbidden ones, and an `ironafs-client` that
-/// uses threads and a method of its own named like a file method.
+/// `ironafs-os` and, through a crate its list names, in `ironafs-gss`, a
+/// pure crate whose source this check does not read, and the
+/// `ironafs-client` of `clean_sources`.
 fn clean() -> Fixture {
     let mut fixture = Fixture::default();
     for (name, dependencies) in [
@@ -103,59 +102,59 @@ fn clean() -> Fixture {
     fixture
 }
 
-/// The clean fixture's source files.
+/// The clean fixture's source files: `ironafs-client` uses threads, a
+/// method of its own named like a file method, allowed standard-library
+/// paths, an import of its own item named like a built-in macro, a raw
+/// identifier spelled like a keyword, and gated unit-test modules that name
+/// forbidden paths. The pure crates are not read: `check-pure` builds them.
 fn clean_sources(fixture: &mut Fixture) {
-    fixture.file(
-        "ironafs-proto",
-        "src/lib.rs",
-        Some(
-            "//! Uses std::net only in this comment.\n\
-             mod codec;\n#[cfg(test)]\nmod tests;\n\
-             use core::net::Ipv4Addr;\nuse std::time::Duration;\n\
-             pub fn f(_: Ipv4Addr, _: Duration) -> &'static str { \"std::fs\" }\n",
-        ),
-    );
-    fixture.file(
-        "ironafs-proto",
-        "src/codec.rs",
-        Some(
-            "use std::io::Read;\nuse std::collections::BTreeMap;\nuse std::path::Path;\n\
-             #[cfg(test)]\nmod tests;\n\
-             #[derive(Debug)]\npub struct Entry { pub metadata: u32 }\n\
-             pub fn f(e: &Entry) -> u32 { e.metadata }\n",
-        ),
-    );
-    fixture.file(
-        "ironafs-proto",
-        "src/tests.rs",
-        Some("use std::fs;\nuse std::time::Instant;\n"),
-    );
-    fixture.file(
-        "ironafs-proto",
-        "src/codec/tests.rs",
-        Some("mod helper;\nuse std::net::UdpSocket;\n"),
-    );
-    fixture.file(
-        "ironafs-proto",
-        "src/codec/tests/helper.rs",
-        Some("fn f() { std::thread::sleep(d); println!(\"x\"); }\n"),
-    );
     fixture.file(
         "ironafs-client",
         "src/lib.rs",
         Some(
-            "use std::thread::{self, JoinHandle};\n\
+            "//! Uses std::net only in this comment.\n\
+             mod codec;\n#[cfg(test)]\nmod tests;\n\
+             use std::thread::{self, JoinHandle};\n\
              pub fn run(f: fn()) -> JoinHandle<()> { thread::spawn(f) }\n\
              pub struct Node;\nimpl Node { pub fn exists(&self) -> bool { true } }\n\
              pub fn present(node: &Node) -> bool { node.exists() }\n",
         ),
     );
+    fixture.file(
+        "ironafs-client",
+        "src/codec.rs",
+        Some(
+            "use std::io::Read;\nuse std::collections::BTreeMap;\nuse core::time::Duration;\n\
+             use crate::report::print;\nuse self::inner::asm;\nlet r#unsafe = 1;\n\
+             #[cfg(test)]\nmod tests;\n\
+             pub fn f(_: Duration) -> &'static str { \"std::fs\" }\n",
+        ),
+    );
+    fixture.file(
+        "ironafs-client",
+        "src/tests.rs",
+        Some("use std::fs;\nuse std::time::Instant;\n"),
+    );
+    fixture.file(
+        "ironafs-client",
+        "src/codec/tests.rs",
+        Some("mod helper;\nuse std::net::UdpSocket;\n"),
+    );
+    fixture.file(
+        "ironafs-client",
+        "src/codec/tests/helper.rs",
+        Some("fn f() { std::thread::sleep(d); println!(\"x\"); }\n"),
+    );
+    fixture.file(
+        "ironafs-proto",
+        "src/lib.rs",
+        Some("extern crate std;\nuse std::net::UdpSocket;\n"),
+    );
 }
 
-/// The crate and file a planted source case writes.
-const PLANTED_CRATE: &str = "ironafs-proto";
-const PLANTED: &str = "crates/ironafs-proto/src/planted.rs";
-const CLIENT: &str = "crates/ironafs-client/src/lib.rs";
+/// The file a planted source case writes, in `ironafs-client`.
+const PLANTED_CRATE: &str = "ironafs-client";
+const PLANTED: &str = "crates/ironafs-client/src/planted.rs";
 
 fn plant_source(fixture: &mut Fixture, source: &str) {
     fixture.file(PLANTED_CRATE, "src/planted.rs", Some(source));
@@ -504,25 +503,25 @@ const CASES: &[Case] = &[
         }],
     },
     Case {
-        name: "a pure crate with no library target",
+        name: "ironafs-client with no library target",
         plant: |fixture| {
-            fixture.file("ironafs-config", "src/lib.rs", None);
-            fixture.file("ironafs-config", "src/main.rs", Some("fn main() {}\n"));
+            fixture.file("ironafs-client", "src/lib.rs", None);
+            fixture.file("ironafs-client", "src/main.rs", Some("fn main() {}\n"));
         },
         expect: &[
-            |found| matches!(found, Violation::NoLibrary(name) if name == "ironafs-config"),
+            |found| matches!(found, Violation::NoLibrary(name) if name == "ironafs-client"),
             |found| {
                 matches!(found, Violation::ShippedTarget { name, target }
-                    if name == "ironafs-config" && target == "bin")
+                    if name == "ironafs-client" && target == "bin")
             },
         ],
     },
     Case {
-        name: "a pure crate with a build script",
-        plant: |fixture| fixture.file("ironafs-config", "build.rs", Some("fn main() {}\n")),
+        name: "ironafs-client with a build script",
+        plant: |fixture| fixture.file("ironafs-client", "build.rs", Some("fn main() {}\n")),
         expect: &[|found| {
             matches!(found, Violation::ShippedTarget { name, target }
-                if name == "ironafs-config" && target == "custom-build")
+                if name == "ironafs-client" && target == "custom-build")
         }],
     },
     Case {
@@ -535,18 +534,18 @@ const CASES: &[Case] = &[
             );
         },
         expect: &[
-            |found| is_source(found, "crates/ironafs-proto/src/tests.rs", "std::fs"),
+            |found| is_source(found, "crates/ironafs-client/src/tests.rs", "std::fs"),
             |found| {
                 is_source(
                     found,
-                    "crates/ironafs-proto/src/tests.rs",
+                    "crates/ironafs-client/src/tests.rs",
                     "std::time::Instant",
                 )
             },
         ],
     },
     Case {
-        name: "a std::net type in a pure crate",
+        name: "a socket",
         plant: |fixture| {
             plant_source(
                 fixture,
@@ -556,7 +555,7 @@ const CASES: &[Case] = &[
         expect: &[|found| is_planted(found, "std::net::UdpSocket::bind")],
     },
     Case {
-        name: "std::fs imported by a pure crate",
+        name: "std::fs imported",
         plant: |fixture| plant_source(fixture, "use std::fs;\n"),
         expect: &[|found| is_planted(found, "std::fs")],
     },
@@ -566,32 +565,47 @@ const CASES: &[Case] = &[
         expect: &[|found| is_planted(found, "std::fs::read")],
     },
     Case {
-        name: "std::thread in a grouped import",
+        name: "std::fs in a grouped import",
+        plant: |fixture| plant_source(fixture, "use std::{io::Read, fs::{self, File}};\n"),
+        expect: &[|found| is_planted(found, "std::fs")],
+    },
+    Case {
+        name: "a path's file-system method",
         plant: |fixture| {
             plant_source(
                 fixture,
-                "use std::{io::Read, thread::{self, JoinHandle}};\n",
+                "fn f(p: &std::path::Path) -> bool { p.exists() }\n",
             );
         },
-        expect: &[|found| is_planted(found, "std::thread")],
+        expect: &[|found| is_planted(found, "std::path::Path")],
     },
     Case {
-        name: "std::os in a pure crate",
+        name: "a path type imported for its methods",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "use std::path::PathBuf;\nfn f(p: PathBuf) -> bool { p.is_dir() }\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "std::path::PathBuf")],
+    },
+    Case {
+        name: "std::os",
         plant: |fixture| plant_source(fixture, "use std::os::unix::net::UnixStream;\n"),
         expect: &[|found| is_planted(found, "std::os")],
     },
     Case {
-        name: "std::process in a pure crate",
+        name: "std::process",
         plant: |fixture| plant_source(fixture, "fn f() { std::process::exit(1); }\n"),
         expect: &[|found| is_planted(found, "std::process")],
     },
     Case {
-        name: "std::env in a pure crate",
+        name: "std::env",
         plant: |fixture| plant_source(fixture, "fn f() { let _ = std::env::var(\"X\"); }\n"),
         expect: &[|found| is_planted(found, "std::env")],
     },
     Case {
-        name: "a standard stream in a pure crate",
+        name: "a standard stream",
         plant: |fixture| plant_source(fixture, "use std::io::{Write, stdout};\n"),
         expect: &[|found| is_planted(found, "std::io::stdout")],
     },
@@ -601,7 +615,7 @@ const CASES: &[Case] = &[
         expect: &[|found| is_planted(found, "std::io")],
     },
     Case {
-        name: "a printing macro in a pure crate",
+        name: "a printing macro",
         plant: |fixture| plant_source(fixture, "fn f() { eprintln!(\"x\"); }\n"),
         expect: &[|found| is_planted(found, "eprintln!")],
     },
@@ -621,6 +635,11 @@ const CASES: &[Case] = &[
         expect: &[|found| is_planted(found, "std::time::*")],
     },
     Case {
+        name: "a sleep",
+        plant: |fixture| plant_source(fixture, "fn f(d: D) { std::thread::sleep(d); }\n"),
+        expect: &[|found| is_planted(found, "sleep")],
+    },
+    Case {
         name: "a wait with a timeout",
         plant: |fixture| {
             plant_source(
@@ -631,11 +650,21 @@ const CASES: &[Case] = &[
         expect: &[|found| is_planted(found, "recv_timeout")],
     },
     Case {
-        name: "a standard hash map in a pure crate",
+        name: "a standard hash map",
         plant: |fixture| {
             plant_source(
                 fixture,
                 "use std::collections::HashMap;\nfn f() { let _ = HashMap::<u8, Vec<u8>>::new(); }\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "HashMap")],
+    },
+    Case {
+        name: "a hash map with a fixed hasher",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "fn f() { let _: HashMap<u8, u8, Fixed> = Default::default(); }\n",
             );
         },
         expect: &[|found| is_planted(found, "HashMap")],
@@ -651,16 +680,6 @@ const CASES: &[Case] = &[
         expect: &[|found| is_planted(found, "HashMap")],
     },
     Case {
-        name: "a hash map built by collect",
-        plant: |fixture| {
-            plant_source(
-                fixture,
-                "fn f(i: I) -> usize { let m: HashMap<u64, u32> = i.collect(); m.len() }\n",
-            );
-        },
-        expect: &[|found| is_planted(found, "HashMap")],
-    },
-    Case {
         name: "a hash set in a derived default",
         plant: |fixture| {
             plant_source(
@@ -671,27 +690,9 @@ const CASES: &[Case] = &[
         expect: &[|found| is_planted(found, "HashSet")],
     },
     Case {
-        name: "a seeded hash map in ironafs-client",
-        plant: |fixture| {
-            fixture.file(
-                "ironafs-client",
-                "src/lib.rs",
-                Some("fn f() { let _ = HashMap::<u8, u8>::new(); }\n"),
-            );
-        },
-        expect: &[|found| is_source(found, CLIENT, "HashMap::new")],
-    },
-    Case {
-        name: "an absolute path from the current directory",
-        plant: |fixture| {
-            plant_source(fixture, "fn f(p: &P) { let _ = std::path::absolute(p); }\n");
-        },
-        expect: &[|found| is_planted(found, "std::path::absolute")],
-    },
-    Case {
-        name: "std::path imported as a module",
-        plant: |fixture| plant_source(fixture, "use std::path;\n"),
-        expect: &[|found| is_planted(found, "std::path")],
+        name: "the standard library's random hasher state",
+        plant: |fixture| plant_source(fixture, "use std::hash::RandomState;\n"),
+        expect: &[|found| is_planted(found, "RandomState")],
     },
     Case {
         name: "a backtrace",
@@ -729,7 +730,17 @@ const CASES: &[Case] = &[
         expect: &[|found| is_planted(found, "c::include")],
     },
     Case {
-        name: "unsafe foreign functions in a pure crate",
+        name: "assembly renamed by an import",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "use core::arch::global_asm as go;\ngo!(\"nop\");\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "core::arch::global_asm")],
+    },
+    Case {
+        name: "unsafe foreign functions",
         plant: |fixture| {
             plant_source(
                 fixture,
@@ -747,37 +758,9 @@ const CASES: &[Case] = &[
         expect: &[|found| is_planted(found, "global_asm!")],
     },
     Case {
-        name: "a foreign-function definition in ironafs-client",
-        plant: |fixture| {
-            fixture.file(
-                "ironafs-client",
-                "src/lib.rs",
-                Some("pub extern \"C\" fn callback() {}\n"),
-            );
-        },
-        expect: &[|found| is_source(found, CLIENT, "extern")],
-    },
-    Case {
-        name: "a pure crate with an empty lints table",
-        plant: |fixture| fixture.lints("ironafs-auth", "\n[lints]\n"),
-        expect: &[|found| is_without_lints(found, "ironafs-auth")],
-    },
-    Case {
-        name: "a binary that overrides the workspace lints",
-        plant: |fixture| {
-            fixture.lints("ironafsd", "\n[lints.rust]\nunsafe_code = \"allow\"\n");
-        },
-        expect: &[|found| is_without_lints(found, "ironafsd")],
-    },
-    Case {
-        name: "the standard library's random hasher state",
-        plant: |fixture| plant_source(fixture, "use std::hash::RandomState;\n"),
-        expect: &[|found| is_planted(found, "RandomState")],
-    },
-    Case {
-        name: "a file-system method on a path",
-        plant: |fixture| plant_source(fixture, "fn f(p: &P) -> bool { p.exists() }\n"),
-        expect: &[|found| is_planted(found, "exists")],
+        name: "a foreign-function definition",
+        plant: |fixture| plant_source(fixture, "pub extern \"C\" fn callback() {}\n"),
+        expect: &[|found| is_planted(found, "extern")],
     },
     Case {
         name: "the standard library renamed",
@@ -822,26 +805,36 @@ const CASES: &[Case] = &[
         expect: &[|found| is_planted(found, "include!")],
     },
     Case {
-        name: "a socket in ironafs-client",
-        plant: |fixture| {
-            fixture.file(
-                "ironafs-client",
-                "src/lib.rs",
-                Some("use std::net::UdpSocket;\n"),
-            );
-        },
-        expect: &[|found| is_source(found, CLIENT, "std::net::UdpSocket")],
+        name: "a pure crate with an empty lints table",
+        plant: |fixture| fixture.lints("ironafs-auth", "\n[lints]\n"),
+        expect: &[|found| is_without_lints(found, "ironafs-auth")],
     },
     Case {
-        name: "a sleep in ironafs-client",
+        name: "a binary that overrides the workspace lints",
         plant: |fixture| {
-            fixture.file(
-                "ironafs-client",
-                "src/lib.rs",
-                Some("fn f(d: D) { std::thread::sleep(d); }\n"),
+            fixture.lints("ironafsd", "\n[lints.rust]\nunsafe_code = \"allow\"\n");
+        },
+        expect: &[|found| is_without_lints(found, "ironafsd")],
+    },
+    Case {
+        name: "a lints table only inside a multi-line string",
+        plant: |fixture| {
+            fixture.lints(
+                "ironafsd",
+                "\n[package.metadata.notes]\ntext = \"\"\"\n[lints]\nworkspace = true\n[notes]\n\"\"\"\n",
             );
         },
-        expect: &[|found| is_source(found, CLIENT, "sleep")],
+        expect: &[|found| is_without_lints(found, "ironafsd")],
+    },
+    Case {
+        name: "a target-scoped lints table",
+        plant: |fixture| {
+            fixture.lints(
+                "ironafs-net",
+                "\n[lints]\nworkspace = true\n\n[target.'cfg(unix)'.lints.rust]\nunsafe_code = \"allow\"\n",
+            );
+        },
+        expect: &[|found| is_without_lints(found, "ironafs-net")],
     },
 ];
 
@@ -916,18 +909,13 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
 }
 
 /// The files the scan must read in the clean fixture, sorted: the library
-/// root of every pure crate and of `ironafs-client`, and the module beside
-/// one, but no gated unit-test file.
+/// root of `ironafs-client` and the module beside it, but no gated
+/// unit-test file and no file of a pure crate.
 fn clean_scanned_files() -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = clean()
-        .names()
-        .into_iter()
-        .filter(|name| super::kind_of(name).is_some_and(super::pure_source::is_scanned))
-        .map(|name| PathBuf::from(format!("crates/{name}/src/lib.rs")))
-        .chain([PathBuf::from("crates/ironafs-proto/src/codec.rs")])
-        .collect();
-    files.sort();
-    files
+    vec![
+        PathBuf::from("crates/ironafs-client/src/codec.rs"),
+        PathBuf::from("crates/ironafs-client/src/lib.rs"),
+    ]
 }
 
 fn failure(case: &'static str, found: &[Violation]) -> Error {

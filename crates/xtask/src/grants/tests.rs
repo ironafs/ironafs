@@ -198,7 +198,9 @@ fn check_requires_the_guarded_definitions_to_stay_inside_their_crate() {
                     "pub(super) struct Rights;\nstruct Rights;\n\
                      macro_rules! d { ($v:vis) => { $v fn evaluate() {} }; }\n\
                      pub extern \"C\" fn evaluate() {}\n\
-                     impl X { pub(crate) fn evaluate(&self) {} }\n",
+                     impl X { pub(crate) fn evaluate(&self) {} }\n\
+                     const unsafe extern \"C\" fn evaluate() {}\n\
+                     pub(crate) unsafe extern \"system\" fn evaluate() {}\n",
                 ),
             ],
         )]

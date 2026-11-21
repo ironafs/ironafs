@@ -56,6 +56,13 @@ pub(crate) struct Package {
     /// and with every feature on. Development dependencies are left out:
     /// they never reach a shipped build.
     pub(crate) dependencies: Vec<String>,
+    /// The kinds of every target, as for a member.
+    pub(crate) target_kinds: Vec<String>,
+    /// The native library the package says it links, if any.
+    pub(crate) links: Option<String>,
+    /// The names of the features the package declares, implicit ones from
+    /// optional dependencies included.
+    pub(crate) features: Vec<String>,
 }
 
 const COMMAND: &str = "cargo metadata";
@@ -181,6 +188,9 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             path,
             member: member_ids.contains(&id),
             dependencies,
+            target_kinds: target_kinds(package)?,
+            links: links(package)?,
+            features: features(package)?,
         });
     }
     Ok(Workspace {
@@ -189,6 +199,40 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
         members,
         packages: resolved,
     })
+}
+
+/// The kinds of a package's targets.
+fn target_kinds(package: &Value) -> Result<Vec<String>, Error> {
+    let mut kinds = Vec::new();
+    for target in array(package, "targets")? {
+        for kind in array(target, "kind")? {
+            kinds.push(
+                kind.as_str()
+                    .ok_or(Error::UnexpectedOutput(COMMAND))?
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(kinds)
+}
+
+/// The native library a package links, if any.
+fn links(package: &Value) -> Result<Option<String>, Error> {
+    match package.get("links") {
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(links)) => Ok(Some(links.clone())),
+        _ => Err(Error::UnexpectedOutput(COMMAND)),
+    }
+}
+
+/// The names of the features a package declares.
+fn features(package: &Value) -> Result<Vec<String>, Error> {
+    match package.get("features") {
+        Some(Value::Object(features)) => {
+            Ok(features.iter().map(|(name, _)| name.clone()).collect())
+        }
+        _ => Err(Error::UnexpectedOutput(COMMAND)),
+    }
 }
 
 fn array<'a>(value: &'a Value, key: &str) -> Result<&'a [Value], Error> {

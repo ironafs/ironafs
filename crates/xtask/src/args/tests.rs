@@ -109,6 +109,11 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             &["check-grants", "--self-test"][..],
             Task::CheckGrants { self_test: true },
         ),
+        (&["check-pure"][..], Task::CheckPure { self_test: false }),
+        (
+            &["check-pure", "--self-test"][..],
+            Task::CheckPure { self_test: true },
+        ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Ok(task));
     }
@@ -120,6 +125,10 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
         (
             &["check-grants", "--self-test", "extra"][..],
             UsageError::UnexpectedArgument("extra".into()),
+        ),
+        (
+            &["check-pure", "--all"][..],
+            UsageError::UnexpectedArgument("--all".into()),
         ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Err(error));

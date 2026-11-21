@@ -61,19 +61,23 @@ fn tokens_count_lines_through_multi_line_comments_and_strings() {
         [
             Token {
                 kind: TokenKind::Ident("a".into()),
-                line: 1
+                line: 1,
+                raw: false
             },
             Token {
                 kind: TokenKind::Ident("b".into()),
-                line: 3
+                line: 3,
+                raw: false
             },
             Token {
                 kind: TokenKind::Ident("c".into()),
-                line: 4
+                line: 4,
+                raw: false
             },
             Token {
                 kind: TokenKind::PathSep,
-                line: 5
+                line: 5,
+                raw: false
             },
         ]
     );
@@ -162,7 +166,8 @@ fn use_paths_list_every_imported_path_from_any_crate_and_no_expression_path() {
                   extern crate core as c;\n\
                   use c::{println as say, fmt::Write};\n\
                   let x = std::fs::read(p);\n\
-                  use crate::local::print;\n";
+                  use crate::local::print;\n\
+                  use self::inner::asm;\n";
 
     let found: Vec<(String, usize)> = use_paths(&tokens(source).unwrap())
         .into_iter()
@@ -176,6 +181,7 @@ fn use_paths_list_every_imported_path_from_any_crate_and_no_expression_path() {
             ("c::println".into(), 3),
             ("c::fmt::Write".into(), 3),
             ("crate::local::print".into(), 5),
+            ("self::inner::asm".into(), 6),
         ]
     );
 }

@@ -11,21 +11,22 @@ use crate::Error;
 const METADATA: &str = r#"{
   "packages": [
     {"name": "ironafs-a", "id": "path+file:///w/crates/ironafs-a#0.0.0", "source": null,
-     "manifest_path": "/w/crates/ironafs-a/Cargo.toml",
+     "features": {}, "links": null, "manifest_path": "/w/crates/ironafs-a/Cargo.toml",
      "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-a/src/lib.rs"}]},
     {"name": "ironafs-b", "id": "path+file:///w/crates/ironafs-b#0.0.0",
-     "manifest_path": "/w/crates/ironafs-b/Cargo.toml",
+     "features": {"std": [], "default": ["std"]}, "links": null, "manifest_path": "/w/crates/ironafs-b/Cargo.toml",
      "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-b/src/lib.rs"}]},
     {"name": "ironafs-c", "id": "path+file:///w/crates/ironafs-c#0.0.0",
-     "manifest_path": "/w/crates/ironafs-c/Cargo.toml",
+     "features": {}, "links": null, "manifest_path": "/w/crates/ironafs-c/Cargo.toml",
      "targets": [{"kind": ["bin"], "src_path": "/w/crates/ironafs-c/src/main.rs"}]},
     {"name": "ironafs-d", "id": "path+file:///w/crates/ironafs-d#0.0.0",
-     "manifest_path": "/w/crates/ironafs-d/Cargo.toml",
+     "features": {}, "links": "native", "manifest_path": "/w/crates/ironafs-d/Cargo.toml",
      "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-d/src/lib.rs"},
                  {"kind": ["custom-build"], "src_path": "/w/crates/ironafs-d/build.rs"}]},
     {"name": "outside", "id": "registry+https://example.invalid#outside@1.0.0",
      "source": "registry+https://example.invalid", "manifest_path": "/r/outside/Cargo.toml",
-     "targets": [{"kind": ["lib"], "src_path": "/r/outside/src/lib.rs"}]}
+     "features": {}, "links": null,
+     "targets": [{"kind": ["proc-macro"], "src_path": "/r/outside/src/lib.rs"}]}
   ],
   "workspace_members": [
     "path+file:///w/crates/ironafs-a#0.0.0",
@@ -63,6 +64,9 @@ fn package(name: &str, path: bool, member: bool, dependencies: &[&str]) -> Packa
         path: path.then(|| PathBuf::from(format!("/w/crates/{name}"))),
         member,
         dependencies: dependencies.iter().map(|name| id(name)).collect(),
+        target_kinds: vec!["lib".into()],
+        links: None,
+        features: Vec::new(),
     }
 }
 
@@ -106,10 +110,23 @@ fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
                     true,
                     &["ironafs-b", "outside", "ironafs-d"]
                 ),
-                package("ironafs-b", true, true, &["outside"]),
-                package("ironafs-c", true, true, &[]),
-                package("ironafs-d", true, true, &[]),
-                package("outside", false, false, &[]),
+                Package {
+                    features: vec!["std".into(), "default".into()],
+                    ..package("ironafs-b", true, true, &["outside"])
+                },
+                Package {
+                    target_kinds: vec!["bin".into()],
+                    ..package("ironafs-c", true, true, &[])
+                },
+                Package {
+                    target_kinds: vec!["lib".into(), "custom-build".into()],
+                    links: Some("native".into()),
+                    ..package("ironafs-d", true, true, &[])
+                },
+                Package {
+                    target_kinds: vec!["proc-macro".into()],
+                    ..package("outside", false, false, &[])
+                },
             ],
         }
     );
@@ -133,6 +150,11 @@ fn parse_workspace_rejects_output_without_a_resolved_graph() {
             "",
         ),
         &METADATA.replace("\"source\": null", "\"source\": 1"),
+        &METADATA.replace(
+            "\"features\": {}, \"links\": null, \"manifest_path\": \"/w/crates/ironafs-c",
+            "\"manifest_path\": \"/w/crates/ironafs-c",
+        ),
+        &METADATA.replace("\"links\": \"native\"", "\"links\": 1"),
     ] {
         assert!(
             matches!(

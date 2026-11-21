@@ -6,8 +6,8 @@
 use std::path::PathBuf;
 
 use super::{
-    CRATES, Kind, Rule, THIRD_PARTY, ThirdPartyLists, Violation, graph_violations,
-    inherits_workspace_lints, kind_of,
+    CRATES, Kind, OWN_LINTS, Rule, THIRD_PARTY, ThirdPartyLists, Violation, graph_violations,
+    inherits_workspace_lints, kind_of, lint_violations,
 };
 use crate::metadata::{Member, Package, Workspace};
 
@@ -23,6 +23,9 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
             path: Some(PathBuf::from(format!("/w/crates/{name}"))),
             member: true,
             dependencies: dependencies.iter().map(|name| id(name)).collect(),
+            target_kinds: vec!["lib".into()],
+            links: None,
+            features: Vec::new(),
         })
         .collect();
     for (_, dependencies) in members {
@@ -34,6 +37,9 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                     path: None,
                     member: false,
                     dependencies: Vec::new(),
+                    target_kinds: vec!["lib".into()],
+                    links: None,
+                    features: Vec::new(),
                 });
             }
         }
@@ -412,6 +418,9 @@ fn graph_violations_let_ironafs_gss_reach_only_the_bindings_its_list_names() {
         path: None,
         member: false,
         dependencies: Vec::new(),
+        target_kinds: vec!["lib".into()],
+        links: None,
+        features: Vec::new(),
     });
     let lists: ThirdPartyLists = &[
         ("ironafs-gss", &["gss-ffi", "libc"]),
@@ -503,7 +512,39 @@ fn inherits_workspace_lints_accepts_only_the_inherited_table() {
         "[package]\nname = \"a\"\n[lints]\nworkspace = true\nrust = { unsafe_code = \"allow\" }\n",
         "[package]\nname = \"a\"\n# [lints]\n# workspace = true\n",
         "[package]\nlints.workspace = true\n",
+        "[package]\nreadme = \"\"\"\n[lints]\nworkspace = true\n[notes]\n\"\"\"\n",
+        "[package]\nreadme = \'\'\'\n[lints]\nworkspace = true\n[notes]\n\'\'\'\n",
+        "[package]\n[lints]\nworkspace = true\n[package.metadata]\nnote = \"\"\"x\"\"\"\n",
+        "[package]\n[lints]\nworkspace = true\n[target.'cfg(unix)'.lints.rust]\nunsafe_code = \"allow\"\n",
     ] {
         assert!(!inherits_workspace_lints(manifest), "{manifest}");
     }
+}
+
+#[test]
+fn lint_violations_skip_only_the_crates_an_adr_lets_keep_their_own_lints() {
+    assert_eq!(OWN_LINTS, [] as [&str; 0]);
+    let root = std::env::temp_dir().join(format!("ironafs-xtask-lints-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut graph = workspace(&[("ironafs-os", &[]), ("ironafs-net", &[])]);
+    graph.root.clone_from(&root);
+    for member in &mut graph.members {
+        member.dir = root.join("crates").join(&member.name);
+        std::fs::create_dir_all(&member.dir).unwrap();
+        std::fs::write(
+            member.dir.join("Cargo.toml"),
+            "[package]\n[lints.rust]\nunsafe_code = \"allow\"\n",
+        )
+        .unwrap();
+    }
+
+    assert_eq!(
+        lint_violations(&graph, &["ironafs-os"]).unwrap(),
+        [Violation::NoWorkspaceLints {
+            name: "ironafs-net".into(),
+            manifest: PathBuf::from("crates/ironafs-net/Cargo.toml"),
+        }]
+    );
+    assert_eq!(lint_violations(&graph, &[]).unwrap().len(), 2);
+    std::fs::remove_dir_all(&root).unwrap();
 }

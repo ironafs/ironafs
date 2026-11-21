@@ -31,6 +31,9 @@ pub(crate) enum TokenKind {
 pub(crate) struct Token {
     pub(crate) kind: TokenKind,
     pub(crate) line: usize,
+    /// Whether the token is a raw identifier, written with `r#`: then a
+    /// keyword's spelling is only a name.
+    pub(crate) raw: bool,
 }
 
 /// Where and why the source could not be read as tokens.
@@ -137,7 +140,11 @@ impl Lexer {
     }
 
     fn push(&mut self, kind: TokenKind, line: usize) {
-        self.tokens.push(Token { kind, line });
+        self.tokens.push(Token {
+            kind,
+            line,
+            raw: false,
+        });
     }
 
     fn run(&mut self) -> Result<(), LexError> {
@@ -259,7 +266,11 @@ impl Lexer {
                     .unwrap_or_default()
                     .iter()
                     .collect();
-                self.push(TokenKind::Ident(name), line);
+                self.tokens.push(Token {
+                    kind: TokenKind::Ident(name),
+                    line,
+                    raw: true,
+                });
                 Ok(())
             }
             ("b" | "c", Some('"'), _) => {
@@ -436,7 +447,12 @@ fn use_tree(
     let mut named = false;
     loop {
         match tokens.get(index).map(|token| &token.kind) {
+            // A `self` that starts a path names the current module; one
+            // inside a path names the path so far.
             Some(TokenKind::Ident(segment)) if segment == "self" => {
+                if prefix.is_empty() {
+                    "self".clone_into(&mut prefix);
+                }
                 index += 1;
                 named = true;
             }
