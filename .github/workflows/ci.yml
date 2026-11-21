@@ -69,6 +69,10 @@ jobs:
         run: cargo --locked xtask check-pure
       - name: Prove the pure-crate build catches planted violations
         run: cargo --locked xtask check-pure --self-test
+      - name: Check unsafe stays in ironafs-os and matches ADR 0005's table
+        run: cargo --locked xtask check-os
+      - name: Prove the site inventory catches planted changes
+        run: cargo --locked xtask check-os --self-test
 
   test:
     name: test
@@ -92,6 +96,7 @@ jobs:
           CARGO_BUILD_WARNINGS: deny
         run: |
           cargo clippy --all-targets --workspace --locked
+          cargo clippy --all-targets --workspace --locked --target aarch64-unknown-linux-gnu
           cargo clippy --all-targets --workspace --locked --target x86_64-pc-windows-msvc
           cargo clippy --all-targets --workspace --locked --target aarch64-apple-darwin
       - name: Install cargo-nextest
@@ -106,11 +111,38 @@ jobs:
           cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
           install -d "$cargo_bin"
           install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: Prove the foreign declarations against this system's C headers
+        run: cargo --locked xtask check-abi
+      - name: Prove the declaration check catches planted mismatches
+        run: cargo --locked xtask check-abi --self-test
       - name: Run tests
         run: cargo nextest run --workspace --profile ci --retries 0 --no-tests fail --locked
       - name: Run doc-tests
         timeout-minutes: 5
         run: cargo test --doc --workspace --locked
+
+  miri:
+    name: miri
+    # The Miri job of coding standards rule 5, with the first crate that
+    # holds unsafe (ADR 0005, point 6.5): the Rust around each site, the
+    # stand-in tests, and mem-wipe's own block. Tests that make a real
+    # system call are ignored under Miri, which cannot run them.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned nightly with Miri
+        run: |
+          rustup toolchain install nightly-2026-11-01 --profile minimal --component miri,rust-src --no-self-update
+          cargo +nightly-2026-11-01 miri --version
+      - name: Run ironafs-os under Miri, host and aarch64 Linux
+        run: |
+          cargo +nightly-2026-11-01 miri test --locked -p ironafs-os --lib
+          cargo +nightly-2026-11-01 miri test --locked -p ironafs-os --lib --target aarch64-unknown-linux-gnu
 
   trailers:
     name: trailers
@@ -139,18 +171,19 @@ jobs:
 
   ci-ok:
     name: ci-ok
-    needs: [lint, test, trailers]
+    needs: [lint, test, miri, trailers]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - name: Require lint, test and trailer check success
+      - name: Require lint, test, Miri and trailer check success
         env:
           LINT_RESULT: ${{ needs.lint.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          MIRI_RESULT: ${{ needs.miri.result }}
           TRAILERS_RESULT: ${{ needs.trailers.result }}
         run: |
-          printf 'lint: %s\ntest: %s\ntrailers: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$TRAILERS_RESULT"
-          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$TRAILERS_RESULT" == success ]]
+          printf 'lint: %s\ntest: %s\nmiri: %s\ntrailers: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$MIRI_RESULT" "$TRAILERS_RESULT"
+          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$MIRI_RESULT" == success && "$TRAILERS_RESULT" == success ]]

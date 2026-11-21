@@ -68,10 +68,12 @@ fn getrandom(piece: &mut [u8]) -> Piece {
     // exclusive borrow of the caller's buffer that lives for the whole
     // call, so the kernel writes only memory this call may write; nothing
     // keeps the pointer afterwards. `length` is at most `MAX_PIECE` (256),
-    // which `fill_with` guarantees. `syscall` is variadic, so every
-    // argument is passed at the width the kernel reads: the number as
-    // `long`, the buffer as a pointer, the length as `size_t` (`usize`)
-    // and the flags as `unsigned long` (ADR 0005, "Variadic calls"). The
+    // which `fill_with` guarantees. `syscall` is variadic and the C
+    // library reads each argument after the number as a register-width
+    // `long`, so every argument is passed at register width (ADR 0005,
+    // "Variadic calls"): the number as `long`, the buffer as a pointer,
+    // the length as `size_t` (`usize`) and the flags, an `unsigned int` to
+    // the kernel, as `unsigned long`, whose low 32 bits are zero. The
     // call shares no state with other threads. The declaration is in
     // `abi`, and `SYS_getrandom` per architecture in `number`; the ABI
     // check proves both.
