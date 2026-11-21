@@ -38,6 +38,7 @@ the evidence that refutes it.
 | [2026-11-21-m1-close-sweep](2026-11-21-m1-close-sweep.md) | The documentation sweep against ADR 0004 at M1's exit |
 | [2026-11-21-m2a-90-convergence](2026-11-21-m2a-90-convergence.md) | Issue #54: convergence rules for review rounds |
 | [2026-11-21-m2a-13-remainder](2026-11-21-m2a-13-remainder.md) | Issue #46: `check-pure`'s exact matrix of compiled crates, targets and profiles, and the crate root's form |
+| [2026-11-21-m2a-14-xdr](2026-11-21-m2a-14-xdr.md) | Issue #59: `ironafs-xdr`, the XDR codec with caps, and `check-bans`' configuration checks |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
