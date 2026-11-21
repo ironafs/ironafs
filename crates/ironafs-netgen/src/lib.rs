@@ -20,6 +20,6 @@ mod generation;
 mod monitor;
 mod netlink;
 
-pub use consumer::{Cause, Consumer, Consumers, Loss, Move};
+pub use consumer::{Cause, Change, Consumer, Consumers, Loss, Move};
 pub use generation::{NetworkGeneration, Reader, Stopped, Unavailable};
-pub use monitor::{Monitor, Request};
+pub use monitor::{Barrier, Monitor, Request, wake};

@@ -17,9 +17,12 @@
 use alloc::collections::BTreeMap;
 
 use crate::Reader;
+use crate::consumer::Change;
 use crate::consumer::{Cause, Consumers, Loss};
 use crate::generation::{Publisher, Stopped};
-use crate::netlink::{AddressKey, Dump, Event, LinkState, dump_request, event, messages};
+use crate::netlink::{
+    AddressKey, Dump, Event, LinkState, acknowledged_noop, dump_request, event, messages,
+};
 
 #[cfg(test)]
 mod tests;
@@ -52,6 +55,33 @@ impl Request {
     pub fn bytes(&self) -> [u8; 20] {
         dump_request(self.dump, self.sequence)
     }
+}
+
+/// The request the driver sends on its **notify** socket once a
+/// snapshot's dumps are complete. The kernel acknowledges it on that
+/// socket, after every notification queued before it; the snapshot is
+/// published only when the monitor reads that acknowledgement, so nothing
+/// the notify socket received before it (an overflow among them) can
+/// follow the publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Barrier {
+    pub(crate) sequence: u32,
+}
+
+impl Barrier {
+    /// The request's bytes: `NLMSG_NOOP` with `NLM_F_REQUEST | NLM_F_ACK`.
+    #[must_use]
+    pub fn bytes(&self) -> [u8; 16] {
+        acknowledged_noop(self.sequence)
+    }
+}
+
+/// A request that wakes a thread blocked receiving on a route socket: the
+/// kernel answers it with an acknowledgement of sequence 0, which the
+/// monitor never uses for anything else, and which moves nothing.
+#[must_use]
+pub fn wake() -> [u8; 16] {
+    acknowledged_noop(0)
 }
 
 /// A table of what decides usability, capped. Over its cap it cannot
@@ -105,6 +135,9 @@ type AddressState = (u32, u8);
 #[derive(Debug)]
 struct Snapshot {
     request: Request,
+    /// Once both dumps are complete, the barrier sent on the notify
+    /// socket, whose acknowledgement publishes the snapshot.
+    barrier: Option<u32>,
     links: Table<i32, LinkState>,
     addresses: Table<AddressKey, AddressState>,
 }
@@ -187,7 +220,24 @@ impl Monitor {
         if !self.subscribed {
             return None;
         }
-        self.snapshot.as_ref().map(|snapshot| snapshot.request)
+        self.snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.barrier.is_none())
+            .map(|snapshot| snapshot.request)
+    }
+
+    /// The barrier to send on the notify socket, once a snapshot's dumps
+    /// are complete; the same one until it comes back or the snapshot is
+    /// abandoned.
+    #[must_use]
+    pub fn barrier(&self) -> Option<Barrier> {
+        if !self.subscribed {
+            return None;
+        }
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.barrier)
+            .map(|sequence| Barrier { sequence })
     }
 
     /// Applies one datagram of the notify socket.
@@ -197,33 +247,64 @@ impl Monitor {
     /// [`Stopped`] once the source has stopped.
     pub fn notification(&mut self, datagram: &[u8]) -> Result<(), Stopped> {
         self.live()?;
+        // A link or address message while a snapshot runs may describe a
+        // state the dump read before or after it: the snapshot is dirty and
+        // is taken again, never merged.
+        let mut dirty = false;
         for message in messages(datagram) {
-            let Ok(found) = message.and_then(|message| event(&message)) else {
+            let Ok((sequence, found)) =
+                message.and_then(|message| Ok((message.sequence, event(&message)?)))
+            else {
                 return self.lost(Loss::Malformed);
             };
-            let changed = match found {
-                Event::Route | Event::Rule | Event::Nexthop => true,
-                Event::Link(link) => self.links.put(link.index, link.state),
+            let change = match found {
+                Event::Route => Some(Change::Route),
+                Event::Rule => Some(Change::Rule),
+                Event::Nexthop => Some(Change::Nexthop),
+                Event::Link(link) => {
+                    dirty = true;
+                    self.links
+                        .put(link.index, link.state)
+                        .then_some(Change::Link)
+                }
                 Event::LinkGone(index) => {
+                    dirty = true;
                     self.links.entries.remove(&index);
                     if let Ok(index) = u32::try_from(index) {
                         self.addresses.entries.retain(|key, _| key.index != index);
                     }
-                    true
+                    Some(Change::Link)
                 }
-                Event::Address(address) => self
-                    .addresses
-                    .put(address.key, (address.flags, address.scope)),
+                Event::Address(address) => {
+                    dirty = true;
+                    self.addresses
+                        .put(address.key, (address.flags, address.scope))
+                        .then_some(Change::Address)
+                }
                 Event::AddressGone(address) => {
+                    dirty = true;
                     self.addresses.entries.remove(&address.key);
-                    true
+                    Some(Change::Address)
                 }
                 Event::Overrun => return self.lost(Loss::Malformed),
-                Event::Done | Event::Error(_) | Event::Skipped => false,
+                Event::Error(_) => {
+                    if !dirty
+                        && self
+                            .barrier()
+                            .is_some_and(|barrier| barrier.sequence == sequence)
+                    {
+                        self.complete()?;
+                    }
+                    None
+                }
+                Event::Done | Event::Skipped => None,
             };
-            if changed {
-                self.advance(Cause::Changed)?;
+            if let Some(change) = change {
+                self.advance(Cause::Changed(change))?;
             }
+        }
+        if dirty && self.snapshot.is_some() {
+            return self.dump_failed(Loss::Interrupted);
         }
         Ok(())
     }
@@ -240,10 +321,28 @@ impl Monitor {
         // The whole datagram is checked before any of it is applied, so a
         // `NLMSG_DONE` never completes a snapshot ahead of bad bytes, and
         // an overrun of any sequence fails the dump.
+        let Some(current) = self.request() else {
+            return Ok(());
+        };
+        // After the dump's terminator, nothing more of its sequence may
+        // follow, and an error of its sequence refuses it.
+        let mut ended = false;
         for message in messages(datagram) {
-            match message.and_then(|message| event(&message)) {
-                Ok(Event::Overrun) | Err(_) => return self.dump_failed(Loss::Malformed),
-                Ok(_) => {}
+            let Ok((sequence, found)) =
+                message.and_then(|message| Ok((message.sequence, event(&message)?)))
+            else {
+                return self.dump_failed(Loss::Malformed);
+            };
+            if found == Event::Overrun {
+                return self.dump_failed(Loss::Malformed);
+            }
+            if sequence == current.sequence {
+                match found {
+                    Event::Error(_) => return self.dump_failed(Loss::Refused),
+                    _ if ended => return self.dump_failed(Loss::Malformed),
+                    Event::Done => ended = true,
+                    _ => {}
+                }
             }
         }
         for message in messages(datagram) {
@@ -272,13 +371,17 @@ impl Monitor {
                 Ok(Event::Error(_)) => return self.dump_failed(Loss::Refused),
                 Ok(Event::Done) => match snapshot.request.dump {
                     Dump::Links => {
-                        self.sequence = self.sequence.wrapping_add(1);
+                        self.sequence = next_after(self.sequence);
                         snapshot.request = Request {
                             dump: Dump::Addresses,
                             sequence: self.sequence,
                         };
                     }
-                    Dump::Addresses => return self.complete(),
+                    Dump::Addresses => {
+                        self.sequence = next_after(self.sequence);
+                        snapshot.barrier = Some(self.sequence);
+                        return Ok(());
+                    }
                 },
                 Ok(_) => {}
             }
@@ -359,6 +462,7 @@ impl Monitor {
                 dump: Dump::Links,
                 sequence,
             },
+            barrier: None,
             links: Table::new(LINKS_MAX),
             addresses: Table::new(ADDRESSES_MAX),
         });
@@ -380,7 +484,7 @@ impl Monitor {
     }
 
     fn next_sequence(&mut self) -> u32 {
-        self.sequence = self.sequence.wrapping_add(1);
+        self.sequence = next_after(self.sequence);
         self.sequence
     }
 
@@ -397,5 +501,14 @@ impl Monitor {
         self.stopped = true;
         self.snapshot = None;
         self.publisher.stop();
+    }
+}
+
+/// The sequence number after `sequence`, wrapping, never 0: 0 is the
+/// wake's ([`wake`]).
+fn next_after(sequence: u32) -> u32 {
+    match sequence.wrapping_add(1) {
+        0 => 1,
+        next => next,
     }
 }

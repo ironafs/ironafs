@@ -10,7 +10,7 @@ use alloc::string::ToString;
 
 use super::{NetworkGeneration, Publisher, Stopped, UNAVAILABLE, Unavailable};
 use crate::consumer::probe::probes;
-use crate::consumer::{Cause, Loss};
+use crate::consumer::{Cause, Change, Loss};
 
 #[test]
 fn reader_is_unavailable_before_the_first_move() {
@@ -25,7 +25,10 @@ fn advance_publishes_one_then_two() {
     let (mut publisher, reader) = Publisher::new(consumers);
     assert_eq!(publisher.advance(Cause::Snapshot), Ok(NetworkGeneration(1)));
     assert_eq!(reader.current(), Ok(NetworkGeneration(1)));
-    assert_eq!(publisher.advance(Cause::Changed), Ok(NetworkGeneration(2)));
+    assert_eq!(
+        publisher.advance(Cause::Changed(Change::Route)),
+        Ok(NetworkGeneration(2))
+    );
     assert_eq!(reader.current(), Ok(NetworkGeneration(2)));
 }
 
@@ -33,7 +36,7 @@ fn advance_publishes_one_then_two() {
 fn advance_tells_every_consumer_the_new_generation() {
     let (consumers, seen) = probes();
     let (mut publisher, _reader) = Publisher::new(consumers);
-    publisher.advance(Cause::Changed).unwrap();
+    publisher.advance(Cause::Changed(Change::Route)).unwrap();
     publisher.advance(Cause::Lost(Loss::Overflow)).unwrap();
     for each in &seen {
         assert_eq!(each.moves(), 2);
@@ -47,7 +50,7 @@ fn every_hook_reads_the_old_generation_during_its_call() {
     let (consumers, seen) = probes();
     let (mut publisher, _reader) = Publisher::new(consumers);
     for _ in 0..3 {
-        publisher.advance(Cause::Changed).unwrap();
+        publisher.advance(Cause::Changed(Change::Route)).unwrap();
     }
     for each in &seen {
         assert_eq!(each.moves(), 3);
@@ -61,12 +64,18 @@ fn advance_at_the_last_value_stops_instead_of_publishing_the_marker() {
     let (mut publisher, reader) = Publisher::new(consumers);
     publisher.value = UNAVAILABLE - 2;
     assert_eq!(
-        publisher.advance(Cause::Changed),
+        publisher.advance(Cause::Changed(Change::Route)),
         Ok(NetworkGeneration(UNAVAILABLE - 1))
     );
-    assert_eq!(publisher.advance(Cause::Changed), Err(Stopped));
+    assert_eq!(
+        publisher.advance(Cause::Changed(Change::Route)),
+        Err(Stopped)
+    );
     assert_eq!(reader.current(), Err(Unavailable));
-    assert_eq!(publisher.advance(Cause::Changed), Err(Stopped));
+    assert_eq!(
+        publisher.advance(Cause::Changed(Change::Route)),
+        Err(Stopped)
+    );
     for each in &seen {
         assert_eq!(each.moves(), 1);
         assert_eq!(each.stops(), 1);
@@ -81,7 +90,10 @@ fn stop_tells_every_consumer_once_and_reads_fail() {
     publisher.stop();
     publisher.stop();
     assert_eq!(reader.current(), Err(Unavailable));
-    assert_eq!(publisher.advance(Cause::Changed), Err(Stopped));
+    assert_eq!(
+        publisher.advance(Cause::Changed(Change::Route)),
+        Err(Stopped)
+    );
     for each in &seen {
         assert_eq!(each.stops(), 1);
     }
@@ -115,7 +127,7 @@ fn a_withheld_publisher_tells_every_move_but_publishes_none_until_released() {
     publisher.withhold();
     assert_eq!(reader.current(), Err(Unavailable));
     publisher.advance(Cause::Lost(Loss::Overflow)).unwrap();
-    publisher.advance(Cause::Changed).unwrap();
+    publisher.advance(Cause::Changed(Change::Route)).unwrap();
     assert_eq!(reader.current(), Err(Unavailable));
     assert_eq!(publisher.release(Cause::Snapshot), Ok(NetworkGeneration(4)));
     assert_eq!(reader.current(), Ok(NetworkGeneration(4)));
@@ -131,7 +143,10 @@ fn halt_makes_reads_fail_and_tells_no_consumer() {
     publisher.advance(Cause::Snapshot).unwrap();
     publisher.halt();
     assert_eq!(reader.current(), Err(Unavailable));
-    assert_eq!(publisher.advance(Cause::Changed), Err(Stopped));
+    assert_eq!(
+        publisher.advance(Cause::Changed(Change::Route)),
+        Err(Stopped)
+    );
     drop(publisher);
     for each in &seen {
         assert_eq!((each.moves(), each.stops()), (1, 0));

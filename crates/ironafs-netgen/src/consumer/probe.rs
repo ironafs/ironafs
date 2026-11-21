@@ -9,7 +9,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::{Cause, Consumer, Consumers, Loss, Move};
+use super::{Cause, Change, Consumer, Consumers, Loss, Move};
 use crate::Reader;
 
 /// What one probe saw.
@@ -29,6 +29,8 @@ pub(crate) struct Seen {
     /// Calls during which the reader already showed the generation being
     /// told: a hook called after the publish.
     pub(crate) late: AtomicU64,
+    /// The last change's code (`change_code`).
+    pub(crate) last_change: AtomicU64,
 }
 
 impl Seen {
@@ -49,6 +51,9 @@ impl Seen {
     }
     pub(crate) fn last_loss(&self) -> u64 {
         self.last_loss.load(Ordering::SeqCst)
+    }
+    pub(crate) fn last_change(&self) -> u64 {
+        self.last_change.load(Ordering::SeqCst)
     }
     pub(crate) fn late(&self) -> u64 {
         self.late.load(Ordering::SeqCst)
@@ -80,7 +85,16 @@ impl Consumer for Probe {
                 self.0.moves.fetch_add(1, Ordering::SeqCst);
                 self.0.last.store(generation.get(), Ordering::SeqCst);
                 match cause {
-                    Cause::Changed => {}
+                    Cause::Changed(change) => {
+                        let code = match change {
+                            Change::Link => 1,
+                            Change::Address => 2,
+                            Change::Route => 3,
+                            Change::Rule => 4,
+                            Change::Nexthop => 5,
+                        };
+                        self.0.last_change.store(code, Ordering::SeqCst);
+                    }
                     Cause::Snapshot => {
                         self.0.snapshots.fetch_add(1, Ordering::SeqCst);
                     }

@@ -37,12 +37,22 @@ pub enum Move {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cause {
     /// A link, address, route, policy rule or nexthop changed.
-    Changed,
+    Changed(Change),
     /// A snapshot completed: a change between the subscription and its
     /// end may be in it without having moved the generation.
     Snapshot,
     /// The monitor cannot know it saw every change.
     Lost(Loss),
+}
+
+/// What changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    Link,
+    Address,
+    Route,
+    Rule,
+    Nexthop,
 }
 
 /// What made the monitor lose track (docs/specs/network-generation.md,

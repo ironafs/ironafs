@@ -29,8 +29,9 @@ const ALIGN: usize = 4;
 const LINK_BODY: usize = 16;
 const ADDRESS_BODY: usize = 8;
 
-/// The control message types (`<linux/netlink.h>`); `NLMSG_NOOP` (1) is
-/// skipped with every other type not read.
+/// The control message types (`<linux/netlink.h>`). A `NLMSG_NOOP` (1)
+/// received is skipped with every other type not read.
+const NLMSG_NOOP: u16 = 1;
 const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 const NLMSG_OVERRUN: u16 = 4;
@@ -52,6 +53,9 @@ const RTM_GETNEXTHOP: u16 = 106;
 /// `NLM_F_REQUEST | NLM_F_DUMP` and `NLM_F_DUMP_INTR`.
 const DUMP_FLAGS: u16 = 0x0301;
 const NLM_F_DUMP_INTR: u16 = 0x0010;
+
+/// `NLM_F_REQUEST | NLM_F_ACK`.
+const NOOP_FLAGS: u16 = 0x0005;
 
 /// The attributes read: `IFLA_OPERSTATE`, `IFLA_IFNAME`, `IFLA_MASTER`,
 /// `IFLA_GROUP`; `IFA_ADDRESS`, `IFA_LOCAL`, `IFA_FLAGS`.
@@ -392,6 +396,25 @@ pub(crate) fn dump_request(kind: Dump, sequence: u32) -> [u8; 20] {
         &20_u32.to_ne_bytes()[..],
         &message_type.to_ne_bytes(),
         &DUMP_FLAGS.to_ne_bytes(),
+        &sequence.to_ne_bytes(),
+    ];
+    let mut at = request.iter_mut();
+    for byte in fields.into_iter().flatten() {
+        if let Some(slot) = at.next() {
+            *slot = *byte;
+        }
+    }
+    request
+}
+
+/// `NLMSG_NOOP` with `NLM_F_REQUEST | NLM_F_ACK` and `sequence`: a header
+/// alone, which the kernel acknowledges on the socket that sent it.
+pub(crate) fn acknowledged_noop(sequence: u32) -> [u8; 16] {
+    let mut request = [0_u8; 16];
+    let fields = [
+        &16_u32.to_ne_bytes()[..],
+        &NLMSG_NOOP.to_ne_bytes(),
+        &NOOP_FLAGS.to_ne_bytes(),
         &sequence.to_ne_bytes(),
     ];
     let mut at = request.iter_mut();
