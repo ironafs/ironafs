@@ -41,9 +41,13 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     for self_test in [false, true] {
         crate::bans::run(self_test, output)?;
         crate::deps::run(self_test, output)?;
+        crate::fuzz_deny::run(self_test, output)?;
         crate::grants::run(self_test, output)?;
         crate::pure::run(self_test, output)?;
     }
+    // The replay itself needs the fuzz crate's nightly and cargo-fuzz; CI's
+    // fuzz job runs it. Its judgement is proven here.
+    crate::fuzz::run(true, output)?;
 
     check_reuse_result(
         Command::new("reuse").arg("lint").status(),
