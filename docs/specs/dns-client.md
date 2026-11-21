@@ -1772,4 +1772,5 @@ and never sends a query where the host's policy does not:
 
 ## 14. Review
 
-Not yet reviewed. The record will be in `docs/reviews/`.
+The review record is
+[2026-11-21-m2a-60-dns-client](../reviews/2026-11-21-m2a-60-dns-client.md).
