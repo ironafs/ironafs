@@ -20,8 +20,9 @@
 //!
 //! On Linux a second fixture, `struct sockaddr` from `<sys/socket.h>`
 //! (whose `sa_data` is `char[14]` in glibc and musl, while macOS adds a
-//! length byte), must compile, and with its array's count changed must
-//! fail at the array's assertion.
+//! length byte), must compile, and with its array's element type changed
+//! at the same size (`uint8_t`, which is not `char`) must fail at the
+//! array's assertion.
 //!
 //! The fixture's headers are Unix headers. On a Windows host, which has no
 //! row with a foreign item yet, the self-test says so and passes; the
@@ -63,10 +64,10 @@ const ARRAY_FIXTURE: &str = "use core::ffi::{c_char, c_ushort};\n\
                              struct sockaddr {\n    sa_family: c_ushort,\n    sa_data: [c_char; 14],\n}\n";
 const ARRAY_HEADERS: &[&str] = &["sys/socket.h"];
 const ARRAY_PLANT: (&str, &str, &str, &str) = (
-    "an array member's count changed",
+    "an array member's element type changed at the same size",
     "[c_char; 14]",
-    "[c_char; 15]",
-    "->sa_data, char (*)[15]: 1",
+    "[u8; 14]",
+    "->sa_data, uint8_t (*)[14]: 1",
 );
 
 /// The fixture's constants compared with a C expression, as sites.json's
@@ -195,34 +196,36 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
             ),
         );
     }
-    match stage(FIXTURE, HEADERS, &dir.join("clean.c"))? {
+    match stage(FIXTURE, HEADERS, EXPRESSIONS, &dir.join("clean.c"))? {
         Stage::Compiled => report(output, "passed: the fixture".to_owned())?,
         Stage::Reader(error) | Stage::Generator(error) | Stage::Compiler(error, _) => {
             return Err(failure("the fixture", error));
         }
     }
-    let mut compiler: Vec<(&'static str, String, &[&str], &str)> = Vec::new();
-    for (name, from, to, label) in COMPILER {
-        compiler.push((name, plant(FIXTURE, name, from, to)?, HEADERS, label));
-    }
     if cfg!(target_os = "linux") {
-        match stage(ARRAY_FIXTURE, ARRAY_HEADERS, &dir.join("array.c"))? {
+        match stage(ARRAY_FIXTURE, ARRAY_HEADERS, &[], &dir.join("array.c"))? {
             Stage::Compiled => report(output, "passed: the array fixture".to_owned())?,
             Stage::Reader(error) | Stage::Generator(error) | Stage::Compiler(error, _) => {
                 return Err(failure("the array fixture", error));
             }
         }
-        let (name, from, to, label) = ARRAY_PLANT;
-        compiler.push((
-            name,
-            plant(ARRAY_FIXTURE, name, from, to)?,
-            ARRAY_HEADERS,
-            label,
-        ));
     }
+    let compiler = compiler_cases()?;
     let planted_count = compiler.len();
-    for (index, (name, planted, headers, label)) in compiler.into_iter().enumerate() {
-        match stage(&planted, headers, &dir.join(format!("compiler-{index}.c")))? {
+    for (index, case) in compiler.into_iter().enumerate() {
+        let Planted {
+            name,
+            source: planted,
+            headers,
+            expressions,
+            label,
+        } = case;
+        match stage(
+            &planted,
+            headers,
+            expressions,
+            &dir.join(format!("compiler-{index}.c")),
+        )? {
             Stage::Compiler(error, at) if at.contains(label) => {
                 report(output, format!("caught by the C compiler: {name}: {error}"))?;
             }
@@ -245,7 +248,7 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
     }
     for (name, from, to, phrase) in READER {
         let planted = plant(FIXTURE, name, from, to)?;
-        match stage(&planted, HEADERS, &dir.join("reader.c"))? {
+        match stage(&planted, HEADERS, EXPRESSIONS, &dir.join("reader.c"))? {
             Stage::Reader(error) | Stage::Generator(error) if error.contains(phrase) => {
                 report(output, format!("caught by the reader: {name}: {error}"))?;
             }
@@ -269,6 +272,43 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
     )
 }
 
+/// One mismatch planted for the C compiler: its name, the planted
+/// declarations with their headers and expressions, and the assertion's
+/// label the compiler's error must carry.
+struct Planted {
+    name: &'static str,
+    source: String,
+    headers: &'static [&'static str],
+    expressions: &'static [(&'static str, &'static str)],
+    label: &'static str,
+}
+
+/// The compiler-stage plants: the fixture's, and on Linux the array
+/// fixture's.
+fn compiler_cases() -> Result<Vec<Planted>, Error> {
+    let mut cases = Vec::new();
+    for &(name, from, to, label) in COMPILER {
+        cases.push(Planted {
+            name,
+            source: plant(FIXTURE, name, from, to)?,
+            headers: HEADERS,
+            expressions: EXPRESSIONS,
+            label,
+        });
+    }
+    if cfg!(target_os = "linux") {
+        let (name, from, to, label) = ARRAY_PLANT;
+        cases.push(Planted {
+            name,
+            source: plant(ARRAY_FIXTURE, name, from, to)?,
+            headers: ARRAY_HEADERS,
+            expressions: &[],
+            label,
+        });
+    }
+    Ok(cases)
+}
+
 fn plant(fixture: &str, name: &'static str, from: &str, to: &str) -> Result<String, Error> {
     if fixture.contains(from) {
         Ok(fixture.replacen(from, to, 1))
@@ -281,7 +321,12 @@ fn plant(fixture: &str, name: &'static str, from: &str, to: &str) -> Result<Stri
 }
 
 /// Reads, generates and compiles one fixture, and says where it stopped.
-fn stage(source: &str, headers: &[&str], file: &Path) -> Result<Stage, Error> {
+fn stage(
+    source: &str,
+    headers: &[&str],
+    expressions: &[(&str, &str)],
+    file: &Path,
+) -> Result<Stage, Error> {
     let tokens = tokens_with_strings(source).map_err(|error| Error::SelfTest {
         check: CHECK,
         case: "reading the fixture",
@@ -292,7 +337,7 @@ fn stage(source: &str, headers: &[&str], file: &Path) -> Result<Stage, Error> {
         return Ok(Stage::Reader(error));
     }
     let headers: Vec<String> = headers.iter().map(|header| (*header).to_owned()).collect();
-    let expressions: Vec<(String, String)> = EXPRESSIONS
+    let expressions: Vec<(String, String)> = expressions
         .iter()
         .map(|(name, expression)| ((*name).to_owned(), (*expression).to_owned()))
         .collect();
