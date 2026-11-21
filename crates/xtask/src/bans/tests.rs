@@ -10,8 +10,8 @@ use std::ffi::OsStr;
 
 use super::{
     BANS, Ban, CONF_DIR, Found, Lint, Snapshot, Violation, build_overrides, cargo_warnings,
-    changed, config_files, fired_violations, line_breaks, listed, overridden, plain_terminal,
-    planted_source, root_config, uncovered, unreadable,
+    changed, config_files, fired_violations, line_breaks, listed, outside_root, overridden,
+    plain_terminal, planted_source, root_config, uncovered, unreadable, workspace_clippy,
 };
 
 /// Clippy's short-format warning for `ban` fired on line `line`, spelt
@@ -852,6 +852,36 @@ fn line_breaks_refuses_a_path_holding_one() {
         found
             .iter()
             .all(|violation| matches!(violation, Violation::Unbuilt(_))),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn workspace_clippy_lints_every_feature() {
+    // Code behind a feature no build enables would otherwise never be
+    // compiled, so no ban could fire on it.
+    let command = workspace_clippy();
+    assert!(
+        command.get_args().any(|arg| arg == "--all-features"),
+        "{:?}",
+        command.get_args().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn outside_root_refuses_a_member_outside_the_root() {
+    let root = Path::new("/w");
+    let members = [
+        PathBuf::from("/w/crates/a"),
+        PathBuf::from("/elsewhere/b"),
+        PathBuf::from("/w2/c"),
+    ];
+    let found = outside_root(root, &members);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+        found.iter().all(
+            |violation| matches!(violation, Violation::Unbuilt(text) if text.contains("outside"))
+        ),
         "{found:?}"
     );
 }

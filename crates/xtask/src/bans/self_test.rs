@@ -13,13 +13,16 @@
 //! the check cannot read, and a ban key spelt with a TOML escape, refused
 //! as unreadable. It builds crates whose build scripts set
 //! `CLIPPY_CONF_DIR`, and `Clippy_Conf_Dir`, for their compilers, and one
-//! whose build script writes a `clippy.toml`, and proves each refused,
-//! beside one whose build script sets another variable, which passes.
+//! whose build script writes a `clippy.toml`, and one whose build script
+//! writes a cargo configuration (`.cargo/config.toml`), and proves each
+//! refused, beside one whose build script sets another variable, which
+//! passes.
 //! Last, it plants cargo configurations: one in a workspace whose `[env]`
 //! sets `CLIPPY_CONF_DIR` under an escaped key, one in cargo's home that
 //! sets it by a dotted key, and one cargo would read that cannot be read,
 //! and proves each refused, beside one whose `[env]` sets another
-//! variable, which passes.
+//! variable, which passes. The canary's own cases, each run through the
+//! workspace's lint, are in `canary`.
 
 mod canary;
 
