@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The VL and fileserver models driven through the simulator, one
-//! scenario per behaviour they serve (`docs/specs/vl-fs-read.md`; issue
-//! #96's acceptance list), with requests scripted in each test. Every
+//! scenario per behaviour they serve (`docs/specs/vl-fs-read.md`), with
+//! requests scripted in each test. Every
 //! scenario runs twice from one seed and must give byte-identical traces.
 
 use std::sync::{Arc, Mutex};

@@ -205,8 +205,8 @@ pub struct Promise {
 }
 
 /// A volume sync record (5.1.3, point 4). Its wire fields are MISSING;
-/// the model's record is the volume's incarnation, which #78's logic
-/// reads.
+/// the model's record is the volume's incarnation, which the volume
+/// incarnation specification reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VolSync {
     /// The volume's incarnation.
