@@ -95,11 +95,14 @@ Not covered, and where it is:
 
 1. The generation stands for the client's addresses and the routes toward
    any server (C23, point 2), so it moves on any change of `[OWN]`:
-   - a link's existence, or its usability: the `IFF_UP`, `IFF_RUNNING`,
-     `IFF_LOWER_UP` and `IFF_DORMANT` flags and the operational state
-     (`IFLA_OPERSTATE`). Other link changes (statistics, the MTU, the
-     link-layer address, wireless events) leave addresses and routes as
-     they were and do not move it;
+   - a link's existence, its usability (the `IFF_UP`, `IFF_RUNNING`,
+     `IFF_LOWER_UP` and `IFF_DORMANT` flags and the operational state,
+     `IFLA_OPERSTATE`), or what routing can match on it: its group
+     (`IFLA_GROUP`, which a policy rule's `suppress_ifgroup` uses), its
+     master (`IFLA_MASTER`, a VRF among them) and its name
+     (`IFLA_IFNAME`, which a scoped DNS cell names). Other link changes
+     (statistics, the MTU, the link-layer address, wireless events) leave
+     addresses and routes as they were and do not move it;
    - an address's existence, or its flags or scope; a deprecated address
      carries `IFA_F_DEPRECATED`, so deprecation is a flag change;
    - any route, policy rule or nexthop object, of either family, added,
@@ -108,17 +111,21 @@ Not covered, and where it is:
    route change moves it `[OWN]`. Narrowing would need the route answer
    (section 2) and a list of servers; the cost is more moves on a host
    whose routes change often (C23's "Revisit if").
-3. **Nexthop objects** `[OWN]`, decided here as ADR 0005, sheet 23, left
-   open. Routes can point at a nexthop object (Linux 5.3 and later), and a
+3. **Nexthop objects** `[OWN]`, decided here: ADR 0005, sheet 23, leaves
+   the nexthops to "the network-change monitor's design"; this is that
+   decision, and the sheet's text is left as accepted. Routes can point at a nexthop object (Linux 5.3 and later), and a
    change to that object changes where those routes lead. Whether the
    kernel also reports each route using the object is a run-time setting
    (`net.ipv4.nexthop_compat_mode`, ip-sysctl in the kernel's
    documentation) that routing daemons may turn off. So the notify socket
    joins the nexthop group too (`RTNLGRP_NEXTHOP`, group 32, mask bit
-   `1 << 31`, which `nl_groups` can still carry). On a kernel without the
-   group the bit names no group; the kernel ignores bits past its own
-   groups (`netlink(7)`: `nl_groups` is a bit mask; the bind succeeds), so
-   the set stays valid on every supported kernel.
+   `1 << 31`, which `nl_groups` can still carry; the ABI check proves the
+   number against the build's `<linux/rtnetlink.h>`, which must therefore
+   be from Linux 5.3 or later, or carry the backport). On a kernel without
+   the group the bit names no group; whether its bind then succeeds is
+   UNVERIFIED: `netlink(7)` documents the mask, not this case
+   (section 13, Q5). If it failed, the monitor would not start, which
+   fails closed.
 4. Neighbour entries, multicast routes and the IPv6 prefix and
    router-advertisement groups are not watched `[OWN]`: none changes an
    address or a route toward a server.
@@ -128,7 +135,10 @@ Not covered, and where it is:
 
 1. The counter is a 64-bit unsigned integer. Values 1 to `2^64 - 2` are
    generations; `2^64 - 1` means **unavailable**. It starts unavailable;
-   the first move publishes 1 `[OWN]`.
+   the first move publishes 1 `[OWN]`. It is also unavailable from a loss
+   until the fresh snapshot after it completes (5.7, point 6): ADR 0005,
+   sheet 23, "take a fresh verified snapshot before reusing state". The
+   moves in that time are told to every consumer but not published.
 2. Each move adds exactly one, so generations are strictly increasing and
    never reused `[OWN]`.
 3. A move that would publish `2^64 - 1` is **exhaustion**: the source
@@ -136,8 +146,10 @@ Not covered, and where it is:
    over half a million years; it is defined only so the counter is
    bounded.
 4. **Stopped.** When the source stops (exhaustion, a fatal error, or its
-   owner dropping it), every hook is called with "stopped" and the
-   published value becomes unavailable. A read then fails, and a consumer
+   owner dropping it), the published value becomes unavailable and every
+   hook is called with "stopped". **Halted:** a driver unwinding from a
+   hook's panic, or finding its lock poisoned by one, stops the source
+   without calling the hooks again. A read then fails, and a consumer
    holding a generation sees it no longer current. It fails closed
    `[OWN]`.
 5. A reader reads the published value with acquire ordering; the
@@ -165,9 +177,11 @@ Not covered, and where it is:
    published. A hook that reads the generation during its call reads the
    old one `[OWN]`, from the issue's failure case "an event raised after
    a consumer has already used the old state".
-3. Hooks run on the monitor's thread, or on the thread that reports a
-   resume (5.7, point 6), one at a time, and must not block on the
-   network or on a lock the source's readers hold `[OWN]`.
+3. Hooks run one at a time, under the monitor's lock, on whichever
+   thread hands the monitor its event: the driver's threads, the thread
+   that reports a resume, or the one that drops the handle (5.7,
+   point 7). They must not block on the network or on a lock the
+   source's readers hold `[OWN]`.
 4. The causes are: a change (5.1), a snapshot completed (5.7, point 4),
    and each loss of section 7, named.
 
@@ -256,9 +270,9 @@ any byte it covers is read, and every sum uses checked arithmetic.
 
 ### 5.7 States and ordering
 
-1. **Start.** The notify socket is made, and joins its groups, before the
-   request socket is used. Then the first snapshot starts. Until it
-   completes, the generation is unavailable.
+1. **Start.** The monitor asks for no dump until the driver says its
+   notify socket has joined its groups ("subscribed"). Then the first
+   snapshot starts. Until it completes, the generation is unavailable.
 2. **Snapshot.** The monitor asks for a link dump, then an address dump,
    each with a new sequence number, one at a time. Dump messages with any
    other sequence number are stale and ignored. Each dump's records fill a
@@ -282,25 +296,35 @@ any byte it covers is read, and every sum uses checked arithmetic.
    - anything else: skipped.
    One datagram with several changes moves the generation once per
    change.
-6. **Losses** (section 7) move the generation at once and start a fresh
-   snapshot, abandoning one in progress. A resume is a loss: changes
+6. **Losses** (section 7) make the generation unavailable, then tell
+   every consumer of the move at once, and start a fresh snapshot,
+   abandoning one in progress; its completion publishes again. After a
+   loss on the notify socket (an overflow, a truncated or malformed
+   datagram, `NLMSG_OVERRUN`, a failed receive) the driver makes that
+   socket again, joined, before the snapshot may start: its queue may hold
+   records from before the loss, which would otherwise be applied to the
+   fresh tables after they were built. A resume is a loss too (changes
    seen by the network while the machine slept may not reach the kernel
-   until later, so nothing kept from before it is trusted.
-7. **The driver** `[OWN]`. One thread owns the notify socket. The
-   request socket, the monitor and the snapshot it runs share one lock,
-   so a resume reported from another thread takes its snapshot before the
-   call returns. A dump that does not end in order (links, then
-   addresses, then none) may still be running in the kernel on that
-   socket, so the request socket is made again before the next dump.
-   When the thread ends, for any reason, the source stops (5.2, point 4).
+   until later), but it leaves the notify socket's queue whole.
+7. **The driver** `[OWN]`. One thread owns the notify socket and makes
+   it again after its losses (point 6). A second thread owns the request
+   socket: it waits for the monitor to ask for a dump, and sends and
+   receives without the lock, which it takes only to hand a datagram
+   over. So no dump keeps notifications unread or a resume report
+   waiting; a kernel that never answered a dump would leave the
+   generation unavailable, never stale. A dump that does not end in order
+   (links, then addresses, then none) may still be running in the kernel
+   on that socket, so the request socket is made again before the next
+   dump. When either thread ends, or the owner drops the handle, the
+   source stops (5.2, point 4).
 8. **Where it lives** `[OWN]`, checked against ADR 0004, C4. The counter,
    the hooks, the decoder and the state machine are a new pure crate,
    `ironafs-netgen` (no dependencies; its consumers, pure crates among
    them, read the counter's type). The thread is in the driver
    `ironafs-net`, which C4, point 3, gives the UDP driver; the monitor is
    the other network driver, and it uses only `ironafs-os`'s
-   `linux-rtnetlink` site. C4, point 1's table gains the row (section 13,
-   Q4).
+   `linux-rtnetlink` site; this is a named departure from C4, point 3's
+   row. C4, point 1's table gains the row (section 13, Q4).
 9. A move happens before anything that depends on the new state is read
    by a consumer (5.3, point 2). There remains a window between the
    kernel's change and the monitor reading its notification, in which a
@@ -326,12 +350,15 @@ any byte it covers is read, and every sum uses checked arithmetic.
 | notify socket overflow (`ENOBUFS`) | move (overflow); fresh snapshot |
 | truncated notification | move (truncated); fresh snapshot |
 | malformed notification, or `NLMSG_OVERRUN` | move (malformed); fresh snapshot |
+| after any of the three rows above | the notify socket is made again, joined, before the snapshot |
 | a datagram from a sender other than the kernel | ignored: the site does not return it, and it moves nothing (a local process could otherwise force moves) |
 | any other failed receive on the notify socket | move (failed); the notify socket is made again (joined before use), then a fresh snapshot; if it cannot be made, stopped |
-| dump truncated, malformed, interrupted (`NLM_F_DUMP_INTR`) or answered with `NLMSG_ERROR` | move (the cause); the snapshot restarts; 8 in a row: stopped |
+| dump truncated, malformed, interrupted (`NLM_F_DUMP_INTR`), answered with `NLMSG_ERROR`, or holding `NLMSG_OVERRUN` of any sequence | move (the cause); the snapshot restarts; 8 in a row: stopped. A dump datagram is checked whole before any of it is applied, so `NLMSG_DONE` never completes a snapshot ahead of bad bytes |
 | request socket send or receive failure | as a failed dump |
 | resume | move (resumed); fresh snapshot |
-| counter exhausted, or the source dropped | stopped: every hook told, reads fail |
+| counter exhausted, the handle dropped, or a monitor thread ended | stopped: reads fail, every hook told |
+| a hook panicked | halted: reads fail, no hook called again |
+| any loss, until the fresh snapshot completes | reads fail (5.2, point 1) |
 
 Every failure fails closed: consumers drop what they kept, and nothing
 published before it is trusted after it.
@@ -348,6 +375,9 @@ published before it is trusted after it.
 - A process that changes routes faster than the monitor reads makes it
   overflow; each overflow is a move and a snapshot, so the result is more
   moves, never a missed one.
+- A hook that panics leaves nothing readable: a loss withholds the
+  generation before any hook runs, and the driver halts the source when a
+  thread unwinds from a hook or finds its lock poisoned (5.2, point 4).
 
 ## 9. Interoperability
 
@@ -359,8 +389,10 @@ Not applicable: the monitor talks only to the local kernel.
    address of each family, a route, a rule, a nexthop, `NLMSG_DONE` with
    and without `NLM_F_DUMP_INTR`, `NLMSG_ERROR`); a reject corpus for each
    check of 5.6; a seeded sweep over truncations and changed bytes of the
-   golden datagrams that asserts no panic and that every truncation is
-   either a whole shorter datagram or malformed.
+   golden datagrams that asserts no panic, that a prefix is accepted
+   exactly when it ends at a message's end (with that many messages), and
+   that an accepted changed input holds no more messages than its length
+   allows.
 2. Counter and hooks: unavailable before the first move; strictly
    increasing; hooks read the old value during the call; exhaustion and
    drop stop it.
@@ -401,9 +433,13 @@ Not applicable: the monitor talks only to the local kernel.
 - **Q3. Resume detection**: who calls the resume input (the daemon's
   clock-pair check, ADR 0004 C37, point 4).
 - **Q4. The crate row**: C4, point 1's table gains `ironafs-netgen`, and
-  point 3's `ironafs-net` row gains the monitor; whether that is written
-  as an amendment of C4 (Working) with this specification or with the
-  M2a amendments (#53) is open.
+  point 3's `ironafs-net` row gains the monitor. Decided: the amendment of
+  C4 (Working) is written with the M2a amendments (#53), a cross-PR item;
+  until then the monitor's place in `ironafs-net` is a named departure
+  (5.7, point 8).
+- **Q5. The nexthop bit on a kernel before 5.3**: whether binding with an
+  unknown group bit succeeds. A measurement on such a kernel settles it
+  (5.1, point 3).
 
 ## 14. Review
 

@@ -384,6 +384,12 @@ impl Monitor {
         self.sequence
     }
 
+    /// Whether the source has stopped.
+    #[must_use]
+    pub fn is_stopped(&self) -> bool {
+        self.stopped
+    }
+
     /// Stops the source: every consumer is told, the generation becomes
     /// unavailable, and every later call fails. A driver whose thread ends
     /// calls it, so readers never keep a generation nobody moves.

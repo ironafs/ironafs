@@ -341,14 +341,16 @@ jobs:
           cat statvfs.log
           grep -q ' 2 passed' statvfs.log
       - name: Run the network-change monitor's unprivileged tests
-        # The monitor (ironafs-net) over the target's route sockets, before
-        # any step builds as root. Each test is checked by name.
+        # The monitor (ironafs-net) over the target's route sockets: four
+        # tests, before any step builds as root. Each is checked by name.
         run: |
           cargo nextest run -p ironafs-net --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked \
             > monitor.log 2>&1 || { cat monitor.log; exit 1; }
           cat monitor.log
           for test in the_first_snapshot_publishes_generation_one \
-            a_resume_moves_the_generation_then_a_snapshot_moves_it_again; do
+            a_resume_moves_the_generation_then_a_snapshot_moves_it_again \
+            a_hook_that_panics_leaves_nothing_readable_and_the_source_halted \
+            dropping_the_handle_stops_the_source; do
             grep -Eq "PASS .* ironafs-net::it monitor::$test\$" monitor.log
           done
       - name: Run linux-udp6's kernel tests at bindv6only 0 and at 1, each in a network namespace of its own

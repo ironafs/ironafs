@@ -15,6 +15,8 @@
 //! that never comes is a hang the runner terminates.
 
 use std::fmt::Write as _;
+use std::io::Write as _;
+use std::process::Stdio;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -30,12 +32,17 @@ struct Hook {
     reader: Reader,
     sender: Sender<Seen>,
     pause: Arc<Mutex<()>>,
+    /// A cause whose move makes this hook panic.
+    panic_on: Option<Cause>,
 }
 
 impl Consumer for Hook {
     fn moved(&mut self, change: Move) {
         // A test holding the pause stalls the monitor's thread here.
         drop(self.pause.lock().unwrap_or_else(PoisonError::into_inner));
+        if let (Some(cause), Move::To(_, seen)) = (self.panic_on, change) {
+            assert_ne!(cause, seen, "a planted panic in a hook");
+        }
         let read = self.reader.current().ok();
         let _ = self.sender.send((self.place, change, read));
     }
@@ -53,13 +60,19 @@ type Command = std::process::Command;
 
 /// Seven hooks, one per consumer, all sending to one channel, all
 /// stalled while `pause` is held.
-fn hooks(sender: &Sender<Seen>, reader: &Reader, pause: &Arc<Mutex<()>>) -> Consumers {
+fn hooks(
+    sender: &Sender<Seen>,
+    reader: &Reader,
+    pause: &Arc<Mutex<()>>,
+    panic_on: Option<Cause>,
+) -> Consumers {
     let hook = |place: usize| -> Box<dyn Consumer> {
         Box::new(Hook {
             place,
             reader: reader.clone(),
             sender: sender.clone(),
             pause: Arc::clone(pause),
+            panic_on,
         })
     };
     Consumers {
@@ -96,14 +109,18 @@ fn next_move(moves: &Receiver<Seen>) -> (NetworkGeneration, Cause) {
     told.unwrap()
 }
 
-/// Waits for a move of `cause`, skipping others, and returns its
-/// generation, which the reader then shows.
+/// Waits for a move of `cause`, skipping others, then until the reader
+/// shows that generation or a later one (the last hook returns before the
+/// thread publishes; a loss's generation is published by the snapshot
+/// after it), and returns it.
 #[track_caller]
 fn wait_for(moves: &Receiver<Seen>, reader: &Reader, cause: Cause) -> NetworkGeneration {
     loop {
         let (generation, seen) = next_move(moves);
         if seen == cause {
-            assert!(reader.current().unwrap() >= generation);
+            while !reader.current().is_ok_and(|now| now >= generation) {
+                std::thread::yield_now();
+            }
             return generation;
         }
     }
@@ -119,15 +136,10 @@ fn started() -> (
 ) {
     let (sender, moves) = channel();
     let pause = Arc::new(Mutex::new(()));
-    let (reader, handle) = spawn(|reader| hooks(&sender, reader, &pause)).unwrap();
+    let (reader, handle) = spawn(|reader| hooks(&sender, reader, &pause, None)).unwrap();
     let first = wait_for(&moves, &reader, Cause::Snapshot);
     assert_eq!(first.get(), 1);
     (handle, reader, moves, pause)
-}
-
-/// Every move already sent.
-fn drain(moves: &Receiver<Seen>) {
-    while moves.try_recv().is_ok() {}
 }
 
 /// Runs `ip` with `arguments`, which must succeed.
@@ -149,19 +161,44 @@ fn the_first_snapshot_publishes_generation_one() {
 fn a_resume_moves_the_generation_then_a_snapshot_moves_it_again() {
     let (handle, reader, moves, _pause) = started();
     handle.resumed().unwrap();
-    // Both moves happened before `resumed` returned.
-    let (lost, cause) = next_move(&moves);
-    assert_eq!((lost.get(), cause), (2, Cause::Lost(Loss::Resumed)));
-    let (snapshot, cause) = next_move(&moves);
-    assert_eq!((snapshot.get(), cause), (3, Cause::Snapshot));
-    assert_eq!(reader.current().unwrap(), snapshot);
+    // Other changes on a shared host may come between; they are skipped.
+    let lost = wait_for(&moves, &reader, Cause::Lost(Loss::Resumed));
+    let snapshot = wait_for(&moves, &reader, Cause::Snapshot);
+    assert!(snapshot > lost);
+}
+
+#[test]
+fn a_hook_that_panics_leaves_nothing_readable_and_the_source_halted() {
+    let (sender, moves) = channel();
+    let pause = Arc::new(Mutex::new(()));
+    let panic_on = Some(Cause::Lost(Loss::Resumed));
+    let (reader, handle) = spawn(|reader| hooks(&sender, reader, &pause, panic_on)).unwrap();
+    wait_for(&moves, &reader, Cause::Snapshot);
+    let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle.resumed()));
+    assert!(resumed.is_err());
+    // The loss withheld the generation before any hook ran, and the
+    // poisoned lock halts the source on its next use.
+    assert!(reader.current().is_err());
+    assert_eq!(handle.resumed(), Err(ironafs_netgen::Stopped));
+    assert!(reader.current().is_err());
+}
+
+#[test]
+fn dropping_the_handle_stops_the_source() {
+    let (handle, reader, moves, _pause) = started();
+    drop(handle);
+    // Every hook is told the source stopped, and nothing is readable.
+    for place in 0..7 {
+        let (seen_place, change, _) = moves.recv().unwrap();
+        assert_eq!((seen_place, change), (place, Move::Stopped));
+    }
+    assert!(reader.current().is_err());
 }
 
 #[test]
 #[ignore = "needs CAP_NET_ADMIN in a network namespace of its own, and iproute2: run there, one test at a time"]
 fn an_address_a_route_and_a_policy_rule_each_move_the_generation() {
     ip("link set lo up");
-    let (_handle, reader, moves, _pause) = started();
     for (add, delete) in [
         (
             "address add 192.0.2.1/24 dev lo",
@@ -189,13 +226,14 @@ fn an_address_a_route_and_a_policy_rule_each_move_the_generation() {
         ),
     ] {
         // Added, then removed: each moves it, and the namespace is left
-        // as it was.
+        // as it was. Each change gets a monitor of its own, subscribed after
+        // the last change's notifications were sent (`ip` returns after the
+        // kernel's answer), so only this change can move it.
         for change in [add, delete] {
-            drain(&moves);
-            let before = reader.current().unwrap();
+            let (_handle, reader, moves, _pause) = started();
             ip(change);
             let after = wait_for(&moves, &reader, Cause::Changed);
-            assert!(after > before, "{change}");
+            assert!(after.get() > 1, "{change}");
         }
     }
 }
@@ -208,7 +246,6 @@ fn an_overflow_moves_the_generation_then_a_snapshot_moves_it_again() {
     // The thread stalls in a hook on the first change, so the burst fills
     // the notify socket, which nobody reads, until the kernel drops.
     let held = pause.lock().unwrap();
-    let batch = std::env::temp_dir().join(format!("ironafs-net-burst-{}", std::process::id()));
     let mut lines = String::new();
     for index in 0..4000 {
         writeln!(lines, "address add 2001:db8:9::{index:x}/128 dev lo nodad").unwrap();
@@ -216,9 +253,19 @@ fn an_overflow_moves_the_generation_then_a_snapshot_moves_it_again() {
     for index in 0..4000 {
         writeln!(lines, "address del 2001:db8:9::{index:x}/128 dev lo").unwrap();
     }
-    std::fs::write(&batch, lines).unwrap();
-    ip(&format!("-batch {}", batch.display()));
-    std::fs::remove_file(&batch).unwrap();
+    // The batch goes through standard input: no file a root run writes.
+    let mut batch = Command::new("ip")
+        .args(["-batch", "-"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    batch
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(lines.as_bytes())
+        .unwrap();
+    assert!(batch.wait().unwrap().success());
     drop(held);
     let lost = wait_for(&moves, &reader, Cause::Lost(Loss::Overflow));
     let snapshot = wait_for(&moves, &reader, Cause::Snapshot);

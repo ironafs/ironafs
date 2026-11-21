@@ -602,7 +602,9 @@ fn a_link_s_group_master_or_name_changing_moves_the_generation() {
 #[test]
 fn halt_makes_the_generation_unavailable_without_calling_any_hook() {
     let (mut monitor, reader, seen) = started();
+    assert!(!monitor.is_stopped());
     monitor.halt();
+    assert!(monitor.is_stopped());
     assert_eq!(reader.current(), Err(Unavailable));
     assert_eq!(monitor.lost(Loss::Resumed), Err(Stopped));
     for each in &seen {
