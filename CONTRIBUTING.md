@@ -62,8 +62,11 @@ without `Assisted-by:`, published text (an issue, pull request, comment,
 review or release notes) without its disclosure line, and `gh pr merge`
 without `--squash`, `--match-head-commit` and `--body-file`, and says what
 to fix. It fails closed: a command it cannot
-read, or a guard that cannot build, blocks the command. It checks only that
-a disclosure line is present and well formed, never who wrote the text.
+read, or a guard that cannot build, blocks the command. It cannot tell a
+command line from text that quotes one, so it may block a command whose
+argument quotes a git or gh command, such as
+`python3 t.py 'git push origin main'`. It checks only that a disclosure line
+is present and well formed, never who wrote the text.
 
 To run the checks individually, use the following commands.
 
