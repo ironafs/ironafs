@@ -11,6 +11,7 @@
 
 mod definition;
 mod runtime;
+mod state;
 
 use std::fmt;
 use std::io;
@@ -32,6 +33,11 @@ pub(crate) enum Failure {
         /// The end of the step's error output, unless the step is secret.
         detail: String,
     },
+    /// The run directory already exists or already holds keys.
+    RunDirInUse(PathBuf),
+    /// Teardown could not remove everything; each failure is listed, and
+    /// what was not removed stays recorded.
+    Teardown(Vec<Failure>),
     /// A file or directory could not be read or written.
     Io {
         operation: &'static str,
@@ -69,6 +75,19 @@ impl fmt::Display for Failure {
                     None => write!(formatter, "step {name} was ended by a signal"),
                 }?;
                 write!(formatter, ":\n{detail}")
+            }
+            Self::RunDirInUse(path) => {
+                write!(formatter, "the run directory {} is in use", path.display())
+            }
+            Self::Teardown(failures) => {
+                write!(
+                    formatter,
+                    "teardown left {} failures; run `cargo xtask cell down` again:",
+                    failures.len()
+                )?;
+                failures
+                    .iter()
+                    .try_for_each(|failure| write!(formatter, "\n  {failure}"))
             }
             Self::Io {
                 operation,
