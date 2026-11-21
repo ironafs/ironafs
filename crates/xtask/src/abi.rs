@@ -577,6 +577,27 @@ fn unsigned(name: &str) -> Option<bool> {
     }
 }
 
+/// Refuses an expression mapped to a constant the declarations do not
+/// hold, which would otherwise prove nothing.
+fn unmapped_expressions(
+    expressions: &[(String, String)],
+    declarations: &Declarations,
+) -> Result<(), String> {
+    for (name, _) in expressions {
+        if !declarations
+            .constants
+            .iter()
+            .any(|(constant, _)| constant == name)
+        {
+            return Err(format!(
+                "sites.json maps `{name}` to a C expression, but the declarations hold no such \
+                 constant"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The size and alignment of a type under `repr(C)`.
 fn layout(
     found: &CType,
@@ -710,18 +731,7 @@ pub(crate) fn c_source(
             );
         }
     }
-    for (name, _) in expressions {
-        if !declarations
-            .constants
-            .iter()
-            .any(|(constant, _)| constant == name)
-        {
-            return Err(format!(
-                "sites.json maps `{name}` to a C expression, but the declarations hold no such \
-                 constant"
-            ));
-        }
-    }
+    unmapped_expressions(expressions, declarations)?;
     for (name, value) in &declarations.constants {
         match expressions.iter().find(|(constant, _)| constant == name) {
             Some((_, expression)) => assert(format!("({expression}) == {value}"), name.clone()),
