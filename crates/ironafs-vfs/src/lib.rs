@@ -11,6 +11,7 @@ extern crate alloc;
 mod capability;
 mod commit;
 mod error;
+mod extension;
 mod reserved;
 
 pub use capability::{
@@ -18,4 +19,5 @@ pub use capability::{
 };
 pub use commit::CommitReason;
 pub use error::{Surface, VfsError};
+pub use extension::{Extension, ExtensionError, Extensions, MAX_EXTENSION_BYTES, MAX_EXTENSIONS};
 pub use reserved::Reserved;
