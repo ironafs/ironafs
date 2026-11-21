@@ -448,7 +448,8 @@ cryptography, published test vector sets, such as NIST's CAVP and ACVTS
 files, Wycheproof's vectors and an RFC's test cases, may be run as a
 separate conformance layer, apart from every specification's golden
 vectors. Each set is used under its own licence, checked and recorded
-with a `docs/provenance.md` row before it is added, and kept in its own
+with its licence text in `LICENSES/`, covered by `reuse lint`, and a
+`docs/provenance.md` row before it is added, and kept in its own
 directory under the owning crate's tests, unmodified, with its source and
 version. A conformance set is never a specification's golden vector,
 never the only check of a requirement, and never cited as the derivation
