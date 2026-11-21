@@ -69,9 +69,10 @@ Not covered, and where it is:
 2. A move calls every consumer's hook first and only then publishes the
    new value, so no reader sees a new value whose consumers have not yet
    dropped what the old one let them keep.
-3. On Linux one thread holds a route-netlink notify socket, joined before
-   anything is read, and a request socket for dumps. It keeps a table of
-   links and of addresses only to tell a lifetime refresh from a change.
+3. On Linux one thread receives on a route-netlink notify socket, joined
+   before anything is read, and a second on a request socket for dumps
+   (5.7, point 7). The monitor keeps a table of links and of addresses
+   only to tell a lifetime refresh from a change.
 4. Anything lost (an overflow, a truncated or malformed datagram, an
    interrupted dump, a failed socket, a resume) moves the generation at
    once and starts a fresh snapshot; finishing a snapshot moves it again.
@@ -85,7 +86,8 @@ Not covered, and where it is:
 - **Snapshot:** a link dump followed by an address dump on the request
   socket, building fresh tables (5.7).
 - **Refresh:** a "new address" message for an address already in the
-  table, with the same flags and scope (5.6, point 4).
+  table (the same link, family, prefix length, address and peer, 5.4,
+  point 4), with the same flags and scope.
 - **Loss:** any event after which the monitor cannot know it saw every
   change (section 7).
 
@@ -181,9 +183,15 @@ Not covered, and where it is:
    thread hands the monitor its event: the driver's threads, the thread
    that reports a resume, or the one that drops the handle (5.7,
    point 7). They must not block on the network or on a lock the
-   source's readers hold `[OWN]`.
+   source's readers hold `[OWN]`. A hook on one of the driver's threads
+   may drop the handle: that thread holds the lock, so the drop only
+   asks it to stop, and it stops the source once the hook returns (5.7,
+   point 7).
 4. The causes are: a change (5.1), a snapshot completed (5.7, point 4),
    and each loss of section 7, named.
+5. Until the first snapshot completes, no hook is told of anything
+   `[OWN]`: no generation has been readable, so no consumer holds anything
+   under one, and the first completion's move tells every consumer.
 
 ### 5.4 Layout read
 
@@ -201,21 +209,32 @@ sizes are from the kernel's user-space headers `<linux/netlink.h>`,
    each at the previous length rounded up to 4 (`RTA_ALIGN`).
 3. **Link** (`RTM_NEWLINK` 16, `RTM_DELLINK` 17): `struct ifinfomsg`,
    16 bytes: family (u8), pad (u8), type (u16), index (i32), flags (u32),
-   change mask (u32); then attributes, of which `IFLA_OPERSTATE` (16, one
-   byte) is read.
+   change mask (u32); then attributes, of which these are read:
+   `IFLA_IFNAME` (3, the name, its terminating zero included, at most 16
+   bytes, `IFNAMSIZ`), `IFLA_MASTER` (10, u32), `IFLA_OPERSTATE` (16, one
+   byte) and `IFLA_GROUP` (27, u32). An attribute absent is recorded as
+   absent, which differs from any value: the kernel sends `IFLA_MASTER`
+   only for a link that has a master.
 4. **Address** (`RTM_NEWADDR` 20, `RTM_DELADDR` 21): `struct ifaddrmsg`,
    8 bytes: family (u8), prefix length (u8), flags (u8), scope (u8),
    index (u32); then attributes, of which `IFA_ADDRESS` (1), `IFA_LOCAL`
    (2) and `IFA_FLAGS` (8, u32, which replaces the one-byte flags when
    present) are read. The address is `IFA_LOCAL` when present, else
-   `IFA_ADDRESS` (`<linux/if_addr.h>`: on a point-to-point link
-   `IFA_ADDRESS` is the peer's).
+   `IFA_ADDRESS`; the peer is `IFA_ADDRESS` when present, else `IFA_LOCAL`
+   (`<linux/if_addr.h>`: on a point-to-point link `IFA_ADDRESS` is the
+   peer's). An address is identified by its link, family, prefix length,
+   address and peer: two addresses that share their own address but not
+   their peer are two entries, and a peer that changes is a change.
 5. **Route** (24 to 26), **rule** (32 to 34) and **nexthop** (104 to 106)
    messages are recognised by type alone; their bodies are not read.
 6. **Control messages:** `NLMSG_NOOP` (1), `NLMSG_ERROR` (2: a signed
-   32-bit error, negative errno or 0, then the request's header),
-   `NLMSG_DONE` (3), `NLMSG_OVERRUN` (4). The flag `NLM_F_DUMP_INTR`
-   (0x10) on a dump's message says the dump was inconsistent.
+   32-bit error, then the request's 16-byte header; error 0 acknowledges
+   that request, any other value refuses it), `NLMSG_DONE` (3: a signed
+   32-bit status; a negative errno says the dump failed part-way, which
+   the kernel reports there and not as `NLMSG_ERROR`, from the kernel's
+   netlink documentation, `userspace-api/netlink/intro`, not EXECUTED),
+   `NLMSG_OVERRUN` (4). The flag `NLM_F_DUMP_INTR` (0x10) on a dump's
+   message says the dump was inconsistent.
 7. **Dump request** (encoded, 20 bytes): a header of length 20, type
    `RTM_GETLINK` (18) or `RTM_GETADDR` (22), flags `NLM_F_REQUEST |
    NLM_F_DUMP` (0x301), the monitor's sequence number, port id 0; then a
@@ -235,7 +254,11 @@ sizes are from the kernel's user-space headers `<linux/netlink.h>`,
 4. A snapshot is retried after a loss; 8 failed snapshots in a row, with
    no snapshot completed between them, stop the source (5.2, point 4)
    `[OWN]`, so a kernel that keeps refusing cannot keep the thread
-   spinning.
+   spinning. A failed snapshot is a failure of its socket or of the
+   kernel's answer (section 7). A dirty snapshot (5.7, point 3) is not
+   one: the host's own changes, however many, never stop the source; a
+   dirty snapshot is taken again only once its barrier has come back, so
+   churn costs one snapshot per round trip.
 
 ### 5.6 Decoding
 
@@ -251,13 +274,20 @@ any byte it covers is read, and every sum uses checked arithmetic.
    header: at least 4 bytes remain; the attribute's length is at least 4
    and at most the bytes remaining. Otherwise the message is malformed.
    The next starts at the length rounded up to 4, ending as in point 1.
-3. **Fixed headers.** A link body shorter than 16 bytes, or an address
-   body shorter than 8, is malformed. Extra bytes inside a message after
-   its attributes are covered by point 2.
+3. **Fixed headers.** A link body shorter than 16 bytes, an address
+   body shorter than 8, an `NLMSG_ERROR` body shorter than 20 (its error
+   and the request's header) or an `NLMSG_DONE` body shorter than 4 (its
+   status) is malformed. Extra bytes inside a message after its
+   attributes are covered by point 2.
 4. **Values.** `IFLA_OPERSTATE` with a value other than one byte,
-   `IFA_FLAGS` other than four, or an address other than 4 bytes for
-   `AF_INET` (2) or 16 for `AF_INET6` (10), is malformed. An address
-   message of another family, or with no address, is malformed.
+   `IFLA_MASTER`, `IFLA_GROUP` or `IFA_FLAGS` other than four,
+   `IFLA_IFNAME` empty or longer than 16, or an address other than 4
+   bytes for `AF_INET` (2) or 16 for `AF_INET6` (10), is malformed. An
+   address message of `AF_INET` or `AF_INET6` with no address is
+   malformed. An address message of another family is skipped once its
+   attributes are walked (point 2): a dump of every family (5.4, point 7)
+   also returns other families' addresses, which leave routing toward a
+   server as it was.
 5. **Tolerance.** Unknown message types and unknown attributes are
    skipped by their length. Duplicate attributes: the last one counts.
    Message flags other than `NLM_F_DUMP_INTR` are ignored. Message types
@@ -280,15 +310,23 @@ any byte it covers is read, and every sum uses checked arithmetic.
 3. Notifications received while a snapshot runs are applied to the live
    tables, exactly as at any other time (point 5). A link or address
    notification also makes the snapshot **dirty**: it may describe a state
-   the dump read before or after it, so the snapshot is discarded and
-   taken again (a failed snapshot, 5.5, point 4), never merged. Route,
-   rule and nexthop notifications leave it: the tables hold neither.
+   the dump read before or after it, so the snapshot is never merged or
+   published. It runs on to its barrier (point 4), and when that comes
+   back it is taken again; that is not a failed snapshot (5.5, point 4)
+   and moves nothing, since each change that made it dirty moved the
+   generation itself. Route, rule and nexthop notifications leave it: the
+   tables hold neither.
 4. **Completion.** When the address dump's `NLMSG_DONE` arrives, the
    driver sends a **barrier** on the notify socket: `NLMSG_NOOP` with
    `NLM_F_REQUEST | NLM_F_ACK` and a sequence of its own, which the kernel
    acknowledges on that socket, after every notification queued before
    it (EXECUTED on the guest's kernel: the acknowledgement is an
-   `NLMSG_ERROR` of error 0 and that sequence). When the notify side reads
+   `NLMSG_ERROR` of error 0 and that sequence). Only an `NLMSG_ERROR` of
+   error 0 that echoes an `NLMSG_NOOP` is that acknowledgement; any other
+   `NLMSG_ERROR` of the barrier's sequence fails the snapshot (refused).
+   The acknowledgement counts only in a datagram whose every message
+   decodes and holds no `NLMSG_OVERRUN`; otherwise the bad message is a
+   loss (point 6), which abandons the snapshot. When the notify side reads
    that acknowledgement, with the snapshot not dirty, the fresh tables
    replace the live ones and the generation moves (cause: snapshot). So
    the publication follows everything the notify socket received before
@@ -309,7 +347,8 @@ any byte it covers is read, and every sum uses checked arithmetic.
    One datagram with several changes moves the generation once per
    change.
 6. **Losses** (section 7) make the generation unavailable, then tell
-   every consumer of the move at once, and start a fresh snapshot,
+   every consumer of the move at once (after the first snapshot; 5.3,
+   point 5), and start a fresh snapshot,
    abandoning one in progress; its completion publishes again. After a
    loss on the notify socket (an overflow, a truncated or malformed
    datagram, `NLMSG_OVERRUN`, a failed receive) the driver makes that
@@ -329,8 +368,16 @@ any byte it covers is read, and every sum uses checked arithmetic.
    thread that must look again; the kernel's acknowledgement returns its
    receive. A socket is replaced only under the lock, and a stop is
    decided under the lock before the wakes go to the sockets then in
-   place, so no receive can start that a stop's wake misses. Dropping the
-   handle stops the source and joins both threads. This needs no call
+   place, so no receive can start that a stop's wake misses; the stop's
+   wakes are sent even if a hook told of the stop unwinds. A wake whose
+   send fails, or whose acknowledgement the kernel drops, leaves that
+   receive blocked until the next datagram on its socket, and a barrier
+   whose acknowledgement is lost leaves the generation unavailable until
+   the next loss: closing these needs a deadline (section 13, Q6).
+   Dropping the handle stops the source and joins both threads; a hook on
+   one of the threads that drops it only records the stop, and that
+   thread, once the hook returns, stops the source and ends, without
+   joining. This needs no call
    beyond `linux-rtnetlink`'s; a `poll` with a wake descriptor or a
    receive timeout would each need a new site of ADR 0005. A dump that does not end in order
    (links, then addresses, then the barrier) may still be running in the
@@ -340,7 +387,7 @@ any byte it covers is read, and every sum uses checked arithmetic.
 8. **Where it lives** `[OWN]`, checked against ADR 0004, C4. The counter,
    the hooks, the decoder and the state machine are a new pure crate,
    `ironafs-netgen` (no dependencies; its consumers, pure crates among
-   them, read the counter's type). The thread is in the driver
+   them, read the counter's type). The threads are in the driver
    `ironafs-net`, which C4, point 3, gives the UDP driver; the monitor is
    the other network driver, and it uses only `ironafs-os`'s
    `linux-rtnetlink` site; this is a named departure from C4, point 3's
@@ -360,7 +407,7 @@ any byte it covers is read, and every sum uses checked arithmetic.
 | attribute start + 4, + attribute length | ≤ body length | checked; malformed |
 | attribute length rounded up to 4 | ≤ 65,535 + 3 | checked; the body ends |
 | counter + 1 | < `2^64 - 1` | exhaustion; stopped (5.2, point 3) |
-| sequence number + 1 | wraps (`u32`) | wrapping is allowed: stale replies are told apart by equality with the current dump only |
+| sequence number + 1 | wraps (`u32`), skipping 0 | wrapping is allowed: stale replies are told apart by equality with the current dump only; 0 is the wake's (5.7, point 7), so no dump or barrier uses it |
 | failed snapshots in a row + 1 | ≤ 8 | stopped (5.5, point 4) |
 
 ## 7. Errors and failure
@@ -373,11 +420,13 @@ any byte it covers is read, and every sum uses checked arithmetic.
 | after any of the three rows above | the notify socket is made again, joined, before the snapshot |
 | a datagram from a sender other than the kernel | ignored: the site does not return it, and it moves nothing (a local process could otherwise force moves) |
 | any other failed receive on the notify socket | move (failed); the notify socket is made again (joined before use), then a fresh snapshot; if it cannot be made, stopped |
-| a link or address notification while a snapshot runs | the snapshot is dirty: discarded and taken again (a failed snapshot) |
-| dump truncated, malformed, interrupted (`NLM_F_DUMP_INTR`), answered with `NLMSG_ERROR` of its sequence, holding `NLMSG_OVERRUN` of any sequence, or holding anything of its sequence after its terminator | move (the cause); the snapshot restarts; 8 in a row: stopped. A dump datagram is checked whole before any of it is applied, so `NLMSG_DONE` never completes a snapshot ahead of bad bytes |
+| a link or address notification while a snapshot runs | the snapshot is dirty: taken again when its barrier comes back, never published; not a failed snapshot, and no move beyond the change's own |
+| dump truncated, malformed, interrupted (`NLM_F_DUMP_INTR`), answered with `NLMSG_ERROR` of its sequence or `NLMSG_DONE` of a negative status, holding `NLMSG_OVERRUN` of any sequence, or holding anything of its sequence after its terminator | move (the cause); the snapshot restarts; 8 in a row: stopped. A dump datagram is checked whole before any of it is applied, so `NLMSG_DONE` never completes a snapshot ahead of bad bytes, and nothing after the link dump's terminator is applied to the address dump, whose request is not yet sent |
+| the barrier answered with an `NLMSG_ERROR` other than error 0 echoing `NLMSG_NOOP` | move (refused); the snapshot restarts; counted as a failed snapshot |
 | request socket send or receive failure | as a failed dump |
 | resume | move (resumed); fresh snapshot |
 | counter exhausted, the handle dropped, or a monitor thread ended | stopped: reads fail, every hook told |
+| the handle dropped by a hook on one of the monitor's threads | that thread stops the source once the hook returns, and ends |
 | a hook panicked | halted: reads fail, no hook called again |
 | any loss, until the fresh snapshot completes | reads fail (5.2, point 1) |
 
@@ -408,7 +457,9 @@ Not applicable: the monitor talks only to the local kernel.
 
 1. Decoder: golden datagrams written from 5.4's layout (a link, an
    address of each family, a route, a rule, a nexthop, `NLMSG_DONE` with
-   and without `NLM_F_DUMP_INTR`, `NLMSG_ERROR`); a reject corpus for each
+   and without `NLM_F_DUMP_INTR` and with a negative status,
+   `NLMSG_ERROR` refusing and acknowledging, an address of another
+   family, a point-to-point address and its peer); a reject corpus for each
    check of 5.6; a seeded sweep over truncations and changed bytes of the
    golden datagrams that asserts no panic, that a prefix is accepted
    exactly when it ends at a message's end (with that many messages), and
@@ -425,7 +476,7 @@ Not applicable: the monitor talks only to the local kernel.
 4. Linux, in a network namespace (Arm64 guest and the hosted Ubuntu
    runners): an address, a route and a policy rule changed, each moving the
    generation; an overflow, followed by a snapshot; a nexthop seen on the
-   notify socket.
+   notify socket; an address dump of every family returning addresses.
 5. A fuzz target for the decoder waits on the fuzzing engine's decision
    (coding standards rule 21); until then the seeded sweep stands in
    (section 13, Q2).
@@ -443,7 +494,9 @@ Not applicable: the monitor talks only to the local kernel.
 - the kernel's user-space headers `<linux/netlink.h>`,
   `<linux/rtnetlink.h>`, `<linux/if_link.h>`, `<linux/if_addr.h>`,
   `<linux/if.h>`, `<linux/nexthop.h>`;
-- the kernel's `ip-sysctl` documentation, `nexthop_compat_mode`.
+- the kernel's `ip-sysctl` documentation, `nexthop_compat_mode`;
+- the kernel's netlink documentation, `userspace-api/netlink/intro`
+  (the status of `NLMSG_DONE`).
 
 ## 13. Open questions
 
@@ -461,6 +514,13 @@ Not applicable: the monitor talks only to the local kernel.
 - **Q5. The nexthop bit on a kernel before 5.3**: whether binding with an
   unknown group bit succeeds. A measurement on such a kernel settles it
   (5.1, point 3).
+- **Q6. Wakes and the barrier without a deadline** (5.7, point 7): a wake
+  whose send fails or whose acknowledgement is dropped, and a barrier
+  whose acknowledgement is lost, have no retry. Retrying needs a deadline
+  through the clock seam (coding standards rule 7) and a way to end a
+  blocked receive when it passes (a receive timeout or a `poll` with a
+  wake descriptor, each a new site of ADR 0005). Until then these stay
+  residuals.
 
 ## 14. Review
 
