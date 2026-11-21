@@ -14,7 +14,11 @@
 extern crate alloc;
 
 mod disk;
+mod identity;
+mod node;
 mod store_path;
 
 pub use disk::{Disk, DiskError, DiskOp, Durability, EntryKind, Plan, PlanStep, ReadRange, Space};
+pub use identity::{CellIndex, ContextKey, FileId, PathKind, Uniquifier, Version, Vnode, VolumeId};
+pub use node::{MAX_MOUNT_DEPTH, MountChain, NodeError};
 pub use store_path::{MAX_COMPONENTS, MAX_NAME_BYTES, StoreDir, StoreName, StorePath};
