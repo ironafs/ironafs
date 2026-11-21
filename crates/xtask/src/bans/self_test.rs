@@ -3,14 +3,16 @@
 
 //! `check-bans --self-test`: runs the check on a workspace holding the
 //! repository's `clippy.toml`, which must pass, then on copies with a
-//! method ban removed, a type ban removed and a ban misspelt, and on a
-//! crate whose own `clippy.toml` leaves out a ban, and proves the check
-//! fails on each, naming that ban and that file.
+//! method ban removed, a type ban removed, a ban misspelt and a ban no
+//! planted line proves, on a crate whose own `clippy.toml` leaves out a
+//! ban, and with `CLIPPY_CONF_DIR` naming a directory whose configuration
+//! leaves out a ban, and proves the check fails on each, naming that ban
+//! and that file, or the variable.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::{CHECK, Found, Violation, check_tree};
+use super::{CHECK, CONF_DIR, Found, Lint, Violation, check_tree};
 use crate::Error;
 use crate::fixture::{self, write_file};
 
@@ -19,6 +21,8 @@ const REMOVED: &str = "std::time::SystemTime::now";
 const REMOVED_TYPE: &str = "std::process::Command";
 const MISSPELT: &str = "std::time::Instant::elapsed";
 const LEFT_OUT: &str = "std::collections::HashMap";
+/// A ban clippy resolves, which no planted line reaches.
+const UNPLANTED: &str = "std::thread::sleep";
 
 /// The workspace's own configuration, and the one a planted crate's own
 /// configuration is written to.
@@ -33,6 +37,8 @@ enum Place {
     Root,
     /// As a member crate's own `clippy.toml`, beside the workspace's.
     Crate,
+    /// In a directory outside the workspace that `CLIPPY_CONF_DIR` names.
+    ConfDir,
 }
 
 /// A planted configuration, what every violation it gives must be, and
@@ -69,7 +75,9 @@ const CASES: &[Case] = &[
             found.file == ROOT_FILE
                 && (names(&found.violation, MISSPELT)
                     || matches!(&found.violation, Violation::Unresolved(line)
-                        if line.contains(&format!("{MISSPELT}x"))))
+                        if line.contains(&format!("{MISSPELT}x")))
+                    || matches!(&found.violation, Violation::Uncovered { path, .. }
+                        if *path == format!("{MISSPELT}x")))
         },
         // Clippy's own warning that the path names nothing is caught.
         needs: |found| matches!(found.violation, Violation::Unresolved(_)),
@@ -82,6 +90,37 @@ const CASES: &[Case] = &[
         plant: |text| without(text, LEFT_OUT),
         expect: |found| found.file == CRATE_FILE && names(&found.violation, LEFT_OUT),
         needs: |found| matches!(found.violation, Violation::NotFired { path, .. } if path == LEFT_OUT),
+    },
+    Case {
+        // Clippy would enforce it, but nothing would prove it still does.
+        name: "a ban in clippy.toml that no planted line reaches",
+        place: Place::Root,
+        plant: |text| {
+            text.replace(
+                "disallowed-methods = [\n",
+                &format!(
+                    "disallowed-methods = [\n  {{ path = \"{UNPLANTED}\", reason = \"r\" }},\n"
+                ),
+            )
+        },
+        expect: |found| {
+            found.file == ROOT_FILE
+                && matches!(&found.violation, Violation::Uncovered { lint: Lint::Method, path }
+                    if path == UNPLANTED)
+        },
+        needs: |_| true,
+    },
+    Case {
+        // Clippy reads the directory the variable names in place of every
+        // crate's own configuration, so the files checked would not be the
+        // ones linted with.
+        name: "CLIPPY_CONF_DIR naming a configuration that leaves out a ban",
+        place: Place::ConfDir,
+        plant: |text| without(text, LEFT_OUT),
+        expect: |found| {
+            found.file == CONF_DIR && matches!(found.violation, Violation::Overridden(_))
+        },
+        needs: |_| true,
     },
 ];
 
@@ -101,11 +140,13 @@ fn names(found: &Violation, path: &str) -> bool {
 
 /// Writes a workspace under `dir` with `root` as its `clippy.toml` and one
 /// member crate, with `own` as that crate's `clippy.toml` if given, and
-/// checks it.
+/// checks it; with `elsewhere`, written to a directory outside the
+/// workspace that `CLIPPY_CONF_DIR` names.
 fn check_planted(
     dir: &Path,
     root: &str,
     own: Option<&str>,
+    elsewhere: Option<&str>,
     toolchain_toml: &str,
 ) -> Result<Vec<Found>, Error> {
     let tree = dir.join("tree");
@@ -114,8 +155,18 @@ fn check_planted(
     if let Some(own) = own {
         write_file(&tree.join(CRATE_FILE), own)?;
     }
+    let conf_dir = dir.join("elsewhere");
+    if let Some(elsewhere) = elsewhere {
+        write_file(&conf_dir.join(ROOT_FILE), elsewhere)?;
+    }
     let members: Vec<PathBuf> = vec![tree.join(CRATE_DIR)];
-    check_tree(&tree, &members, toolchain_toml, &dir.join("lint"))
+    check_tree(
+        &tree,
+        &members,
+        elsewhere.map(|_| conf_dir.as_os_str()),
+        toolchain_toml,
+        &dir.join("lint"),
+    )
 }
 
 /// Runs the clean configuration and every planted case.
@@ -144,7 +195,7 @@ fn run_in(
     let mut report =
         |line: String| writeln!(output, "{line}").map_err(Error::io("report check-bans self-test"));
     let clean = "the repository's clippy.toml";
-    let found = check_planted(&dir.join("clean"), clippy_toml, None, toolchain_toml)?;
+    let found = check_planted(&dir.join("clean"), clippy_toml, None, None, toolchain_toml)?;
     if !found.is_empty() {
         return Err(failure(clean, &found));
     }
@@ -156,8 +207,13 @@ fn run_in(
         }
         let case_dir = dir.join(format!("case-{index}"));
         let found = match case.place {
-            Place::Root => check_planted(&case_dir, &planted, None, toolchain_toml)?,
-            Place::Crate => check_planted(&case_dir, clippy_toml, Some(&planted), toolchain_toml)?,
+            Place::Root => check_planted(&case_dir, &planted, None, None, toolchain_toml)?,
+            Place::Crate => {
+                check_planted(&case_dir, clippy_toml, Some(&planted), None, toolchain_toml)?
+            }
+            Place::ConfDir => {
+                check_planted(&case_dir, clippy_toml, None, Some(&planted), toolchain_toml)?
+            }
         };
         match found.first() {
             Some(_) if found.iter().all(case.expect) && found.iter().any(case.needs) => {

@@ -13,9 +13,16 @@
 //! `clippy.toml`, and requires the ban's warning on every planted line and
 //! no unresolved ban.
 //!
+//! Every method and type ban of the root `clippy.toml` must have a planted
+//! line, so a ban added there is proved too, and a member's own file is
+//! held to the same lines.
+//!
 //! Clippy reads only the configuration nearest a crate and merges nothing,
 //! so a crate's own `clippy.toml` replaces the root's for that crate. Each
 //! such file is checked the same way, and must carry every ban itself.
+//! `CLIPPY_CONF_DIR` comes before all of them: clippy then reads the
+//! directory it names for every crate. The check refuses to run while it
+//! is set, and `cargo xtask check` lints without it.
 //!
 //! What the bans cannot see is named in the root `clippy.toml`. The core's
 //! own rules (`ironafs-client` names no clock at all) are in `check-deps`,
@@ -23,6 +30,7 @@
 
 mod self_test;
 
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::io::Write;
@@ -158,6 +166,10 @@ pub(crate) enum Violation {
     Unresolved(String),
     /// Clippy did not run to completion on the fixture.
     Clippy(String),
+    /// The root `clippy.toml` bans a path no planted line proves.
+    Uncovered { lint: Lint, path: String },
+    /// `CLIPPY_CONF_DIR` is set, to the value given.
+    Overridden(String),
 }
 
 impl fmt::Display for Violation {
@@ -180,6 +192,17 @@ impl fmt::Display for Violation {
                 formatter,
                 "clippy did not finish on the planted calls: {error}"
             ),
+            Self::Uncovered { lint, path } => write!(
+                formatter,
+                "clippy.toml bans the {} {path}, but check-bans plants no line that reaches \
+                 it, so nothing proves the ban fires: add one to BANS (coding standards rule 7)",
+                lint.word()
+            ),
+            Self::Overridden(value) => write!(
+                formatter,
+                "{CONF_DIR} is set (to {value:?}), so clippy would lint every crate with that \
+                 directory's configuration instead of the files this check proves: unset it"
+            ),
         }
     }
 }
@@ -192,6 +215,68 @@ pub(crate) fn listed(clippy_toml: &str, path: &str) -> bool {
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
         .any(|line| line.contains(&entry))
+}
+
+/// The variable through which clippy reads one directory's configuration
+/// for every crate, before and instead of the one nearest each crate.
+/// Set from outside, it would lint the workspace with a file this check
+/// never saw, so the check refuses to run under it and `cargo xtask check`
+/// lints without it.
+pub(crate) const CONF_DIR: &str = "CLIPPY_CONF_DIR";
+
+/// The `disallowed-methods` and `disallowed-types` entries of
+/// `clippy_toml`, as `listed` reads them, with the lint each is under.
+fn entries(clippy_toml: &str) -> Vec<(Lint, &str)> {
+    let mut lint = None;
+    let mut found = Vec::new();
+    for line in clippy_toml.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with(']') && !line.starts_with(char::is_whitespace) {
+            lint = None;
+        } else if !line.starts_with(char::is_whitespace) && trimmed.contains('=') {
+            lint = if trimmed.starts_with("disallowed-methods") {
+                Some(Lint::Method)
+            } else if trimmed.starts_with("disallowed-types") {
+                Some(Lint::Type)
+            } else {
+                None
+            };
+        }
+        let (Some(lint), Some((_, rest))) = (lint, line.split_once("path = \"")) else {
+            continue;
+        };
+        if let Some((path, _)) = rest.split_once('"') {
+            found.push((lint, path));
+        }
+    }
+    found
+}
+
+/// Each method or type ban of the root `clippy_toml` that no entry of
+/// `BANS` plants under the same lint: nothing would prove it fires. A
+/// member's own file may ban more (its allocations, say), which rule 7
+/// does not need proved.
+pub(crate) fn uncovered(clippy_toml: &str) -> Vec<Violation> {
+    entries(clippy_toml)
+        .into_iter()
+        .filter(|&(lint, path)| !BANS.iter().any(|ban| ban.lint == lint && ban.path == path))
+        .map(|(lint, path)| Violation::Uncovered {
+            lint,
+            path: path.to_owned(),
+        })
+        .collect()
+}
+
+/// The refusal to check while `value`, the environment's `CLIPPY_CONF_DIR`,
+/// is set, whatever it names.
+pub(crate) fn overridden(value: Option<&OsStr>) -> Option<Found> {
+    value.map(|value| Found {
+        file: CONF_DIR.to_owned(),
+        violation: Violation::Overridden(value.to_string_lossy().into_owned()),
+    })
 }
 
 /// The fixture's library: line `n` holds the planted line of `BANS[n - 1]`.
@@ -269,7 +354,7 @@ pub(crate) fn check(
         ])
         .arg("--target-dir")
         .arg(dir.join("target"))
-        .env("CLIPPY_CONF_DIR", dir)
+        .env(CONF_DIR, dir)
         .env_remove("CARGO_BUILD_WARNINGS")
         .env_remove("CLIPPY_ARGS");
     for name in CLEARED_ENVIRONMENT {
@@ -327,9 +412,12 @@ pub(crate) fn config_files(
 }
 
 /// Checks the bans of the workspace at `root`, whose member crates are in
-/// `member_dirs`: its `clippy.toml`, which must exist, and every other
-/// configuration a member can be linted with (`config_files`), each with
-/// fixtures under its own directory below `dir`.
+/// `member_dirs`: its `clippy.toml`, which must exist and whose every ban
+/// must be planted (`uncovered`), and every other configuration a member
+/// can be linted with (`config_files`), each with fixtures under its own
+/// directory below `dir`. With `conf_dir`, the environment's
+/// `CLIPPY_CONF_DIR`, set, clippy would read none of these, so the check
+/// refuses before it lints anything (`overridden`).
 ///
 /// # Errors
 ///
@@ -338,27 +426,33 @@ pub(crate) fn config_files(
 pub(crate) fn check_tree(
     root: &Path,
     member_dirs: &[PathBuf],
+    conf_dir: Option<&OsStr>,
     toolchain_toml: &str,
     dir: &Path,
 ) -> Result<Vec<Found>, Error> {
+    if let Some(refusal) = overridden(conf_dir) {
+        return Ok(vec![refusal]);
+    }
     let mut files = config_files(root, member_dirs, Path::is_file);
-    let own = PathBuf::from("clippy.toml");
-    if !files.contains(&own) {
-        files.insert(0, own);
+    let own = Path::new("clippy.toml");
+    if !files.iter().any(|file| file == own) {
+        files.insert(0, own.to_path_buf());
     }
     let mut found = Vec::new();
     for (index, file) in files.iter().enumerate() {
         let path = root.join(file);
         let text = fs::read_to_string(&path).map_err(Error::path_io("read", &path))?;
         let name = file.display().to_string();
-        found.extend(
-            check(&text, toolchain_toml, &dir.join(index.to_string()))?
-                .into_iter()
-                .map(|violation| Found {
-                    file: name.clone(),
-                    violation,
-                }),
-        );
+        let mut violations = if file == own {
+            uncovered(&text)
+        } else {
+            Vec::new()
+        };
+        violations.extend(check(&text, toolchain_toml, &dir.join(index.to_string()))?);
+        found.extend(violations.into_iter().map(|violation| Found {
+            file: name.clone(),
+            violation,
+        }));
     }
     Ok(found)
 }
@@ -386,7 +480,14 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         .map(|member| member.dir.clone())
         .collect();
     let dir = crate::fixture::fresh_dir(&workspace.target_dir, CHECK)?;
-    let result = check_tree(&workspace.root, &member_dirs, &toolchain_toml, &dir);
+    let conf_dir = std::env::var_os(CONF_DIR);
+    let result = check_tree(
+        &workspace.root,
+        &member_dirs,
+        conf_dir.as_deref(),
+        &toolchain_toml,
+        &dir,
+    );
     crate::fixture::remove_dir(&dir)?;
     let violations = result?;
     if !violations.is_empty() {

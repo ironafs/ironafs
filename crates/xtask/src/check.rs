@@ -21,12 +21,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         Command::new("cargo").args(["fmt", "--all", "--check"]),
         "cargo fmt --all --check",
     )?;
-    run_command(
-        Command::new("cargo")
-            .args(["clippy", "--all-targets", "--workspace"])
-            .env("CARGO_BUILD_WARNINGS", "deny"),
-        "cargo clippy --all-targets --workspace",
-    )?;
+    run_command(&mut clippy(), "cargo clippy --all-targets --workspace")?;
     run_command(
         Command::new("cargo").args([
             "nextest",
@@ -63,6 +58,18 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     } else {
         report_skipped("cargo-deny", output)
     }
+}
+
+/// The workspace's clippy run, with every crate linted under the
+/// configuration nearest it, the files `check-bans` proves: an inherited
+/// `CLIPPY_CONF_DIR` would put one other file in their place.
+fn clippy() -> Command {
+    let mut command = Command::new("cargo");
+    command
+        .args(["clippy", "--all-targets", "--workspace"])
+        .env("CARGO_BUILD_WARNINGS", "deny")
+        .env_remove(crate::bans::CONF_DIR);
+    command
 }
 
 fn run_command(command: &mut Command, name: &'static str) -> Result<(), Error> {

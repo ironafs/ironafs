@@ -6,7 +6,12 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{BANS, Ban, Lint, Violation, config_files, fired_violations, listed, planted_source};
+use std::ffi::OsStr;
+
+use super::{
+    BANS, Ban, CONF_DIR, Found, Lint, Violation, config_files, fired_violations, listed,
+    overridden, planted_source, uncovered,
+};
 
 /// Clippy's short-format warning for `ban` fired on line `line`, spelt
 /// here rather than through `Lint::word`, so the test does not share the
@@ -226,5 +231,111 @@ fn config_files_ignores_files_outside_the_workspace_and_beside_no_member() {
             ]
         ),
         [PathBuf::from("clippy.toml")]
+    );
+}
+
+/// A root configuration listing exactly `methods` and `types`, with a
+/// macro ban and a comment that names a path, which never count.
+fn root_with(methods: &[&str], types: &[&str]) -> String {
+    let entries = |paths: &[&str]| -> String {
+        paths
+            .iter()
+            .flat_map(|path| ["  { path = \"", path, "\", reason = \"r\" },\n"])
+            .collect()
+    };
+    format!(
+        "# path = \"std::thread::sleep\"\ndisallowed-methods = [\n{}]\ndisallowed-types = [\n{}]\n\
+         disallowed-macros = [\n  {{ path = \"std::println\", reason = \"r\" }},\n]\n",
+        entries(methods),
+        entries(types)
+    )
+}
+
+/// The paths of `BANS` under `lint`, each once.
+fn ban_paths(lint: Lint) -> Vec<&'static str> {
+    let mut paths: Vec<&str> = BANS
+        .iter()
+        .filter(|ban| ban.lint == lint)
+        .map(|ban| ban.path)
+        .collect();
+    paths.dedup();
+    paths
+}
+
+#[test]
+fn uncovered_accepts_a_root_whose_every_ban_is_planted() {
+    let text = root_with(&ban_paths(Lint::Method), &ban_paths(Lint::Type));
+    assert_eq!(uncovered(&text), []);
+}
+
+#[test]
+fn uncovered_accepts_the_repository_root_configuration() {
+    let text = include_str!("../../../../clippy.toml");
+    assert_eq!(uncovered(text), []);
+}
+
+#[test]
+fn uncovered_reports_a_root_ban_with_no_planted_line() {
+    let mut methods = ban_paths(Lint::Method);
+    methods.push("std::thread::sleep");
+    let text = root_with(&methods, &ban_paths(Lint::Type));
+    assert_eq!(
+        uncovered(&text),
+        [Violation::Uncovered {
+            lint: Lint::Method,
+            path: "std::thread::sleep".to_owned()
+        }]
+    );
+}
+
+#[test]
+fn uncovered_needs_a_planted_line_under_the_same_lint() {
+    // A type ban listed as a method is not what the planted lines prove.
+    let mut methods = ban_paths(Lint::Method);
+    methods.push("std::process::Command");
+    let text = root_with(&methods, &ban_paths(Lint::Type));
+    assert_eq!(
+        uncovered(&text),
+        [Violation::Uncovered {
+            lint: Lint::Method,
+            path: "std::process::Command".to_owned()
+        }]
+    );
+}
+
+#[test]
+fn overridden_accepts_an_unset_variable() {
+    assert_eq!(overridden(None), None);
+}
+
+#[test]
+fn overridden_refuses_any_set_value() {
+    for value in ["/elsewhere", ""] {
+        assert_eq!(
+            overridden(Some(OsStr::new(value))),
+            Some(Found {
+                file: CONF_DIR.to_owned(),
+                violation: Violation::Overridden(value.to_owned())
+            }),
+            "{value:?}"
+        );
+    }
+}
+
+#[test]
+fn new_violations_say_what_failed() {
+    assert_eq!(
+        Violation::Uncovered {
+            lint: Lint::Method,
+            path: "std::thread::sleep".to_owned()
+        }
+        .to_string(),
+        "clippy.toml bans the method std::thread::sleep, but check-bans plants no line that \
+         reaches it, so nothing proves the ban fires: add one to BANS (coding standards rule 7)"
+    );
+    assert_eq!(
+        Violation::Overridden("/elsewhere".to_owned()).to_string(),
+        "CLIPPY_CONF_DIR is set (to \"/elsewhere\"), so clippy would lint every crate with \
+         that directory's configuration instead of the files this check proves: unset it"
     );
 }
