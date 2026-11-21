@@ -379,7 +379,7 @@ removed, and its use is redesigned, before any codec merges.
    |---|---|---|---|
    | `file_type` | closed enumeration: file, directory, symbolic link | the object's kind; selects which grants apply (5.7) | values MISSING (Q1) |
    | `link_count` | `u32` | attribute only | carried: UNVERIFIED; layout MISSING (Q1) |
-   | `length` | `u64` | the object's size; bounds every fetch (5.4, point 9) | width and split MISSING (Q1, Q3) |
+   | `length` | `u64` | the object's size; bounds the data a fetch reply may hold (5.4, point 9; section 6, A3), never the length a request asks for, which is never 0 (5.5, point 2) | width and split MISSING (Q1, Q3) |
    | `data_version` | `u64` | the version of the bytes; compared for equality only | `[ADR 0004 N38.1: Firm]`; wire carriage MISSING (Q4); a 64-bit data version appears in published extension material `[DES-057]` |
    | `author`, `owner` | protection id, `i32` | attribute only; mapped by the layer | `[ADR 0004 N38.3: Firm]` for the type; carried: UNVERIFIED; wire signedness MISSING (Q1, Q6) |
    | `group` | protection id, `i32` | attribute only | as `owner` |
@@ -521,7 +521,8 @@ order within each message is MISSING (Q1). Caps are in 5.2.
    - Errors: 5.9, rows FS.
 7. **`fs.get_volume_status`.**
    - Arguments: a volume id.
-   - Results: a fixed record of the volume's quota, blocks in use, and
+   - Results: a record (whether of fixed size is UNVERIFIED, Q1, Q9) of
+     the volume's quota, blocks in use, and
      the partition's free and total blocks, and short strings: the
      volume's name, an offline message and a message of the day. These
      fields are the ones the reference documentation's quota and
@@ -564,14 +565,14 @@ known, this table is amended at class S before the codec merges.
 | `fs.fetch_status.reply` | message | message | MISSING | 1 024 bytes | in | 2 048 bytes | | a status record of at most `fs.status_record_max`, a callback promise of at most `fs.callback_record_max`, and a volume sync record; the decoder rejects trailing bytes |
 | `fs.bulk_status.request`, `fs.inline_bulk_status.request` | message | message | MISSING | 512 bytes | out | — | | a number and the file id list |
 | `fs.bulk_status.request.fids`, `fs.inline_bulk_status.request.fids` | file ids | array | MISSING | 384 bytes | out | — | | `fs.bulk.fids_max` (32) file ids of 12 bytes |
-| `fs.bulk_status.reply`, `fs.inline_bulk_status.reply` | message | message | MISSING | 16 384 bytes | in | 32 768 bytes | | two lists of at most 32 items and one fixed record |
+| `fs.bulk_status.reply`, `fs.inline_bulk_status.reply` | message | message | MISSING | 16 384 bytes | in | 32 768 bytes | | two lists of at most 32 items and one volume sync record (its fixed size UNVERIFIED, 5.1.3, point 4) |
 | `fs.bulk_status.reply.statuses`, `fs.inline_bulk_status.reply.statuses` | status records | array | MISSING | 8 192 bytes, and no more items than file ids sent | in | — | | `fs.bulk.fids_max` × `fs.status_record_max`; the item count is checked against the request (5.4, point 10) |
 | `fs.bulk_status.reply.callbacks`, `fs.inline_bulk_status.reply.callbacks` | callback promises | array | MISSING | 2 048 bytes, and no more items than file ids sent | in | — | | `fs.bulk.fids_max` × `fs.callback_record_max` |
 | `fs.fetch_data.request`, `fs.fetch_data64.request` | message | message | MISSING | 64 bytes | out | — | | a number, a file id, an offset and a length |
 | `fs.fetch_data.reply`, `fs.fetch_data64.reply` | message | message | MISSING | the bytes asked + 2 048, at most `fs.fetch.chunk_max` + 2 048 (1 050 624) bytes; set per call as the Rx reply limit (5.1.4, point 6) | in | 1 050 624 bytes | | the data, its length word and padding, and the other records |
 | `fs.fetch_data.reply.data`, `fs.fetch_data64.reply.data` | data | opaque stream (5.1.1, point 4) | MISSING | the length requested, at most `fs.fetch.chunk_max` | in | counted in the message's budget | | a reply never holds more than was asked (5.4, point 9) |
 | `fs.get_volume_status.request` | message | message | MISSING | 64 bytes | out | — | | a number and a volume id |
-| `fs.get_volume_status.reply` | message | message | MISSING | 2 048 bytes | in | 2 048 bytes | | a fixed record and three short strings |
+| `fs.get_volume_status.reply` | message | message | MISSING | 2 048 bytes | in | 2 048 bytes | | a record of counts (its fixed size UNVERIFIED, Q9) and three short strings |
 | `fs.get_volume_status.reply.name` | volume name | string (Q9) | MISSING | 64 bytes | in | — | | as `vl.get_entry.reply.name` |
 | `fs.get_volume_status.reply.offline_message` | text | string (Q9) | MISSING | 256 bytes | in | — | | an administrator's one-line message |
 | `fs.get_volume_status.reply.motd` | text | string (Q9) | MISSING | 256 bytes | in | — | | as above |
@@ -655,6 +656,13 @@ used (xdr.md, 5.4, point 13) `[OWN]`.
      that claims more, is caught. A directory's `length` meets the
      directory format's caps (#56); a symbolic link's `length` is at most
      `fs.symlink.target_max`, else `SymlinkTooLong`;
+   - a symbolic link whose `length` is 0, on the planning record or on a
+     fetch reply's record, is `ReplyInvalid`: a link with no target
+     cannot be served, and no 0-byte fetch is ever asked for;
+   - a file or directory whose planning `length` is 0 needs no data
+     fetch: it is empty under that record's data version. An undecided
+     read of it (5.7, point 7) asks for status again in the reader's own
+     context instead, which decides it;
    - a symbolic link is read whole: one fetch at offset 0 for its whole
      `length`. If the reply's `length` differs from the planned one and
      is still within `fs.symlink.target_max`, the link is fetched once
@@ -703,8 +711,11 @@ used (xdr.md, 5.4, point 13) `[OWN]`.
       local machine. The one exception is loopback when the cell's own
       VL servers are configured at loopback addresses (a test venue);
     - a site whose server is named by identity is resolved with
-      `vl.get_addrs`, at most `vl.get_addrs.per_lookup_max` calls per
-      entry; a site whose `vl.get_addrs` call fails, by any abort or
+      `vl.get_addrs` only if it is a candidate: it holds the version
+      asked, and survives the release filter above. Each distinct server
+      identity is resolved once per lookup, at most
+      `vl.get_addrs.per_lookup_max` calls per lookup (a value to revisit
+      once Q8 settles the site table's size); a site whose `vl.get_addrs` call fails, by any abort or
       decode failure, is unusable and counted, and the other sites
       stand;
     - an entry with no usable site for the version asked fails the
@@ -732,8 +743,10 @@ used (xdr.md, 5.4, point 13) `[OWN]`.
     - the three strings are at most their caps; a NUL in one is
       `ReplyInvalid`. They are text for display only: never parsed,
       never used as a name or a path, and shown only with control
-      characters (below 0x20, and 0x7F) escaped, so a server cannot
-      write terminal escapes into the command line's output.
+      characters escaped: octets below 0x20 and 0x7F, the code points
+      U+0080 to U+009F where the text is valid UTF-8, and every octet of
+      a string that is not valid UTF-8, so a server cannot write
+      terminal escapes into the command line's output.
 
 ### 5.5 Encoding
 
@@ -882,9 +895,11 @@ function, the rights report (point 4), which reads only `caller_access`.
    decides `[OWN]`:
    - `read` and `read_link`: the reader's own data fetch (5.1.4,
      point 6);
-   - `read_directory`, `lookup` and `search`: the reader's own fetch of
-     the directory object; a name is resolved from that fetch alone;
-   - `execute`: no call can decide it, so it is not granted.
+   - `read_directory` and `lookup`: the reader's own fetch of the
+     directory object; a name is resolved from that fetch alone;
+   - `search` and `execute`: these are access answers, and no call can
+     decide them, so they are not granted (the closing paragraph of this
+     point).
 
    The reply's status record is evaluated again. Data is delivered under
    a grant if that evaluation grants the operation; if it is still
@@ -966,7 +981,7 @@ lab's error scenarios (Q10). The descriptions are IronAFS's own.
 | R3 | −5 | Rx | all | the peer saw a protocol error | the generic failure (Q11) | counted; not retried on that connection |
 | R4 | −100 | Rx and volume | all | the server is restarting | `busy` | retry with jittered backoff to the deadline (C33, point 7); for the VL service, try the cell's next VL server |
 | R5 | −450 to −454, −456, −457 | rxgen | all | a marshalling failure at either end | the generic failure (Q11) | counted; on a bulk call, 5.8, F3 |
-| R6 | −455 | rxgen | all | the server does not know the procedure | per 5.8: fallback for F1, F2, F3; `not supported` for V1 and for a non-catalogue procedure | sets the variant memo (5.6, point 2) |
+| R6 | −455 | rxgen | all | the server does not know the procedure | per 5.8: fallback for F1, F2, F3; `not supported` for V1 and for a non-catalogue procedure | for F1 or F2, sets that entry's variant memo (5.6, point 2); for F3 and V1, no memo |
 | R7 | 101 | volume | file service | the volume needs salvage | `offline` | try another usable site of a read-only version, else fail |
 | R8 | 102 | volume | file service | no such vnode | `stale` for a known handle; `not found` for a fresh lookup; on a bulk call, 5.8, F3 finds which file | none |
 | R9 | 103 | volume | file service | the volume is not on this server, or not on line | `offline` | ask the VL service again (5.6, point 3), then retry once at the new site |
@@ -982,8 +997,8 @@ lab's error scenarios (Q10). The descriptions are IronAFS's own.
 | R19 | 363 521, 363 547, 363 552 | VL | VL service | the VL server's own I/O, memory or database failure | `busy` | try the cell's next VL server (C33) |
 | R20 | any other code in the VL table (363 520 to 363 552) | VL | VL service | a failure that a read-only lookup does not expect | the generic failure (Q11) | counted |
 | R24 | any code, and any decode failure | any | `vl.get_addrs` | that one server cannot be resolved | none for the lookup: only that site is unusable (5.4, point 11) | counted; R4 and R19 also try the cell's next VL server for that call |
-| R21 | 1, 13 | system range (below 256) | file service | permission refused | `access` | none; no grant is minted (5.7) |
-| R22 | 2 | system range | file service | no such object | `not found`, or `stale` for a known handle | none |
+| R21 | 1, 13 | system range (below 256) | file service | permission refused | `access`; on a bulk call, 5.8, F3 finds which file | none; no grant is minted (5.7) |
+| R22 | 2 | system range | file service | no such object | `not found`, or `stale` for a known handle; on a bulk call, 5.8, F3 finds which file | none |
 | R23 | any other code | — | any | not classified | the generic failure (Q11) | counted with procedure and code, never retried in a loop |
 
 `[OWN]`, and the reasons:
@@ -1160,7 +1175,7 @@ they exist; the rules are fixed now.
 | R17 | a link planned at 10 bytes whose reply says 20, then 30 | one re-fetch, then `FetchLengthMismatch`; no prefix served | 5.4, point 9 |
 | R18 | a bulk reply with the right counts and one item of unknown file type | the whole reply discarded; per-file calls | 5.4, point 10 |
 | R19 | a volume status reply with a negative count, a count whose bytes overflow, a string holding NUL, or another volume's id | the count unusable and the answer failed, or `ReplyInvalid` | 5.4, point 14 |
-| R20 | a VL entry with 9 sites named by identity | 8 `vl.get_addrs` calls; the ninth site unusable | 5.4, point 11 |
+| R20 | a VL entry with 9 candidate sites of the version asked, each naming a different server identity | 8 `vl.get_addrs` calls; the ninth site unusable. Two candidate sites naming one identity: one call | 5.4, point 11 |
 
 ### 10.4 Fuzz targets
 
@@ -1183,10 +1198,11 @@ The grant cases run on the evaluator alone; the others in the simulator
   (granted, denied or undecided). With the table empty, every mask gives
   no granted operation, and every mask operation of the type is
   undecided. (N28, point 3.)
-- **G2 mode narrows only.** For every mask, type and mode: the output
-  with any mode is a subset of the output with mode 0o7777. A file with
-  the owner read bit clear gets neither `read` nor `execute`. A
-  directory's output does not depend on mode. (N28, point 4.)
+- **G2 mode narrows only.** For every mask, type and mode: the grant
+  (the set of granted operations) with any mode is a subset of the grant
+  with mode 0o7777. A file with the owner read bit clear gets neither
+  `read` nor `execute`. A directory's whole output (granted, denied and
+  undecided) does not depend on mode. (N28, point 4.)
 - **G3 per item.** A bulk reply that passes, where item 1 grants `read`
   and item 2 does not: file 1 gets its grant, file 2 none. A bulk reply
   where item 2 is rejected: neither file gets a grant from it, and both
