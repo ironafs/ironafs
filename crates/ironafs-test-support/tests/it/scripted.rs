@@ -61,8 +61,10 @@ fn capability_minted_for_another_binding_is_refused() {
     );
     let handle = core.open_handle(first, &caller, FILE).unwrap();
     assert_eq!(core.check_handle(second, &handle), Err(VfsError::Stale));
-    // Each capability presented on the wrong binding is a layer fault.
-    assert_eq!(core.layer_faults(), 3);
+    // Each capability presented on the wrong binding is a fault of the
+    // binding that presented it.
+    assert_eq!(core.layer_faults(second), 3);
+    assert_eq!(core.layer_faults(first), 0);
     assert_eq!(core.check_handle(first, &handle), Ok(FILE));
 }
 
@@ -88,7 +90,7 @@ fn weak_break_and_purge_failure_stale_the_node_only() {
             revision: event.revision,
         },
     );
-    assert_eq!(core.layer_faults(), 0);
+    assert_eq!(core.layer_faults(first), 0);
 
     // Both contexts' handles on FILE, in every binding, are revoked.
     assert!(core.node_stale(FILE));
@@ -188,10 +190,11 @@ fn purge_failure_not_matching_a_delivery_changes_nothing() {
         node: FILE,
         revision,
     };
-    // A binding that does not hold the node, an unknown binding, a
-    // revision never delivered (zero included), and an overflow never
-    // delivered: each is a layer fault and changes nothing (contract
-    // specification, 5.10, point 6).
+    // A binding that does not hold the node, a revision above the latest
+    // delivered and an overflow never delivered are faults of the binding
+    // that sent them; an unknown binding has no count; revision zero for a
+    // node that had a delivery is a repeat. None changes anything
+    // (contract specification, 5.10, point 6).
     core.purge_failed(first, node(event.revision));
     core.purge_failed(BindingId(99), node(event.revision));
     core.purge_failed(second, node(Revision(event.revision.0 + 1)));
@@ -203,7 +206,8 @@ fn purge_failure_not_matching_a_delivery_changes_nothing() {
             revision: event.revision,
         },
     );
-    assert_eq!(core.layer_faults(), 5);
+    assert_eq!(core.layer_faults(first), 1);
+    assert_eq!(core.layer_faults(second), 2);
     assert!(!core.node_stale(FILE));
     assert_eq!(core.check_handle(second, &handle), Ok(FILE));
 }
@@ -226,7 +230,7 @@ fn repeated_purge_failure_is_ignored() {
     // The same report again: a repeat, which offers nothing new.
     core.purge_failed(first, report);
     assert_eq!(core.next_event(first), None);
-    assert_eq!(core.layer_faults(), 0);
+    assert_eq!(core.layer_faults(first), 0);
     core.ack(
         first,
         Ack::Node {
@@ -238,7 +242,7 @@ fn repeated_purge_failure_is_ignored() {
 }
 
 #[test]
-fn overflow_report_for_a_node_not_held_at_delivery_changes_nothing() {
+fn late_overflow_report_is_a_fault_while_open_and_a_repeat_after() {
     const LATE: NodeId = NodeId(13);
     let (mut core, first, _) = core(0);
     core.break_node(FILE, Evidence::Weak, Scope::Object, &DATA);
@@ -254,9 +258,24 @@ fn overflow_report_for_a_node_not_held_at_delivery_changes_nothing() {
             revision: overflow.revision,
         },
     );
-    // Not valid (5.10, point 6), but at or below the overflow's delivered
-    // revision, so a repeat: ignored and not a fault.
-    assert_eq!(core.layer_faults(), 0);
+    // A node not held at the delivery of an overflow still open: a fault.
+    assert_eq!(core.layer_faults(first), 1);
+    assert!(!core.node_stale(LATE));
+    core.ack(
+        first,
+        Ack::Overflow {
+            revision: overflow.revision,
+        },
+    );
+    // Once the overflow is acknowledged, the same report is a repeat.
+    core.purge_failed(
+        first,
+        PurgeFailed::OverflowNode {
+            node: LATE,
+            revision: overflow.revision,
+        },
+    );
+    assert_eq!(core.layer_faults(first), 1);
     assert!(!core.node_stale(LATE));
     assert_eq!(core.next_event(first), None);
 }
@@ -291,7 +310,7 @@ fn forged_and_repeated_reports() {
             revision: Revision(event.revision.0 + 1),
         },
     );
-    assert_eq!(core.layer_faults(), 3);
+    assert_eq!(core.layer_faults(first), 3);
     assert_eq!(core.check_handle(second, &held), Ok(FILE));
     let valid = Ack::Node {
         node: FILE,
@@ -299,7 +318,7 @@ fn forged_and_repeated_reports() {
     };
     core.ack(first, valid);
     core.ack(first, valid);
-    assert_eq!(core.layer_faults(), 3);
+    assert_eq!(core.layer_faults(first), 3);
     assert!(!core.gated(first, FILE));
 }
 
@@ -347,7 +366,7 @@ fn reoffered_purge_folded_into_an_overflow_is_still_delivered() {
     assert!(!core.node_stale(FILE));
     assert!(!core.gated(first, FILE));
     assert!(open(&mut core, first, ALICE, FILE).is_ok());
-    assert_eq!(core.layer_faults(), 0);
+    assert_eq!(core.layer_faults(first), 0);
 }
 
 #[test]
@@ -406,4 +425,106 @@ fn detach_ends_the_staleness_its_failed_purge_caused() {
     core.detach(first);
     assert!(!core.node_stale(FILE));
     assert!(open(&mut core, second, BOB, FILE).is_ok());
+}
+
+#[test]
+fn failure_of_a_delivery_folded_into_an_overflow_is_handled() {
+    // One slot fits; a second folds every slot into an overflow.
+    let (mut core, first, second) = core(64);
+    let alice = open(&mut core, first, ALICE, FILE).unwrap();
+    let bob = open(&mut core, second, BOB, FILE).unwrap();
+    core.break_node(FILE, Evidence::Weak, Scope::Object, &DATA);
+    let Some(Event::Node(delivered)) = core.next_event(first) else {
+        panic!("expected a node event");
+    };
+    // A second event during the purge folds FILE's slot into an overflow.
+    core.break_node(OTHER, Evidence::Weak, Scope::Object, &DATA);
+    // The purge of the delivery still unanswered fails.
+    core.purge_failed(
+        first,
+        PurgeFailed::Node {
+            node: FILE,
+            revision: delivered.revision,
+        },
+    );
+    assert_eq!(core.layer_faults(first), 0);
+    assert!(core.node_stale(FILE));
+    assert_eq!(core.check_handle(first, &alice), Err(VfsError::Stale));
+    assert_eq!(core.check_handle(second, &bob), Err(VfsError::Stale));
+    // The overflow comes first; the re-offer then comes on FILE's slot,
+    // and only its acknowledgement ends the staleness.
+    let Some(Event::Overflow(overflow)) = core.next_event(first) else {
+        panic!("expected an overflow");
+    };
+    core.ack(
+        first,
+        Ack::Overflow {
+            revision: overflow.revision,
+        },
+    );
+    assert!(core.node_stale(FILE));
+    let Some(Event::Node(reoffer)) = core.next_event(first) else {
+        panic!("expected the re-offer");
+    };
+    assert_eq!(reoffer.node, FILE);
+    assert!(reoffer.revision > overflow.revision);
+    core.ack(
+        first,
+        Ack::Node {
+            node: FILE,
+            revision: reoffer.revision,
+        },
+    );
+    assert!(!core.node_stale(FILE));
+    assert_eq!(core.layer_faults(first), 0);
+}
+
+#[test]
+fn staleness_ends_only_with_the_delivery_that_carries_the_reoffer() {
+    // The re-offer folds into an overflow; a later node event for the same
+    // node does not carry it.
+    let (mut core, first, _) = core(64);
+    core.break_node(FILE, Evidence::Weak, Scope::Object, &DATA);
+    core.break_node(OTHER, Evidence::Weak, Scope::Object, &DATA);
+    let Some(Event::Overflow(swept)) = core.next_event(first) else {
+        panic!("expected an overflow");
+    };
+    core.break_node(OTHER, Evidence::Weak, Scope::Object, &DATA);
+    core.purge_failed(
+        first,
+        PurgeFailed::OverflowNode {
+            node: FILE,
+            revision: swept.revision,
+        },
+    );
+    core.ack(
+        first,
+        Ack::Overflow {
+            revision: swept.revision,
+        },
+    );
+    // A later event for FILE, delivered on its own slot.
+    let Some(Event::Overflow(reoffer)) = core.next_event(first) else {
+        panic!("expected the overflow carrying the re-offer");
+    };
+    core.break_node(FILE, Evidence::Weak, Scope::Object, &DATA);
+    let Some(Event::Node(later)) = core.next_event(first) else {
+        panic!("expected a node event");
+    };
+    core.ack(
+        first,
+        Ack::Node {
+            node: FILE,
+            revision: later.revision,
+        },
+    );
+    assert!(core.node_stale(FILE));
+    core.ack(
+        first,
+        Ack::Overflow {
+            revision: reoffer.revision,
+        },
+    );
+    assert!(!core.node_stale(FILE));
+    assert_eq!(core.layer_faults(first), 0);
 }

@@ -35,7 +35,7 @@ use ironafs_vfs::{
 };
 
 use ledger::Ledger;
-use stream::{Acked, Stream};
+use stream::{Answer, Stream};
 
 mod ledger;
 mod stream;
@@ -89,7 +89,7 @@ pub enum PurgeFailed {
 /// assert_eq!(core.check_caller(mount, &caller), Ok(ContextId(1)));
 /// // A capability minted for one binding does not act on another.
 /// assert_eq!(core.check_caller(other, &caller), Err(VfsError::Stale));
-/// assert_eq!(core.layer_faults(), 1);
+/// assert_eq!(core.layer_faults(other), 1);
 /// ```
 #[derive(Debug)]
 pub struct ScriptedCore {
@@ -97,12 +97,9 @@ pub struct ScriptedCore {
     event_bound: usize,
     streams: BTreeMap<BindingId, Stream>,
     suspect: BTreeSet<NodeId>,
-    /// The nodes whose purge failed, with each binding whose purge of
-    /// them has not succeeded since, and the revision under which the
-    /// purge was offered again.
-    stale: BTreeMap<(NodeId, BindingId), Revision>,
-    /// Layer faults the streams counted.
-    faults: u64,
+    /// Layer faults the streams counted, per binding (contract
+    /// specification, 7, point 3).
+    faults: BTreeMap<BindingId, u64>,
 }
 
 impl ScriptedCore {
@@ -111,15 +108,17 @@ impl ScriptedCore {
     /// point 9).
     pub const DEFAULT_EVENT_BOUND: usize = 1024 * 1024;
 
-    /// How many layer faults the core counted: a capability presented on
-    /// a binding other than its own (contract specification, 5.3,
-    /// point 3), a release of a capability it has no record of (5.6,
-    /// point 2), and an acknowledgement or purge failure that is neither
-    /// valid nor a repeat (5.10, point 6). The specification counts them
-    /// per binding; this core keeps one count.
+    /// How many layer faults the core counted against `binding` (contract
+    /// specification, 7, point 3): a capability it presented that was
+    /// recorded for another binding (5.3, point 3), an SMB session the core
+    /// does not know (5.3, point 1), a release of a capability with no
+    /// record for it (5.6, point 2), and an acknowledgement or failure
+    /// report in the fault class (5.10, point 6). A report from a binding
+    /// not attached has no binding to count against.
     #[must_use]
-    pub fn layer_faults(&self) -> u64 {
-        self.ledger.faults().saturating_add(self.faults)
+    pub fn layer_faults(&self, binding: BindingId) -> u64 {
+        let streams = self.faults.get(&binding).copied().unwrap_or(0);
+        self.ledger.faults(binding).saturating_add(streams)
     }
 
     /// A core with no bindings, whose capability nonces come from `seed`.
@@ -137,8 +136,7 @@ impl ScriptedCore {
             event_bound: bytes,
             streams: BTreeMap::new(),
             suspect: BTreeSet::new(),
-            stale: BTreeMap::new(),
-            faults: 0,
+            faults: BTreeMap::new(),
         }
     }
 
@@ -152,12 +150,10 @@ impl ScriptedCore {
 
     /// The binding dies: its caller capabilities and handles act no more
     /// (C14, point 3), its pending events are dropped, and a node stale
-    /// only from its failed purge is stale no more.
+    /// only from its failed purge is stale no more (5.10, point 5).
     pub fn detach(&mut self, binding: BindingId) {
         self.ledger.detach(binding);
         self.streams.remove(&binding);
-        // Its operating system's cache went with it.
-        self.stale.retain(|(_, failed), _| *failed != binding);
     }
 
     /// Scripts the credential context the core gives a caller that the
@@ -174,9 +170,10 @@ impl ScriptedCore {
     /// # Errors
     ///
     /// [`VfsError::Stale`] if `binding` is not attached;
-    /// [`VfsError::Access`] if no context is scripted for `attestation`
-    /// (the contract specification does not yet say what the core answers
-    /// an attestation it has no context for).
+    /// [`VfsError::Access`] if no context is scripted for `attestation`:
+    /// the core does not accept it (contract specification, 5.3, point 1).
+    /// An unknown SMB session is also counted as a layer fault of
+    /// `binding`; a uid is not, since the operating system may send it.
     pub fn mint_caller(
         &mut self,
         binding: BindingId,
@@ -303,39 +300,26 @@ impl ScriptedCore {
     }
 
     /// `binding` acknowledges that it applied an event's purge (C17,
-    /// point 2; contract specification, 5.10, point 3). Only the delivered
-    /// revision it names is cleared; effects merged after that delivery
-    /// stay pending under their higher revision (C17, point 6).
+    /// point 2; contract specification, 5.10, point 3). It clears each
+    /// effect merged at or below the revision it names; effects merged
+    /// later stay pending under their own revision (C17, point 6).
     ///
-    /// An acknowledgement has no reply, and is valid only if it names a
-    /// delivery to `binding` not yet acknowledged or reported (5.10,
-    /// point 6). An invalid one changes nothing: if its revision is
-    /// non-zero and at or below the latest delivered for that node (or for
-    /// the overflow) it is a repeat, ignored; otherwise (a revision never
-    /// delivered, a node `binding` does not hold, an overflow never
-    /// delivered, a binding not attached) it is counted as a layer fault.
+    /// An acknowledgement has no reply, and is valid only if it answers an
+    /// open delivery: the node's one unanswered delivery (still open when
+    /// its slot folded into an overflow), or the open overflow (5.10,
+    /// point 6). An invalid one changes nothing and is in one of two
+    /// classes. It is a layer fault of `binding` if its revision is above
+    /// the latest delivered for that node or overflow, if `binding` does
+    /// not hold the node or never had a delivery for it, or if no overflow
+    /// was delivered. Otherwise it is a repeat, ignored: a second answer, a
+    /// revision at or below the latest delivered (zero included), an
+    /// overflow already acknowledged. A binding not attached is ignored.
     pub fn ack(&mut self, binding: BindingId, ack: Ack) {
         let Some(stream) = self.streams.get_mut(&binding) else {
-            self.fault();
             return;
         };
-        match stream.ack(ack) {
-            Acked::Node(node, revision) => {
-                if self
-                    .stale
-                    .get(&(node, binding))
-                    .is_some_and(|offered| *offered <= revision)
-                {
-                    self.stale.remove(&(node, binding));
-                }
-            }
-            Acked::Overflow(revision) => {
-                // The overflow purged every node the binding holds.
-                self.stale
-                    .retain(|(_, failed), offered| *failed != binding || *offered > revision);
-            }
-            Acked::Repeat => {}
-            Acked::Fault => self.fault(),
+        if stream.ack(ack) == Answer::Fault {
+            self.fault(binding);
         }
     }
 
@@ -356,42 +340,42 @@ impl ScriptedCore {
     /// 5.10, point 5). The operating
     /// system may still serve the node's old state, so the node answers
     /// [`VfsError::Stale`] in every binding: every context's handles on it,
-    /// on every binding, are revoked, and new opens of it are refused until
-    /// `binding` acknowledges a purge that covers it. The purge is offered
-    /// to `binding` again, as a node event or, when its slot does not fit
-    /// the bound, within the overflow. Nothing else changes: no other node,
-    /// handle or pending event.
+    /// on every binding, are revoked, and new opens of it are refused. The
+    /// purge is offered to `binding` again, widened to every effect, as a
+    /// node event or, when its slot does not fit the bound, within the
+    /// next overflow; the node's staleness ends when `binding`
+    /// acknowledges the delivery that carries that offer, or is detached.
+    /// Nothing else changes: no other node, handle or pending event.
     ///
     /// The report has no reply (5.6, point 1) and follows the validity
-    /// rule of [`ScriptedCore::ack`]: an `OverflowNode` report is valid
-    /// only for a node `binding` held when the overflow was delivered,
-    /// once. An invalid report revokes nothing.
+    /// rule of [`ScriptedCore::ack`]. An `OverflowNode` report is valid
+    /// for the open overflow, a node `binding` held at its delivery, once;
+    /// naming a node not held at the delivery of an overflow still open is
+    /// a fault, and any report on an overflow already acknowledged is a
+    /// repeat. An invalid report revokes nothing.
     pub fn purge_failed(&mut self, binding: BindingId, report: PurgeFailed) {
         let Some(stream) = self.streams.get_mut(&binding) else {
-            self.fault();
             return;
         };
-        let (PurgeFailed::Node { node, .. } | PurgeFailed::OverflowNode { node, .. }) = report;
         match stream.fail(report) {
-            Ok(offered) => {
+            Answer::Valid => {
+                let (PurgeFailed::Node { node, .. } | PurgeFailed::OverflowNode { node, .. }) =
+                    report;
                 self.ledger.revoke_node(node);
-                self.stale.insert((node, binding), offered);
             }
-            Err(Acked::Fault) => self.fault(),
-            Err(_) => {}
+            Answer::Repeat => {}
+            Answer::Fault => self.fault(binding),
         }
     }
 
     /// Whether a failed purge left `node` stale (C15, point 6).
     #[must_use]
     pub fn node_stale(&self, node: NodeId) -> bool {
-        self.stale
-            .range((node, BindingId(0))..=(node, BindingId(u64::MAX)))
-            .next()
-            .is_some()
+        self.streams.values().any(|stream| stream.stale(node))
     }
 
-    fn fault(&mut self) {
-        self.faults = self.faults.saturating_add(1);
+    fn fault(&mut self, binding: BindingId) {
+        let count = self.faults.entry(binding).or_insert(0);
+        *count = count.saturating_add(1);
     }
 }

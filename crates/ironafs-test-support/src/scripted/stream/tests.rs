@@ -131,7 +131,7 @@ fn ack_of_delivered_revision_clears_the_slot() {
     );
     assert!(!core.gated(binding, FILE));
     assert_eq!(core.next_event(binding), None);
-    assert_eq!(core.layer_faults(), 0);
+    assert_eq!(core.layer_faults(binding), 0);
 }
 
 #[test]
@@ -169,8 +169,10 @@ fn ack_of_a_revision_never_issued_clears_nothing() {
     let binding = holding(&mut core, &[FILE]);
     weak(&mut core, FILE, &DATA);
     let event = node_event(&mut core, binding);
-    // Above the latest delivered, revision zero (never issued), and an
-    // overflow never delivered: each changes nothing and is a layer fault.
+    // Above the latest delivered, and an overflow never delivered (at any
+    // revision, zero included): faults. Revision zero for a node that had
+    // a delivery is at or below its latest: a repeat, not a fault (5.10,
+    // point 6).
     for ack in [
         Ack::Node {
             node: FILE,
@@ -189,7 +191,7 @@ fn ack_of_a_revision_never_issued_clears_nothing() {
     ] {
         core.ack(binding, ack);
     }
-    assert_eq!(core.layer_faults(), 4);
+    assert_eq!(core.layer_faults(binding), 3);
     assert!(core.gated(binding, FILE));
 }
 
@@ -206,7 +208,7 @@ fn ack_of_an_undelivered_revision_clears_nothing() {
             revision: Revision(1),
         },
     );
-    assert_eq!(core.layer_faults(), 1);
+    assert_eq!(core.layer_faults(binding), 1);
     assert!(core.gated(binding, FILE));
     assert_eq!(node_event(&mut core, binding).effects, DATA);
 }
@@ -228,7 +230,7 @@ fn repeated_ack_changes_nothing() {
     // fault; the later effect stays pending.
     core.ack(binding, ack);
     assert!(core.gated(binding, FILE));
-    assert_eq!(core.layer_faults(), 0);
+    assert_eq!(core.layer_faults(binding), 0);
     core.ack(
         binding,
         Ack::Node {
@@ -338,22 +340,25 @@ fn weak_break_marks_node_suspect_authoritative_does_not() {
 }
 
 #[test]
-fn ack_of_a_delivery_folded_into_an_overflow_is_a_repeat() {
+fn ack_of_a_delivery_folded_into_an_overflow_answers_it() {
     let mut core = ScriptedCore::with_event_bound(1, SLOT_BYTES);
     let binding = holding(&mut core, &[FILE, DIRECTORY]);
     weak(&mut core, FILE, &DATA);
     let delivered = node_event(&mut core, binding);
-    // The next event folds FILE's delivered slot into an overflow.
+    // The next event folds FILE's delivered slot into an overflow; the
+    // delivery is still unanswered, so its acknowledgement is valid.
     weak(&mut core, DIRECTORY, &DATA);
-    core.ack(
-        binding,
-        Ack::Node {
-            node: FILE,
-            revision: delivered.revision,
-        },
-    );
-    assert_eq!(core.layer_faults(), 0);
+    let ack = Ack::Node {
+        node: FILE,
+        revision: delivered.revision,
+    };
+    core.ack(binding, ack);
+    assert_eq!(core.layer_faults(binding), 0);
+    // The overflow still gates the node.
     assert!(core.gated(binding, FILE));
+    // A second answer is a repeat.
+    core.ack(binding, ack);
+    assert_eq!(core.layer_faults(binding), 0);
 }
 
 #[test]
@@ -369,7 +374,7 @@ fn ack_for_a_node_not_held_is_a_fault() {
             revision: event.revision,
         },
     );
-    assert_eq!(core.layer_faults(), 1);
+    assert_eq!(core.layer_faults(binding), 1);
     assert!(core.gated(binding, FILE));
 }
 
@@ -383,10 +388,63 @@ fn hold_on_an_unknown_binding_is_stale() {
             revision: Revision(1),
         },
     );
-    assert_eq!(core.layer_faults(), 1);
+    // No binding to count it against.
+    assert_eq!(core.layer_faults(BindingId(99)), 0);
 }
 
 #[test]
 fn default_event_bound_is_the_spec_figure() {
     assert_eq!(ScriptedCore::DEFAULT_EVENT_BOUND, 1024 * 1024);
+}
+
+#[test]
+fn overflow_is_delivered_once_and_a_second_waits_until_it_is_acknowledged() {
+    let mut core = ScriptedCore::with_event_bound(1, SLOT_BYTES);
+    let binding = holding(&mut core, &[FILE, DIRECTORY]);
+    weak(&mut core, FILE, &DATA);
+    weak(&mut core, DIRECTORY, &DATA);
+    let Some(Event::Overflow(first)) = core.next_event(binding) else {
+        panic!("expected an overflow");
+    };
+    // While it is open, the binding overflows again.
+    weak(&mut core, FILE, &DATA);
+    weak(&mut core, DIRECTORY, &DATA);
+    assert_eq!(core.next_event(binding), None);
+    core.ack(
+        binding,
+        Ack::Overflow {
+            revision: first.revision,
+        },
+    );
+    let Some(Event::Overflow(second)) = core.next_event(binding) else {
+        panic!("expected the second overflow");
+    };
+    assert!(second.revision > first.revision);
+    assert!(core.gated(binding, FILE));
+    core.ack(
+        binding,
+        Ack::Overflow {
+            revision: second.revision,
+        },
+    );
+    assert!(!core.gated(binding, FILE));
+    assert_eq!(core.layer_faults(binding), 0);
+}
+
+#[test]
+fn faults_count_against_the_reporting_binding_only() {
+    let mut core = ScriptedCore::new(1);
+    let first = holding(&mut core, &[FILE]);
+    let second = holding(&mut core, &[FILE]);
+    weak(&mut core, FILE, &DATA);
+    let event = node_event(&mut core, first);
+    core.ack(
+        first,
+        Ack::Node {
+            node: FILE,
+            revision: Revision(event.revision.0 + 1),
+        },
+    );
+    assert_eq!(core.layer_faults(first), 1);
+    assert_eq!(core.layer_faults(second), 0);
 }

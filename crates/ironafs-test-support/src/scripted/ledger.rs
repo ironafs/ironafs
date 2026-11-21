@@ -15,7 +15,7 @@
 //! [`SplitMix64`], so a run is replayed from its seed.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use ironafs_vfs::{
     Attestation, BindingId, CallerCap, ContextId, CredentialGeneration, HandleCap, HandleId, Mint,
@@ -52,7 +52,8 @@ pub(super) struct Ledger {
     nonces: SplitMix64,
     /// Capabilities presented on a binding other than their own, and
     /// releases of a capability the core has no record of.
-    faults: AtomicU64,
+    /// Counted per binding (contract specification, 7, point 3).
+    faults: Mutex<BTreeMap<BindingId, u64>>,
     next_binding: u64,
     next_handle: u64,
     bindings: BTreeSet<BindingId>,
@@ -89,7 +90,7 @@ impl Ledger {
         Self {
             mint: Mint::new(),
             nonces: SplitMix64::new(seed),
-            faults: AtomicU64::new(0),
+            faults: Mutex::new(BTreeMap::new()),
             next_binding: 0,
             next_handle: 0,
             bindings: BTreeSet::new(),
@@ -135,10 +136,19 @@ impl Ledger {
         if !self.attached(binding) {
             return Err(VfsError::Stale);
         }
-        let context = *self
+        // An attestation the core does not accept mints nothing and is
+        // refused with `Access`; an unknown SMB session is also a fault,
+        // while a uid the operating system sent is not (5.3, point 1).
+        let Some(context) = self
             .attested
             .get(&AttestationKey::from(attestation))
-            .ok_or(VfsError::Access)?;
+            .copied()
+        else {
+            if let Attestation::SmbSession { .. } = attestation {
+                self.fault(binding);
+            }
+            return Err(VfsError::Access);
+        };
         let generation = self.generation(context);
         let nonce = self.fresh_nonce();
         self.callers.insert(
@@ -162,7 +172,7 @@ impl Ledger {
         }
         let record = self.callers.get(&cap.nonce()).ok_or(VfsError::Stale)?;
         if record.binding != binding || cap.binding() != binding {
-            self.fault();
+            self.fault(binding);
             return Err(VfsError::Stale);
         }
         if record.context != cap.context() || record.generation != cap.generation() {
@@ -216,7 +226,7 @@ impl Ledger {
             .filter(|record| record.nonce == cap.nonce())
             .ok_or(VfsError::Stale)?;
         if record.binding != binding || cap.binding() != binding {
-            self.fault();
+            self.fault(binding);
             return Err(VfsError::Stale);
         }
         if !record.live
@@ -244,9 +254,10 @@ impl Ledger {
     }
 
     /// Ends the handle if `cap` is the one recorded for it on `binding`,
-    /// live or revoked. Release never fails (C9, point 4), so any other
-    /// capability releases nothing and is counted as a layer fault
-    /// (contract specification, 5.6, point 2).
+    /// live or not: releasing a revoked handle, or one of a retired
+    /// generation or a detached binding, is ordinary. Release never fails
+    /// (C9, point 4), so any other capability releases nothing and is
+    /// counted as a layer fault (contract specification, 5.6, point 2).
     #[expect(
         clippy::needless_pass_by_value,
         reason = "release takes the capability, so the layer keeps no copy (C7, point 4)"
@@ -258,17 +269,23 @@ impl Ledger {
         if recorded {
             self.handles.remove(&cap.handle());
         } else {
-            self.fault();
+            self.fault(binding);
         }
     }
 
-    /// How many layer faults the table counted.
-    pub(super) fn faults(&self) -> u64 {
-        self.faults.load(Ordering::Relaxed)
+    /// How many layer faults the table counted against `binding`.
+    pub(super) fn faults(&self, binding: BindingId) -> u64 {
+        self.counts().get(&binding).copied().unwrap_or(0)
     }
 
-    fn fault(&self) {
-        self.faults.fetch_add(1, Ordering::Relaxed);
+    fn fault(&self, binding: BindingId) {
+        let mut counts = self.counts();
+        let count = counts.entry(binding).or_insert(0);
+        *count = count.saturating_add(1);
+    }
+
+    fn counts(&self) -> MutexGuard<'_, BTreeMap<BindingId, u64>> {
+        self.faults.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn generation(&self, context: ContextId) -> CredentialGeneration {

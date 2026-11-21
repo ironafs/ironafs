@@ -47,10 +47,11 @@ fn caller_acts_on_its_own_binding() {
 fn caller_minted_for_one_binding_is_refused_on_another() {
     let (mut core, first, second) = core();
     let cap = caller(&mut core, first);
-    assert_eq!(core.layer_faults(), 0);
     assert_eq!(core.check_caller(second, &cap), Err(VfsError::Stale));
-    // A capability recorded for another binding is a layer fault.
-    assert_eq!(core.layer_faults(), 1);
+    // A capability recorded for another binding is a fault of the binding
+    // that presented it, and of no other.
+    assert_eq!(core.layer_faults(second), 1);
+    assert_eq!(core.layer_faults(first), 0);
 }
 
 #[test]
@@ -87,6 +88,8 @@ fn unscripted_attestation_is_refused() {
             .map(|cap| cap.context()),
         Err(VfsError::Access)
     );
+    // The operating system may send a uid the core refuses: not a fault.
+    assert_eq!(core.layer_faults(first), 0);
 }
 
 #[test]
@@ -120,9 +123,9 @@ fn handle_acts_on_its_own_binding() {
 fn handle_minted_for_one_binding_is_refused_on_another() {
     let (mut core, first, second) = core();
     let cap = handle(&mut core, first);
-    let before = core.layer_faults();
     assert_eq!(core.check_handle(second, &cap), Err(VfsError::Stale));
-    assert_eq!(core.layer_faults(), before + 1);
+    assert_eq!(core.layer_faults(second), 1);
+    assert_eq!(core.layer_faults(first), 0);
 }
 
 #[test]
@@ -184,7 +187,7 @@ fn release_ends_the_handle() {
     core.release(first, cap);
     assert_eq!(core.check_handle(first, &probe), Err(VfsError::Stale));
     assert_eq!(core.check_handle(first, &kept), Ok(FILE));
-    assert_eq!(core.layer_faults(), 0);
+    assert_eq!(core.layer_faults(first), 0);
 }
 
 #[test]
@@ -196,6 +199,41 @@ fn release_on_another_binding_leaves_the_handle_live() {
     let copy = Mint::new().handle(first, cap.handle(), cap.nonce());
     core.release(second, copy);
     assert_eq!(core.check_handle(first, &cap), Ok(FILE));
-    // Release still answers success, and the failed check is a layer fault.
-    assert_eq!(core.layer_faults(), 1);
+    // Release still answers success; a capability with no record for the
+    // presenting binding is that binding's fault (5.6, point 2).
+    assert_eq!(core.layer_faults(second), 1);
+    assert_eq!(core.layer_faults(first), 0);
+}
+
+#[test]
+fn release_of_a_dead_handle_is_not_a_fault() {
+    let (mut core, first, _) = core();
+    let revoked = handle(&mut core, first);
+    let retired = handle(&mut core, first);
+    core.revoke_handle(revoked.handle());
+    core.release(first, revoked);
+    core.retire_generation(ALICE_CONTEXT);
+    core.release(first, retired);
+    assert_eq!(core.layer_faults(first), 0);
+}
+
+#[test]
+fn release_of_an_already_released_handle_is_a_fault() {
+    let (mut core, first, _) = core();
+    let cap = handle(&mut core, first);
+    let again = Mint::new().handle(first, cap.handle(), cap.nonce());
+    core.release(first, cap);
+    core.release(first, again);
+    assert_eq!(core.layer_faults(first), 1);
+}
+
+#[test]
+fn unknown_smb_session_is_refused_and_counted() {
+    let (mut core, first, _) = core();
+    assert_eq!(
+        core.mint_caller(first, Attestation::SmbSession { session: 9 })
+            .map(|cap| cap.context()),
+        Err(VfsError::Access)
+    );
+    assert_eq!(core.layer_faults(first), 1);
 }
