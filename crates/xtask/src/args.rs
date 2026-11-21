@@ -13,13 +13,28 @@ mod tests;
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Task {
     Check,
-    CheckBans { self_test: bool },
-    CheckDeps { self_test: bool },
-    CheckGrants { self_test: bool },
-    CheckPure { self_test: bool },
-    CheckOs { self_test: bool },
-    CheckAbi { self_test: bool },
-    InstallHook { force: bool },
+    CheckBans {
+        self_test: bool,
+    },
+    CheckDeps {
+        self_test: bool,
+    },
+    CheckGrants {
+        self_test: bool,
+    },
+    CheckPure {
+        self_test: bool,
+    },
+    CheckOs {
+        self_test: bool,
+    },
+    CheckAbi {
+        self_test: bool,
+        target: Option<String>,
+    },
+    InstallHook {
+        force: bool,
+    },
     UninstallHook,
     Trailers(TrailerMode),
 }
@@ -38,6 +53,7 @@ pub(super) enum UsageError {
     MissingHookSubcommand,
     MissingTrailerMode,
     MissingCommitMessagePath,
+    MissingTarget,
     UnknownCommand(OsString),
     UnknownHookSubcommand(OsString),
     UnknownTrailerMode(OsString),
@@ -51,6 +67,7 @@ impl fmt::Display for UsageError {
             Self::MissingHookSubcommand => write!(formatter, "missing hooks subcommand"),
             Self::MissingTrailerMode => write!(formatter, "missing trailers mode"),
             Self::MissingCommitMessagePath => write!(formatter, "missing commit message file path"),
+            Self::MissingTarget => write!(formatter, "missing target triple"),
             Self::UnknownCommand(command) => {
                 write!(formatter, "unknown command {}", command.display())
             }
@@ -66,7 +83,7 @@ impl fmt::Display for UsageError {
         }?;
         write!(
             formatter,
-            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | check-os [--self-test] | check-abi [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
+            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | check-os [--self-test] | check-abi [--self-test | --target <triple>] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
         )
     }
 }
@@ -95,9 +112,7 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
         Some("check-os") => Task::CheckOs {
             self_test: parse_self_test(&mut arguments)?,
         },
-        Some("check-abi") => Task::CheckAbi {
-            self_test: parse_self_test(&mut arguments)?,
-        },
+        Some("check-abi") => parse_check_abi(&mut arguments)?,
         Some("hooks") => parse_hooks(&mut arguments)?,
         Some("trailers") => Task::Trailers(parse_trailers(&mut arguments)?),
         _ => return Err(UsageError::UnknownCommand(command)),
@@ -113,6 +128,31 @@ fn parse_self_test(arguments: &mut impl Iterator<Item = OsString>) -> Result<boo
         Some(argument) if argument == OsStr::new("--self-test") => Ok(true),
         Some(argument) => Err(UsageError::UnexpectedArgument(argument)),
         None => Ok(false),
+    }
+}
+
+fn parse_check_abi(arguments: &mut impl Iterator<Item = OsString>) -> Result<Task, UsageError> {
+    match arguments.next() {
+        None => Ok(Task::CheckAbi {
+            self_test: false,
+            target: None,
+        }),
+        Some(argument) if argument == OsStr::new("--self-test") => Ok(Task::CheckAbi {
+            self_test: true,
+            target: None,
+        }),
+        Some(argument) if argument == OsStr::new("--target") => {
+            let target = arguments
+                .next()
+                .ok_or(UsageError::MissingTarget)?
+                .into_string()
+                .map_err(UsageError::UnexpectedArgument)?;
+            Ok(Task::CheckAbi {
+                self_test: false,
+                target: Some(target),
+            })
+        }
+        Some(argument) => Err(UsageError::UnexpectedArgument(argument)),
     }
 }
 

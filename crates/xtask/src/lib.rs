@@ -163,7 +163,9 @@ fn run_task(
         args::Task::CheckGrants { self_test } => grants::run(self_test, output),
         args::Task::CheckPure { self_test } => pure::run(self_test, output),
         args::Task::CheckOs { self_test } => os::run(self_test, output),
-        args::Task::CheckAbi { self_test } => abi::run(self_test, output),
+        args::Task::CheckAbi { self_test, target } => {
+            abi::run(self_test, target.as_deref(), output)
+        }
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
         args::Task::Trailers(mode) => trailers::run(mode, output),
