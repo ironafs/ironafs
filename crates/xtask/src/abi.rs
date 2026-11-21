@@ -79,8 +79,10 @@ pub(crate) enum CType {
 /// The prefix of an opaque field's name: the last field of a struct, an
 /// array, standing for space a C library fills with fields this crate
 /// never reads and names differently between libraries or releases
-/// (`struct statvfs`'s spare fields). Only the struct's size and alignment
-/// bind it, so the named fields before it keep their offsets and types.
+/// (`struct statvfs`'s spare fields). Only a tail `OPAQUE_TAILS` approves
+/// may carry it; it is bound by where the C member before it ends and by
+/// its length to the struct's end, and the named fields before it keep
+/// their offsets and types.
 const OPAQUE: &str = "_opaque";
 
 /// An opaque tail this check approves: in `row`'s declarations,
