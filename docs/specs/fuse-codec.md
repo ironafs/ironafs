@@ -102,7 +102,8 @@ notification for an uncached entry (its 5.10, point 4). Sections 5.7,
 
 ## 3. The design in short
 
-1. One read of `/dev/fuse` holds one request. The decoder checks the
+1. One read of `/dev/fuse` holds one request. A session, the
+   connection's state, decodes it and later writes its one reply. The decoder checks the
    header's length against the bytes read, then the body against the
    opcode's layout at the negotiated minor, and returns a typed request
    that borrows nothing it has not checked.
@@ -277,6 +278,13 @@ size the request asked for).
    - a major above 7: the reply is the header and one u32, the major 7,
      and the codec waits for a new INIT `[E73 FUSE_INIT: CONFIRMED]`;
    - a major below 7: refused, `EPROTO` [OWN].
+
+   The INIT request's token holds its checked offer, and one call,
+   `InitReply::answer`, negotiates with that offer and encodes the one
+   reply its result allows: the INIT reply, the major-only reply, or
+   `EPROTO`. No INIT reply can carry another offer's result, and the
+   major-only reply cannot be chosen for a major-7 offer [OWN: 5.5,
+   point 11's rule, for INIT].
 2. **The offer** is the `flags` field, plus, when `flags` holds
    `FUSE_INIT_EXT` (bit 30), `flags2` shifted up by 32 bits `[E70 "bits
    32..63 get shifted down 32 bits into the flags2 field": CONFIRMED]`.
@@ -307,10 +315,12 @@ In this order; the first failure is the result.
    trusted `unique` and gets no reply; the layer treats it as a broken
    connection [OWN: a reply under a wrong `unique` could answer another
    request].
-2. **Phase.** Before a minor is negotiated, a request other than INIT is a
-   request error (`EIO`), since INIT is "the first request sent by the
-   kernel" `[E73 FUSE_INIT: CONFIRMED]`. After it, a second INIT is a
-   request error (`EIO`) [OWN].
+2. **Phase.** The phase is the session's (5.6, point 3). Before a minor
+   is negotiated, a request other than INIT is a request error (`EIO`),
+   since INIT is "the first request sent by the kernel" `[E73 FUSE_INIT:
+   CONFIRMED]`. After it, a second INIT is a request error (`EIO`) [OWN].
+   A request id still owed a reply is refused before anything else of its
+   body is read, with no reply (5.6, point 3).
 3. **Extensions.** At a negotiated minor of 38 or more, a non-zero
    `total_extlen` is a request error (`EIO`): extensions are sent only for
    flags this codec never selects (`FUSE_SECURITY_CTX`,
@@ -369,6 +379,10 @@ In this order; the first failure is the result.
     opcode a kernel may send at the negotiated minor is likewise decoded
     and answered, or refused per operation as the contract says (section
     13, Q1) [OWN].
+11. **An opcode above the negotiated minor.** STATX at a negotiated minor
+    below 7.39, where E70 does not define it, is refused before its token
+    is made, with `EOPNOTSUPP` (`Malformed::AboveMinor`), the per-operation
+    "not supported" error of N43 [OWN].
 
 ### 5.5 Encoding
 
@@ -456,7 +470,7 @@ In this order; the first failure is the result.
    has error zero.
 10. **Length.** Every reply's `len` is its byte count, by checked
     conversion; no reply exceeds 16 + 1,048,576 bytes.
-11. **Only through the encoders.** The decoder gives each request that
+11. **Only through the encoders.** The session (5.6, point 3) gives each request that
     takes a reply one reply token, `ReplyTo<S>`, whose type parameter names
     the shapes that request allows (an entry for LOOKUP, a handle with
     direct I/O for OPEN, data for READ, and so on), and gives none to a
@@ -466,11 +480,12 @@ In this order; the first failure is the result.
     token can also answer with an error. READ's token carries the size the
     request asked for, and its data encoder refuses more. An encoder's
     refusal hands the token back, so the layer can still answer with an
-    error. Encoders return a `Reply`, which the layer can read to write to
-    the device and cannot build or change. The compiler shows each of
-    these rules (the compile-fail examples of `reply.rs`) [OWN: a layer
-    that could write its own bytes, or reuse a request id, could skip L3,
-    L5 and the allowlist].
+    error. Encoders return a `Reply`, which the layer can neither build
+    nor read; its bytes come only from the issuing session's `finish`.
+    Raw decoding is not public. The compiler shows each of these rules
+    (the compile-fail examples of `reply.rs`) [OWN: a layer that could
+    write its own bytes, or reuse a request id, could skip L3, L5 and the
+    allowlist].
 
 ### 5.6 States and ordering
 
@@ -489,6 +504,22 @@ In this order; the first failure is the result.
    transferred to user space `[E72 "Interrupting filesystem operations":
    CONFIRMED]`. An interrupt for a request already answered is ignored,
    which E72 allows. The layer's single reader is M2a-30's to keep [OWN].
+
+3. **The session** is one connection's codec state, and the only public
+   decoder. It holds the phase and the ids of the requests owed a reply.
+   Decoding a request that takes a reply, or refusing one with a reply,
+   records its id; a request whose id is already recorded is refused with
+   no token and no reply (`Malformed::DuplicateUnique`), since a reply
+   under that id would answer the earlier request [OWN: E73, the reply
+   repeats the request's `unique`]. `Session::finish` is the only way to a
+   reply's bytes: it refuses a reply whose token another session issued,
+   or whose id is not recorded, and otherwise retires the id. Finishing an
+   INIT reply that settled the protocol moves the session to the
+   negotiated minor. A layer that cancels a request still answers it (with
+   `EINTR`, E72) through `finish`; tearing the connection down drops the
+   session and every token with it. The set of recorded ids is bounded by
+   the requests the kernel has outstanding; the layer's request table caps
+   them (vfs-contract 5.8) [OWN].
 
 ### 5.7 Errors mapped to Linux
 
@@ -579,8 +610,11 @@ hostile kernel module is outside the threat model: it owns the machine.
 
 - A request length trusted before it is checked: 5.4, point 1.
 - An over-long or path-shaped name: 5.4, point 5, through `Name`.
-- A read size that would size an allocation: 5.2; the codec allocates
-  nothing from a decoded length.
+- A read size that would size an allocation: 5.2; no allocation is
+  sized by a READ or READDIR size, and the one copy sized by a decoded
+  length is a LOOKUP's name, after its 255-byte cap (5.2).
+- A duplicate, stale or wrong-shape reply: 5.5, point 11, and 5.6,
+  point 3.
 - A cache or privilege flag accepted: 5.5, points 1 to 4; L4 and L5's
   flags are on the never-list or not accepted.
 - A set-id bit or device node shown from a cell: 5.5, point 8.
@@ -599,6 +633,9 @@ hostile kernel module is outside the threat model: it owns the machine.
 | L2, point 4; N47, point 6 | 5.4, point 10 | `request::tests::statx_decodes`, `reply::tests::statx_reply_layout_without_birth_time`, `statx_reply_reports_a_birth_time_it_has` |
 | L2, point 3 (flags checked against their minor) | 5.3, point 2 | `init::tests::decode_init_refuses_flags_before_their_minor`, `decode_init_refuses_bodies_of_other_sizes`, `decode_init_other_major_reads_only_the_major`, `negotiated_flags_are_defined_at_the_negotiated_minor` |
 | L3, L5 and the allowlist reached only through the encoders | 5.5, point 11 | the compile-fail examples of `reply.rs`; `reply::tests::data_over_the_request_size_refused`; `request::tests::refused_requests_reply_only_when_owed` |
+| One reply per pending request, on its own connection | 5.6, point 3 | `session::tests::a_frame_decoded_twice_is_refused_the_second_time`, `a_duplicate_of_a_refused_request_is_refused_too`, `requests_without_a_reply_take_no_id`, `finish_refuses_a_reply_of_another_session`, `the_phase_moves_only_when_a_settled_init_is_finished` |
+| INIT answered from its own offer, in its major's shape | 5.3, point 1 | `session::tests::init_answers_in_the_shape_its_major_allows`; `reply::tests::init_major_only_reply_for_a_newer_major`, `init_refusal_is_eproto` |
+| N43 for an opcode above the minor | 5.4, point 11 | `session::tests::statx_needs_7_39` |
 | L5, points 1 to 3 | 5.5, point 7 | `reply::tests::entry_and_attr_timeouts_are_zero`, `open_reply_is_direct_io_only`, `opendir_reply_sets_no_cache_flag` |
 | vfs-contract 5.6, point 9 | 5.7 | `errno::tests::rename_flags_is_einval` |
 
@@ -619,7 +656,7 @@ time.
 
 The codec decodes requests and encodes replies, which are different
 messages, so there is no round trip. Its properties instead
-(`tests/it/decode.rs`): for every byte string `decode` returns a value or
+(`tests/it/decode.rs`): for every byte string `Session::decode` returns a value or
 an error and never panics (`decode_never_panics_on_any_bytes`); a
 request with a well-formed header and a random body is decoded with that
 header, or refused with it, and a decoded LOOKUP's name is the body
@@ -638,7 +675,8 @@ field; a READ of 1,048,577 bytes, at offset `i64::MAX`, and with `offset +
 size` over `i64::MAX`; a BATCH_FORGET whose count does not match, and one
 whose count is `u32::MAX`; a STATX body one byte short and one long; an
 OPEN or OPENDIR with a bit in its second word at 7.33 (and ignored at
-7.32). In `src/init/tests.rs`: a major-7 INIT of 15 or 17 bytes without
+7.32). In `src/session/tests.rs`: a frame decoded twice, and a refused one
+decoded twice; a reply finished on another session; STATX at 7.38. In `src/init/tests.rs`: a major-7 INIT of 15 or 17 bytes without
 `FUSE_INIT_EXT`, of 16, 20, 63 or 65 bytes with it, and of 64 without it;
 `FUSE_INIT_EXT` offered at 7.35 and `FUSE_NO_EXPORT_SUPPORT` at 7.39; a
 newer major's body of 4 bytes, read for its major alone, and of 3 bytes,
