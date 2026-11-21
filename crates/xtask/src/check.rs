@@ -7,6 +7,7 @@ use std::io::{self, Write};
 use std::process::{Command, ExitStatus, Stdio};
 
 use crate::Error;
+use crate::args::InventoryMode;
 
 #[cfg(test)]
 mod tests;
@@ -27,18 +28,9 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
             .env("CARGO_BUILD_WARNINGS", "deny"),
         "cargo clippy --all-targets --workspace",
     )?;
-    run_command(
-        Command::new("cargo").args([
-            "nextest",
-            "run",
-            "--workspace",
-            "--retries",
-            "0",
-            "--no-tests",
-            "fail",
-        ]),
-        "cargo nextest run --workspace --retries 0 --no-tests fail",
-    )?;
+    // Runs every test once (nextest, no retries) and checks the run against
+    // the test inventory and the merge base's inventory.
+    crate::inventory::run(InventoryMode::Check { base: None }, output)?;
     run_command(
         Command::new("cargo").args(["test", "--doc", "--workspace"]),
         "cargo test --doc --workspace",
@@ -48,6 +40,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         crate::grants::run(self_test, output)?;
         crate::pure::run(self_test, output)?;
     }
+    crate::inventory::run(InventoryMode::SelfTest, output)?;
 
     check_reuse_result(
         Command::new("reuse").arg("lint").status(),

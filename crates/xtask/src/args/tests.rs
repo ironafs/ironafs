@@ -5,7 +5,7 @@
 
 use std::ffi::OsString;
 
-use super::{Task, TrailerMode, UsageError, parse};
+use super::{InventoryMode, Task, TrailerMode, UsageError, parse};
 
 #[test]
 fn parse_rejects_unknown_command() {
@@ -133,4 +133,41 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
     }
+}
+
+#[test]
+fn parse_routes_each_inventory_mode() {
+    for (args, mode) in [
+        (&["inventory"][..], InventoryMode::Check { base: None }),
+        (
+            &["inventory", "--base", "HEAD^1"][..],
+            InventoryMode::Check {
+                base: Some("HEAD^1".into()),
+            },
+        ),
+        (&["inventory", "--self-test"][..], InventoryMode::SelfTest),
+        (&["inventory", "update"][..], InventoryMode::Update),
+    ] {
+        assert_eq!(
+            parse(args.iter().map(OsString::from)),
+            Ok(Task::Inventory(mode)),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn parse_rejects_inventory_without_base_revision_or_with_extra_arguments() {
+    assert_eq!(
+        parse(["inventory", "--base"].into_iter().map(OsString::from)),
+        Err(UsageError::MissingBaseRevision)
+    );
+    assert_eq!(
+        parse(
+            ["inventory", "update", "--self-test"]
+                .into_iter()
+                .map(OsString::from)
+        ),
+        Err(UsageError::UnexpectedArgument("--self-test".into()))
+    );
 }
