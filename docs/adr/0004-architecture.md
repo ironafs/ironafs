@@ -4,7 +4,8 @@
 # 0004: The architecture
 
 Status: accepted (2026-11-20), by the owner, after the review rounds
-recorded below. Raised in issue #20. Amended 2026-11-20 (#32).
+recorded below. Raised in issue #20. Amended 2026-11-20 (#32) and
+2026-11-21 (#49).
 
 ## Context
 
@@ -688,3 +689,42 @@ The full record, with every finding and its disposition, is
     - Round 3 on `4ce1c33..ea23d5d`: GLM PASS and GPT PASS, each with
       one minor (no production check of N13's gate), fixed in the next
       commit.
+- **Amendment, 2026-11-21 (#49, with ADR 0005 in the same pull
+  request): C5, point 5, and C4, point 3's row for `ironafs-os`.**
+  - What changed: C5, point 5's list of calls with no safe route gains
+    what ADR 0005's closed list holds and the point did not name: the
+    operating system's random source (C5, point 1); the resolver calls
+    of C33, point 2; the Windows control pipe's creation, I/O and
+    caller's token (C45, point 1), and the pipe server's process token
+    checked by the sender (C43, points 1, 2 and 4); the Linux mount
+    call and FUSE descriptor hand-off (L7, point 1); the IPv6-only
+    callback socket (C34, point 2), the free-space query (C27, point 3)
+    and network-change notification (C23, point 2) on Linux; a safe
+    module that carries encoded messages to the log sinks (O8); and the
+    volatile wipe of key material and token buffers (O28, point 2).
+    C5's "Revisit if" gains "or the `ironafs-os` ADR's closed list adds
+    a kind of call this point does not name". C4, point 3's row for
+    `ironafs-os` names the safe log transport. No firm decision changes;
+    C4 and C5 are working decisions.
+  - Evidence: ADR 0005's sweep of the M2a work found these calls with
+    no stable safe route in `std` (its Context and Decision, point 2),
+    and the owner decided on 2026-11-20 that they belong in
+    `ironafs-os`.
+  - Sweep: the repository was searched for "C5, point 5", "C5.5",
+    "few calls that have no safe route", "small operating-system
+    bindings", "closed list" and "ironafs-os".
+    - C5, point 5, its "Revisit if" and C4, point 3's row (part 1):
+      rewritten as above.
+    - C4, point 7, C37, point 2, and
+      C46 (part 1), and O8, point 2, and O31, point 4 (part 3): name
+      `ironafs-os` for calls that are on the new list. Unchanged.
+    - `crates/xtask/src/deps.rs`: the lint-table exception list stays
+      empty until ADR 0005 is accepted, and its message cites C5,
+      point 5, for the workspace lints, which still hold. Unchanged.
+    - ADR 0002's "closed list" of agent ids and C24, point 6's closed
+      list are unrelated. Unchanged.
+    - The rule binds the same actors as before (the maintainer's
+      session, contributors and their agents); no bot acts on it.
+  - Review rounds: pending, class S on the strongest row, from families
+    that wrote neither the amendment nor the decision. The record is
+    [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md).

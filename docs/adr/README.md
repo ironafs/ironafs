@@ -13,7 +13,8 @@ decides anything that is hard to change later.
 | [0001](0001-licence-and-dont-copy.md) | Licence and the don't-copy rule: GPL-3.0-or-later, no code from other AFS implementations | accepted |
 | [0002](0002-ai-use-and-attribution.md) | AI use, commit attribution and working in the open | accepted; partly superseded by 0003 |
 | [0003](0003-branch-work-and-ai-disclosure.md) | Branch work and AI disclosure | proposed |
-| [0004](0004-architecture.md) | The architecture: core, OS layers, operations, negotiation and formats | accepted; amended 2026-11-20 (#32) |
+| [0004](0004-architecture.md) | The architecture: core, OS layers, operations, negotiation and formats | accepted; amended 2026-11-20 (#32) and 2026-11-21 (#49) |
+| [0005](0005-ironafs-os.md) | `ironafs-os`, the crate for the operating-system calls that need `unsafe` | proposed |
 
 ## How an ADR is made
 
