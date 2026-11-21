@@ -1,18 +1,33 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The fence (ADR 0004, C16, point 2; callback specification, 5.6,
-//! points 1 to 4): the values a validating or fetching call records when
-//! it is sent, and the one check that compares them with the current ones
-//! where its reply is installed and where its entry is served.
+//! The fence (ADR 0004, C16, point 2; C25, point 3; C32, point 5; callback
+//! specification, 5.6, points 1 to 4): the values a validating or fetching
+//! call records when it is sent, and the one check that compares them with
+//! the current ones where its reply is installed and where its entry is
+//! served.
 //!
-//! - **The tuple** of an object of server key K, in one context: the
-//!   object's break counter, its volume's break counter (both
-//!   [`BreakCounters`]), K's suspect epoch (taken from [`EpochSource`]),
-//!   the pause generation of K's family's socket (Rx's driver's) and the
-//!   [`ResumeGeneration`]. A reply or an entry is good only if every value
-//!   is unchanged.
-//! - **Values never repeat.** The cache's counters and the suspect epoch
+//! - **The tuple** of an object of server key K, in one context, has six
+//!   values: the object's break counter and its volume's break counter
+//!   (the [`FenceTable`]'s), K's suspect epoch (taken from
+//!   [`EpochSource`]), the pause generation of K's family's socket (Rx's
+//!   driver's), the resume generation (the table's), and the context's
+//!   local volume epoch for the object's volume (the incarnation
+//!   specification's, 5.6, point 3, step 3, which the table keeps a copy
+//!   of). A reply or an entry is good only if every value is unchanged.
+//! - **What is not in it.** The credential and rights generations are the
+//!   request's ticket's, checked at submission (C16, point 3; the contract
+//!   specification, 5.9, point 2), not here. The credential generation is
+//!   also part of the [`ContextKey`](crate::ContextKey) the table is keyed
+//!   by, so a check made with the context's current key after a credential
+//!   change finds no record and fails. There is no overload counter: the
+//!   seams specification's overload record (its 5.4, point 7) is replaced
+//!   by Rx holding what it cannot admit until the callback service has
+//!   advanced the affected suspect epochs at its tick (callback
+//!   specification, 5.6, point 7; Rx specification, 5.10, point 5), and by
+//!   the pause generation where Rx cannot hold (Rx specification, 5.10,
+//!   point 6). Both reach this tuple.
+//! - **Values never repeat.** The table's counters and the suspect epoch
 //!   are [`Stamp`]s, each taken once from a sequence that only rises and
 //!   never wraps, so a value names one record at one moment: a retired
 //!   server record, or an evicted counter record, made again never matches
@@ -24,9 +39,12 @@
 //!   wide (incarnation specification, section 4), and the two are
 //!   revalidated differently (its 5.6, point 6).
 
-mod breaks;
+mod table;
 
-pub use breaks::{BreakCounters, BreakLimits, FenceError};
+pub use table::{
+    FenceError, FenceLimits, FenceTable, MAX_FENCE_BYTES, MIN_FENCE_BYTES, OBJECT_RECORD_BYTES,
+    VOLUME_RECORD_BYTES,
+};
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -35,7 +53,10 @@ mod tests;
 
 /// One value of a fence counter: 1 to `u64::MAX`, or [`Stamp::NONE`].
 /// Only this crate makes one, from a sequence that hands out each value
-/// once.
+/// once. Values are unique within the one table or source that issued them:
+/// every table and every source starts at 1, so values from two of them
+/// are never compared (the daemon keeps one [`FenceTable`] and one
+/// [`EpochSource`] for its whole life).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Stamp(u64);
 
@@ -107,52 +128,21 @@ impl Default for EpochSource {
     }
 }
 
-/// The client-wide resume generation (callback specification, 5.6, point
-/// 2): raised by the fence check when the C37 clocks show a suspend or a
-/// jump not seen before, so every tuple recorded before it fails.
-#[derive(Debug)]
-pub struct ResumeGeneration {
-    value: AtomicU64,
-}
-
-impl ResumeGeneration {
-    /// A generation whose first value is 1.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            value: AtomicU64::new(1),
-        }
-    }
-
-    /// The current value; [`Stamp::NONE`] once exhausted.
-    #[must_use]
-    pub fn current(&self) -> Stamp {
-        Stamp(self.value.load(Ordering::SeqCst))
-    }
-
-    /// Raises the generation by 1, atomically. A raise past `u64::MAX`
-    /// exhausts it: from then on [`ResumeGeneration::current`] is
-    /// [`Stamp::NONE`], which fails every fence.
-    pub fn raise(&self) {
-        // Past `u64::MAX` the value wraps to 0, which stays: exhausted.
-        let _ = self
-            .value
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-                (value != 0).then(|| value.wrapping_add(1))
-            });
-    }
-}
-
-impl Default for ResumeGeneration {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// A socket's pause generation, read from Rx's driver (Rx specification,
-/// 5.12, point 5). It starts at 0 and is compared by plain equality.
+/// A socket's pause generation, read by the caller from Rx's driver with a
+/// sequentially consistent load (Rx specification, 5.12, point 5). The
+/// driver starts it at 0 and only raises it, so a value is never seen again
+/// on that socket while the daemon runs; a socket bound again is a new
+/// server key (the local endpoint generation is part of the key), not a
+/// reset. It is compared by plain equality, 0 included.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PauseGeneration(pub u64);
+
+/// A context's local volume epoch (incarnation specification, 5.1.2; N38,
+/// point 8), taken by the incarnation code from its daemon-wide counter,
+/// which never repeats a value. The [`FenceTable`] keeps a copy per context
+/// and volume, written by [`FenceTable::set_volume_epoch`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VolumeEpoch(pub u64);
 
 /// The current values of a fence tuple shared by every object of one
 /// server key: read from the callback state record and the driver when a
@@ -165,14 +155,16 @@ pub struct ServerValues {
     pub pause: PauseGeneration,
 }
 
-/// What the comparison of the C37 clocks found, which the fence check acts
-/// on first (C32, point 5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Clocks {
-    /// No suspend or jump not seen before.
-    Steady,
-    /// A suspend or a jump not seen before.
-    Moved,
+/// The C37 clocks' detector of suspends and jumps (the keepalive
+/// specification's rule and baseline), owned by the [`FenceTable`] so that
+/// the comparison, the move of its baseline and the raise of the resume
+/// generation are one step under the table's lock (callback specification,
+/// 5.6, point 2).
+pub trait ClockWatch {
+    /// Compares the clocks with the baseline. Returns `true`, and moves the
+    /// baseline to the current clocks, if they show a suspend or a jump not
+    /// seen before; a clock that cannot be read counts as a move.
+    fn moved(&mut self) -> bool;
 }
 
 /// The fence tuple of one object in one context, as a call recorded it
@@ -190,6 +182,9 @@ pub struct FenceTuple {
     pub pause: PauseGeneration,
     /// The resume generation.
     pub resume: Stamp,
+    /// The context's local volume epoch, or `None` if the table held none
+    /// when the tuple was recorded (see [`FenceTable::adopt_volume_epoch`]).
+    pub volume_epoch: Option<VolumeEpoch>,
 }
 
 impl FenceTuple {
@@ -203,6 +198,8 @@ impl FenceTuple {
             suspect_epoch: !current.suspect_epoch.matches(self.suspect_epoch),
             pause: current.pause != self.pause,
             resume: !current.resume.matches(self.resume),
+            volume_epoch: !(self.volume_epoch.is_some()
+                && current.volume_epoch == self.volume_epoch),
         }
     }
 }
@@ -225,6 +222,8 @@ pub struct Suspicion {
     pub pause: bool,
     /// The resume generation.
     pub resume: bool,
+    /// The local volume epoch.
+    pub volume_epoch: bool,
 }
 
 impl Suspicion {

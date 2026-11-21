@@ -5,29 +5,14 @@
 //! 10), each named by the case it shows.
 
 use ironafs_cache::{
-    CellIndex, ContextKey, DYNAMIC_ROOT, FileId, Limits, NodeError, NodeTable, PathKind,
-    Uniquifier, Version, Vnode, VolumeId,
+    CellIndex, DYNAMIC_ROOT, Limits, NodeError, NodeTable, PathKind, Uniquifier, Version, Vnode,
+    VolumeId,
 };
-use ironafs_vfs::{ContextId, CredentialGeneration, NodeId};
+use ironafs_vfs::NodeId;
 
-const CELL: CellIndex = CellIndex(1);
+use crate::fixture::{CELL, context, file};
+
 const BIG: u32 = 1_000;
-
-fn context(id: u64) -> ContextKey {
-    ContextKey {
-        id: ContextId(id),
-        generation: CredentialGeneration(1),
-    }
-}
-
-fn file(volume: u32, vnode: u32) -> FileId {
-    FileId {
-        cell: CELL,
-        volume: VolumeId(volume),
-        vnode: Vnode(vnode),
-        uniquifier: Uniquifier(1),
-    }
-}
 
 /// A cell root (volume 100) entered in context 1, with two mount points,
 /// vnodes 5 and 6, in its root directory.

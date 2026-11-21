@@ -21,11 +21,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ironafs_cache::{
-    CellIndex, ContextKey, DYNAMIC_ROOT, FileId, Limits, NodeKind, NodeTable, PathKind, Uniquifier,
-    Version, Vnode, VolumeId,
+    CellIndex, DYNAMIC_ROOT, FileId, Limits, NodeKind, NodeTable, PathKind, Uniquifier, Version,
+    Vnode, VolumeId,
 };
 use ironafs_test_support::{Exhaustive, Property, Source};
-use ironafs_vfs::{ContextId, CredentialGeneration, NodeId};
+use ironafs_vfs::NodeId;
+
+use crate::fixture::context;
 
 /// One operation; indices pick among the nodes live when it runs.
 #[derive(Clone, Copy, Debug)]
@@ -109,13 +111,6 @@ fn op(
         _ => Op::Release {
             context: source.u64_in(1..=contexts),
         },
-    }
-}
-
-fn context(id: u64) -> ContextKey {
-    ContextKey {
-        id: ContextId(id),
-        generation: CredentialGeneration(1),
     }
 }
 

@@ -7,10 +7,11 @@
 //! It holds:
 //! - the node table ([`NodeTable`]; C11): node ids, their keys and
 //!   aliases, anchor chains, pins and each context's mount-point bindings;
-//! - the fence ([`BreakCounters`], [`FenceTuple`]; C16, point 2): each
-//!   context's object and volume break counters, the client-wide suspect
-//!   epoch source and resume generation, and the one check that compares a
-//!   recorded tuple with the current one at install and at serve;
+//! - the fence ([`FenceTable`], [`FenceTuple`]; C16, point 2): each
+//!   context's object and volume break counters and local volume epochs,
+//!   the resume generation, the client-wide suspect epoch source, and the
+//!   one check that compares a recorded tuple with the current one at
+//!   install and at serve;
 //! - the `Disk` interface: [`Disk`], its error and the paths and plans it
 //!   takes (seams and scheduling specification, 5.5).
 //!
@@ -29,8 +30,9 @@ mod store_path;
 
 pub use disk::{Disk, DiskError, DiskOp, Durability, EntryKind, Plan, PlanStep, ReadRange, Space};
 pub use fence::{
-    BreakCounters, BreakLimits, Clocks, EpochSource, FenceError, FenceTuple, PauseGeneration,
-    ResumeGeneration, ServerValues, Stamp, Suspicion,
+    ClockWatch, EpochSource, FenceError, FenceLimits, FenceTable, FenceTuple, MAX_FENCE_BYTES,
+    MIN_FENCE_BYTES, OBJECT_RECORD_BYTES, PauseGeneration, ServerValues, Stamp, Suspicion,
+    VOLUME_RECORD_BYTES, VolumeEpoch,
 };
 pub use identity::{CellIndex, ContextKey, FileId, PathKind, Uniquifier, Version, Vnode, VolumeId};
 pub use node::{

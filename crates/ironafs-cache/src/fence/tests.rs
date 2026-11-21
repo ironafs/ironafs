@@ -1,18 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::AtomicU64;
 
-use super::{EpochSource, FenceTuple, PauseGeneration, ResumeGeneration, Stamp, Suspicion};
+use super::{EpochSource, FenceTuple, PauseGeneration, Stamp, Suspicion, VolumeEpoch};
 
-fn tuple(values: [u64; 5]) -> FenceTuple {
-    let [object, volume, suspect_epoch, pause, resume] = values;
+fn tuple(values: [u64; 6]) -> FenceTuple {
+    let [object, volume, suspect_epoch, pause, resume, epoch] = values;
     FenceTuple {
         object: Stamp(object),
         volume: Stamp(volume),
         suspect_epoch: Stamp(suspect_epoch),
         pause: PauseGeneration(pause),
         resume: Stamp(resume),
+        volume_epoch: Some(VolumeEpoch(epoch)),
     }
 }
 
@@ -52,84 +53,42 @@ fn epoch_source_exhausted_returns_none() {
 }
 
 #[test]
-fn resume_generation_raise_moves_current() {
-    let resume = ResumeGeneration::new();
-    let before = resume.current();
-    resume.raise();
-    let after = resume.current();
-    assert!(!after.matches(before));
-    assert!(after.matches(resume.current()));
-}
-
-#[test]
-fn resume_generation_exhausted_matches_nothing() {
-    let resume = ResumeGeneration {
-        value: AtomicU64::new(u64::MAX),
-    };
-    let before = resume.current();
-    assert!(before.matches(before));
-    resume.raise();
-    assert_eq!(resume.current(), Stamp::NONE);
-    assert!(!resume.current().matches(before));
-    assert!(!resume.current().matches(resume.current()));
-    resume.raise();
-    assert_eq!(resume.value.load(Ordering::SeqCst), 0);
-}
-
-#[test]
 fn compare_names_each_changed_value() {
-    let recorded = tuple([1, 2, 3, 4, 5]);
+    let recorded = tuple([1, 2, 3, 4, 5, 6]);
     assert!(recorded.compare(&recorded).is_clear());
-    let cases = [
-        (
-            tuple([9, 2, 3, 4, 5]),
-            Suspicion {
-                object: true,
-                ..Suspicion::default()
-            },
-        ),
-        (
-            tuple([1, 9, 3, 4, 5]),
-            Suspicion {
-                volume: true,
-                ..Suspicion::default()
-            },
-        ),
-        (
-            tuple([1, 2, 9, 4, 5]),
-            Suspicion {
-                suspect_epoch: true,
-                ..Suspicion::default()
-            },
-        ),
-        (
-            tuple([1, 2, 3, 9, 5]),
-            Suspicion {
-                pause: true,
-                ..Suspicion::default()
-            },
-        ),
-        (
-            tuple([1, 2, 3, 4, 9]),
-            Suspicion {
-                resume: true,
-                ..Suspicion::default()
-            },
-        ),
-    ];
-    for (current, expected) in cases {
-        assert_eq!(recorded.compare(&current), expected, "{current:?}");
+    let flag = |index: usize| {
+        let mut flags = [false; 6];
+        if let Some(slot) = flags.get_mut(index) {
+            *slot = true;
+        }
+        let [object, volume, suspect_epoch, pause, resume, volume_epoch] = flags;
+        Suspicion {
+            object,
+            volume,
+            suspect_epoch,
+            pause,
+            resume,
+            volume_epoch,
+        }
+    };
+    for index in 0..6 {
+        let mut values = [1, 2, 3, 4, 5, 6];
+        values[index] = 9;
+        let current = tuple(values);
+        assert_eq!(recorded.compare(&current), flag(index), "{current:?}");
     }
 }
 
 #[test]
 fn compare_fails_on_absent_values_even_when_equal() {
-    let recorded = tuple([0, 2, 0, 0, 5]);
+    let mut recorded = tuple([0, 2, 0, 0, 5, 6]);
+    recorded.volume_epoch = None;
     assert_eq!(
         recorded.compare(&recorded),
         Suspicion {
             object: true,
             suspect_epoch: true,
+            volume_epoch: true,
             ..Suspicion::default()
         }
     );
@@ -137,10 +96,11 @@ fn compare_fails_on_absent_values_even_when_equal() {
 
 #[test]
 fn compare_narrow_only_for_object() {
-    let recorded = tuple([1, 2, 3, 4, 5]);
+    let recorded = tuple([1, 2, 3, 4, 5, 6]);
     assert!(!recorded.compare(&recorded).is_narrow());
-    assert!(recorded.compare(&tuple([9, 2, 3, 4, 5])).is_narrow());
-    assert!(!recorded.compare(&tuple([9, 9, 3, 4, 5])).is_narrow());
-    assert!(!recorded.compare(&tuple([1, 9, 3, 4, 5])).is_narrow());
-    assert!(!recorded.compare(&tuple([9, 2, 3, 4, 9])).is_narrow());
+    assert!(recorded.compare(&tuple([9, 2, 3, 4, 5, 6])).is_narrow());
+    assert!(!recorded.compare(&tuple([9, 9, 3, 4, 5, 6])).is_narrow());
+    assert!(!recorded.compare(&tuple([1, 9, 3, 4, 5, 6])).is_narrow());
+    assert!(!recorded.compare(&tuple([9, 2, 3, 4, 9, 6])).is_narrow());
+    assert!(!recorded.compare(&tuple([9, 2, 3, 4, 5, 9])).is_narrow());
 }
