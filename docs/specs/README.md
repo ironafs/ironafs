@@ -9,6 +9,7 @@ written from the specification, and tests check the code against it.
 
 | Spec | Kind | Class | Status | Implements |
 |---|---|---|---|---|
+| [Wire time fields](wire-time.md) | protocol | S | draft (2026-11-21) | ADR 0004, C6 points 3 and 4, C26 point 2, C37 points 1 and 6, C38 points 1 to 5, C46 points 1 and 4, N31 points 1 and 2, O40 point 2; constraint 4 |
 | [XDR profile](xdr.md) | protocol | S | draft (2026-11-20) | ADR 0004, C3 point 1, C4 points 1 and 4, C6 points 1, 2 and 4, N31 points 1 and 2, O47 points 2 to 4; constraint 4 |
 
 ## Frozen formats
