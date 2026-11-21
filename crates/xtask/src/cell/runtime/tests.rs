@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 
-use super::{Engine, EngineRun, Ran, Run, Step, require_success};
+use super::{Engine, EngineRun, Ran, Run, Step, require_success, with_input};
 use crate::cell::Failure;
 
 /// A [`Run`] that records every step and replays scripted results by step
@@ -187,4 +187,42 @@ fn step_new_takes_its_arguments_in_order() {
     assert_eq!(step.args, [OsString::from("run"), OsString::from("--rm")]);
     assert_eq!(step.stdin, None);
     assert!(!step.secret);
+}
+
+#[test]
+fn failed_input_write_keeps_the_childs_status_and_output() {
+    let ran = Ran {
+        stdout: b"partial\n".to_vec(),
+        ..failed(1, b"Error: container c is not running\n")
+    };
+
+    assert_eq!(
+        with_input(ran, Err("Broken pipe".to_owned())),
+        Ran {
+            success: false,
+            code: Some(1),
+            stdout: b"partial\n".to_vec(),
+            stderr: b"Error: container c is not running\n\
+                      write the step's input: Broken pipe\n"
+                .to_vec(),
+        }
+    );
+}
+
+#[test]
+fn failed_input_write_fails_a_step_that_exited_zero() {
+    assert_eq!(
+        with_input(ok(b"done\n"), Err("Broken pipe".to_owned())),
+        Ran {
+            success: false,
+            code: Some(0),
+            stdout: b"done\n".to_vec(),
+            stderr: b"write the step's input: Broken pipe\n".to_vec(),
+        }
+    );
+}
+
+#[test]
+fn written_input_leaves_the_result_unchanged() {
+    assert_eq!(with_input(ok(b"done\n"), Ok(())), ok(b"done\n"));
 }

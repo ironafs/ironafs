@@ -8,6 +8,7 @@ mod bans;
 mod cell;
 mod check;
 mod deps;
+mod files;
 mod fixture;
 mod grants;
 mod hooks;

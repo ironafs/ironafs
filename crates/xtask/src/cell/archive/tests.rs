@@ -3,10 +3,13 @@
 
 //! Tests for the generated apt source and the archive signature check.
 
-use super::{check_apt_update, sources};
+use std::fs;
+
+use super::{check_apt_update, prepare, sources};
 use crate::cell::Failure;
-use crate::cell::definition::parse;
-use crate::cell::runtime::tests::{failed, ok};
+use crate::cell::definition::{Arch, parse};
+use crate::cell::runtime::tests::{FakeRun, failed, ok};
+use crate::cell::state::{RunDir, State};
 
 #[test]
 fn sources_has_signed_by_and_no_trusted() {
@@ -65,4 +68,41 @@ fn apt_update_clean_output_is_accepted() {
         ok(b"Get:1 https://snapshot.invalid trixie InRelease [140 kB]\nReading package lists...\n");
 
     assert_eq!(check_apt_update(&ran), Ok(()));
+}
+
+#[test]
+fn prepare_records_the_base_image_before_pulling() {
+    let definition = parse(include_str!("../../../cell/pins.txt")).unwrap();
+    let target = std::env::temp_dir().join(format!(
+        "ironafs-xtask-cell-archive-base-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&target);
+    let dir = RunDir::create(&target, "r1".to_owned()).unwrap();
+    let mut run = FakeRun::default();
+    run.script("pull image", failed(1, b"Error: interrupted\n"));
+
+    let result = prepare(
+        &mut run,
+        &definition,
+        Arch::Amd64,
+        &dir,
+        &mut State::default(),
+        "ironafs-cell-r1-builder",
+    );
+
+    assert!(matches!(
+        result,
+        Err(Failure::Step {
+            name: "pull image",
+            ..
+        })
+    ));
+    // A pull that fails or is interrupted part-way is still torn down.
+    assert_eq!(
+        fs::read_to_string(dir.root.join("state.txt")).unwrap(),
+        "image docker.io/library/debian@sha256:\
+         bfc36aecdece0387418759dba474aa856c026ca8087da3606b41b90ab0509c99\n"
+    );
+    fs::remove_dir_all(&target).unwrap();
 }

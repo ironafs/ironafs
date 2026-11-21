@@ -131,7 +131,7 @@ impl fmt::Display for Failure {
             Self::Teardown(failures) => {
                 write!(
                     formatter,
-                    "teardown left {} failures; run `cargo xtask cell down` again:",
+                    "teardown left {} failures; what was not removed stays recorded in the run directory:",
                     failures.len()
                 )?;
                 failures

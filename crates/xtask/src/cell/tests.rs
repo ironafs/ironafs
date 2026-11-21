@@ -47,3 +47,12 @@ fn finish_reports_both_failures() {
         })
     );
 }
+
+#[test]
+fn teardown_failure_names_no_command_that_does_not_exist() {
+    assert_eq!(
+        Failure::Teardown(vec![step_failure("remove container")]).to_string(),
+        "teardown left 1 failures; what was not removed stays recorded in the run \
+         directory:\n  step remove container failed with exit code 1:\n"
+    );
+}

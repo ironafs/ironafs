@@ -202,28 +202,32 @@ impl Run for EngineRun {
             "wait for the container engine",
             Path::new(program),
         ))?;
-        match written {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                return Err(Failure::io("write a step's input", Path::new(program))(
-                    error,
-                ));
-            }
-            Err(_) => {
-                return Err(Failure::Io {
-                    operation: "write a step's input",
-                    path: PathBuf::from(program),
-                    error: "the writer thread panicked".to_owned(),
-                });
-            }
-        }
-        Ok(Ran {
+        let ran = Ran {
             success: output.status.success(),
             code: output.status.code(),
             stdout: output.stdout,
             stderr: output.stderr,
-        })
+        };
+        Ok(with_input(
+            ran,
+            match written {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(_) => Err("the writer thread panicked".to_owned()),
+            },
+        ))
     }
+}
+
+/// Folds the result of writing a step's input into what the step returned.
+/// A failed write fails the step, which keeps its own status and output, so
+/// the engine's diagnostic is reported with the write failure after it.
+pub(crate) fn with_input(mut ran: Ran, written: Result<(), String>) -> Ran {
+    if let Err(error) = written {
+        ran.success = false;
+        ran.stderr
+            .extend_from_slice(format!("write the step's input: {error}\n").as_bytes());
+    }
+    ran
 }
 
 /// Turns a failed step into [`Failure::Step`].

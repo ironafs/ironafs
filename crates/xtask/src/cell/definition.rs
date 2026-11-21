@@ -40,6 +40,11 @@ pub(crate) struct Definition {
 pub(crate) struct ImagePin {
     pub(crate) repository: String,
     pub(crate) tag: String,
+    /// The index the platform digests were read from. It records which
+    /// image was pinned, for the run summary and for re-pinning; it is
+    /// never pulled. Pulls use the platform digests, which pin the content,
+    /// and never fall back to the index.
+    // TODO(#47): the cell workflow's summary writes it.
     pub(crate) index: Digest,
     pub(crate) platforms: Vec<(Arch, Digest)>,
 }

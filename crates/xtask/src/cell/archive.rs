@@ -74,7 +74,8 @@ pub(crate) fn check_apt_update(ran: &Ran) -> Result<(), Failure> {
 
 /// Starts a builder container from the pinned platform image, with the
 /// snapshot as its only apt source, and updates and checks the archive.
-/// The container, named `container`, is recorded before it starts.
+/// The pulled image and the container, named `container`, are each recorded
+/// before they are created, so teardown removes both.
 ///
 /// # Errors
 ///
@@ -101,6 +102,7 @@ pub(crate) fn prepare(
         })?;
     let image = format!("{}@sha256:{digest}", def.image.repository);
     let platform = format!("linux/{}", arch.debian());
+    state.record(dir, Object::Image(image.clone()))?;
     run_step(
         run,
         &Step::new("pull image", ["pull", "--platform", &platform, &image]),

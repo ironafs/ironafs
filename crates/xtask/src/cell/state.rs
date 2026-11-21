@@ -5,11 +5,12 @@
 //! run creates, and teardown from that record alone.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use super::Failure;
 use super::runtime::{Run, Step, require_success};
+use super::{Failure, finish};
+use crate::files;
 
 #[cfg(test)]
 mod tests;
@@ -61,7 +62,8 @@ impl RunDir {
     /// # Errors
     ///
     /// Returns [`Failure::RunDirInUse`] if it already exists, and
-    /// [`Failure::Io`] if it or the latest-run marker cannot be written.
+    /// [`Failure::Io`] if it or the latest-run marker cannot be written; a
+    /// directory created before the marker failed is removed again.
     pub(crate) fn create(target_dir: &Path, id: String) -> Result<Self, Failure> {
         let runs = target_dir.join(RUNS);
         fs::create_dir_all(&runs).map_err(Failure::io("create the cell runs directory", &runs))?;
@@ -73,7 +75,10 @@ impl RunDir {
             result => result.map_err(Failure::io("create the run directory", &root))?,
         }
         let latest = runs.join(LATEST);
-        write_replacing(&latest, &id, "mark the latest cell run")?;
+        if let Err(failure) = write_replacing(&latest, &id, "mark the latest cell run") {
+            let removed = files::remove_dir(&root, Failure::io("remove the run directory", &root));
+            return finish(Err(failure), removed);
+        }
         Ok(Self { root, id })
     }
 
@@ -234,7 +239,7 @@ impl State {
 ///
 /// If everything was removed, the run directory goes too, keys included.
 /// Otherwise the keys are removed, the state file is rewritten to record
-/// only what remains, so `cargo xtask cell down` can try again, and every
+/// only what remains, so a later teardown can try again, and every
 /// failure is reported.
 ///
 /// # Errors
@@ -315,21 +320,27 @@ fn private_dir_builder() -> fs::DirBuilder {
     }
 }
 
-/// Removes a directory and everything in it; a missing one is already
-/// removed. This is `fixture::remove_dir` with the cell's error type.
+/// Removes a run directory or its keys, adding any failure to `failures`.
 fn remove_dir(dir: &Path, failures: &mut Vec<Failure>) {
-    match fs::remove_dir_all(dir) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => {
-            failures.push(Failure::io("remove the run directory", dir)(error));
-        }
-        _ => {}
+    if let Err(failure) = files::remove_dir(dir, Failure::io("remove the run directory", dir)) {
+        failures.push(failure);
     }
 }
 
-/// Writes `contents` to `path` through a temporary file and a rename, so a
-/// reader sees the old contents or the new, never a partial file.
+/// Writes `contents` to `path` through a staged file and a rename, so a
+/// reader sees the old contents or the new, never a partial file. The
+/// staged name is unique to this process and call, so concurrent runs
+/// never share it.
 fn write_replacing(path: &Path, contents: &str, operation: &'static str) -> Result<(), Failure> {
-    let staged = path.with_extension("new");
-    fs::write(&staged, contents).map_err(Failure::io(operation, &staged))?;
-    fs::rename(&staged, path).map_err(Failure::io(operation, path))
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let tag = path
+        .file_name()
+        .map_or_else(|| "file".into(), |name| name.to_string_lossy());
+    files::write_staged(
+        directory,
+        &tag,
+        |file| file.write_all(contents.as_bytes()),
+        |staged| fs::rename(staged, path).map_err(Failure::io(operation, path)),
+        |_, staged, error| Failure::io(operation, staged)(error),
+    )
 }

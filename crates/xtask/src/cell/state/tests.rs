@@ -239,3 +239,34 @@ fn run_dir_is_private_to_its_owner() {
     assert_eq!(mode & 0o777, 0o700);
     fs::remove_dir_all(&target).unwrap();
 }
+
+#[test]
+fn run_dir_create_ignores_another_runs_staging_file() {
+    let target = target("staging");
+    // Another process's marker staged under the old fixed name.
+    fs::create_dir_all(target.join("xtask-cell").join("latest.new")).unwrap();
+
+    let dir = RunDir::create(&target, "r1".to_owned()).unwrap();
+
+    assert_eq!(RunDir::latest(&target), Ok(Some(dir)));
+    let staged: Vec<_> = fs::read_dir(target.join("xtask-cell"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().starts_with(".ironafs-"))
+        .collect();
+    assert_eq!(staged, Vec::<std::ffi::OsString>::new());
+    fs::remove_dir_all(&target).unwrap();
+}
+
+#[test]
+fn run_dir_create_removes_its_directory_when_the_marker_fails() {
+    let target = target("marker-fails");
+    // A non-empty directory where the marker goes: the rename fails.
+    fs::create_dir_all(target.join("xtask-cell").join("latest").join("x")).unwrap();
+
+    let result = RunDir::create(&target, "r1".to_owned());
+
+    assert!(matches!(result, Err(Failure::Io { .. })));
+    assert!(!target.join("xtask-cell").join("r1").exists());
+    fs::remove_dir_all(&target).unwrap();
+}

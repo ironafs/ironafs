@@ -267,7 +267,10 @@ fn install_clean_run_commits_the_image_after_every_check() {
     );
     assert_eq!(
         fs::read_to_string(dir.root.join("state.txt")).unwrap(),
-        "container ironafs-cell-r1-builder\nimage ironafs-cell:r1\n"
+        "image docker.io/library/debian@sha256:\
+         bfc36aecdece0387418759dba474aa856c026ca8087da3606b41b90ab0509c99\n\
+         container ironafs-cell-r1-builder\n\
+         image ironafs-cell:r1\n"
     );
     let pull = &run.steps[0].args;
     assert_eq!(
