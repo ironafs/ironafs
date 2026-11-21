@@ -65,6 +65,12 @@ ADR 0004, N43 (**Working**):
 > 2. Such a request is answered with a per-operation "not supported" error
 >    instead.
 
+ADR 0004, N47 (**Working**), point 6:
+
+> 6. A creation time records whether the server supplied it. A layer
+>    synthesises one from the modification time only when the server gives
+>    none.
+
 The contract between the core and the layers (`vfs-contract.md`, issue
 #67) leaves four points to this codec: the Linux error column's re-check
 (its section 13, Q8), Linux's name and extended-attribute limits (its Q6),
@@ -78,10 +84,11 @@ notification for an uncached entry (its 5.10, point 4). Sections 5.7,
    take no reply; INIT: decoding, version negotiation, the INIT-flag
    allowlist and never-list, the function that selects the reply flags,
    and the reply; decoding of the requests a read-only mount needs
-   (LOOKUP, FORGET, BATCH_FORGET, GETATTR, READLINK, OPEN, OPENDIR, READ,
-   READDIR, RELEASE, RELEASEDIR, FLUSH, STATFS, ACCESS, INTERRUPT,
-   DESTROY); the replies to them except READDIR's; the mapping of the
-   contract's errors to Linux error numbers.
+   (LOOKUP, FORGET, BATCH_FORGET, GETATTR, STATX, READLINK, OPEN, OPENDIR,
+   READ, READDIR, RELEASE, RELEASEDIR, FLUSH, STATFS, ACCESS, INTERRUPT,
+   DESTROY); the replies to them except READDIR's, each reachable only
+   through its request's reply token; the mapping of the contract's errors
+   to Linux error numbers.
 2. **Not covered yet, and still this specification's** (section 13,
    Q1): the READDIR reply's records, the invalidation notifications,
    GETXATTR, LISTXATTR, FSYNC, FSYNCDIR and LSEEK, the requests that
@@ -105,9 +112,11 @@ notification for an uncached entry (its 5.10, point 4). Sections 5.7,
    one reviewed constant, `ALLOWED`. A second constant, `NEVER`, names the
    flags no reply may carry; the two are disjoint, which the compiler
    checks.
-3. Replies are built from typed values. The encoders write the cache
-   rules of L5 themselves (zero timeouts, direct I/O, no cache flags) and
-   clear set-id bits (L3), so no caller can pass a value that breaks them.
+3. Replies are built from typed values, through a single-use reply token
+   that only the decoder makes and that offers only the shapes its request
+   allows. The encoders write the cache rules of L5 themselves (zero
+   timeouts, direct I/O, no cache flags) and clear set-id bits (L3), so no
+   caller can pass a value that breaks them, or bytes that skip them.
 4. Every error the codec or the layer can answer is an `Errno` value, a
    type with no `ENOSYS` in it (N43).
 
@@ -162,13 +171,14 @@ notification for an uncached entry (its 5.10, point 4). Sections 5.7,
    | LOOKUP | 1 | a name and a terminating NUL |
    | FORGET | 2 | `nlookup` u64 (8) |
    | GETATTR | 3 | `getattr_flags` u32, `dummy` u32, `fh` u64 (16) |
+   | STATX | 52 | `getattr_flags` u32, reserved u32, `fh` u64, `sx_flags` u32, `sx_mask` u32 (24); from 7.39 |
    | READLINK | 5 | empty |
-   | OPEN | 14 | `flags` u32, `open_flags` u32 (8) |
+   | OPEN | 14 | `flags` u32, then a u32: unused before 7.33, `open_flags` from it (8) |
    | READ | 15 | `fh` u64, `offset` u64, `size` u32, `read_flags` u32, `lock_owner` u64, `flags` u32, padding u32 (40) |
    | STATFS | 17 | empty |
    | RELEASE | 18 | `fh` u64, `flags` u32, `release_flags` u32, `lock_owner` u64 (24) |
    | FLUSH | 25 | `fh` u64, unused u32, padding u32, `lock_owner` u64 (24) |
-   | INIT | 26 | `major`, `minor`, `max_readahead`, `flags` (u32 each); from 7.36 also `flags2` u32 and eleven unused u32 (16, or 64) |
+   | INIT | 26 | `major`, then for major 7: `minor`, `max_readahead`, `flags` (u32 each) (16); with `FUSE_INIT_EXT`, from 7.36, also `flags2` u32 and eleven unused u32 (64) |
    | OPENDIR | 27 | as OPEN |
    | READDIR | 28 | as READ |
    | RELEASEDIR | 29 | as RELEASE |
@@ -177,7 +187,9 @@ notification for an uncached entry (its 5.10, point 4). Sections 5.7,
    | DESTROY | 38 | empty |
    | BATCH_FORGET | 42 | `count` u32, `dummy` u32, then `count` records of `nodeid` u64 and `nlookup` u64 (8 + 16 × count) |
 
-   The empty bodies and LOOKUP's name are `[E73 FUSE_LOOKUP, FUSE_STATFS:
+   STATX exists from 7.39 and its body has one layout `[E70 changelog
+   7.39, struct fuse_statx_in: CONFIRMED]`. The empty bodies and LOOKUP's
+   name are `[E73 FUSE_LOOKUP, FUSE_STATFS:
    CONFIRMED]` and E70's opcode table; DESTROY and READLINK have no input
    structure in E70, so their bodies are empty [E70: CONFIRMED by the
    absence of a structure; OWN reading].
@@ -191,6 +203,15 @@ notification for an uncached entry (its 5.10, point 4). Sections 5.7,
      `attr_valid_nsec` (u32 each), `fuse_attr`.
    - GETATTR: `fuse_attr_out` (104): `attr_valid` u64,
      `attr_valid_nsec` u32, `dummy` u32, `fuse_attr`.
+   - STATX: `fuse_statx_out` (288): `attr_valid` u64, `attr_valid_nsec`
+     u32, `flags` u32, two spare u64, then `fuse_statx` (256): `mask`,
+     `blksize` (u32 each), `attributes` u64, `nlink`, `uid`, `gid` (u32
+     each), `mode` u16, a spare u16, `ino`, `size`, `blocks`,
+     `attributes_mask` (u64 each), the times `atime`, `btime`, `ctime`,
+     `mtime` (each `fuse_sx_time`, 16: `tv_sec` i64, `tv_nsec` u32, a
+     reserved i32), `rdev_major`, `rdev_minor`, `dev_major`, `dev_minor`
+     (u32 each), fourteen spare u64. The mask's bits are `STATX_BASIC_STATS`
+     (`0x7ff`) and `STATX_BTIME` (`0x800`) `[E74 stat.h: CONFIRMED]`.
    - OPEN, OPENDIR: `fuse_open_out` (16): `fh` u64, `open_flags` u32,
      and a u32 that is padding before 7.40 and `backing_id` from it; the
      codec writes zero.
@@ -208,7 +229,8 @@ notification for an uncached entry (its 5.10, point 4). Sections 5.7,
    - INIT: `fuse_init_out` (64) for every minor from 7.23: `major`,
      `minor`, `max_readahead`, `flags` (u32 each), `max_background`,
      `congestion_threshold` (u16 each), `max_write`, `time_gran` (u32
-     each); from 7.28 `max_pages`, `map_alignment` (u16 each); from 7.36
+     each); from 7.28 `max_pages` u16; from 7.31 `map_alignment` u16; from
+     7.36
      `flags2` u32; from 7.40 `max_stack_depth` u32; from 7.43
      `request_timeout` u16; the rest unused. Below each field's minor its
      bytes are unused, and the codec writes zero in every field it does
@@ -226,21 +248,27 @@ notification for an uncached entry (its 5.10, point 4). Sections 5.7,
 | READ `size` | 1,048,576 bytes | `EINVAL` | [vfs-contract 5.2, point 3; OutOfRange] |
 | READ `offset`, and `offset + size` | at most `i64::MAX`, by checked addition | `EINVAL` | [vfs-contract 5.2, point 4] |
 | READDIR `size` | 1,048,576 bytes | `EINVAL` | [vfs-contract 5.2, read-directory budget] |
-| BATCH_FORGET `count` | the body: `8 + 16 × count` must equal its length, by checked arithmetic | `EIO`, but no reply (5.6) | [OWN] |
+| BATCH_FORGET `count` | the body: `8 + 16 × count` must equal its length (6, point 4) | `EIO`, but no reply (5.6) | [OWN] |
 | INIT `max_write` replied | 1,048,576 bytes | refused when the configuration is built | [vfs-contract 5.2, point 3] |
 | READ reply data | 1,048,576 bytes | refused by the encoder | [vfs-contract 5.2, point 3] |
 | READLINK reply | 1 to 4,095 bytes, no NUL | refused by the encoder | [vfs-contract 5.2, link target] |
 
 READDIR's `offset` is the layer's own cookie, not a byte offset, so it
-has no cap [OWN]. Nothing is allocated from a decoded length: a decoded
-request borrows the read buffer, and BATCH_FORGET's records are walked
-in place.
+has no cap [OWN]. Nothing is allocated from a decoded length but one
+thing: a LOOKUP's name is copied into its `Name`, only after its 255-byte
+cap is checked. Every other part of a decoded request borrows the read
+buffer, and BATCH_FORGET's records are walked in place. A reply's buffer
+is sized by its payload, which its encoder caps first (for READ, at the
+size the request asked for).
 
 ### 5.3 Versions
 
 1. **Negotiation** `[E70 "Version negotiation"; E73 FUSE_INIT:
    CONFIRMED]`. The codec's own version is 7.46, `MAX_MINOR`, the minor of
    the header it is written from (E70). For the kernel's INIT:
+   - the major is read first, and decides the rest: for a major other than
+     7 nothing past it is read, since its layout is not 7.x's [OWN: E73's
+     rule that the kernel sends a new INIT after the major-only reply];
    - major 7, minor 23 or higher: the negotiated minor is the smaller of
      the kernel's and 46;
    - major 7, minor below 23: refused (L2, point 2), the reply `EPROTO`
@@ -252,12 +280,23 @@ in place.
 2. **The offer** is the `flags` field, plus, when `flags` holds
    `FUSE_INIT_EXT` (bit 30), `flags2` shifted up by 32 bits `[E70 "bits
    32..63 get shifted down 32 bits into the flags2 field": CONFIRMED]`.
-   Without that bit, `flags2` is not read [OWN: before 7.36 it does not
-   exist]. With it, a body shorter than 20 bytes is a request error.
-3. **Features come from flags** (L2, point 3). Nothing in this codec
-   branches on the negotiated minor except the header's `total_extlen`
-   (5.4, point 3); every request it decodes has the same layout across
-   7.23 to 7.46 (5.1, point 4).
+   `FUSE_INIT_EXT` marks the extended request `[E70: "extended
+   fuse_init_in request"]`, so a major-7 body is exactly 16 bytes without
+   it and exactly 64 with it; any other size, trailing bytes included, is
+   a request error (`EIO`). The eleven unused words of the 64 are not read
+   [OWN: E70 names them unused]. An allowlisted flag offered by a minor
+   below the one that defines it (`FUSE_INIT_EXT` before 7.36,
+   `FUSE_NO_EXPORT_SUPPORT` before 7.40 `[E70 changelog]`) is a request
+   error too (`EIO`) [OWN: the offer contradicts its own version]. Because
+   the negotiated minor is the kernel's when the kernel's is at most 46,
+   and 46 is above both, every selected flag exists at the negotiated
+   minor. Only the decoder builds the `InitRequest` that negotiation
+   takes, so negotiation sees only checked offers.
+3. **Features come from flags** (L2, point 3). The codec branches on the
+   negotiated minor only where E70 gives a field a meaning from a minor on:
+   the header's `total_extlen` (5.4, point 3) and OPEN's second word (5.4,
+   point 6); every request it decodes has the same size across 7.23 to
+   7.46 (5.1, point 4).
 
 ### 5.4 Decoding
 
@@ -280,9 +319,8 @@ In this order; the first failure is the result.
    and are ignored [OWN: a kernel of that minor defines no meaning for
    them].
 4. **Body length.** A fixed body (5.1, point 4) must have exactly its
-   size; an empty one must be empty. INIT's must be at least 16 bytes, and
-   its bytes past the fields read are ignored (they are unused, or a later
-   minor's) [OWN: INIT arrives before the minor is known]. Anything else is
+   size; an empty one must be empty; INIT's as 5.3, point 2, says. Anything
+   else is
    a request error (`EIO`) [OWN: a body of another size means the two
    sides disagree on the layout, and guessing would read the wrong
    fields].
@@ -293,13 +331,16 @@ In this order; the first failure is the result.
    `FUSE_GETATTR_FH` (bit 0), which says `fh` is set; `read_flags` only
    `FUSE_READ_LOCKOWNER` (bit 1); `release_flags` only
    `FUSE_RELEASE_FLUSH` (bit 0) and `FUSE_RELEASE_FLOCK_UNLOCK` (bit 1)
-   `[E70: CONFIRMED]`. Any other bit is a request error (`EIO`) [OWN: a
-   bit the negotiated minor does not define means the layouts disagree].
-   Fields the codec hands on whole (the `open(2)` flags, `mask`) are
-   checked by the layer that gives them meaning. Padding, `dummy`,
-   `unused` and OPEN's `open_flags` are ignored: `open_flags` carries only
-   `FUSE_OPEN_KILL_SUIDGID`, which needs `FUSE_HANDLE_KILLPRIV_V2`, never
-   selected `[E70 changelog 7.33: CONFIRMED]`.
+   `[E70: CONFIRMED]`; STATX's `getattr_flags` as GETATTR's. OPEN's and
+   OPENDIR's second word is unused below 7.33 and ignored there; from 7.33
+   it is `open_flags`, whose one defined bit, `FUSE_OPEN_KILL_SUIDGID`,
+   comes only with `FUSE_HANDLE_KILLPRIV_V2`, never selected `[E70
+   changelog 7.33: CONFIRMED]`, so from 7.33 any bit in it is refused. Any
+   other bit is a request error (`EIO`) [OWN: a bit the negotiated minor
+   does not define means the layouts disagree]. Fields the codec hands on
+   whole (the `open(2)` flags, ACCESS's `mask`, STATX's `sx_flags` and
+   `sx_mask`) are checked by the layer that gives them meaning. Padding,
+   `dummy` and reserved words are ignored.
 7. **Ranges.** READ's and READDIR's caps (5.2), by checked arithmetic.
    Over a cap: `EINVAL`.
 8. **BATCH_FORGET's count** (5.2).
@@ -312,6 +353,22 @@ In this order; the first failure is the result.
    (ADR 0004 part 2, context point 4), and a per-operation error never
    is]. `CUSE_INIT` and the byte-swapped INIT opcodes are not FUSE requests
    and count as unknown.
+10. **A request the kernel may fall back from is served, not refused
+    with `ENOSYS`.** The negotiated minor can be 7.39 or above, so the
+    kernel may send STATX. `ENOSYS` is not an answer to it: L2, point 4,
+    forbids `ENOSYS` "to an operation that a volume could later support",
+    and STATX carries the birth time a volume can supply (N47, point 6).
+    Lowering `MAX_MINOR` below 7.39 instead would give up
+    `FUSE_NO_EXPORT_SUPPORT` (7.40, 5.5, point 1). So the codec decodes
+    STATX and encodes its reply: the basic fields always, and the birth
+    time only when the layer has one; statx's own rules let a reply clear
+    the bit of a field it does not fill `[E74 stat.h, the comment above
+    struct statx: CONFIRMED]`. No registered source says how the kernel
+    treats any other error to STATX, so the layer answers STATX and never
+    refuses it as not decoded. Before the Linux layer ships, each other
+    opcode a kernel may send at the negotiated minor is likewise decoded
+    and answered, or refused per operation as the contract says (section
+    13, Q1) [OWN].
 
 ### 5.5 Encoding
 
@@ -389,12 +446,31 @@ In this order; the first failure is the result.
    always cleared. Times are seconds from 0 to `i64::MAX` and nanoseconds
    below 1,000,000,000; a value outside that cannot be built [OWN: E70
    types the seconds as u64, and no source says how the kernel reads one
-   above `i64::MAX`]. STATFS's `namelen` is 255 (5.2).
+   above `i64::MAX`]. STATFS's `namelen` is 255 (5.2). STATX's reply
+   follows the same rules: its `mode` carries the same bits, `rdev` and
+   `dev` are zero, `attributes` and `attributes_mask` are zero, and its
+   mask is `STATX_BASIC_STATS`, with `STATX_BTIME` only when a birth time
+   is given (N47, point 6); a time it does not fill is zero.
 9. **Errors** are sent as the negative of an `Errno`; `Errno` is a closed
    set of values from E74, none of them `ENOSYS` (N43). A success reply
    has error zero.
 10. **Length.** Every reply's `len` is its byte count, by checked
     conversion; no reply exceeds 16 + 1,048,576 bytes.
+11. **Only through the encoders.** The decoder gives each request that
+    takes a reply one reply token, `ReplyTo<S>`, whose type parameter names
+    the shapes that request allows (an entry for LOOKUP, a handle with
+    direct I/O for OPEN, data for READ, and so on), and gives none to a
+    request that takes no reply (5.6, point 1). A token cannot be built
+    from a request id, cloned or copied, and each encoder consumes it, so
+    a request is answered at most once and only in its shapes; every
+    token can also answer with an error. READ's token carries the size the
+    request asked for, and its data encoder refuses more. An encoder's
+    refusal hands the token back, so the layer can still answer with an
+    error. Encoders return a `Reply`, which the layer can read to write to
+    the device and cannot build or change. The compiler shows each of
+    these rules (the compile-fail examples of `reply.rs`) [OWN: a layer
+    that could write its own bytes, or reuse a request id, could skip L3,
+    L5 and the allowlist].
 
 ### 5.6 States and ordering
 
@@ -402,7 +478,8 @@ In this order; the first failure is the result.
    `[E73 FUSE_INTERRUPT: CONFIRMED]`, or to BATCH_FORGET [OWN reading of
    E70: its records are FORGET's, `fuse_forget_one`; section 13, Q3], even
    when the body is malformed: a reply to one would be a reply nobody waits
-   for.
+   for. These requests, and refusals of them, come with no reply token
+   (5.5, point 11).
 2. **The interrupt** (vfs-contract 5.8, point 7). The codec has no
    encoder for a reply to INTERRUPT, so the layer follows E73: "requires
    no response". E72 describes an `EAGAIN` reply for an interrupt that
@@ -471,9 +548,11 @@ is observed when they are (section 13, Q1).
    a checked slice (`get`), never by index.
 3. READ: `offset + size` by `checked_add` in u64, then compared with
    `i64::MAX`.
-4. BATCH_FORGET: `16 × count` by `checked_mul`, compared with the length
-   of the body after its 8-byte head; on overflow the request is refused
-   (5.2).
+4. BATCH_FORGET: the body after its 8-byte head is split into whole
+   16-byte records; a remainder is refused, and the number of records must
+   equal `count`, converted by `try_from`, so no product is formed (5.2).
+   Each record's two fields are read from its own array, never with a
+   default.
 5. Replies: each length is a sum of constants and one payload length
    capped at 1 MiB, converted to u32 by `try_from`.
 6. The negated error number: positive values below 4,096, negated by
@@ -516,7 +595,10 @@ hostile kernel module is outside the threat model: it owns the machine.
 | L2, point 3 | 5.3, point 3; 5.5, point 4 | `init::tests::select_*` |
 | L2, point 4; N43 | 5.4, point 9; 5.5, point 9 | `errno::tests::no_errno_is_enosys`, `errno::tests::every_value_maps_to_an_error` |
 | L2, point 6; L4, points 1 to 3 | 5.5, points 1 and 2 | `init::tests::never_list_flags_are_never_selected`, the compile-time disjointness check |
-| L3, point 2 | 5.5, point 8 | `reply::tests::attr_clears_set_id_bits`, the `Kind` type |
+| L3, point 2 | 5.5, point 8 | `reply::tests::attr_clears_set_id_bits`, `statx_clears_set_id_bits`, the `Kind` type |
+| L2, point 4; N47, point 6 | 5.4, point 10 | `request::tests::statx_decodes`, `reply::tests::statx_reply_layout_without_birth_time`, `statx_reply_reports_a_birth_time_it_has` |
+| L2, point 3 (flags checked against their minor) | 5.3, point 2 | `init::tests::decode_init_refuses_flags_before_their_minor`, `decode_init_refuses_bodies_of_other_sizes`, `decode_init_other_major_reads_only_the_major`, `negotiated_flags_are_defined_at_the_negotiated_minor` |
+| L3, L5 and the allowlist reached only through the encoders | 5.5, point 11 | the compile-fail examples of `reply.rs`; `reply::tests::data_over_the_request_size_refused`; `request::tests::refused_requests_reply_only_when_owed` |
 | L5, points 1 to 3 | 5.5, point 7 | `reply::tests::entry_and_attr_timeouts_are_zero`, `open_reply_is_direct_io_only`, `opendir_reply_sets_no_cache_flag` |
 | vfs-contract 5.6, point 9 | 5.7 | `errno::tests::rename_flags_is_einval` |
 
@@ -529,7 +611,9 @@ in the test that uses it (`crates/ironafs-fuse/src/*/tests.rs`), with
 IronAFS's own values: a LOOKUP of `b"cell"` under node 1, a GETATTR with
 and without `FUSE_GETATTR_FH`, a READ of 4,096 bytes at offset 8,192, a
 BATCH_FORGET of two records, an INIT at 7.23 (16 bytes) and at 7.46 (64
-bytes with `flags2`), and one reply of each kind in 5.1, point 5.
+bytes with `flags2`), a STATX with and without `FUSE_GETATTR_FH`, and
+one reply of each kind in 5.1, point 5, STATX's with and without a birth
+time.
 
 ### 10.2 Round-trip properties
 
@@ -552,14 +636,19 @@ byte short and one long; LOOKUP without its NUL, with a byte after it,
 with a `/`, with 256 bytes, of `.` and `..`; unknown bits in each flags
 field; a READ of 1,048,577 bytes, at offset `i64::MAX`, and with `offset +
 size` over `i64::MAX`; a BATCH_FORGET whose count does not match, and one
-whose count is `u32::MAX` (an overflow on a 32-bit `usize`, a mismatch on
-a 64-bit one).
+whose count is `u32::MAX`; a STATX body one byte short and one long; an
+OPEN or OPENDIR with a bit in its second word at 7.33 (and ignored at
+7.32). In `src/init/tests.rs`: a major-7 INIT of 15 or 17 bytes without
+`FUSE_INIT_EXT`, of 16, 20, 63 or 65 bytes with it, and of 64 without it;
+`FUSE_INIT_EXT` offered at 7.35 and `FUSE_NO_EXPORT_SUPPORT` at 7.39; a
+newer major's body of 4 bytes, read for its major alone, and of 3 bytes,
+refused.
 
 ### 10.4 Fuzz target
 
 `fuse_codec`, in the top-level `fuzz/` crate: it decodes the input at
-each phase and asserts no panic, and that a decoded request's borrowed
-name lies inside the input. It is added when the fuzz crate lands (issue
+each phase and asserts no panic, and that a decoded LOOKUP's name is
+the input's bytes before its NUL. It is added when the fuzz crate lands (issue
 #45); until then the property of 10.2 is the only random-input check
 (section 13, Q5).
 
@@ -605,7 +694,9 @@ None yet. Section 13 lists what is to be observed.
 
 ## 13. Open questions
 
-- **Q1. The rest of the codec.** READDIR's reply records need the
+- **Q1. The rest of the codec.** Each opcode a kernel may send at the
+  negotiated minor must be decoded and answered, or refused per operation,
+  before the Linux layer ships (5.4, point 10); STATX is done. READDIR's reply records need the
   directory-entry type values, which no registered source gives yet (the
   uapi headers do not define them); the notifications, the extended
   attribute, sync and seek requests, the requests that change a volume, and
