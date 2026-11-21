@@ -84,7 +84,7 @@ Point 10 of the list that local-ipc.md, 5.2 starts:
       | Listening | yes | no | one connect wait |
       | Refused: its connect completed and admission's first step failed | no | no | none; it is disconnected at once and is then Idle |
       | Idle: released, or refused and disconnected, with no connect wait | no | no | none; armed or closed at once (Handoffs) |
-      | `PreAttestation` | no | yes, and a handshake slot | one read, of at most 4 bytes |
+      | `PreAttestation` | no | yes, and a handshake slot | one prefix-and-caller transition (5.4, point 1): a read of at most 4 bytes, then the capture |
       | `AwaitHello`, `AwaitBinding` | no | yes, a handshake slot and a per-caller one | one read, one write |
       | `Open`; `Closing` after `Open` | no | yes; no handshake slot | one read, one write |
       | `Closing` never `Open` | no | yes; the handshake slots it held | one read, one write |
@@ -189,7 +189,12 @@ on Windows. Its rule, in full:
      pipe or any other failure ends the transition with a failure. When
      the handshake deadline passes with a read outstanding, the driver
      cancels it and fails the transition only after the read's terminal
-     completion.
+     completion. The transition, the capture included, is the
+     connection's one outstanding operation until it returns: a close
+     or a passed handshake deadline before then, whether a read is
+     outstanding or the capture is running, moves the connection to
+     `Draining`, and the transition's return is its terminal completion
+     (5.6.2).
    - The 4 bytes are not decoded, compared or answered in this state.
      When all 4 are read, the caller is captured at once (impersonate,
      open the thread token, revert; ADR 0005, sheet 19). A result is
@@ -229,11 +234,13 @@ in local-ipc-resources.md), and the rule that goes with them:
    every byte read and every value that borrows from it dropped, or
    every byte written; or it is abandoned (a failure, a cancellation, a
    stale generation, a close, a stop). A read or write that completes
-   successfully with fewer bytes than asked is neither: the bytes
-   already read or still unwritten stay in the buffer, the charge
-   stays, and the next operation on the same buffer continues from the
+   successfully with at least 1 byte and fewer than asked is neither:
+   the bytes already read or still unwritten stay in the buffer, the
+   charge stays, and the next operation on the same buffer continues from the
    count the completion reported (for the prefix, ADR 0005, sheet 18's
-   short completion). When a use ends while the transport owns the
+   short completion). A completion of 0 bytes on a read or write that
+   asked for at least 1 is a failure: the buffer is abandoned (5.4,
+   point 1 for the prefix). When a use ends while the transport owns the
    buffer, the order is: request cancellation, wait for the terminal
    completion, then zero with `ironafs-os`'s wipe (ADR 0005, sheet 24)
    and release. This holds for the client's Windows rows as for the
@@ -250,9 +257,9 @@ The Windows rows of the table in local-ipc.md, 5.6.2:
 | Accepted (Windows) | admission's first step passes (5.4, point 2) | `PreAttestation` | otherwise disconnected without a read. The state records the instance's connection generation |
 | `PreAttestation` | the transition returns, for this generation, 4 prefix bytes and a captured caller; admission's second step passes | `AwaitHello` | nothing decoded or answered in this state; the prefix is checked on leaving it (5.4, point 3) |
 | `PreAttestation` | the transition fails, or admission's second step fails | Closed | no reply; nothing more read; a failed revert ends the daemon process (ADR 0005, sheet 19) |
-| `PreAttestation` | the handshake deadline passes with the read outstanding | `Draining` | the driver requests the read's cancellation; no reply |
+| `PreAttestation` | the handshake deadline passes, or a close, with the transition outstanding (its read, or the capture after it) | `Draining` | the driver requests the read's cancellation if a read is outstanding; no reply |
 | `PreAttestation` | a transition result tagged with another generation | `PreAttestation` | discarded, buffer zeroed, bound to nothing |
-| `Draining`, Closed (from `PreAttestation`) | a transition result of this generation | unchanged | discarded, buffer zeroed, bound to nothing |
+| `Draining` (from `PreAttestation`) | the transition's return, for this generation | released | its result discarded, the prefix buffer zeroed, bound to nothing; the transition was the one operation outstanding, so its return is the last terminal completion (row below) |
 | Closed (Windows) | an operation is still outstanding | `Draining` | the instance is not disconnected, reused or closed (ADR 0005, sheet 18) |
 | `Draining` (Windows) | the last terminal completion | released | buffers zeroed, then the instance is disconnected and may listen again |
 
@@ -376,7 +383,9 @@ Paths and conventions are those of local-ipc.md, section 10.
     completion);
   - a disconnect, and a reconnect by another client, between the prefix
     read and the capture: the first identity is never bound to the second
-    client;
+    client; the handshake deadline passing, and a close, while the
+    capture runs: the connection is `Draining`, the transition's result
+    is discarded at its return, and the instance is then released;
   - `capture_scratch_peak`: under a counting allocator, the capture
     of a standard user and of an administrator with a linked token
     never has more than one token-information buffer live, and never
@@ -388,9 +397,11 @@ Paths and conventions are those of local-ipc.md, section 10.
     frames with a cancellation after the first short completion and a
     terminal completion delayed past the close are zeroed only at that
     completion;
-  - `pipe_pool`: with the global account at its budget and a handle
-    still free, a listener that becomes a connection is replaced at
-    once and the armed count returns to the configured number; P
+  - `pipe_pool`: with a handle still free and the global account's
+    headroom exactly one first-step allowance (5.2.1, rule 1), a
+    listener that becomes a connection takes that headroom, leaving the
+    account at its budget, and is replaced at once with no new
+    reservation, the armed count back at the configured number; P
     instances in use, in every state of 5.2, point 10's
     table, `Draining` included; with the pool full, a connect that has
     just completed and fails admission is disconnected with no read and
@@ -478,37 +489,15 @@ were still open at its last round. A **blocker** (B) is a major:
 implementation (issue #95) must not start on the sections it names until
 it is closed by a reviewed change to this specification. An **open
 item** (M) is a minor, recorded and not gating. This part has no blocker
-of its own. The Windows prefix rule's scope is part of B5 (local-ipc.md,
-13.1). Q4 above is an owner decision and gates the Windows parts on its
-own terms.
-
-- **M1. The `pipe_pool` fixture for listener replacement.** Parts:
-  local-ipc-windows.md, 10.5; local-ipc-resources.md, 5.2.1, rule 1.
-  Quoted from the review, without its label:
-
-  > Defect: The standing charge of P connect blocks removes
-  > request-budget competition for listener replacement. The new
-  > test starts with the global account at its budget and expects
-  > the listener to become an admitted connection. Admission itself
-  > requires a new global allowance.
-  >
-  > Consequence: Saturating the account before admission exercises
-  > refusal and rearming of the same handle, so it does not verify that
-  > an admitted connection gets a replacement.
-  >
-  > Fix asked: Leave exactly enough headroom for the first admission
-  > step to consume, then assert that the account is full at replacement
-  > and the armed count is restored without a new reservation.
-
-  Closes with: the fixture leaving exactly the headroom the first
-  admission step consumes, then asserting a full account at replacement
-  and the armed count restored with no new reservation.
+of its own and no open item. The Windows prefix rule's scope is part of
+B5 (local-ipc.md, 13.1). Q4 above is an owner decision and gates the
+Windows parts on its own terms.
 
 ## 14. Review
 
 Reviewed in five rounds on 2026-11-21 by two non-author families, and
 not converged: one seat passed and one did not. The rounds, every
 finding and the decision to stop are in [the review
-record](../reviews/2026-11-21-m2a-62-local-ipc.md). Open here: open item
-M1 (13.1), Q4 and Q5; B5 names this part's prefix rule. This
-specification stays `draft`.
+record](../reviews/2026-11-21-m2a-62-local-ipc.md). Open here: Q4 and
+Q5; B5 names this part's prefix rule. This specification stays
+`draft`.

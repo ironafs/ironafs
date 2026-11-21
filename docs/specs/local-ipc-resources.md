@@ -40,6 +40,14 @@ endpoint's stream, which this framework carries as `EVENT` frames:
 >   full, replies wait within their deadlines. An epoch advance is never
 >   dropped: space for it is kept free.
 
+ADR 0004, overview, constraint 4, also quoted in local-ipc.md,
+section 1; this part's share is its byte limits, the accounts and
+budgets:
+
+> **Untrusted input everywhere:** fileserver replies, callbacks, XDR,
+> local IPC, configuration, requests from the operating system, and SMB
+> messages before authentication. No panics, checked arithmetic and byte
+> limits apply to all of it (coding standards rules 1 to 3).
 
 Section 9 shows where each is kept and which test fails if it is broken.
 
@@ -111,14 +119,17 @@ local-ipc-windows.md.
    computed from the configured values and the generator's constants:
    - connections in handshake ≤ connections in all; connections in
      handshake per caller key ≤ connections in handshake;
-   - output queued per connection ≥ the endpoint's largest framed reply
-     frame plus `ipc.overhead.frame`, so one reply or part always fits
-     an empty queue;
+   - output queued per connection ≥ the endpoint's largest framed
+     `REPLY`, `PART` or droppable `EVENT`, whichever is largest, plus
+     `ipc.overhead.frame`, so one reply, part or droppable event always
+     fits an empty queue;
    - in-flight bytes, all connections ≥ connections in all × (A +
      `ipc.overhead.caller`), plus on Windows P × `ipc.overhead.operation`;
    - in-flight bytes per caller key ≥ (open connections per caller key +
      connections in handshake per caller key) × A + R, so a caller at
-     its connection limits can still run a request; and ≤ half of
+     its connection limits can still have a request admitted (rule 2).
+     That its handler's working set (rule 3) then fits as well is not
+     covered by R and is open (13.1, B8); and ≤ half of
      in-flight bytes, all connections. The promise is about a caller's
      own account: no one caller's account can hold more than half the
      global budget. What is left for the others is the other half less
@@ -127,11 +138,22 @@ local-ipc-windows.md.
      is not yet known), which the first rule of this point bounds.
      Among several callers the rest is first come, first served: no
      share is promised to each;
+   - live heap requests, all connections ≥ the heap requests of the
+     same charges: connections in all × (an allowance's and a caller
+     record's), plus on Windows the standing connect blocks', plus
+     R's, each as 5.2.1 states it (rules 1, 2, 6 and 7), so a validated
+     count never refuses a connection or a request the byte rules
+     admit;
    - requests in flight per caller key ≤ executor queue ÷ 4, so one
      caller can fill at most a quarter of the queue;
    - each streaming budget ≤ its row constants (point 11);
    - closing deadline ≤ write deadline;
    - on Windows, point 10.
+
+   On a reload these rules are checked with A the larger of the running
+   and the new allowance, since a connection keeps the allowance and the
+   request table it was admitted with until its release (5.2.1,
+   rule 1).
 
 #### 5.2.1 Reservation before allocation
 
@@ -179,13 +201,17 @@ account at the capture (5.4, point 2).
    a target where one is larger does not build, and this point changes.
    The allowance makes a fixed number of heap requests,
    `ipc.overhead.connection_requests` = 16 at most, counted under
-   rule 6. Everything in the allowance is allocated once, at admission, and
-   nothing in it grows. Storage that exists before any connection is
-   charged on its own, in the global account only: when a Windows pipe
-   endpoint starts, before it accepts anything, the daemon reserves P ×
-   `ipc.overhead.operation` once, for the connect block of every
-   instance the endpoint can ever hold (5.2, point 10), and keeps it
-   until the endpoint stops; if it cannot, the endpoint does not start.
+   rule 6. Everything in the allowance is allocated once, at
+   admission, and nothing in it grows. A reload changes A only for
+   connections admitted after it: a connection keeps the allowance, and
+   the size of the request table, it was admitted with, applies that
+   size as its requests-in-flight limit, and releases that allowance at
+   its release. Storage that exists before any connection is charged on
+   its own, in the global account only: when a Windows pipe endpoint
+   starts, before it accepts anything, the daemon reserves P ×
+   `ipc.overhead.operation`, in at most P heap requests, once, for the
+   connect block of every instance the endpoint can ever hold (5.2,
+   point 10), and keeps it until the endpoint stops; if it cannot, the endpoint does not start.
    Creating or arming an instance therefore reserves nothing, and no
    request can take the space a replacement listener needs. If either
    account cannot cover the allowance, the connection is closed without
@@ -285,6 +311,16 @@ account at the capture (5.4, point 2).
      not fit, or whose reservation fails, is dropped and counted under
      the endpoint's rule. So no nonterminal frame takes the queue past
      its budget.
+   - **No `PART` after its reply.** The step that appends a request's
+     terminal `REPLY`, from whichever path completed its slot, marks the
+     request's reply as queued, under the output lock. A `PART`'s append
+     step checks that mark first; if it is set, the part is not
+     appended, its charge is released (its buffer zeroed if the row is
+     secret-bearing, 5.5, point 7), and the handler stops as at a
+     cancellation point. So every `PART` is queued before its request's
+     `REPLY` or not at all (local-ipc.md, 5.6.3, rule 2), whichever path
+     completed the slot and whenever the handler last checked for
+     cancellation.
    - **Mandatory events have their own space** `[ADR 0004 C16.6: Firm]`
      ("An epoch advance is never dropped: space for it is kept free");
      the mechanism is `[OWN]`. An event row is droppable or mandatory
@@ -366,9 +402,9 @@ account at the capture (5.4, point 2).
    exactly while the key has a live charge: a connection not yet
    released, a reservation, or a request whose worker has not returned.
    The record has a charge of its own, `ipc.overhead.caller` (256
-   bytes, a ceiling asserted like rule 1's), reserved in the global
-   account when the record is created and released when it is removed,
-   so it is paid for however long detached work keeps it; a record that
+   bytes, a ceiling asserted like rule 1's) in one heap request,
+   reserved in the global account when the record is created and
+   released when it is removed, so it is paid for however long detached work keeps it; a record that
    cannot be paid for fails admission's second step (5.4, point 2).
    It is removed with its last charge, so the records are at most the
    connections in all plus the requests still running after their
@@ -475,8 +511,15 @@ The order of checks is local-ipc.md, 5.4. This part holds its points 2,
     undecoded through the discard buffer, and the terminal `REPLY`'s
     envelope closes the request id. If the grace period ends, or a
     further `parts_max` parts are discarded, before that `REPLY`, the
-    client fails the connection. A daemon within this specification
-    never triggers either: it enforces the same row limits.
+    client fails the connection. That `parts_max` is the row's wire
+    constant (5.2, point 11), never a lower limit the caller set. A
+    daemon within this specification never passes it, since it enforces
+    the same row limits. It can outlast the grace period: a claimed
+    request on an outcome-unknown row ignores the `CANCEL` until the
+    daemon's request deadline (5.6.4, rule 4), and a `CANCEL` behind
+    another frame waits while the daemon's reads are paused (5.6.4,
+    rule 1). Aligning the grace period with the daemon's legal window
+    is open (13.1, B6).
 20. **Every request, at the client,** has a request deadline the caller
     of the client library sets, at most 3,600 s `[OWN]`. When it passes
     without a `REPLY` the client reports the request as failed with an
@@ -503,7 +546,7 @@ table, and its ownership rule, are in local-ipc-windows.md.
    |---|---|---|---|
    | `ipc-rx-frame` | daemon | the receive buffer for one frame's body, on an endpoint with a secret-bearing client message | before reuse or release, on every path: decoded, refused at any step, truncated, timed out, cancelled, connection closed, daemon stopping; and not before every value that borrows from it is dropped |
    | `ipc-rx-discard` | daemon | the discard buffer (5.2.1, rule 2) | each chunk before the next is read, and at release |
-   | `ipc-tx-daemon-stage` | daemon | the encoder output for a secret-bearing reply, part or event, while it is built and while it is queued | after its last byte is written; and on every path that ends it unwritten or partly written: an encode error, a suppressed reply (5.4, point 13), a dropped event, a failed or timed-out write, the closing deadline, connection closed, daemon stopping |
+   | `ipc-tx-daemon-stage` | daemon | the encoder output for a secret-bearing reply, part or event, while it is built and while it is queued | after its last byte is written; and on every path that ends it unwritten or partly written: an encode error, a suppressed reply (5.4, point 13), a dropped event, a part refused after its reply (5.2.1, rule 4), a failed or timed-out write, the closing deadline, connection closed, daemon stopping |
    | `ipc-tx-stage` | client | the checked connection's staging buffer for a secret-bearing message | after the last byte is written or the write fails, on an encode error, and on cancel or close |
    | `ipc-rx-client` | client | the receive buffer for one frame, on an endpoint with a secret-bearing daemon message | before reuse or release, on every path: decoded, refused, truncated, timed out, connection failed or closed; and not before every value that borrows from it is dropped |
    | `ipc-rx-client-stage` | client | the staging storage of a stream whose row is secret-bearing (5.4, point 19) | at release, on every path: shown, failed, over a limit, cancelled, deadline, connection failed |
@@ -741,6 +784,7 @@ The rows of local-ipc.md, section 8's table that rest on this part:
 | C16.6: an epoch advance is never dropped; space for it is kept free | the space and the order only: M reserved in every connection's allowance, a mandatory occupancy apart from the output budget, appended in order (5.2.1, rules 1 and 4). That the epoch advance is a mandatory row, its coalescing and the fence are the adapter endpoint specification's (local-ipc.md, section 13, Q6) | `mandatory_event_reserved`; the rest with the adapter endpoint specification |
 | C39.3: one-shot result slots with a deadline from arrival and a cancel token; every queue bounded in bytes | 5.6.4, rules 2, 4 and 5; 5.6.3, rule 3; 5.2, point 8; 5.2.1 | `request_deadline`; `charged_until_worker_returns`; `cancel_cases`; `stalled_reader`; `output_admission`; `global_budget_exhausted`; `caps_per_caller` |
 | O28.2, O28.3: zeroisation at named places | 5.5, point 7 | `secret_buffers_wiped` |
+| Constraint 4, its byte limits: every byte held for a connection is inside a budget | 5.2, points 8 and 9; 5.2.1; section 6 | `global_budget_exhausted`; `caps_per_caller`; `config_bounds` |
 
 ## 10. Tests
 
@@ -782,6 +826,11 @@ Item 7 of local-ipc.md, 10.2's list:
   only by funded terminal replies, and mandatory events are counted
   apart from it. Two producers racing
   for the last headroom: one fits, the other waits or is dropped. A
+  streaming stand-in handler that passes its last cancellation check
+  and then appends a `PART`, raced with a `CANCEL` and with the
+  deadline completing its slot: the part is queued before the terminal
+  reply or not at all, never after it, and a part not queued has its
+  charge released. A
   terminal reply from terminal capacity needs no reservation with both
   accounts at their budgets, its queue entry included.
 - `mandatory_event_reserved`: on a test endpoint with a mandatory event
@@ -915,7 +964,9 @@ None of its own. Those of the framework are in local-ipc.md, section
 
 The review ended without the second seat passing ([the review
 record](../reviews/2026-11-21-m2a-62-local-ipc.md)). The items below
-were still open at its last round. A **blocker** (B) is a major:
+were still open at its last round; B6 to B8 and M3 came from a later
+second-family pass on the same text, and their quotes keep that
+text's line numbers. A **blocker** (B) is a major:
 implementation (issue #95) must not start on the sections it names until
 it is closed by a reviewed change to this specification. An **open
 item** (M) is a minor, recorded and not gating. B2 and B5 are in
@@ -1044,11 +1095,145 @@ gated too.
   charges, or those charges subtracted, with the second caller's ability
   to run asserted on its own.
 
+- **B6. The client's grace period against the daemon's legal reply
+  window.** Parts: local-ipc-resources.md, 5.4, points 19 and 20.
+  Quoted from the second-family review, without its label:
+
+  > Defect: point 19 (470-479) starts a fixed 10 s cancel
+  > grace on any request-level failure, 'whether or not the CANCEL can
+  > be written', fails the whole connection if the grace expires or a
+  > further parts_max parts are discarded before the terminal REPLY,
+  > and asserts 'A daemon within this specification never triggers
+  > either: it enforces the same row limits'. But: (1) on a claimed
+  > outcome-unknown row, rule 4 ignores CANCEL (rule 4 table:670) and
+  > completes only at the daemon's deadline (672), whose default is 60
+  > s and ceiling 3,600 s (94), while the client's caller-set deadline
+  > (480-481) has no lower bound; (2) a CANCEL behind another
+  > pipelined frame waits up to the request deadline under
+  > back-pressure (564-583); (3) the parts_max at line 477 is
+  > ambiguous between the row's wire limit and the caller's lower
+  > limit (point 19 bullet 1:430-431), and if it is the latter a
+  > conforming daemon sending the row's parts_max parts tears down the
+  > connection. B3's closing criteria (956-989) do not cover this.
+  >
+  > Consequence: A conforming daemon legally replies more than 10 s
+  > after a short client deadline, and the client fails the whole
+  > multiplexed connection, aborting healthy concurrent requests
+  > instead of isolating the failed one. Fix: align post-failure
+  > draining with the daemon's legal window (claimed outcome-unknown
+  > rows and back-pressured reads), state that the discard cap is the
+  > row's wire parts_max, and add a client_stream_budget case where a
+  > claimed outcome-unknown request completes after 10 s without
+  > teardown.
+
+  The discard cap is now stated as the row's wire `parts_max`, and the
+  sentence that a conforming daemon never outlasts the grace period is
+  withdrawn. Closes with: a grace period, or a rule in its place, that
+  a daemon within this specification cannot outlast, on a claimed
+  outcome-unknown row and with its reads paused, and a
+  `client_stream_budget` case in which a claimed outcome-unknown
+  request completes more than 10 s after the client's deadline without
+  failing the connection or its other requests.
+  Gated until then: 5.4, points 19 and 20, as B3 gates them.
+
+- **B7. The client's space for mandatory events, and the client's
+  minimum budgets.** Parts: local-ipc-resources.md, 5.4, point 19.
+  Quoted from the second-family review, without its label:
+
+  > Defect: the daemon reserves M per connection outside
+  > ordinary budgets so mandatory EVENTs never compete with replies or
+  > parts (rule 1:166-167; rule 4:288-314; invariant table:741). On
+  > the client, point 19 (434-458) uses one shared staging budget for
+  > staged PARTs, REPLYs and EVENTs, and a mandatory EVENT whose
+  > reservation fails fails the connection (457-458); there is no
+  > dedicated client-side headroom. The client staging budget is only
+  > bounded above ('at most 64 MiB', 434-436) and the client request
+  > deadline only above ('at most 3,600 s', 480-481), with no non-zero
+  > minimum.
+  >
+  > Consequence: Ordinary staged parts of live streams can fill the
+  > client's budget, and an interleaved mandatory EVENT (the exact
+  > saturation case M is meant to survive) then fails the client
+  > reservation and tears down the adapter connection, so C16.6's
+  > kept-free space does not reach the front end. Fix: reserve
+  > dedicated client-side headroom per mandatory row (body plus decode
+  > charge) outside ordinary staging, and enforce non-zero minimums on
+  > the client staging budget and request deadline.
+
+  Closes with: client headroom kept for each mandatory event row
+  outside the staging budget, and non-zero minimums for the client's
+  staging budget and request deadline. The adapter endpoint's own rules
+  stay with Q6 of local-ipc.md.
+  Gated until then: the client's receive path for mandatory events, and
+  so any client of an endpoint with a mandatory event row.
+
+- **B8. The largest single-request charge R and the handler's working
+  set.** Parts: local-ipc-resources.md, 5.2, point 9 and 5.2.1,
+  rules 2 and 3; local-ipc.md, 5.6.1, point 3.
+  Quoted from the second-family review, without its label:
+
+  > Defect: point 9 (108-110) defines R as 'the endpoint's
+  > largest single-request reservation (5.2.1, rules 1 and 2)', and
+  > rule 2 (212-217) is body length-16 + T + the decode charge; the
+  > generator computes R from rules 1 and 2 only
+  > (local-ipc.md:1271-1273). Rule 3 (245-253) requires the handler to
+  > reserve its largest working set, which includes the largest
+  > encoded reply and its queue entry, while the rule-2 charges are
+  > still held: rule 4 (262-271) releases T only when the handler's
+  > reply is queued, and the body/decode charge stays until the
+  > decoded value is dropped. The per-caller rule (119-120) guarantees
+  > only (open+handshake) x A + R.
+  >
+  > Consequence: A caller at its connection limits can reserve R for a
+  > request and then fail rule 3's working-set reservation, answering
+  > Busy even though the configuration was validated to let it run a
+  > request to completion; with a small R and a large handler working
+  > set the failure occurs even with one connection. Fix: define R as
+  > the peak concurrent single-request charge across rules 2 and 3
+  > (retained request charge, T, and the working set or one PART
+  > charge), and use that R in the per-caller rule and the generator.
+
+  The per-caller rule now claims only that a request is admitted.
+  Closes with: R defined over the peak charge of one request across
+  rules 2 and 3, which needs each row's largest working set declared
+  where the generator can read it, and that R used by the per-caller
+  rule, the generator and `config_bounds`.
+  Gated until then: 5.2, point 9's per-caller rule and 5.2.1, rule 3.
+
+- **M3. The heap requests of M.** Parts: local-ipc-resources.md, 5.2.1,
+  rules 1 and 4; 5.5, point 7.
+  Quoted from the second-family review, without its label:
+
+  > Defect: rule 1 (180-182) caps the allowance at
+  > ipc.overhead.connection_requests = 16 heap requests; M is added to
+  > A (166-167) and the generator computes M as a byte sum only
+  > (local-ipc.md:1271-1273); 5.5 point 7 (512-515) allocates each
+  > frame buffer before it is filled at the frame's size. Nothing
+  > asserts that the fixed connection allocations plus the sum of the
+  > mandatory rows' pending-slot allocations fit within 16, and no
+  > rule states the heap-request count of M or of the mandatory
+  > encoder buffers.
+  >
+  > Consequence: An endpoint with mandatory event rows can make
+  > per-event encoder heap requests outside the 16-request allowance
+  > (breaking the global_budget_exhausted reservation check,
+  > 10.5:805-824) or exceed 16 at admission without a generation-time
+  > check. Fix: pre-allocate reusable M slot buffers inside A at
+  > admission (zeroed in place after write/release on secret rows) and
+  > assert at generation time that fixed allocations plus the sum of
+  > mandatory pending bounds do not exceed
+  > ipc.overhead.connection_requests.
+
+  Closes with: a stated heap-request count for M and for the mandatory
+  events' frame buffers, inside the allowance or outside it, and a
+  generation-time check that the allowance stays within
+  `ipc.overhead.connection_requests`.
+
 ## 14. Review
 
 Reviewed in five rounds on 2026-11-21 by two non-author families, and
 not converged: one seat passed and one did not. The rounds, every
 finding and the decision to stop are in [the review
 record](../reviews/2026-11-21-m2a-62-local-ipc.md). Open here: blockers
-B1, B3 and B4 and open item M2 (13.1); B2 and B5 also name places in
-this part. This specification stays `draft`.
+B1, B3, B4, B6, B7 and B8 and open items M2 and M3 (13.1); B2 and B5
+also name places in this part. This specification stays `draft`.

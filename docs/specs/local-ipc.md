@@ -125,6 +125,15 @@ table above says which part holds each): 5.2, point 10 (the instance
 count); 5.4, point 1 (the prefix rule); and 5.5, point 7 (the
 zeroisation places).
 
+ADR 0004, C16, point 6 (**Firm**), the sentence quoted in
+local-ipc-resources.md, section 1. This part's share is what a
+catalogue declares: an event row's delivery class and a mandatory
+row's pending bound (5.3.3, point 2; 5.6.1, point 3):
+
+> - **Back-pressure:** the stream is bounded (C39, point 3). When it is
+>   full, replies wait within their deadlines. An epoch advance is never
+>   dropped: space for it is kept free.
+
 Section 9 shows where each is kept and which test fails if it is broken.
 
 ## 2. Scope
@@ -1890,9 +1899,9 @@ record](../reviews/2026-11-21-m2a-62-local-ipc.md)). The items below
 were still open at its last round. A **blocker** (B) is a major:
 implementation (issue #95) must not start on the sections it names until
 it is closed by a reviewed change to this specification. An **open
-item** (M) is a minor, recorded and not gating. B1, B3 and B4 are in
-local-ipc-resources.md, 13.1, and M1 in local-ipc-windows.md, 13.1;
-where they name a place in this part, that place is gated too.
+item** (M) is a minor, recorded and not gating. B1, B3, B4 and B6 to
+B8 are in local-ipc-resources.md, 13.1; where they name a place in
+this part, that place is gated too.
 
 - **B2. The binding step when both deadlines have passed, and a binding
   handler that must claim.** Parts: local-ipc.md, 5.4, point 6 and
@@ -1964,5 +1973,5 @@ Reviewed in five rounds on 2026-11-21 by two non-author families, and
 not converged: one seat passed and one did not. The rounds, every
 finding and the decision to stop are in [the review
 record](../reviews/2026-11-21-m2a-62-local-ipc.md). Open here: blockers
-B2 and B5 (13.1), and Q6; B1 and B3 also name places in this part. This
-specification stays `draft`.
+B2 and B5 (13.1), and Q6; B1, B3 and B8 also name places in this
+part. This specification stays `draft`.
