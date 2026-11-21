@@ -863,11 +863,11 @@ struct sealed {                                   /* secret-bearing */
 | `test.sealed.key` | `key` | opaque | 16 bytes | 16 | both | | yes | equal to its bound; the secret field of 5.1, point 8 |
 | `test.sealed.tag` | `tag` | string | 8 bytes | 8 | both | | | equal to its bound (`label`) |
 
-Each `label` in `pair` and `names` has the cap 8. Each test type decoded
-on its own, without a message row above, is a message with the cap 128
-and the memory budget 1024; the largest worst case among them is that
-of `names` and `pair`, ⌈24 ÷ 4⌉ + 1 = 7 per byte on a 64-bit target,
-so 896.
+Each `label` in `pair`, `names` and `tags` has the cap 8. Each test type
+decoded on its own, without a message row above, is a message with the
+cap 128 and the memory budget 1024; the largest worst case among them is
+that of `names`, `tags` and `pair`, ⌈24 ÷ 4⌉ + 1 = 7 per byte on a
+64-bit target, so 896.
 `tags` isolates its guards: its cap of 16 bytes is below the 3 × 12 =
 36 bytes its bound allows (5.2, point 4), and a count of 4 empty labels
 is above the bound while 4 × 4 = 16 bytes is within the cap, so only
