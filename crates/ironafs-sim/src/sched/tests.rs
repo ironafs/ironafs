@@ -325,6 +325,29 @@ fn a_call_whose_deadline_passes_first_gets_no_reply() {
 }
 
 #[test]
+fn a_dropped_reply_ends_the_call_at_its_deadline() {
+    let replies = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&replies);
+    let outcome = run_with(&Config::new("drop", 3), move |setup| {
+        setup.server_may_drop(|request: &[u8]| (request != [9]).then(|| request.to_vec()));
+        setup.task("caller", move |cx: &TaskCx| {
+            for request in [[9], [7]] {
+                let reply = cx.call(&request, boot_in(cx, Duration::from_millis(50)));
+                record.lock().unwrap().push(reply);
+            }
+        });
+    });
+    assert_eq!(outcome.failure, None);
+    assert_eq!(
+        *replies.lock().unwrap(),
+        vec![Err(Waited::DeadlinePassed), Ok(vec![7])]
+    );
+    assert!(outcome.trace.contains(" world drop c0\n"));
+    assert!(!outcome.trace.contains(" world reply c0 "));
+    assert!(outcome.trace.contains(" world reply c1 07\n"));
+}
+
+#[test]
 fn a_broken_invariant_fails_the_run_at_its_step() {
     let counter = Arc::new(Mutex::new(0_u32));
     let bump = Arc::clone(&counter);
