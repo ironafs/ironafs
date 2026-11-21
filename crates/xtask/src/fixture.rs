@@ -321,7 +321,13 @@ impl Fixture {
     }
 }
 
-fn write_file(path: &Path, contents: &str) -> Result<(), Error> {
+/// Writes `contents` to `path`, creating its parent directories.
+///
+/// # Errors
+///
+/// Returns an error naming the path if a directory or the file cannot be
+/// written.
+pub(crate) fn write_file(path: &Path, contents: &str) -> Result<(), Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(Error::path_io("create fixture directory", parent))?;
     }

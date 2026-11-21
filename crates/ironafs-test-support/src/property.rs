@@ -299,6 +299,11 @@ impl Property {
     /// Runs the property from `seed`, without reading the environment,
     /// writing the first failure's notice to standard error and timing
     /// the shrink on the wall clock.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "rule 7 covers the code under test; the shrink time limit guards the test \
+                  runner's own wall-clock kill"
+    )]
     pub(crate) fn run_seeded<T, V: Verdict>(
         &self,
         seed: u64,

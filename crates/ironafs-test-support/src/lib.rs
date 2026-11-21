@@ -32,17 +32,26 @@
 //! tests: single-bit flips, integers near a known one, and fields at all
 //! zeros and all ones.
 //!
+//! [`SeededClock`] and [`SeededRng`] implement the `Clock` and `Rng`
+//! interfaces of `ironafs-time` for tests and the simulator: virtual clocks
+//! that move only when the test moves them, and random bytes from a seed.
+//! Neither is ever a production source (coding standards rule 7).
+//!
 //! This crate is a dev-dependency only: no shipped crate depends on it.
 
 mod capture;
+mod clock;
 mod property;
+mod rng;
 mod shrink;
 mod source;
 mod splitmix64;
 mod sweep;
 pub mod wire;
 
+pub use clock::{SeededClock, TimeOverflow};
 pub use property::{Counterexample, Property, Verdict};
+pub use rng::SeededRng;
 pub use source::Source;
 pub use splitmix64::SplitMix64;
 pub use sweep::{Exhaustive, FailedInput, SweepFailure};

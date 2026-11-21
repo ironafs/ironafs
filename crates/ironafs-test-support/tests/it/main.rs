@@ -9,3 +9,4 @@ mod bulk_bytes;
 mod exhaustive;
 mod property;
 mod regressions;
+mod seams;
