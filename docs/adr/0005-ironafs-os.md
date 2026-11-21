@@ -2125,9 +2125,9 @@ no macOS or Windows component's status: that is the owner's (below).
 | macOS libSystem (clocks, dump limit, peer credentials, `poll`, `dns_sd`, unified logging) | dynamically | OPEN: ships with macOS; whether it is packaged with a Major Component (the kernel or the operating system's core) and not part of it is not verified. Apple's statement that it does not support statically linked binaries is UNVERIFIED (to be inspected at source). | OPEN: libSystem offers much more than enabling use with the kernel | OPEN: some calls are POSIX (`poll`, `setrlimit`, `getsockopt`; rows 7, 11, 16), others Apple's own (`clock_gettime_nsec_np`, `dns_sd`, unified logging; rows 2, 7, 5); per interface, not verified | owner's decision; UNVERIFIED |
 | macOS Security.framework (`SecRandomCopyBytes`, row 9) | dynamically | OPEN, as for libSystem | OPEN: a framework with broad functions | OPEN: not verified for this interface | owner's decision; UNVERIFIED |
 | The macOS C shim | statically, IronAFS's own code | Part of the work, under GPL-3.0-or-later; it calls only libSystem. Built by the platform compiler, which is a Major Component when used to produce the work. | not needed | not needed | CONFIRMED (own code) |
-| Windows Kernel32.dll, Dnsapi.dll, Bcrypt.dll (rows 3, 6, 10) | dynamically (`raw-dylib`, no import library from a crate) | OPEN. Candidate: the Windows operating system's kernel and its system libraries as shipped with Windows (each DLL ships with Windows and is its documented interface: Microsoft's function pages name each DLL; Context). Whether each DLL is included in that component's normal packaging and is not part of it, and where the component's boundary lies, is not verified | OPEN | OPEN: whether each called interface is a Standard Interface, and whether any public-source implementation of it exists (a third party's counts), is not verified | DLL names CONFIRMED; owner's decision; UNVERIFIED |
-| Windows DLL of row 4 (`QueryUnbiasedInterruptTimePrecise`) | dynamically | OPEN. Candidate: the same as for Kernel32.dll (the Windows kernel and its system libraries as shipped with Windows); packaging and boundary not verified, and the assessment completes only once point 5.4's check names the import target | OPEN | OPEN: whether the called interface is a Standard Interface with a public-source implementation is not verified | Import target MISSING: the function's page names Kernel32.dll and lists API-set and KernelBase hosts, so point 5.4's link-and-run check sets it; owner's decision; UNVERIFIED |
-| Windows DLLs of rows 17 to 20 (expected Kernel32.dll and Advapi32.dll) | dynamically | OPEN. Candidate: the Windows kernel and its system libraries as shipped with Windows, for each DLL point 5.4's check names; packaging and boundary not verified, and the assessment completes only once that check names the import targets | OPEN | OPEN: whether each called interface is a Standard Interface with a public-source implementation is not verified | DLL names MISSING until point 5.4's check runs; owner's decision; UNVERIFIED |
+| Windows Kernel32.dll, Dnsapi.dll, Bcrypt.dll (rows 3, 6, 10) | dynamically (`raw-dylib`, no import library from a crate) | OPEN. Candidate: the Windows operating system's kernel, with which each DLL ships (each DLL ships with Windows and is its documented interface: Microsoft's function pages name each DLL; Context). Whether each DLL is included in that component's normal packaging and is not part of it, and where the component's boundary lies, is not verified | OPEN | OPEN: whether each called interface is a Standard Interface, and whether any public-source implementation of it exists (a third party's counts), is not verified | DLL names CONFIRMED; owner's decision; UNVERIFIED |
+| Windows DLL of row 4 (`QueryUnbiasedInterruptTimePrecise`) | dynamically | OPEN. Candidate: the same as for Kernel32.dll (the Windows kernel, with which the DLL ships); packaging and boundary not verified, and the assessment completes only once point 5.4's check names the import target | OPEN | OPEN: whether the called interface is a Standard Interface with a public-source implementation is not verified | Import target MISSING: the function's page names Kernel32.dll and lists API-set and KernelBase hosts, so point 5.4's link-and-run check sets it; owner's decision; UNVERIFIED |
+| Windows DLLs of rows 17 to 20 (expected Kernel32.dll and Advapi32.dll) | dynamically | OPEN. Candidate: the Windows kernel, with which each DLL that point 5.4's check names ships; packaging and boundary not verified, and the assessment completes only once that check names the import targets | OPEN | OPEN: whether each called interface is a Standard Interface with a public-source implementation is not verified | DLL names MISSING until point 5.4's check runs; owner's decision; UNVERIFIED |
 
 - **Owner item.** Whether the proprietary macOS and Windows components
   (libSystem, Security.framework and the Windows DLLs) meet the
@@ -2333,14 +2333,19 @@ Rounds 15 and 16 reviewed commits on the pull request's branch.
   owner; C4 gains its trigger; the citations and the sweep are
   corrected. Two minors were deferred: the status line's pull request
   number waits for the pull request, and the record's descriptions of
-  earlier findings were added in round 16's fix.
+  earlier findings were added in round 16's fix, except round 1's
+  minor, which the record leaves undescribed.
 - **Round 16** (GPT `gpt-6.2-sol` xhigh and GLM `glm-5.3` high, the
   scoped verification of `434e573..aef2fac`): GLM PASS with 1 minor;
   GPT FAIL, 1 major and 4 minors (GLM's minor among them). The major:
   the Windows rows named no candidate Major Component; each now names
-  one, the Windows kernel and its system libraries as shipped with
-  Windows, as a candidate only, with (a) still OPEN. The minors: the
+  one, the Windows kernel with which the DLL ships, as a candidate
+  only, with (a) still OPEN. The minors: the
   libSystem row's call names, the ADR 0004 sweep's read-through and
   rule 5, the review record's summaries, and the description of the
-  amendment's review above. All fixed in the next commit; its
-  verification is pending.
+  amendment's review above. All fixed in `2f0660f`.
+- **Round 17** (GPT `gpt-6.2-sol` xhigh, the scoped verification of
+  `aef2fac..2f0660f`): PASS with 3 minors (the Windows candidate's
+  wording, round 15's sweep entry in the record, and round 1's
+  undescribed minor), fixed in the next commit and recorded; under the
+  stop rule, no further round.
