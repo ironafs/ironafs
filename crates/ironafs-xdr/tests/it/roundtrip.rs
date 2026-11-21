@@ -8,7 +8,8 @@ use std::fmt::Debug;
 
 use ironafs_test_support::{Property, Source};
 use ironafs_xdr::{
-    BorrowedBytes, BorrowedWord, Decode, ErrorKind, Message, Plain, Reservation, decode, encode,
+    BorrowedBytes, BorrowedWord, Decode, Encode, ErrorKind, Message, MessageType, Reservation,
+    decode, encode,
 };
 
 use crate::support::{self, hex, sealed_bytes, size, traced};
@@ -19,9 +20,9 @@ use crate::types::{
 };
 
 /// A type the properties run over.
-trait Tested: for<'a> Decode<'a> + Plain + PartialEq + Debug {}
+trait Tested: for<'a> Decode<'a> + Encode + MessageType + PartialEq + Debug {}
 
-impl<T: for<'a> Decode<'a> + Plain + PartialEq + Debug> Tested for T {}
+impl<T: for<'a> Decode<'a> + Encode + MessageType + PartialEq + Debug> Tested for T {}
 
 /// The heap ratio and reservation ratio of `T`.
 fn ratios<T: Tested>() -> (u64, u64) {
@@ -101,7 +102,7 @@ fn encodes_and_decodes_back<T: Tested>(
     size: fn(&T) -> usize,
 ) {
     Property::new(format!("{name}: decode(encode(x)) = x")).check(generate, |value| {
-        let bytes = encode(message, value).unwrap();
+        let bytes = encode(value).unwrap();
         assert_eq!(bytes.len() % 4, 0, "not whole units");
         assert_eq!(bytes.len(), size(value), "not the profile's size");
         let (decoded, seen) = traced::<T>(message, &bytes);
@@ -125,11 +126,11 @@ fn accepted_inputs_are_canonical<T: Tested>(
                 (value, mutation(source))
             },
             |(value, mutation)| {
-                let input = mutate(encode(message, value).unwrap(), mutation);
+                let input = mutate(encode(value).unwrap(), mutation);
                 let (decoded, seen) = traced::<T>(message, &input);
                 check_ledger::<T>(message, input.len(), decoded.is_ok(), &seen);
                 match decoded {
-                    Ok(decoded) => assert_eq!(encode(message, &decoded).unwrap(), input),
+                    Ok(decoded) => assert_eq!(encode(&decoded).unwrap(), input),
                     Err(error) => {
                         if let Some(offset) = error.offset() {
                             assert!(offset <= input.len(), "{error}");
@@ -150,7 +151,7 @@ fn prefixes_are_truncated<T: Tested>(
     Property::new(format!("{name}: proper prefixes are truncated"))
         .cases(64)
         .check(generate, |value| {
-            let bytes = encode(message, value).unwrap();
+            let bytes = encode(value).unwrap();
             for length in 0..bytes.len() {
                 let (decoded, seen) = traced::<T>(message, &bytes[..length]);
                 let error = decoded.unwrap_err();
@@ -261,7 +262,7 @@ fn encoder_refuses_what_decoder_rejects() {
         owner: vec![],
         body: vec![0; 17],
     };
-    let refused = encode(&NOTE, &over_cap).unwrap_err();
+    let refused = encode(&over_cap).unwrap_err();
     let bytes =
         hex("00000000 00000000 00000000 00000011 00000000 00000000 00000000 00000000 00000000");
     let rejected = decode::<Note>(&NOTE, &bytes).unwrap_err();
@@ -277,7 +278,7 @@ fn encoder_refuses_what_decoder_rejects() {
         title: vec![0; 33],
         ..over_cap.clone()
     };
-    let refused = encode(&NOTE, &over_bound).unwrap_err();
+    let refused = encode(&over_bound).unwrap_err();
     let mut bytes = hex("00000021");
     bytes.extend([0; 36]);
     let rejected = decode::<Note>(&NOTE, &bytes).unwrap_err();
@@ -289,7 +290,7 @@ fn encoder_refuses_what_decoder_rejects() {
 
     // tags: four empty labels, 16 bytes within the cap, one over the bound.
     let four = Tags(vec![Label(vec![]); 4]);
-    let refused = encode(&TAGS, &four).unwrap_err();
+    let refused = encode(&four).unwrap_err();
     let bytes = hex("00000004 00000000 00000000 00000000 00000000");
     let rejected = decode::<Tags>(&TAGS, &bytes).unwrap_err();
     assert_eq!(
@@ -300,7 +301,7 @@ fn encoder_refuses_what_decoder_rejects() {
 
     // names: labels of 4 and 8 bytes, 20 bytes over the cap of 16.
     let over = Names(vec![Label(b"abcd".to_vec()), Label(b"abcdefgh".to_vec())]);
-    let refused = encode(&NAMES, &over).unwrap_err();
+    let refused = encode(&over).unwrap_err();
     let bytes = hex("00000002 00000004 61626364 00000008 61626364 65666768");
     let rejected = decode::<Names>(&NAMES, &bytes).unwrap_err();
     assert_eq!(
@@ -339,17 +340,17 @@ fn string_padding(offset: usize, length: usize, padding: &mut Vec<usize>) -> usi
 #[test]
 fn non_zero_padding_is_rejected_at_its_offset() {
     Property::new("blob: padding is checked").check(support::blob, |blob| {
-        let bytes = encode(&BLOB, blob).unwrap();
+        let bytes = encode(blob).unwrap();
         let data_end = 4 + blob.0.len();
         let padding: Vec<usize> = (data_end..bytes.len()).collect();
         padding_is_checked::<Blob>(&BLOB, &bytes, &padding);
     });
     Property::new("five: padding is checked").check(support::five, |five| {
-        let bytes = encode(&FIVE, five).unwrap();
+        let bytes = encode(five).unwrap();
         padding_is_checked::<Five>(&FIVE, &bytes, &[5, 6, 7]);
     });
     Property::new("note: padding is checked").check(support::note, |note| {
-        let bytes = encode(&NOTE, note).unwrap();
+        let bytes = encode(note).unwrap();
         let mut padding = Vec::new();
         let mut offset = 0;
         offset = string_padding(offset, note.title.len(), &mut padding);

@@ -14,7 +14,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::{Cap, Error, ErrorKind, Message};
+use crate::{Cap, Error, ErrorKind, Message, MessageType};
 
 #[cfg(test)]
 mod tests;
@@ -39,18 +39,11 @@ pub trait Encode {
     fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error>;
 }
 
-/// A message type that holds no secret field at any depth, which the
-/// generated code marks per message. Only such a type may be encoded into a
-/// buffer the codec returns ([`encode`]); a secret-bearing message goes
-/// through [`encode_into`], into a buffer the caller zeroes on drop
-/// (`docs/specs/xdr.md`, 5.1, point 8). A type without the marker is held
-/// to the safe path.
-pub trait Plain: Encode {}
-
 /// The output of one message: its buffer, and the bytes it may still take.
 ///
-/// Its `Debug` shows the message's name and the bytes still to write,
-/// never the output, which may hold a secret-bearing message.
+/// Its `Debug` shows the message's name only: neither the output, which
+/// may hold a secret-bearing message, nor the bytes still to write, which
+/// would tell a secret field's length.
 pub struct Encoder<'o> {
     out: &'o mut Vec<u8>,
     remaining: u64,
@@ -63,23 +56,27 @@ impl fmt::Debug for Encoder<'_> {
         formatter
             .debug_struct("Encoder")
             .field("message", &self.message)
-            .field("remaining", &self.remaining)
             .finish_non_exhaustive()
     }
 }
 
-/// Encodes `value` as one `message` into a new buffer.
+/// Encodes `value`, one message of type `T`, into a new buffer, under the
+/// descriptor its type carries.
 ///
-/// A type that holds a secret field does not build here: its generated
-/// code does not implement the marker of plain messages, so
-/// [`encode_into`], with a buffer the caller zeroes on drop, is its only
-/// path (`docs/specs/xdr.md`, 5.1, point 8):
+/// A buffer this crate returns is never zeroed on drop, so a message whose
+/// descriptor says it holds a secret does not build here: [`encode_into`],
+/// with a buffer the caller wipes, is its only path (`docs/specs/xdr.md`,
+/// 5.1, point 8):
 ///
 /// ```compile_fail
-/// use ironafs_xdr::{Encode, Encoder, Error, Message, encode};
+/// use ironafs_xdr::{Encode, Encoder, Error, Message, MessageType, encode};
 ///
 /// /// A secret-bearing message: a 4-byte key.
 /// struct Key([u8; 4]);
+///
+/// impl MessageType for Key {
+///     const MESSAGE: Message = Message { name: "demo.key", cap: 4, budget: 0, secret: true };
+/// }
 ///
 /// impl Encode for Key {
 ///     fn encoded_len(&self) -> Result<u64, Error> {
@@ -91,72 +88,102 @@ impl fmt::Debug for Encoder<'_> {
 ///     }
 /// }
 ///
-/// const KEY: Message = Message { name: "demo.key", cap: 4, budget: 0, secret: true };
-/// let _ = encode(&KEY, &Key([1, 2, 3, 4]));
+/// let _ = encode(&Key([1, 2, 3, 4]));
 /// ```
 ///
 /// # Errors
 ///
 /// As [`encode_into`].
-pub fn encode<T: Plain + ?Sized>(message: &Message, value: &T) -> Result<Vec<u8>, Error> {
+pub fn encode<T: Encode + MessageType>(value: &T) -> Result<Vec<u8>, Error> {
+    const {
+        assert!(
+            !T::MESSAGE.secret,
+            "a secret-bearing message goes through encode_into"
+        );
+    }
     let mut out = Vec::new();
-    encode_into(message, value, &mut out)?;
+    encode_into(&T::MESSAGE, value, &mut out)?;
     Ok(out)
 }
 
 /// Encodes `value` as one `message` into `out`, the caller's buffer.
 ///
-/// The contract for a secret-bearing message (`docs/specs/xdr.md`, 5.1,
-/// point 8, and 5.5, point 3), which holds for every message:
+/// For a secret-bearing message (`docs/specs/xdr.md`, 5.1, point 8, and
+/// 5.5, point 3) the secret bytes never move:
 ///
-/// - **Reuse.** Whatever `out` held, and its spare capacity, is overwritten
-///   with zeros before anything else, so a reservation that must move the
-///   buffer releases only zeros.
-/// - **One request.** The whole size is requested once, before anything is
-///   written, and the output is written by `push` alone, so the buffer
-///   never grows and no reallocation leaves a copy behind.
-/// - **Failure.** On any error, everything written and the spare capacity
-///   are overwritten with zeros, and `out` is left empty. Nothing from it
-///   may be sent.
-/// - **Drop.** The caller zeroes `out` on drop; this crate cannot, since
-///   zeroing that the compiler may not remove needs code a pure crate may
-///   not contain.
+/// - **No reallocation.** The whole size is requested once, before
+///   anything is written, and only where that moves nothing: `out` has no
+///   allocation yet, or already has room for the whole message. A buffer
+///   that has an allocation too small for the message is refused with
+///   `AllocationFailed` and left as it was, since growing it would move its
+///   bytes and release the old block unwiped. The output is written by
+///   `push` alone, so the buffer never grows.
+/// - **Wiping is the caller's.** Before writing, and on any error, the
+///   encoder overwrites the buffer and its spare capacity with zeros and
+///   leaves it empty. That is best effort only: ordinary writes to memory
+///   that is about to be cleared may be removed by the compiler, and a
+///   pure crate cannot write any other way. The caller wipes `out` with
+///   the project's approved wiper (ADR 0005, `mem-wipe`) after use, on
+///   error and on drop.
+///
+/// For any other message the buffer may also grow, once, when it is too
+/// small.
 ///
 /// # Errors
 ///
 /// Any error of [`Encode::encoded_len`]; `MessageTooLarge` naming the
 /// message if the size is above its cap, before any output is reserved;
-/// `AllocationFailed` if the reservation fails.
+/// `AllocationFailed` if the reservation fails, or for a secret-bearing
+/// message would move the buffer.
 pub fn encode_into<T: Encode + ?Sized>(
     message: &Message,
     value: &T,
     out: &mut Vec<u8>,
 ) -> Result<(), Error> {
+    let size = size_within_cap(message, value)?;
+    let length = usize::try_from(size).map_err(|_| too_large(message))?;
+    if message.secret && out.capacity() != 0 && out.capacity() < length {
+        return Err(Error::new(ErrorKind::AllocationFailed));
+    }
     wipe(out);
-    let written = write(message, value, out);
+    let written = write(message, value, out, size, length);
     if written.is_err() {
         wipe(out);
     }
     written
 }
 
-/// Sizes `value`, requests the output once and writes it into `out`,
-/// which is empty.
-fn write<T: Encode + ?Sized>(message: &Message, value: &T, out: &mut Vec<u8>) -> Result<(), Error> {
-    let too_large = Error::new(ErrorKind::MessageTooLarge)
+/// `MessageTooLarge` naming `message`.
+fn too_large(message: &Message) -> Error {
+    Error::new(ErrorKind::MessageTooLarge)
         .named(message.name)
-        .limit(u64::from(message.cap));
+        .limit(u64::from(message.cap))
+}
+
+/// `value`'s encoded size, checked against `message`'s cap.
+fn size_within_cap<T: Encode + ?Sized>(message: &Message, value: &T) -> Result<u64, Error> {
     let size = value.encoded_len().map_err(|error| {
         if error.kind() == ErrorKind::MessageTooLarge {
-            too_large
+            too_large(message)
         } else {
             error
         }
     })?;
     if size > u64::from(message.cap) {
-        return Err(too_large);
+        return Err(too_large(message));
     }
-    let length = usize::try_from(size).map_err(|_| too_large)?;
+    Ok(size)
+}
+
+/// Requests the output once and writes `value`, of `size` bytes, into
+/// `out`, which is empty.
+fn write<T: Encode + ?Sized>(
+    message: &Message,
+    value: &T,
+    out: &mut Vec<u8>,
+    size: u64,
+    length: usize,
+) -> Result<(), Error> {
     #[expect(
         clippy::disallowed_methods,
         reason = "rule 3: the encoder requests its output once, after the size check (docs/specs/xdr.md, 5.5, point 3)"
@@ -178,8 +205,9 @@ fn write<T: Encode + ?Sized>(message: &Message, value: &T, out: &mut Vec<u8>) ->
 }
 
 /// Overwrites every byte `out` holds, and its spare capacity, with zeros,
-/// and leaves it empty with the same capacity. The writes stay: the
-/// memory remains the caller's, reachable through `out`.
+/// and leaves it empty with the same capacity. Best effort: the compiler
+/// may remove these writes, so the caller's wiper is what holds
+/// ([`encode_into`]).
 fn wipe(out: &mut Vec<u8>) {
     zero_to_capacity(out);
     out.clear();
@@ -442,12 +470,6 @@ macro_rules! encode_number {
         }
     };
 }
-
-impl Plain for i32 {}
-impl Plain for u32 {}
-impl Plain for i64 {}
-impl Plain for u64 {}
-impl Plain for () {}
 
 encode_number!(i32, 4, put_i32);
 encode_number!(u32, 4, put_u32);

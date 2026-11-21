@@ -7,10 +7,11 @@
     reason = "the tests build their inputs and records outside the ledger"
 )]
 
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::{Decoder, Ledger, Reservation, Vacant, run};
+use super::{Decoder, Ledger, Reservation, run};
 use crate::{Cap, Error, ErrorKind, Message};
 
 const MESSAGE: Message = Message {
@@ -62,10 +63,6 @@ const LABEL: Cap = Cap {
     bound: Some(8),
     bytes: 8,
 };
-
-impl Vacant for Label {
-    const VACANT: Self = Label(Vec::new());
-}
 
 impl<'a> super::Decode<'a> for Label {
     const S_MIN: u64 = 4;
@@ -581,7 +578,8 @@ fn nested_array_keeps_the_tighter_enclosing_limit() {
 
 #[test]
 fn fixed_array_checks_its_minimum_on_entry() {
-    let (result, seen) = decode_with!(&MESSAGE, &[0, 0, 0, 0], Decoder::fixed_array::<Label, 2>);
+    let (result, seen) = decode_with!(&MESSAGE, &[0, 0, 0, 0], |decoder| decoder
+        .fixed_array::<Label, 2>("test.m.array"));
     assert_error(&result.unwrap_err(), ErrorKind::Truncated, None, Some(0));
     assert_eq!(seen, []);
 }
@@ -589,21 +587,25 @@ fn fixed_array_checks_its_minimum_on_entry() {
 #[test]
 fn fixed_array_decodes_each_element() {
     let input = [&[0, 0, 0, 1][..], b"a\0\0\0", &[0, 0, 0, 0]].concat();
-    let (result, _) = decode_with!(&MESSAGE, &input, Decoder::fixed_array::<Label, 2>);
+    let (result, _) = decode_with!(&MESSAGE, &input, |decoder| decoder
+        .fixed_array::<Label, 2>("test.m.array"));
     assert_eq!(result.unwrap(), [Label(vec![b'a']), Label(vec![])]);
 }
 
 #[test]
 fn fixed_array_stops_at_its_first_element_error() {
     let input = [&[0, 0, 0, 9][..], &[0; 8]].concat();
-    let (result, seen) = decode_with!(&MESSAGE, &input, Decoder::fixed_array::<Label, 2>);
+    let (result, seen) = decode_with!(&MESSAGE, &input, |decoder| decoder
+        .fixed_array::<Label, 2>("test.m.array"));
     assert_error(
         &result.unwrap_err(),
         ErrorKind::LengthOverBound,
         Some("test.m.label"),
         Some(0),
     );
-    assert_eq!(seen, []);
+    // The slots, then no request for the label that failed.
+    let names: Vec<&str> = seen.iter().map(|reservation| reservation.name).collect();
+    assert_eq!(names, ["test.m.array"]);
 }
 
 #[test]
@@ -695,10 +697,6 @@ impl Default for Loud {
     }
 }
 
-impl Vacant for Loud {
-    const VACANT: Self = Loud(Vec::new());
-}
-
 impl<'a> super::Decode<'a> for Loud {
     const S_MIN: u64 = 4;
     const DEPTH: u32 = 0;
@@ -713,7 +711,8 @@ impl<'a> super::Decode<'a> for Loud {
 #[test]
 fn fixed_array_after_an_element_error_builds_no_element() {
     let input = [&[0, 0, 0, 9][..], &[0; 8]].concat();
-    let (result, _) = decode_with!(&MESSAGE, &input, Decoder::fixed_array::<Loud, 2>);
+    let (result, _) = decode_with!(&MESSAGE, &input, |decoder| decoder
+        .fixed_array::<Loud, 2>("test.m.array"));
     assert_error(
         &result.unwrap_err(),
         ErrorKind::LengthOverBound,
@@ -866,5 +865,67 @@ fn array_whose_cap_is_the_largest_word_has_a_limit_on_every_target() {
             bytes: 0,
             name: "test.m.huge"
         }]
+    );
+}
+
+#[test]
+fn boxed_accepts_a_reservation_with_excess_capacity() {
+    let mut buffer: Vec<u32> = Vec::with_capacity(8);
+    buffer.push(7);
+    let input = [0; 4];
+    let (result, _) = decode_with!(&MESSAGE, &input, |decoder| {
+        let held = decoder.boxed::<u32, 1>(buffer, 0)?;
+        decoder.read_u32()?;
+        Ok(held)
+    });
+    assert_eq!(*result.unwrap(), [7]);
+}
+
+/// An element that owns a 100-byte fixed-length opaque out of line, and has
+/// no constant empty value.
+#[derive(Debug, PartialEq, Eq)]
+struct Big(Box<[u8; 100]>);
+
+impl<'a> super::Decode<'a> for Big {
+    const S_MIN: u64 = 100;
+    const DEPTH: u32 = 0;
+    const HEAP_RATIO: Option<u64> = Some(1);
+    const RESERVATIONS: Option<u64> = Some(1);
+
+    fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
+        decoder.fixed_opaque_owned("test.m.big").map(Big)
+    }
+}
+
+#[test]
+fn fixed_array_of_elements_without_an_empty_value_decodes() {
+    let roomy = Message {
+        cap: 200,
+        ..MESSAGE
+    };
+    let input = [[1; 100], [2; 100]].concat();
+    let (result, seen) = decode_with!(&roomy, &input, |decoder| decoder
+        .fixed_array::<Big, 2>("test.m.array"));
+    assert_eq!(
+        result.unwrap(),
+        [Big(Box::new([1; 100])), Big(Box::new([2; 100]))]
+    );
+    let slot = u64::try_from(core::mem::size_of::<Big>()).unwrap();
+    assert_eq!(
+        seen,
+        [
+            Reservation {
+                bytes: 2 * slot,
+                name: "test.m.array"
+            },
+            Reservation {
+                bytes: 100,
+                name: "test.m.big"
+            },
+            Reservation {
+                bytes: 100,
+                name: "test.m.big"
+            },
+        ]
     );
 }

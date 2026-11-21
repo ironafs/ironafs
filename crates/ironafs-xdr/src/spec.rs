@@ -41,3 +41,11 @@ pub struct Message {
     /// decoding it carry no offset or length (section 7, point 2).
     pub secret: bool,
 }
+
+/// A type that is one whole message, with the descriptor the generated code
+/// sets for it, so that a message's type and its caps, budget and secrecy
+/// cannot be paired wrongly.
+pub trait MessageType {
+    /// The message's descriptor.
+    const MESSAGE: Message;
+}

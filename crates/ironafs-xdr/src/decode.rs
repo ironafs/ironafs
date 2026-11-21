@@ -59,15 +59,6 @@ pub trait Decode<'a>: Sized {
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error>;
 }
 
-/// The value a fixed-length array holds in the slots after an element
-/// fails to decode, so that the array is built without running any code
-/// that could allocate or fail. It is a constant, fixed when the program
-/// is built; the array holding it is dropped with the error.
-pub trait Vacant {
-    /// The placeholder value.
-    const VACANT: Self;
-}
-
 /// A value held out of line, in a one-element buffer reserved through the
 /// ledger (`docs/specs/xdr.md`, 5.2, point 10.2), so that its parent's
 /// inline size stays small whichever arm or component it is.
@@ -223,6 +214,21 @@ pub const fn array_heap_ratio<'a, T: Decode<'a>>() -> Option<u64> {
 #[must_use]
 pub const fn array_reservations<'a, T: Decode<'a>>() -> Option<u64> {
     max(Some(1), T::RESERVATIONS)
+}
+
+/// `r` of a fixed-length array of `T`: its element slots, reserved through
+/// the ledger while it is decoded, as for a variable-length array.
+#[must_use]
+pub const fn fixed_array_heap_ratio<'a, T: Decode<'a>>() -> Option<u64> {
+    slot_ratio::<T>(T::HEAP_RATIO)
+}
+
+/// `q` of a fixed-length array of `T`: one reservation for its slots, which
+/// no count word backs, plus its elements'. Its elements are at least one
+/// unit each, so per unit that is at most 1 + `q(T)`.
+#[must_use]
+pub const fn fixed_array_reservations<'a, T: Decode<'a>>() -> Option<u64> {
+    out_of_line_reservations::<T>()
 }
 
 /// `r` of a value of `T` held out of line: a one-element array
@@ -559,32 +565,40 @@ impl<'a> Decoder<'a, '_> {
         result.map(|()| elements)
     }
 
-    /// Decodes a fixed-length array of `N` elements of `T`, held inline.
-    /// On entry it checks that `N` times `T::S_MIN` bytes fit before an
-    /// end of the cursor (5.4, point 2); the elements are then decoded by
-    /// a loop, which stops at the first error. The slots after it hold
-    /// [`Vacant::VACANT`], a constant, and are dropped with the error.
+    /// Decodes a fixed-length array of `N` elements of `T`. On entry it
+    /// checks that `N` times `T::S_MIN` bytes fit before an end of the
+    /// cursor (5.4, point 2); it then reserves `N` slots through the
+    /// ledger, named `field`, decodes the elements into them by a loop that
+    /// stops at the first error, and moves them into the array, which is
+    /// held inline. No element is ever made up, so any element type will
+    /// do. The slots count against the memory budget, so the generated `r`
+    /// and `q` of a fixed-length array come from [`fixed_array_heap_ratio`]
+    /// and [`fixed_array_reservations`]. An array of no elements reserves
+    /// nothing.
     ///
     /// # Errors
     ///
-    /// `CapExceeded` or `Truncated` on entry, then the first element's
+    /// `CapExceeded` or `Truncated` on entry; `BudgetExceeded` or
+    /// `AllocationFailed` from the reservation; then the first element's
     /// error.
-    pub fn fixed_array<T: Decode<'a> + Vacant, const N: usize>(&mut self) -> Result<[T; N], Error> {
+    pub fn fixed_array<T: Decode<'a>, const N: usize>(
+        &mut self,
+        field: &'static str,
+    ) -> Result<[T; N], Error> {
         const { assert!(T::S_MIN >= UNIT) };
         let start = self.offset;
         let at_least = offset64(N).checked_mul(T::S_MIN);
         self.check_item_end(start, at_least)?;
-        let mut failure = None;
-        let elements = core::array::from_fn(|_| {
-            if failure.is_some() {
-                return T::VACANT;
-            }
-            T::decode(self).unwrap_or_else(|error| {
-                failure = Some(error);
-                T::VACANT
-            })
-        });
-        failure.map_or(Ok(elements), Err)
+        if N == 0 {
+            return <[T; N]>::try_from(Vec::new())
+                .map_err(|_| self.locate(Error::new(ErrorKind::AllocationFailed), start, None));
+        }
+        let mut elements = self.reserve(N, field, start)?;
+        for _ in 0..N {
+            elements.push(T::decode(self)?);
+        }
+        <[T; N]>::try_from(elements)
+            .map_err(|_| self.locate(Error::new(ErrorKind::AllocationFailed), start, None))
     }
 
     /// Reads a length word and runs the checks of 5.4, point 3, steps 1 to
@@ -671,16 +685,14 @@ impl<'a> Decoder<'a, '_> {
         Ok(buffer)
     }
 
-    /// Turns a buffer reserved for exactly `N` elements and filled with
-    /// them into a box, in place: the conversion reallocates only when the
-    /// capacity differs from the length, which is refused instead, so no
-    /// request bypasses the ledger.
+    /// Turns a buffer holding exactly `N` elements into a box. A
+    /// reservation may give more capacity than it was asked for (5.2,
+    /// point 9.4), which the conversion then gives back by shrinking the
+    /// block in place: a smaller request than the one the ledger counted,
+    /// never a larger one.
     fn boxed<T, const N: usize>(&self, buffer: Vec<T>, at: usize) -> Result<Box<[T; N]>, Error> {
-        let failed = || self.locate(Error::new(ErrorKind::AllocationFailed), at, None);
-        if size_of::<T>() != 0 && buffer.capacity() != N {
-            return Err(failed());
-        }
-        Box::<[T; N]>::try_from(buffer).map_err(|_| failed())
+        Box::<[T; N]>::try_from(buffer)
+            .map_err(|_| self.locate(Error::new(ErrorKind::AllocationFailed), at, None))
     }
 
     /// Reserves `count` slots of `T` through the ledger, for the item whose
@@ -754,16 +766,6 @@ macro_rules! decode_number {
         }
     };
 }
-
-macro_rules! vacant_number {
-    ($($type:ty),*) => {$(
-        impl Vacant for $type {
-            const VACANT: Self = 0;
-        }
-    )*};
-}
-
-vacant_number!(i32, u32, i64, u64);
 
 decode_number!(i32, 4, read_i32);
 decode_number!(u32, 4, read_u32);

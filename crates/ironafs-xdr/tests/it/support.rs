@@ -5,7 +5,7 @@
 //! decode, and seeded generators for the test types.
 
 use ironafs_test_support::Source;
-use ironafs_xdr::{Decode, Error, Message, Reservation, decode_traced, encode_into};
+use ironafs_xdr::{Decode, Encode, Error, Message, Reservation, decode_traced, encode_into};
 
 use crate::types::{
     Blob, Deep, Deep16, Entry, Every, Five, Ints, Label, Names, Note, Pair, Quad, SEALED, Sealed,
@@ -60,12 +60,17 @@ pub(crate) fn traced_with_budget<'a, T: Decode<'a>>(
     (result, seen)
 }
 
-/// Encodes a `sealed` value into a buffer the test owns: `encode_into` is
-/// the only path for a secret-bearing message.
-pub(crate) fn sealed_bytes(sealed: &Sealed<'_>) -> Vec<u8> {
+/// Encodes `value` as one `message` into a buffer the test owns, by the
+/// path every message may take, secret-bearing ones included.
+pub(crate) fn encoded<T: Encode + ?Sized>(message: &Message, value: &T) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
-    encode_into(&SEALED, sealed, &mut out).unwrap();
-    out
+    encode_into(message, value, &mut out)?;
+    Ok(out)
+}
+
+/// Encodes a `sealed` value: `encode` refuses a secret-bearing message.
+pub(crate) fn sealed_bytes(sealed: &Sealed<'_>) -> Vec<u8> {
+    encoded(&SEALED, sealed).unwrap()
 }
 
 // ---- generators: every value they draw is within its caps ----

@@ -47,9 +47,9 @@ use core::mem::size_of;
 
 use ironafs_xdr::limits::INLINE_MAX;
 use ironafs_xdr::{
-    BorrowedBytes, BorrowedWord, Cap, Decode, Decoder, Encode, Encoder, Error, Message, Plain,
-    Vacant, array_heap_ratio, array_len, array_reservations, fixed_array_len, fixed_opaque_len,
-    max, opaque_len, proven, sum,
+    BorrowedBytes, BorrowedWord, Cap, Decode, Decoder, Encode, Encoder, Error, Message,
+    MessageType, array_heap_ratio, array_len, array_reservations, fixed_array_heap_ratio,
+    fixed_array_len, fixed_array_reservations, fixed_opaque_len, max, opaque_len, proven, sum,
 };
 
 /// The message row of a test type decoded on its own.
@@ -113,8 +113,6 @@ impl<'a> Decode<'a> for Shade {
     }
 }
 
-impl Plain for Shade {}
-
 impl Encode for Shade {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
@@ -141,8 +139,6 @@ impl<'a> Decode<'a> for Flag {
         decoder.read_bool("test.flag").map(Self)
     }
 }
-
-impl Plain for Flag {}
 
 impl Encode for Flag {
     fn encoded_len(&self) -> Result<u64, Error> {
@@ -193,8 +189,6 @@ impl<'a> Decode<'a> for Solo {
     }
 }
 
-impl Plain for Solo {}
-
 impl Encode for Solo {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
@@ -240,8 +234,6 @@ impl<'a> Decode<'a> for Entry {
     }
 }
 
-impl Plain for Entry {}
-
 impl Encode for Entry {
     fn encoded_len(&self) -> Result<u64, Error> {
         match self {
@@ -280,10 +272,6 @@ pub(crate) struct Label(pub(crate) Vec<u8>);
 
 pub(crate) const LABEL: Message = alone("test.label");
 
-impl Vacant for Label {
-    const VACANT: Self = Label(Vec::new());
-}
-
 impl<'a> Decode<'a> for Label {
     const S_MIN: u64 = 4;
     const DEPTH: u32 = 0;
@@ -294,8 +282,6 @@ impl<'a> Decode<'a> for Label {
         decoder.opaque_owned(&LABEL_CAP).map(Self)
     }
 }
-
-impl Plain for Label {}
 
 impl Encode for Label {
     fn encoded_len(&self) -> Result<u64, Error> {
@@ -358,8 +344,6 @@ impl<'a> Decode<'a> for Note {
     }
 }
 
-impl Plain for Note {}
-
 impl Encode for Note {
     fn encoded_len(&self) -> Result<u64, Error> {
         let mut total = opaque_len(&TITLE, self.title.len())?;
@@ -387,15 +371,13 @@ pub(crate) const PAIR: Message = alone("test.pair");
 impl<'a> Decode<'a> for Pair {
     const S_MIN: u64 = 2 * Label::S_MIN;
     const DEPTH: u32 = 1 + Label::DEPTH;
-    const HEAP_RATIO: Option<u64> = Label::HEAP_RATIO;
-    const RESERVATIONS: Option<u64> = Label::RESERVATIONS;
+    const HEAP_RATIO: Option<u64> = fixed_array_heap_ratio::<Label>();
+    const RESERVATIONS: Option<u64> = fixed_array_reservations::<Label>();
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
-        decoder.fixed_array().map(Self)
+        decoder.fixed_array("test.pair").map(Self)
     }
 }
-
-impl Plain for Pair {}
 
 impl Encode for Pair {
     fn encoded_len(&self) -> Result<u64, Error> {
@@ -418,6 +400,10 @@ macro_rules! array_type {
 
         pub(crate) const $message: Message = alone($cap_name);
 
+        impl MessageType for $name {
+            const MESSAGE: Message = $message;
+        }
+
         #[derive(Clone, Debug, Default, PartialEq, Eq)]
         pub(crate) struct $name(pub(crate) Vec<$element>);
 
@@ -431,8 +417,6 @@ macro_rules! array_type {
                 decoder.array(&$cap).map(Self)
             }
         }
-
-        impl Plain for $name {}
 
         impl Encode for $name {
             fn encoded_len(&self) -> Result<u64, Error> {
@@ -470,8 +454,6 @@ impl<'a> Decode<'a> for Five {
     }
 }
 
-impl Plain for Five {}
-
 impl Encode for Five {
     fn encoded_len(&self) -> Result<u64, Error> {
         fixed_opaque_len(5)
@@ -504,8 +486,6 @@ impl<'a> Decode<'a> for Blob {
         decoder.opaque_owned(&BLOB_CAP).map(Self)
     }
 }
-
-impl Plain for Blob {}
 
 impl Encode for Blob {
     fn encoded_len(&self) -> Result<u64, Error> {
@@ -543,8 +523,6 @@ impl<'a> Decode<'a> for Quad {
         })
     }
 }
-
-impl Plain for Quad {}
 
 impl Encode for Quad {
     fn encoded_len(&self) -> Result<u64, Error> {
@@ -592,8 +570,6 @@ impl<'a> Decode<'a> for Wide {
     }
 }
 
-impl Plain for Wide {}
-
 impl Encode for Wide {
     fn encoded_len(&self) -> Result<u64, Error> {
         match self {
@@ -636,8 +612,6 @@ impl<'a> Decode<'a> for Deep16 {
     }
 }
 
-impl Plain for Deep16 {}
-
 impl Encode for Deep16 {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(72)
@@ -671,8 +645,6 @@ macro_rules! deep_link {
                 })
             }
         }
-
-        impl Plain for $name {}
 
         impl Encode for $name {
             fn encoded_len(&self) -> Result<u64, Error> {
@@ -808,8 +780,17 @@ impl<'a> Decode<'a> for Every {
     const S_MIN: u64 = 4 + 4 + 8 + 8 + 4 + 4 + 100 + 4 + 4 + 8 + 4 + 4;
     // The list of labels and the entry are each one level below.
     const DEPTH: u32 = 2;
-    const HEAP_RATIO: Option<u64> = max(array_heap_ratio::<Label>(), Entry::HEAP_RATIO);
-    const RESERVATIONS: Option<u64> = max(array_reservations::<Label>(), Entry::RESERVATIONS);
+    const HEAP_RATIO: Option<u64> = max(
+        max(array_heap_ratio::<Label>(), fixed_array_heap_ratio::<u32>()),
+        Entry::HEAP_RATIO,
+    );
+    const RESERVATIONS: Option<u64> = max(
+        max(
+            array_reservations::<Label>(),
+            fixed_array_reservations::<u32>(),
+        ),
+        Entry::RESERVATIONS,
+    );
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         Ok(Self {
@@ -822,14 +803,12 @@ impl<'a> Decode<'a> for Every {
             big: decoder.fixed_opaque_owned(BIG_FIELD)?,
             var: decoder.opaque_owned(&VAR)?,
             name: Label::decode(decoder)?,
-            fixed: decoder.fixed_array()?,
+            fixed: decoder.fixed_array("test.every.fixed")?,
             list: decoder.array(&LIST)?,
             what: Entry::decode(decoder)?,
         })
     }
 }
-
-impl Plain for Every {}
 
 impl Encode for Every {
     fn encoded_len(&self) -> Result<u64, Error> {
@@ -897,3 +876,17 @@ const _: () = assert!(proven::<Wide>(&WIDE));
 const _: () = assert!(proven::<Deep>(&DEEP));
 const _: () = assert!(proven::<Sealed<'static>>(&SEALED));
 const _: () = assert!(proven::<Every>(&EVERY));
+
+/// Binds each test type to its message row.
+macro_rules! message_types {
+    ($($type:ty => $message:ident),* $(,)?) => {$(
+        impl MessageType for $type {
+            const MESSAGE: Message = $message;
+        }
+    )*};
+}
+
+message_types!(
+    Shade => SHADE, Flag => FLAG, Entry => ENTRY, Label => LABEL, Note => NOTE, Pair => PAIR,
+    Five => FIVE, Blob => BLOB, Wide => WIDE, Deep => DEEP, Sealed<'_> => SEALED, Every => EVERY,
+);

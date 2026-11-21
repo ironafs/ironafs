@@ -9,9 +9,9 @@ use std::fmt::Debug;
 use std::thread;
 
 use ironafs_xdr::limits::SMALL_STACK;
-use ironafs_xdr::{BorrowedBytes, BorrowedWord, Decode, Message, Plain, decode, encode};
+use ironafs_xdr::{BorrowedBytes, BorrowedWord, Decode, Encode, Message, decode};
 
-use crate::support::{deep_from, sealed_bytes};
+use crate::support::{deep_from, encoded, sealed_bytes};
 use crate::types::{
     BLOB, Blob, DEEP, Deep16, ENTRY, EVERY, Entry, Every, FIVE, FLAG, Five, Flag, INTS, Ints,
     LABEL, Label, NAMES, NOTE, Names, Note, PAIR, Pair, Quad, SEALED, SHADE, SOLOS, Sealed, Shade,
@@ -23,9 +23,9 @@ use crate::types::{
 #[track_caller]
 fn fits<T>(message: &'static Message, value: &T, size: usize)
 where
-    T: for<'a> Decode<'a> + Plain + PartialEq + Debug + Send + 'static,
+    T: for<'a> Decode<'a> + Encode + PartialEq + Debug + Send + 'static,
 {
-    let bytes = encode(message, value).unwrap();
+    let bytes = encoded(message, value).unwrap();
     assert_eq!(bytes.len(), size, "{value:?}");
     let decoded = thread::Builder::new()
         .stack_size(SMALL_STACK)

@@ -12,8 +12,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::{
-    Encode, Encoder, Plain, array_len, encode, encode_into, fixed_opaque_len, opaque_len,
-    word_length, zero_to_capacity,
+    Encode, Encoder, array_len, encode_into, fixed_opaque_len, opaque_len, word_length,
+    zero_to_capacity,
 };
 use crate::{Cap, Error, ErrorKind, Message};
 
@@ -48,8 +48,6 @@ const SOME: Cap = Cap {
 /// Variable-length opaque under `SHORT`, as a message.
 struct Short<'a>(&'a [u8]);
 
-impl Plain for Short<'_> {}
-
 impl Encode for Short<'_> {
     fn encoded_len(&self) -> Result<u64, Error> {
         opaque_len(&SHORT, self.0.len())
@@ -63,8 +61,6 @@ impl Encode for Short<'_> {
 /// A value whose size understates what it writes.
 struct Liar;
 
-impl Plain for Liar {}
-
 impl Encode for Liar {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(8)
@@ -74,6 +70,14 @@ impl Encode for Liar {
         encoder.put_u32(1)?;
         encoder.put_u64(1)
     }
+}
+
+/// Encodes `value` as one `message` into a new buffer, by the path every
+/// message may take.
+fn encode_with<T: Encode>(message: &Message, value: &T) -> Result<Vec<u8>, Error> {
+    let mut out = Vec::new();
+    encode_into(message, value, &mut out)?;
+    Ok(out)
 }
 
 #[track_caller]
@@ -86,28 +90,31 @@ fn assert_error(error: &Error, kind: ErrorKind, name: Option<&str>, limit: Optio
 
 #[test]
 fn numbers_encode_most_significant_byte_first() {
-    assert_eq!(encode(&MESSAGE, &-2_i32).unwrap(), [0xff, 0xff, 0xff, 0xfe]);
-    assert_eq!(encode(&MESSAGE, &7_u32).unwrap(), [0, 0, 0, 7]);
     assert_eq!(
-        encode(&MESSAGE, &0x0102_0304_0506_0708_u64).unwrap(),
+        encode_with(&MESSAGE, &-2_i32).unwrap(),
+        [0xff, 0xff, 0xff, 0xfe]
+    );
+    assert_eq!(encode_with(&MESSAGE, &7_u32).unwrap(), [0, 0, 0, 7]);
+    assert_eq!(
+        encode_with(&MESSAGE, &0x0102_0304_0506_0708_u64).unwrap(),
         [1, 2, 3, 4, 5, 6, 7, 8]
     );
     assert_eq!(
-        encode(&MESSAGE, &i64::MIN).unwrap(),
+        encode_with(&MESSAGE, &i64::MIN).unwrap(),
         [0x80, 0, 0, 0, 0, 0, 0, 0]
     );
-    assert_eq!(encode(&MESSAGE, &()).unwrap(), []);
+    assert_eq!(encode_with(&MESSAGE, &()).unwrap(), []);
 }
 
 #[test]
 fn opaque_is_length_data_and_zero_padding() {
-    assert_eq!(encode(&MESSAGE, &Short(b"")).unwrap(), [0, 0, 0, 0]);
+    assert_eq!(encode_with(&MESSAGE, &Short(b"")).unwrap(), [0, 0, 0, 0]);
     assert_eq!(
-        encode(&MESSAGE, &Short(b"ab")).unwrap(),
+        encode_with(&MESSAGE, &Short(b"ab")).unwrap(),
         [0, 0, 0, 2, b'a', b'b', 0, 0]
     );
     assert_eq!(
-        encode(&MESSAGE, &Short(b"abcd")).unwrap(),
+        encode_with(&MESSAGE, &Short(b"abcd")).unwrap(),
         [0, 0, 0, 4, b'a', b'b', b'c', b'd']
     );
 }
@@ -158,8 +165,6 @@ fn array_len_compares_count_with_bound_and_bytes_with_cap() {
 #[test]
 fn put_array_writes_count_then_elements() {
     struct Pair;
-    impl Plain for Pair {}
-
     impl Encode for Pair {
         fn encoded_len(&self) -> Result<u64, Error> {
             array_len(&SOME, &[7_u32, 8])
@@ -170,7 +175,7 @@ fn put_array_writes_count_then_elements() {
         }
     }
     assert_eq!(
-        encode(&MESSAGE, &Pair).unwrap(),
+        encode_with(&MESSAGE, &Pair).unwrap(),
         [0, 0, 0, 2, 0, 0, 0, 7, 0, 0, 0, 8]
     );
 }
@@ -223,8 +228,6 @@ fn value_writing_past_its_size_fails_and_leaves_nothing() {
 #[test]
 fn value_writing_short_of_its_size_fails() {
     struct Short8;
-    impl Plain for Short8 {}
-
     impl Encode for Short8 {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(8)
@@ -234,15 +237,13 @@ fn value_writing_short_of_its_size_fails() {
             encoder.put_u32(1)
         }
     }
-    let error = encode(&MESSAGE, &Short8).unwrap_err();
+    let error = encode_with(&MESSAGE, &Short8).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::MessageTooLarge);
 }
 
 #[test]
 fn bool_encodes_as_zero_or_one() {
     struct Flags;
-    impl Plain for Flags {}
-
     impl Encode for Flags {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(8)
@@ -253,15 +254,16 @@ fn bool_encodes_as_zero_or_one() {
             encoder.put_bool(true)
         }
     }
-    assert_eq!(encode(&MESSAGE, &Flags).unwrap(), [0, 0, 0, 0, 0, 0, 0, 1]);
+    assert_eq!(
+        encode_with(&MESSAGE, &Flags).unwrap(),
+        [0, 0, 0, 0, 0, 0, 0, 1]
+    );
 }
 
 #[test]
 fn put_opaque_refuses_over_cap_even_after_a_size_pass_that_passed() {
     /// Sizes itself as 12 bytes, then writes 5 bytes under a cap of 4.
     struct Sneaky;
-    impl Plain for Sneaky {}
-
     impl Encode for Sneaky {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(12)
@@ -271,7 +273,7 @@ fn put_opaque_refuses_over_cap_even_after_a_size_pass_that_passed() {
             encoder.put_opaque(&SHORT, b"abcde")
         }
     }
-    let error = encode(&MESSAGE, &Sneaky).unwrap_err();
+    let error = encode_with(&MESSAGE, &Sneaky).unwrap_err();
     assert_error(
         &error,
         ErrorKind::CapExceeded,
@@ -284,8 +286,6 @@ fn put_opaque_refuses_over_cap_even_after_a_size_pass_that_passed() {
 fn encoder_debug_shows_no_output_bytes() {
     /// Writes a key-like word, then formats the encoder.
     struct Peek;
-    impl Plain for Peek {}
-
     impl Encode for Peek {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(4)
@@ -303,7 +303,7 @@ fn encoder_debug_shows_no_output_bytes() {
             Ok(())
         }
     }
-    encode(&MESSAGE, &Peek).unwrap();
+    encode_with(&MESSAGE, &Peek).unwrap();
 }
 
 #[test]
@@ -333,4 +333,78 @@ fn encode_into_reuses_a_buffer_holding_old_bytes() {
     encode_into(&MESSAGE, &Short(b"ab"), &mut out).unwrap();
     assert_eq!(out, [0, 0, 0, 2, b'a', b'b', 0, 0]);
     assert_eq!(out.as_ptr(), before);
+}
+
+const SECRET: Message = Message {
+    secret: true,
+    ..MESSAGE
+};
+
+#[test]
+fn encoder_debug_shows_the_message_name_only() {
+    /// Formats the encoder before and after writing.
+    struct Twice;
+    impl Encode for Twice {
+        fn encoded_len(&self) -> Result<u64, Error> {
+            Ok(8)
+        }
+
+        fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+            let before = format!("{encoder:?}");
+            encoder.put_u32(1)?;
+            let after = format!("{encoder:#?}");
+            encoder.put_u32(2)?;
+            assert_eq!(before, "Encoder { message: \"test.m\", .. }");
+            assert_eq!(after, "Encoder {\n    message: \"test.m\",\n    ..\n}");
+            Ok(())
+        }
+    }
+    let mut out = Vec::new();
+    encode_into(&SECRET, &Twice, &mut out).unwrap();
+}
+
+#[test]
+fn secret_encode_into_short_of_capacity_refuses_and_leaves_buffer_as_it_was() {
+    let mut out = Vec::with_capacity(4);
+    out.extend_from_slice(&[0xaa; 4]);
+    let before = (out.as_ptr(), out.capacity());
+    let error = encode_into(&SECRET, &Short(b"abc"), &mut out).unwrap_err();
+    assert_error(&error, ErrorKind::AllocationFailed, None, None);
+    assert_eq!(out, [0xaa; 4]);
+    assert_eq!((out.as_ptr(), out.capacity()), before);
+}
+
+#[test]
+fn secret_encode_into_writes_in_place_or_into_a_fresh_buffer() {
+    let mut out = Vec::with_capacity(8);
+    out.push(0xaa);
+    let before = out.as_ptr();
+    encode_into(&SECRET, &Short(b"abc"), &mut out).unwrap();
+    assert_eq!(out, [0, 0, 0, 3, b'a', b'b', b'c', 0]);
+    assert_eq!(out.as_ptr(), before);
+    let mut fresh = Vec::new();
+    encode_into(&SECRET, &Short(b"abc"), &mut fresh).unwrap();
+    assert_eq!(fresh, [0, 0, 0, 3, b'a', b'b', b'c', 0]);
+}
+
+/// A plain message type with its descriptor.
+struct Greeting;
+
+impl crate::MessageType for Greeting {
+    const MESSAGE: Message = MESSAGE;
+}
+
+impl Encode for Greeting {
+    fn encoded_len(&self) -> Result<u64, Error> {
+        Ok(4)
+    }
+
+    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+        encoder.put_u32(9)
+    }
+}
+
+#[test]
+fn encode_uses_the_descriptor_its_type_carries() {
+    assert_eq!(super::encode(&Greeting).unwrap(), [0, 0, 0, 9]);
 }

@@ -9,9 +9,9 @@
 
 use std::fmt::Debug;
 
-use ironafs_xdr::{Decode, Message, Plain, decode, encode};
+use ironafs_xdr::{Decode, Encode, Message, decode};
 
-use crate::support::hex;
+use crate::support::{encoded, hex};
 use crate::types::{
     BLOB, Blob, ENTRY, Entry, FIVE, FLAG, Five, Flag, INTS, Ints, LABEL, Label, NOTE, Note, PAIR,
     Pair, SHADE, Shade,
@@ -28,10 +28,14 @@ const PRIMITIVE: Message = Message {
 #[track_caller]
 fn both_ways<T>(message: &Message, value: &T, expected: &str)
 where
-    T: for<'a> Decode<'a> + Plain + PartialEq + Debug,
+    T: for<'a> Decode<'a> + Encode + PartialEq + Debug,
 {
     let bytes = hex(expected);
-    assert_eq!(encode(message, value).unwrap(), bytes, "encoding {value:?}");
+    assert_eq!(
+        encoded(message, value).unwrap(),
+        bytes,
+        "encoding {value:?}"
+    );
     assert_eq!(
         &decode::<T>(message, &bytes).unwrap(),
         value,

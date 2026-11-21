@@ -42,7 +42,9 @@
 //!     }
 //! }
 //!
-//! impl ironafs_xdr::Plain for Greeting {}
+//! impl ironafs_xdr::MessageType for Greeting {
+//!     const MESSAGE: Message = GREETING;
+//! }
 //!
 //! impl Encode for Greeting {
 //!     fn encoded_len(&self) -> Result<u64, Error> {
@@ -56,7 +58,7 @@
 //! }
 //!
 //! let greeting = Greeting { count: 2, name: b"hi".to_vec() };
-//! let bytes = encode(&GREETING, &greeting).unwrap();
+//! let bytes = encode(&greeting).unwrap();
 //! assert_eq!(bytes, [0, 0, 0, 2, 0, 0, 0, 2, b'h', b'i', 0, 0]);
 //! assert_eq!(decode::<Greeting>(&GREETING, &bytes).unwrap(), greeting);
 //! ```
@@ -115,12 +117,13 @@ mod spec;
 
 pub use borrowed::{BorrowedBytes, BorrowedHyper, BorrowedWord};
 pub use decode::{
-    Decode, Decoder, Mark, OutOfLine, Reservation, Vacant, array_heap_ratio, array_reservations,
-    decode, decode_traced, max, out_of_line_heap_ratio, out_of_line_reservations, proven,
+    Decode, Decoder, Mark, OutOfLine, Reservation, array_heap_ratio, array_reservations, decode,
+    decode_traced, fixed_array_heap_ratio, fixed_array_reservations, max, out_of_line_heap_ratio,
+    out_of_line_reservations, proven,
 };
 pub use encode::{
-    Encode, Encoder, Plain, array_len, encode, encode_into, fixed_array_len, fixed_opaque_len,
-    opaque_len, sum,
+    Encode, Encoder, array_len, encode, encode_into, fixed_array_len, fixed_opaque_len, opaque_len,
+    sum,
 };
 pub use error::{Error, ErrorKind};
-pub use spec::{Cap, Message};
+pub use spec::{Cap, Message, MessageType};
