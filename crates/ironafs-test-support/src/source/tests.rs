@@ -503,3 +503,28 @@ fn from_bytes_any_input_gives_valid_values() {
             },
         );
 }
+
+#[test]
+fn fresh_string_length_target_counts_bytes() {
+    let mut source = Source::from_seed(31);
+    let total: usize = (0..2000).map(|_| source.string(64).len()).sum();
+    // A target uniform in 0..=64 bytes averages 32; the last character can
+    // overshoot it by up to three bytes.
+    let mean = total / 2000;
+    assert!((28..=36).contains(&mean), "{mean}");
+}
+
+#[test]
+fn fresh_strings_are_mostly_ascii() {
+    let mut source = Source::from_seed(37);
+    let (mut ascii, mut all) = (0_u32, 0_u32);
+    for _ in 0..2000 {
+        for character in source.string(32).chars() {
+            all += 1;
+            ascii += u32::from(character.is_ascii());
+        }
+    }
+    // Three characters in four are drawn from ASCII.
+    let percent = ascii * 100 / all;
+    assert!((70..=80).contains(&percent), "{percent}");
+}

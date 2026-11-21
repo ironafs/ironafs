@@ -451,9 +451,10 @@ impl Source {
     }
 
     /// Draws a string of at most `max_bytes` bytes of UTF-8, shrinking
-    /// toward fewer characters and lower code points. A fresh run draws
-    /// mostly ASCII, then the rest of the Basic Multilingual Plane, then
-    /// any scalar value.
+    /// toward fewer characters and lower code points. A fresh run aims for
+    /// a length in bytes drawn up to `max_bytes`, and draws three
+    /// characters in four from ASCII, one in eight from the rest of the
+    /// Basic Multilingual Plane and one in eight from any scalar value.
     ///
     /// ```
     /// use ironafs_test_support::Source;
@@ -485,7 +486,7 @@ impl Source {
         let mut text = String::new();
         loop {
             let room = max_bytes.saturating_sub(text.len());
-            let more = text.chars().count() < target && room > 0;
+            let more = text.len() < target && room > 0;
             let drawn =
                 self.more_element(more, room > 0, |source| source.char_within(room, highest));
             match drawn {
@@ -508,10 +509,10 @@ impl Source {
         let choice = self.draw_with(last, |generator| {
             // The tiers pick how often each range is drawn, not what a
             // choice means: index n is always the nth scalar value.
-            let tier = generator.next_u64() % 4;
+            let tier = generator.next_u64() % 8;
             let bound = match tier {
-                0 | 1 => scalar_index('\u{7f}'),
-                2 => scalar_index('\u{ffff}'),
+                0..=5 => scalar_index('\u{7f}'),
+                6 => scalar_index('\u{ffff}'),
                 _ => last,
             };
             fresh_choice(generator, bound.min(last))
