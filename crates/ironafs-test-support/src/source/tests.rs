@@ -485,6 +485,8 @@ fn choice_bytes_drive_from_bytes_to_the_seeded_values() {
 
 #[test]
 fn from_bytes_any_input_gives_valid_values() {
+    let items = [1, 2, 3];
+    let mut reached = [false; 3];
     crate::Property::new("any byte string drives the draws")
         .cases(2000)
         .check(
@@ -499,9 +501,16 @@ fn from_bytes_any_input_gives_valid_values() {
                 assert!((3..=40).contains(&source.bulk_bytes(3..=40).len()));
                 assert!(source.weighted(&[1, 2, 3]) < 3);
                 assert!((-5..=5).contains(&source.i64_in(-5..=5)));
-                assert!(*source.pick(&[1, 2, 3]) > 0);
+                let picked = source.pick(&items);
+                let position = items.iter().position(|item| item == picked);
+                assert!(position.is_some(), "{picked} is not one of {items:?}");
+                if let Some(position) = position {
+                    reached[position] = true;
+                }
             },
         );
+    // Over 2000 byte strings, `pick` reaches every item, not only one.
+    assert_eq!(reached, [true; 3]);
 }
 
 #[test]
