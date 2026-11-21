@@ -4,10 +4,10 @@
 //! The workspace's resolved dependency graph, read from `cargo metadata`.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
-use crate::Error;
 use crate::json::{self, Value};
+use crate::{Command, Error};
 
 #[cfg(test)]
 mod tests;

@@ -178,8 +178,10 @@ because they can contain secrets and personal data.
 ## What the owner checks before approving a commit
 
 - The change does what its description says, and its class is right.
-- The class's checks passed, and every confirmed finding is fixed or refuted
-  with evidence.
+- The class's checks passed, and every confirmed finding is fixed, refuted
+  with evidence, or closed as [docs/workflow.md](docs/workflow.md) §3, step
+  7 allows (a deferral to a specification item agreed by a refutation seat,
+  or a judgement that it does not hold).
 - The trailers are true: the right models, served ids, no stale reviews.
 - Provenance: nothing from OpenAFS, AuriStor or the kernel's AFS/Rx code
   goes in (the don't-copy rule in [ADR 0001](docs/adr/0001-licence-and-dont-copy.md)),
