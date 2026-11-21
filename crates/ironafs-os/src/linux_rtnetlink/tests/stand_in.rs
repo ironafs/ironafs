@@ -6,7 +6,7 @@
 //! these check each call's arguments and the receive of every reply the
 //! sheet names, through the wrapper's own buffers.
 
-use super::super::abi::stand_in::{Call, Reply, calls, reply, short_sends};
+use super::super::abi::stand_in::{Call, Plan, Reply, calls, plan, reply, short_sends};
 use super::super::abi::{AF_NETLINK, NETLINK_ROUTE, SOCK_CLOEXEC, SOCK_RAW, sockaddr_nl};
 use super::super::{GROUPS, RouteSocket};
 use crate::route::RouteError;
@@ -130,4 +130,44 @@ fn a_receive_passes_no_flags() {
     let _ = calls();
     socket.receive(&mut [0_u8; 8]).unwrap();
     assert_eq!(calls(), [Call::Receive(0)]);
+}
+
+#[test]
+fn an_interrupted_send_and_receive_are_each_made_again() {
+    let socket = RouteSocket::request().unwrap();
+    let _ = calls();
+    plan(Plan::Interrupt(2));
+    socket.send(&[1; 20]).unwrap();
+    let sends = calls();
+    assert_eq!(sends.len(), 3, "{sends:?}");
+    assert_eq!(sends[..2], [Call::Failed, Call::Failed]);
+    reply(from_kernel(&[1; 4]));
+    plan(Plan::Interrupt(1));
+    assert_eq!(socket.receive(&mut [0_u8; 8]).unwrap(), 4);
+    assert_eq!(calls(), [Call::Receive(0), Call::Receive(0)]);
+}
+
+#[test]
+fn an_overflow_and_another_failure_are_told_apart_through_the_receive() {
+    let socket = RouteSocket::notify().unwrap();
+    plan(Plan::Fail(105));
+    assert!(matches!(
+        socket.receive(&mut [0_u8; 8]),
+        Err(RouteError::Overflow(error)) if error.raw_os_error() == Some(105)
+    ));
+    plan(Plan::Fail(9));
+    assert!(matches!(
+        socket.receive(&mut [0_u8; 8]),
+        Err(RouteError::Receive(error)) if error.raw_os_error() == Some(9)
+    ));
+}
+
+#[test]
+fn a_failed_send_is_returned_with_its_errno() {
+    let socket = RouteSocket::request().unwrap();
+    plan(Plan::Fail(111));
+    assert!(matches!(
+        socket.send(&[1; 20]),
+        Err(RouteError::Send(error)) if error.raw_os_error() == Some(111)
+    ));
 }

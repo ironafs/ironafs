@@ -4,8 +4,14 @@
 //! The foreign declarations of site `linux-rtnetlink`.
 
 use core::ffi::{c_int, c_void};
+use std::io;
 
 use super::{msghdr, sockaddr, socklen_t};
+
+/// The errno the last failed call on this thread set.
+pub(in crate::linux_rtnetlink) fn last_error() -> io::Error {
+    io::Error::last_os_error()
+}
 
 // SAFETY: `int socket(int domain, int type, int protocol)`, `int bind(int
 // sockfd, const struct sockaddr *addr, socklen_t addrlen)`, `ssize_t

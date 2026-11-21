@@ -7,11 +7,75 @@
 //! free blocks of 4096 bytes, every other field non-zero, the opaque tail
 //! included) and returns 0; given a negative one it writes nothing and
 //! returns -1. So Miri checks the wrapper's pointer for the struct's full
-//! size.
+//! size. A test can [`plan`] the next calls' answers instead: interrupted
+//! by a signal some number of times (-1 with `EINTR`), or failed once with
+//! an errno; [`last_error`] returns that errno, as the C library's would
+//! be, and [`calls`] counts the calls made.
 
 use core::ffi::c_int;
+use std::cell::Cell;
+use std::io;
 
 use super::statvfs;
+
+thread_local! {
+    static PLAN: Cell<Plan> = const { Cell::new(Plan::Answer) };
+    static ERRNO: Cell<c_int> = const { Cell::new(0) };
+    static CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// `EINTR`.
+const EINTR: c_int = 4;
+
+/// The next calls' answer.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::linux_statvfs) enum Plan {
+    /// As the kernel answers.
+    Answer,
+    /// -1 with `EINTR` for this many calls, then as the kernel answers.
+    Interrupt(usize),
+    /// -1 with this errno, once.
+    Fail(c_int),
+}
+
+/// Plans the next calls' answer on this thread.
+pub(in crate::linux_statvfs) fn plan(next: Plan) {
+    PLAN.with(|plan| plan.set(next));
+}
+
+/// The calls made on this thread.
+pub(in crate::linux_statvfs) fn calls() -> usize {
+    CALLS.with(Cell::get)
+}
+
+/// The errno the last planned failure set.
+pub(in crate::linux_statvfs) fn last_error() -> io::Error {
+    io::Error::from_raw_os_error(ERRNO.with(Cell::get))
+}
+
+/// Counts a call and answers it as planned: `true` for a planned failure,
+/// with its errno set.
+fn planned_failure() -> bool {
+    CALLS.with(|calls| calls.set(calls.get() + 1));
+    let errno = match PLAN.with(Cell::get) {
+        Plan::Answer => return false,
+        Plan::Interrupt(left) => {
+            let next = if left > 1 {
+                Plan::Interrupt(left - 1)
+            } else {
+                Plan::Answer
+            };
+            PLAN.with(|plan| plan.set(next));
+            EINTR
+        }
+        Plan::Fail(errno) => {
+            PLAN.with(|plan| plan.set(Plan::Answer));
+            errno
+        }
+    };
+    ERRNO.with(|cell| cell.set(errno));
+    true
+}
 
 /// The free blocks and fragment size the stand-in reports.
 pub(in crate::linux_statvfs) const BLOCKS: u64 = 1000;
@@ -25,7 +89,7 @@ pub(in crate::linux_statvfs) const FRAGMENT: u64 = 4096;
 /// `struct statvfs`.
 #[expect(unsafe_code, reason = "linux-statvfs: Miri stand-in")]
 pub(in crate::linux_statvfs) unsafe fn fstatvfs(fd: c_int, buf: *mut statvfs) -> c_int {
-    if fd < 0 {
+    if fd < 0 || planned_failure() {
         return -1;
     }
     let figures = statvfs {

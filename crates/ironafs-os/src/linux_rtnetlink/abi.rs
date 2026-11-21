@@ -109,6 +109,14 @@ pub(super) const RTMGRP_IPV6_ROUTE: u32 = 1024;
 /// `RTNLGRP_IPV6_RULE`: the IPv6 policy rules' group number.
 pub(super) const RTNLGRP_IPV6_RULE: u32 = 19;
 
+/// The notify socket's group mask: the six `RTMGRP_*` masks and the IPv6
+/// rules' bit, `1 << (RTNLGRP_IPV6_RULE - 1)` (proved against that
+/// expression).
+pub(super) const NOTIFY_GROUPS: u32 = 263_633;
+
+/// `sizeof(struct sockaddr_nl)` (proved against that expression).
+pub(super) const SOCKADDR_NL_SIZE: socklen_t = 12;
+
 // Each C library's `struct msghdr`. No site is in either file, so a musl
 // build's sites are the glibc build's.
 #[cfg(target_env = "gnu")]
@@ -130,6 +138,6 @@ mod foreign;
 pub(super) mod stand_in;
 
 #[cfg(not(miri))]
-pub(super) use foreign::{bind, recvmsg, sendto, socket};
+pub(super) use foreign::{bind, last_error, recvmsg, sendto, socket};
 #[cfg(miri)]
-pub(super) use stand_in::{bind, recvmsg, sendto, socket};
+pub(super) use stand_in::{bind, last_error, recvmsg, sendto, socket};

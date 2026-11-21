@@ -4,8 +4,14 @@
 //! The foreign declaration of site `linux-statvfs`.
 
 use core::ffi::c_int;
+use std::io;
 
 use super::statvfs;
+
+/// The errno the last failed call on this thread set.
+pub(in crate::linux_statvfs) fn last_error() -> io::Error {
+    io::Error::last_os_error()
+}
 
 // SAFETY: `int fstatvfs(int fd, struct statvfs *buf)`, as `statvfs(3)`
 // and `<sys/statvfs.h>` declare it in glibc and musl, with the struct of

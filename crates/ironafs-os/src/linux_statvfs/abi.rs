@@ -77,9 +77,9 @@ impl statvfs {
 #[cfg(not(miri))]
 mod foreign;
 #[cfg(miri)]
-mod stand_in;
+pub(super) mod stand_in;
 
 #[cfg(not(miri))]
-pub(super) use foreign::fstatvfs;
+pub(super) use foreign::{fstatvfs, last_error};
 #[cfg(miri)]
-pub(super) use stand_in::fstatvfs;
+pub(super) use stand_in::{fstatvfs, last_error};

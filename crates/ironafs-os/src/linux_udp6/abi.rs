@@ -83,6 +83,13 @@ pub(super) const IPPROTO_IPV6: c_int = 41;
 /// `IPV6_V6ONLY`: the socket sends and receives IPv6 packets only.
 pub(super) const IPV6_V6ONLY: c_int = 26;
 
+/// `sizeof(int)`: the length of `IPV6_V6ONLY`'s value (proved against
+/// that expression).
+pub(super) const OPTION_LENGTH: socklen_t = 4;
+
+/// `sizeof(struct sockaddr_in6)` (proved against that expression).
+pub(super) const SOCKADDR_IN6_SIZE: socklen_t = 28;
+
 /// `EAFNOSUPPORT`: the address family is not supported.
 pub(super) const EAFNOSUPPORT: c_int = 97;
 
@@ -98,6 +105,6 @@ mod foreign;
 pub(super) mod stand_in;
 
 #[cfg(not(miri))]
-pub(super) use foreign::{bind, setsockopt, socket};
+pub(super) use foreign::{bind, last_error, setsockopt, socket};
 #[cfg(miri)]
-pub(super) use stand_in::{bind, setsockopt, socket};
+pub(super) use stand_in::{bind, last_error, setsockopt, socket};

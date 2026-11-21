@@ -9,11 +9,16 @@
 //! writes a reply a test queued (its bytes, cut to the buffer with
 //! `MSG_TRUNC` set when longer, and its sender's address, of the length
 //! the reply says) through the wrapper's message, as the kernel does.
-//! Each records the call, in order, on this thread.
+//! Each records the call, in order, on this thread. A test can [`plan`]
+//! the next `sendto` and `recvmsg` answers instead: interrupted by a
+//! signal some number of times (-1 with `EINTR`), or failed once with an
+//! errno; [`last_error`] returns that errno, as the C library's would
+//! be.
 
 use core::ffi::{c_int, c_void};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::io;
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
 
@@ -32,6 +37,8 @@ pub(in crate::linux_rtnetlink) enum Call {
     Send(Vec<u8>, c_int, sockaddr_nl, socklen_t),
     /// The flags.
     Receive(c_int),
+    /// A send answered with a planned failure.
+    Failed,
 }
 
 /// A datagram the next `recvmsg` returns.
@@ -47,6 +54,55 @@ thread_local! {
     static CALLS: RefCell<Vec<Call>> = const { RefCell::new(Vec::new()) };
     static REPLIES: RefCell<VecDeque<Reply>> = const { RefCell::new(VecDeque::new()) };
     static SHORT: Cell<bool> = const { Cell::new(false) };
+    static PLAN: Cell<Plan> = const { Cell::new(Plan::Answer) };
+    static ERRNO: Cell<c_int> = const { Cell::new(0) };
+}
+
+/// `EINTR`.
+const EINTR: c_int = 4;
+
+/// The next `sendto` and `recvmsg` answers.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::linux_rtnetlink) enum Plan {
+    /// As the kernel answers.
+    Answer,
+    /// -1 with `EINTR` for this many calls, then as the kernel answers.
+    Interrupt(usize),
+    /// -1 with this errno, once.
+    Fail(c_int),
+}
+
+/// Plans the next calls' answer on this thread.
+pub(in crate::linux_rtnetlink) fn plan(next: Plan) {
+    PLAN.with(|plan| plan.set(next));
+}
+
+/// The errno the last planned failure set.
+pub(in crate::linux_rtnetlink) fn last_error() -> io::Error {
+    io::Error::from_raw_os_error(ERRNO.with(Cell::get))
+}
+
+/// Answers a call as planned: `true` for a planned failure, with its
+/// errno set.
+fn planned_failure() -> bool {
+    let errno = match PLAN.with(Cell::get) {
+        Plan::Answer => return false,
+        Plan::Interrupt(left) => {
+            let next = if left > 1 {
+                Plan::Interrupt(left - 1)
+            } else {
+                Plan::Answer
+            };
+            PLAN.with(|plan| plan.set(next));
+            EINTR
+        }
+        Plan::Fail(errno) => {
+            PLAN.with(|plan| plan.set(Plan::Answer));
+            errno
+        }
+    };
+    ERRNO.with(|cell| cell.set(errno));
+    true
 }
 
 /// The calls made on this thread so far, which it then forgets.
@@ -128,6 +184,10 @@ pub(in crate::linux_rtnetlink) unsafe fn sendto(
     if sockfd < 0 || usize::try_from(addrlen) != Ok(NAME) {
         return -1;
     }
+    if planned_failure() {
+        record(Call::Failed);
+        return -1;
+    }
     let mut bytes = vec![0_u8; len];
     let source: *const u8 = buf.cast();
     let target: *mut u8 = bytes.as_mut_ptr();
@@ -164,7 +224,7 @@ pub(in crate::linux_rtnetlink) unsafe fn recvmsg(
     flags: c_int,
 ) -> isize {
     record(Call::Receive(flags));
-    if sockfd < 0 {
+    if sockfd < 0 || planned_failure() {
         return -1;
     }
     let Some(queued) = REPLIES.with(|replies| replies.borrow_mut().pop_front()) else {

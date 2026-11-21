@@ -12,7 +12,7 @@ use super::abi::{
     RTMGRP_IPV4_IFADDR, RTMGRP_IPV4_ROUTE, RTMGRP_IPV4_RULE, RTMGRP_IPV6_IFADDR, RTMGRP_IPV6_ROUTE,
     RTMGRP_LINK, RTNLGRP_IPV6_RULE,
 };
-use super::{GROUPS, RouteSocket, group_bit};
+use super::{GROUPS, RouteSocket};
 
 #[cfg(not(miri))]
 mod kernel;
@@ -21,10 +21,10 @@ mod stand_in;
 
 #[test]
 fn the_groups_are_links_and_both_families_addresses_routes_and_rules() {
-    assert_eq!(group_bit(1), RTMGRP_LINK);
-    assert_eq!(group_bit(5), RTMGRP_IPV4_IFADDR);
-    assert_eq!(group_bit(8), RTMGRP_IPV4_RULE);
-    assert_eq!(group_bit(RTNLGRP_IPV6_RULE), 1 << 18);
+    // One bit per group, group 1 the lowest (`netlink(7)`).
+    assert_eq!(RTMGRP_LINK, 1 << (1 - 1));
+    assert_eq!(RTMGRP_IPV4_IFADDR, 1 << (5 - 1));
+    assert_eq!(RTMGRP_IPV4_RULE, 1 << (8 - 1));
     assert_eq!(
         GROUPS,
         RTMGRP_LINK
@@ -33,7 +33,7 @@ fn the_groups_are_links_and_both_families_addresses_routes_and_rules() {
             | RTMGRP_IPV4_RULE
             | RTMGRP_IPV6_IFADDR
             | RTMGRP_IPV6_ROUTE
-            | (1 << 18)
+            | (1 << (RTNLGRP_IPV6_RULE - 1))
     );
     assert_eq!(GROUPS.count_ones(), 7);
 }

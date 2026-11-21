@@ -13,6 +13,8 @@ use super::measure;
 
 #[cfg(not(miri))]
 mod kernel;
+#[cfg(miri)]
+mod stand_in;
 
 #[test]
 fn measure_queries_the_descriptor_s_filesystem_through_the_call() {

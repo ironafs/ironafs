@@ -94,7 +94,7 @@ fn query(descriptor: BorrowedFd<'_>, figures: &mut statvfs) -> io::Result<()> {
     let status = unsafe { abi::fstatvfs(fd, buffer) };
     if status != 0 {
         // At once, with no call in between, on the thread that made it.
-        return Err(io::Error::last_os_error());
+        return Err(abi::last_error());
     }
     Ok(())
 }

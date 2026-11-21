@@ -31,28 +31,18 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use crate::fdpass::retried;
 use crate::route::{Received, RouteError, Rules, checked, receive_error, sent};
 use abi::{
-    AF_NETLINK, ENOBUFS, MSG_TRUNC, NETLINK_ROUTE, RTMGRP_IPV4_IFADDR, RTMGRP_IPV4_ROUTE,
-    RTMGRP_IPV4_RULE, RTMGRP_IPV6_IFADDR, RTMGRP_IPV6_ROUTE, RTMGRP_LINK, RTNLGRP_IPV6_RULE,
-    SOCK_CLOEXEC, SOCK_RAW, iovec, msghdr, sa_family_t, sockaddr, sockaddr_nl, socklen_t,
+    AF_NETLINK, ENOBUFS, MSG_TRUNC, NETLINK_ROUTE, NOTIFY_GROUPS, RTMGRP_IPV4_IFADDR,
+    RTMGRP_IPV4_ROUTE, RTMGRP_IPV4_RULE, RTMGRP_IPV6_IFADDR, RTMGRP_IPV6_ROUTE, RTMGRP_LINK,
+    RTNLGRP_IPV6_RULE, SOCK_CLOEXEC, SOCK_RAW, SOCKADDR_NL_SIZE, iovec, msghdr, sa_family_t,
+    sockaddr, sockaddr_nl, socklen_t,
 };
 
 #[cfg(test)]
 mod tests;
 
-/// The notify socket's groups: the owner's set (ADR 0005, sheet 23).
-const GROUPS: u32 = RTMGRP_LINK
-    | RTMGRP_IPV4_IFADDR
-    | RTMGRP_IPV4_ROUTE
-    | RTMGRP_IPV4_RULE
-    | RTMGRP_IPV6_IFADDR
-    | RTMGRP_IPV6_ROUTE
-    | group_bit(RTNLGRP_IPV6_RULE);
-
-/// The mask bit of group `number` in `nl_groups` (`netlink(7)`: one bit
-/// per group, group 1 the lowest).
-const fn group_bit(number: u32) -> u32 {
-    1 << (number - 1)
-}
+/// The notify socket's groups: the owner's set (ADR 0005, sheet 23),
+/// whose mask the ABI check proves against the kernel's header.
+const GROUPS: u32 = NOTIFY_GROUPS;
 
 /// The socket's type: raw (netlink's own), close-on-exec.
 const KIND: c_int = SOCK_RAW | SOCK_CLOEXEC;
@@ -61,7 +51,7 @@ const KIND: c_int = SOCK_RAW | SOCK_CLOEXEC;
 const FAMILY: sa_family_t = 16;
 
 /// `sizeof(struct sockaddr_nl)`, as the calls' length type.
-const NAME_LENGTH: socklen_t = 12;
+const NAME_LENGTH: socklen_t = SOCKADDR_NL_SIZE;
 
 /// The receive's flags: none (truncation is read from the returned flags).
 const RECEIVE_FLAGS: c_int = 0;
@@ -72,7 +62,14 @@ const SEND_FLAGS: c_int = 0;
 const _: () = assert!(
     NAME_LENGTH as usize == size_of::<sockaddr_nl>()
         && FAMILY as c_int == AF_NETLINK
-        && GROUPS == 0x0004_05d1
+        && GROUPS
+            == RTMGRP_LINK
+                | RTMGRP_IPV4_IFADDR
+                | RTMGRP_IPV4_ROUTE
+                | RTMGRP_IPV4_RULE
+                | RTMGRP_IPV6_IFADDR
+                | RTMGRP_IPV6_ROUTE
+                | (1 << (RTNLGRP_IPV6_RULE - 1))
 );
 
 /// The C facts the receive's checks compare with.
@@ -198,7 +195,7 @@ fn open() -> io::Result<OwnedFd> {
     let descriptor = unsafe { abi::socket(domain, kind, protocol) };
     if descriptor < 0 {
         // At once, with no call in between, on the thread that made it.
-        return Err(io::Error::last_os_error());
+        return Err(abi::last_error());
     }
     Ok(adopt(descriptor))
 }
@@ -236,7 +233,7 @@ fn bind_to(socket: BorrowedFd<'_>, local: &sockaddr_nl) -> io::Result<()> {
     let status = unsafe { abi::bind(descriptor, address, length) };
     if status != 0 {
         // At once, with no call in between, on the thread that made it.
-        return Err(io::Error::last_os_error());
+        return Err(abi::last_error());
     }
     Ok(())
 }
@@ -263,7 +260,7 @@ fn send_to(socket: BorrowedFd<'_>, request: &[u8], kernel: &sockaddr_nl) -> io::
     // `abi`, proved by the ABI check.
     let count = unsafe { abi::sendto(descriptor, buffer, length, flags, address, address_length) };
     // At once, with no call in between, on the thread that made it.
-    usize::try_from(count).map_err(|_| io::Error::last_os_error())
+    usize::try_from(count).map_err(|_| abi::last_error())
 }
 
 /// One `recvmsg` call into `message` on `socket`: the bytes it received.
@@ -287,5 +284,5 @@ fn receive_message(socket: BorrowedFd<'_>, message: &mut msghdr) -> io::Result<u
     // declarations are in `abi`, proved by the ABI check.
     let count = unsafe { abi::recvmsg(descriptor, pointer, flags) };
     // At once, with no call in between, on the thread that made it.
-    usize::try_from(count).map_err(|_| io::Error::last_os_error())
+    usize::try_from(count).map_err(|_| abi::last_error())
 }

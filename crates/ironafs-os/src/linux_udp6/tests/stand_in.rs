@@ -31,7 +31,7 @@ fn the_calls_are_socket_then_ipv6_only_set_to_one_then_bind() {
 #[test]
 fn a_failed_option_leaves_the_socket_unbound() {
     let _ = calls();
-    fail(Fail::Option);
+    fail(Fail::Option, 22);
     assert!(matches!(
         udp6_socket(Ipv6Addr::LOCALHOST, 0),
         Err(Udp6Error::IpV6Only(_))
@@ -40,14 +40,31 @@ fn a_failed_option_leaves_the_socket_unbound() {
 }
 
 #[test]
-fn a_failed_socket_or_bind_is_an_error() {
+fn a_missing_family_and_an_address_in_use_are_told_apart_through_the_calls() {
     let _ = calls();
-    fail(Fail::Socket);
-    assert!(udp6_socket(Ipv6Addr::LOCALHOST, 0).is_err());
+    fail(Fail::Socket, 97);
+    assert!(matches!(
+        udp6_socket(Ipv6Addr::LOCALHOST, 0),
+        Err(Udp6Error::Unsupported(error)) if error.raw_os_error() == Some(97)
+    ));
     assert_eq!(calls().len(), 1);
-    fail(Fail::Bind);
-    assert!(udp6_socket(Ipv6Addr::LOCALHOST, 0).is_err());
+    fail(Fail::Socket, 24);
+    assert!(matches!(
+        udp6_socket(Ipv6Addr::LOCALHOST, 0),
+        Err(Udp6Error::Socket(error)) if error.raw_os_error() == Some(24)
+    ));
+    let _ = calls();
+    fail(Fail::Bind, 98);
+    assert!(matches!(
+        udp6_socket(Ipv6Addr::LOCALHOST, 0),
+        Err(Udp6Error::InUse(error)) if error.raw_os_error() == Some(98)
+    ));
     assert_eq!(calls().len(), 3);
+    fail(Fail::Bind, 99);
+    assert!(matches!(
+        udp6_socket(Ipv6Addr::LOCALHOST, 0),
+        Err(Udp6Error::Bind(error)) if error.raw_os_error() == Some(99)
+    ));
 }
 
 #[test]

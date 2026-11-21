@@ -4,8 +4,14 @@
 //! The foreign declarations of site `linux-udp6`.
 
 use core::ffi::{c_int, c_void};
+use std::io;
 
 use super::{sockaddr, socklen_t};
+
+/// The errno the last failed call on this thread set.
+pub(in crate::linux_udp6) fn last_error() -> io::Error {
+    io::Error::last_os_error()
+}
 
 // SAFETY: `int socket(int domain, int type, int protocol)`, `int
 // setsockopt(int sockfd, int level, int optname, const void *optval,

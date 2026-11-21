@@ -25,8 +25,8 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 
 use crate::udp6::{Rules, Udp6Error, bind_error, needs_zone, socket_error};
 use abi::{
-    AF_INET6, EADDRINUSE, EAFNOSUPPORT, IPPROTO_IPV6, IPV6_V6ONLY, SOCK_CLOEXEC, SOCK_DGRAM,
-    in6_addr, sa_family_t, sockaddr, sockaddr_in6, socklen_t,
+    AF_INET6, EADDRINUSE, EAFNOSUPPORT, IPPROTO_IPV6, IPV6_V6ONLY, OPTION_LENGTH, SOCK_CLOEXEC,
+    SOCK_DGRAM, SOCKADDR_IN6_SIZE, in6_addr, sa_family_t, sockaddr, sockaddr_in6, socklen_t,
 };
 
 #[cfg(test)]
@@ -45,10 +45,10 @@ const KIND: c_int = SOCK_DGRAM | SOCK_CLOEXEC;
 const ON: c_int = 1;
 
 /// The option value's length, `sizeof(int)`.
-const ON_LENGTH: socklen_t = 4;
+const ON_LENGTH: socklen_t = OPTION_LENGTH;
 
 /// The address's length, `sizeof(struct sockaddr_in6)`.
-const NAME_LENGTH: socklen_t = 28;
+const NAME_LENGTH: socklen_t = SOCKADDR_IN6_SIZE;
 
 /// `AF_INET6` as the address's family field.
 const FAMILY: sa_family_t = 10;
@@ -119,7 +119,7 @@ fn open() -> io::Result<OwnedFd> {
     let descriptor = unsafe { abi::socket(domain, kind, protocol) };
     if descriptor < 0 {
         // At once, with no call in between, on the thread that made it.
-        return Err(io::Error::last_os_error());
+        return Err(abi::last_error());
     }
     Ok(adopt(descriptor))
 }
@@ -159,7 +159,7 @@ fn restrict(socket: BorrowedFd<'_>) -> io::Result<()> {
     let status = unsafe { abi::setsockopt(descriptor, level, option, value, length) };
     if status != 0 {
         // At once, with no call in between, on the thread that made it.
-        return Err(io::Error::last_os_error());
+        return Err(abi::last_error());
     }
     Ok(())
 }
@@ -184,7 +184,7 @@ fn bind_to(socket: BorrowedFd<'_>, name: &sockaddr_in6) -> io::Result<()> {
     let status = unsafe { abi::bind(descriptor, address, length) };
     if status != 0 {
         // At once, with no call in between, on the thread that made it.
-        return Err(io::Error::last_os_error());
+        return Err(abi::last_error());
     }
     Ok(())
 }

@@ -8,10 +8,12 @@
 //! its option value through the wrapper's pointer for the stated length;
 //! `bind` reads the whole `struct sockaddr_in6` through the wrapper's
 //! pointer when the length is its size. Each records the call, in order,
-//! on this thread, and a test can make one of them fail.
+//! on this thread, and a test can make one of them fail with an errno,
+//! which [`last_error`] then returns, as the C library's would be.
 
 use core::ffi::{c_int, c_void};
 use std::cell::{Cell, RefCell};
+use std::io;
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
 
@@ -37,7 +39,8 @@ pub(in crate::linux_udp6) enum Fail {
 
 thread_local! {
     static CALLS: RefCell<Vec<Call>> = const { RefCell::new(Vec::new()) };
-    static FAIL: Cell<Option<Fail>> = const { Cell::new(None) };
+    static FAIL: Cell<Option<(Fail, c_int)>> = const { Cell::new(None) };
+    static ERRNO: Cell<c_int> = const { Cell::new(0) };
 }
 
 /// The calls made on this thread so far, which it then forgets.
@@ -45,17 +48,29 @@ pub(in crate::linux_udp6) fn calls() -> Vec<Call> {
     CALLS.with(|calls| calls.take())
 }
 
-/// Makes `call` fail (with -1) from now on, on this thread.
-pub(in crate::linux_udp6) fn fail(call: Fail) {
-    FAIL.with(|fail| fail.set(Some(call)));
+/// Makes `call` fail (with -1 and `errno`) from now on, on this thread.
+pub(in crate::linux_udp6) fn fail(call: Fail, errno: c_int) {
+    FAIL.with(|fail| fail.set(Some((call, errno))));
+}
+
+/// The errno the last planned failure set.
+pub(in crate::linux_udp6) fn last_error() -> io::Error {
+    io::Error::from_raw_os_error(ERRNO.with(Cell::get))
 }
 
 fn record(call: Call) {
     CALLS.with(|calls| calls.borrow_mut().push(call));
 }
 
+/// Whether `call` is planned to fail; if so, its errno is set.
 fn failing(call: Fail) -> bool {
-    FAIL.with(Cell::get) == Some(call)
+    match FAIL.with(Cell::get) {
+        Some((planned, errno)) if planned == call => {
+            ERRNO.with(|cell| cell.set(errno));
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Makes a descriptor as `socket` would.
