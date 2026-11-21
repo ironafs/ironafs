@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 
 use super::{
     Violation, closure_violations, config_files, config_words, extern_lines, first_error,
-    has_no_std, toolchain_targets,
+    library_names, root_no_std, toolchain_targets,
 };
 use crate::metadata::{Member, Package, Workspace};
+use crate::rust_source;
 
 #[test]
 fn toolchain_targets_reads_the_targets_array() {
@@ -81,13 +82,119 @@ fn extern_lines_allow_only_the_alloc_line() {
     assert_eq!(extern_lines(text), [3, 4, 5, 6, 7, 8, 9, 10, 11]);
 }
 
+fn root(source: &str) -> Option<usize> {
+    root_no_std(&rust_source::tokens(source).unwrap())
+}
+
 #[test]
-fn has_no_std_wants_the_unconditional_attribute_on_its_own_line() {
-    assert!(has_no_std(b"//! Doc.\n#![no_std]\nextern crate alloc;\n"));
-    assert!(has_no_std(b"  #![no_std]  \r\n"));
-    assert!(!has_no_std(b"#![cfg_attr(target_os = \"none\", no_std)]\n"));
-    assert!(!has_no_std(b"#![no_std] // why\n"));
-    assert!(!has_no_std(b"extern crate alloc;\n"));
+fn root_no_std_wants_the_unconditional_inner_attribute_at_the_start() {
+    assert_eq!(root("//! Doc.\n#![no_std]\nextern crate alloc;\n"), Some(3));
+    assert_eq!(root("#![doc = \"x\"]\n#![no_std] // why\n"), Some(9));
+    assert_eq!(root("#![forbid(unsafe_code)]\n# ! [ no_std ]\n"), Some(11));
+    assert_eq!(
+        root("/* #![no_std] */\n#![cfg_attr(not(panic = \"abort\"), no_std)]\n"),
+        None
+    );
+    assert_eq!(root("/*\n#![no_std]\n*/\n"), None);
+    assert_eq!(root("#![cfg_attr(all(), no_std)]\n"), None);
+    assert_eq!(root("const S: &str = \"\n#![no_std]\n\";\n"), None);
+    assert_eq!(root("fn f() {}\n#![no_std]\n"), None);
+    assert_eq!(root("macro_rules! m { () => { #![no_std] } }\n"), None);
+    assert_eq!(root("#![no_std, no_main]\n"), None);
+    assert_eq!(root("#![no_std\n"), None);
+    assert_eq!(root(""), None);
+}
+
+fn names(source: &str, allowed: Option<usize>) -> Vec<(usize, String)> {
+    library_names(&rust_source::tokens(source).unwrap(), allowed)
+        .into_iter()
+        .map(|(line, name, _)| (line, name))
+        .collect()
+}
+
+#[test]
+fn library_names_hold_for_every_cfg() {
+    let source = "#![no_std]\n\
+                  extern crate alloc;\n\
+                  #[cfg(not(panic = \"abort\"))]\n\
+                  extern crate alloc;\n\
+                  #[cfg(panic = \"abort\")] extern crate std as hidden;\n\
+                  #![cfg_attr(not(target_env = \"musl\"), no_std)]\n\
+                  use alloc as std;\n\
+                  include!(\"../ext.rs\");\n\
+                  const T: &str = core::include_str!(\"t\");\n\
+                  #[doc = include_bytes!(\"b\")] fn b() {}\n\
+                  use core::include as inc;\n\
+                  #[path = \"../p.rs\"] mod p;\n\
+                  #[cfg_attr(all(), path = \"q.rs\")] mod q;\n\
+                  macro_rules! m { ($a:meta) => { #[$a] mod x {} }; ($c:ident) => { $c!(\"x\") } }\n\
+                  #[cfg(debug_assertions)] fn u() { unsafe { core::arch::asm!(\"nop\") } }\n\
+                  core::arch::global_asm!(\"\");\n\
+                  unsafe extern \"C\" { fn f(); }\n\
+                  extern crate alloc as a;\n\
+                  // std, no_std, include!, unsafe and extern in a comment\n\
+                  const S: &str = \"std no_std include!(x) unsafe extern\";\n\
+                  fn ok(path: &str, include: u8, r#unsafe: u8, r#extern: u8) { let path = 1; }\n\
+                  struct S2 { std_like: u8 }\n";
+    assert_eq!(
+        names(source, Some(3)),
+        [
+            (4, "extern".into()),
+            (5, "extern".into()),
+            (5, "std".into()),
+            (6, "no_std".into()),
+            (7, "std".into()),
+            (8, "include!".into()),
+            (9, "include_str!".into()),
+            (10, "include_bytes!".into()),
+            (11, "core::include".into()),
+            (12, "#[path]".into()),
+            (13, "#[path]".into()),
+            (14, "#[$".into()),
+            (14, "$c!".into()),
+            (15, "unsafe".into()),
+            (15, "asm!".into()),
+            (16, "global_asm!".into()),
+            (17, "unsafe".into()),
+            (17, "extern".into()),
+            (18, "extern".into()),
+        ]
+    );
+    assert_eq!(names("#![no_std]\n", None), [(1, "no_std".into())]);
+}
+
+#[cfg(unix)]
+#[test]
+fn package_files_list_every_file_and_follow_no_link() {
+    let root = std::env::temp_dir().join(format!("ironafs-xtask-package-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    for path in [
+        "ext.rs",
+        "src/lib.rs",
+        "src/data.bin",
+        "tests/it.rs",
+        "target/x.rs",
+    ] {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "").unwrap();
+    }
+    std::os::unix::fs::symlink(".", root.join("src/loop")).unwrap();
+    std::os::unix::fs::symlink("../ext.rs", root.join("src/ext.rs")).unwrap();
+
+    let (files, links) = super::package_files(&root, &root.join("target")).unwrap();
+
+    assert_eq!(
+        files,
+        [
+            root.join("ext.rs"),
+            root.join("src/data.bin"),
+            root.join("src/lib.rs"),
+            root.join("tests/it.rs"),
+        ]
+    );
+    assert_eq!(links, [root.join("src/ext.rs"), root.join("src/loop")]);
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]

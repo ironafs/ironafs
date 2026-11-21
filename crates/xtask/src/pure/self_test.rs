@@ -123,6 +123,21 @@ fn is_extern(violation: &Violation, line: usize) -> bool {
         if file == Path::new(TOP_LIB) && *found == line)
 }
 
+fn is_source(violation: &Violation, line: usize, name: &str) -> bool {
+    matches!(violation, Violation::Source { file, line: found, name: named, .. }
+        if file == Path::new(TOP_LIB) && *found == line && named == name)
+}
+
+/// A file of the planted crate outside its library's directory.
+fn is_extern_in(violation: &Violation, file: &str, line: usize) -> bool {
+    matches!(violation, Violation::Extern { file: found, line: at }
+        if found == Path::new(file) && *at == line)
+}
+
+/// A planted file of the crate, outside its library's directory, that
+/// brings the standard library back under a cfg no build sets.
+const HIDDEN_STD: &str = "#[cfg(panic = \"abort\")]\nextern crate std as hidden;\n";
+
 fn is_not_no_std(violation: &Violation) -> bool {
     matches!(violation, Violation::NotNoStd(file) if file == Path::new(TOP_LIB))
 }
@@ -157,6 +172,8 @@ const CASES: &[Case] = &[
         plant: |fixture| plant_head(fixture, "#![no_std]\nextern crate std;"),
         expect: &[
             |found| is_extern(found, 2),
+            |found| is_source(found, 2, "extern"),
+            |found| is_source(found, 2, "std"),
             |found| is_build(found, "dev", NO_STD_CRATE),
             |found| is_build(found, "release", NO_STD_CRATE),
         ],
@@ -171,6 +188,8 @@ const CASES: &[Case] = &[
         },
         expect: &[
             |found| is_extern(found, 3),
+            |found| is_source(found, 3, "extern"),
+            |found| is_source(found, 3, "std"),
             |found| is_build(found, "dev", NO_STD_CRATE),
             |found| is_build(found, "release", NO_STD_CRATE),
         ],
@@ -180,6 +199,8 @@ const CASES: &[Case] = &[
         plant: |fixture| plant_head(fixture, "#![no_std]\n#[cfg(windows)]\nextern crate std;"),
         expect: &[
             |found| is_extern(found, 3),
+            |found| is_source(found, 3, "extern"),
+            |found| is_source(found, 3, "std"),
             |found| is_build(found, "dev", NO_STD_CRATE),
             |found| is_build(found, "release", NO_STD_CRATE),
         ],
@@ -194,6 +215,8 @@ const CASES: &[Case] = &[
         },
         expect: &[
             |found| is_extern(found, 3),
+            |found| is_source(found, 3, "extern"),
+            |found| is_source(found, 3, "std"),
             |found| is_build(found, "release", NO_STD_CRATE),
         ],
     },
@@ -202,6 +225,7 @@ const CASES: &[Case] = &[
         plant: |fixture| plant_head(fixture, "#![cfg_attr(target_os = \"none\", no_std)]"),
         expect: &[
             is_not_no_std,
+            |found| is_source(found, 1, "no_std"),
             |found| is_build(found, "dev", NO_STD_CRATE),
             |found| is_build(found, "release", NO_STD_CRATE),
         ],
@@ -247,6 +271,8 @@ const CASES: &[Case] = &[
         },
         expect: &[
             |found| is_extern(found, 13),
+            |found| is_source(found, 13, "unsafe"),
+            |found| is_source(found, 13, "extern"),
             |found| is_build(found, "dev", "unsafe"),
             |found| is_build(found, "release", "unsafe"),
         ],
@@ -260,9 +286,79 @@ const CASES: &[Case] = &[
             );
         },
         expect: &[
+            |found| is_source(found, 13, "unsafe"),
+            |found| is_source(found, 13, "asm!"),
             |found| is_build(found, "dev", "unsafe"),
             |found| is_build(found, "release", "unsafe"),
         ],
+    },
+    Case {
+        name: "no_std in a comment, and only under the default panic strategy",
+        plant: |fixture| {
+            plant_head(
+                fixture,
+                "/*\n#![no_std]\n*/\n#![cfg_attr(not(panic = \"abort\"), no_std)]",
+            );
+        },
+        expect: &[is_not_no_std, |found| is_source(found, 4, "no_std")],
+    },
+    Case {
+        name: "the standard library through include! of a file outside the library",
+        plant: |fixture| {
+            plant_head(fixture, "#![no_std]\ninclude!(\"../ext.rs\");");
+            fixture.file(TOP, "ext.rs", Some(HIDDEN_STD));
+        },
+        expect: &[
+            |found| is_source(found, 2, "include!"),
+            |found| is_extern_in(found, "crates/ironafs-xdr/ext.rs", 2),
+        ],
+    },
+    Case {
+        name: "the standard library through a module path outside the library",
+        plant: |fixture| {
+            plant_head(
+                fixture,
+                "#![no_std]\n#[path = \"../outside.rs\"]\nmod outside;",
+            );
+            fixture.file(TOP, "outside.rs", Some(HIDDEN_STD));
+        },
+        expect: &[
+            |found| is_source(found, 2, "#[path]"),
+            |found| is_extern_in(found, "crates/ironafs-xdr/outside.rs", 2),
+        ],
+    },
+    Case {
+        name: "extern crate alloc under a cfg",
+        plant: |fixture| plant_head(fixture, "#![no_std]\n#[cfg(not(panic = \"abort\"))]"),
+        expect: &[|found| is_source(found, 3, "extern")],
+    },
+    Case {
+        name: "assembly under a panic strategy no build uses",
+        plant: |fixture| {
+            plant_head(
+                fixture,
+                "#![no_std]\n#[cfg(panic = \"abort\")]\npub fn raw() { unsafe { core::arch::asm!(\"nop\") } }",
+            );
+        },
+        expect: &[
+            |found| is_source(found, 3, "unsafe"),
+            |found| is_source(found, 3, "asm!"),
+        ],
+    },
+    Case {
+        name: "the alloc crate renamed std",
+        plant: |fixture| plant_head(fixture, "#![no_std]\nuse alloc as std;"),
+        expect: &[|found| is_source(found, 2, "std")],
+    },
+    Case {
+        name: "an attribute built from a macro fragment",
+        plant: |fixture| {
+            plant_head(
+                fixture,
+                "#![no_std]\nmacro_rules! hide { ($a:meta) => { #[$a] mod x {} }; }",
+            );
+        },
+        expect: &[|found| is_source(found, 2, "#[$")],
     },
     Case {
         name: "a root cargo configuration that caps the lints",
@@ -278,6 +374,8 @@ const CASES: &[Case] = &[
         },
         expect: &[
             |found| is_config(found, ".cargo/config.toml", 2, "rustflags"),
+            |found| is_source(found, 13, "unsafe"),
+            |found| is_source(found, 13, "asm!"),
             |found| is_build(found, "dev", "unsafe"),
             |found| is_build(found, "release", "unsafe"),
         ],

@@ -11,22 +11,29 @@
 //! foreign functions and assembly.
 //!
 //! Around the build, rules that need no compiler: the cargo configuration
-//! may not change the flags the build runs with, the source may say
-//! `extern` only as `extern crate alloc;`, and a pure crate's dependencies
-//! are pure crates with no build script, procedural macro, native library
-//! or feature.
+//! may not change the flags the build runs with, a pure crate's
+//! dependencies are pure crates with no build script, procedural macro,
+//! native library or feature, and its source holds the rules the build
+//! cannot. The build proves only the cfgs it compiles, so each source rule
+//! holds for every cfg: the library root starts with an unconditional
+//! `#![no_std]`, and no file of the library names `std`, another `no_std`,
+//! `unsafe`, assembly, an `extern` other than `extern crate alloc;` with no
+//! attribute, or a way to read source from elsewhere (`include!`,
+//! `#[path]`, a symbolic link).
 
 mod self_test;
 
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::Error;
 use crate::deps::{self, Kind};
 use crate::metadata::{self, Member, Package, Workspace};
+use crate::rust_source::{self, Token, TokenKind, ident, punct};
 
 #[cfg(test)]
 mod tests;
@@ -52,8 +59,31 @@ const CONFIG_WORDS: &[(&str, &str)] = &[
 /// The only line of a pure crate's source that may say `extern`.
 const EXTERN_ALLOWED: &str = "extern crate alloc;";
 
-/// The line that makes a crate `#![no_std]`, which its library root holds.
-const NO_STD: &str = "#![no_std]";
+/// Why a pure library's source may not name what it names.
+const STD: &str = "the standard library is out of a pure crate's reach under every cfg, \
+                   including those the build does not compile";
+const NO_STD: &str = "a pure crate says no_std once, unconditionally, at the start of its \
+                      library root";
+const UNSAFE: &str = "unsafe code, assembly and foreign functions are out of a pure crate's \
+                      reach under every cfg";
+const EXTERN: &str = "a pure crate says extern only as `extern crate alloc;`, with no \
+                      attribute, so no cfg can bring the standard library or a foreign \
+                      function back";
+const ELSEWHERE: &str = "a pure library's source is its own `.rs` files: nothing may read \
+                         source or data from elsewhere, where these rules do not look";
+const FRAGMENT: &str = "an attribute or macro call built from a macro fragment can hide \
+                        `#[path]` or `include!` from this check";
+
+/// Built-in macros a pure library may not call or import: they read files
+/// or write machine code.
+const FORBIDDEN_MACROS: &[(&str, &str)] = &[
+    ("include", ELSEWHERE),
+    ("include_str", ELSEWHERE),
+    ("include_bytes", ELSEWHERE),
+    ("asm", UNSAFE),
+    ("global_asm", UNSAFE),
+    ("naked_asm", UNSAFE),
+];
 
 /// Target kinds a crate in a pure crate's closure may have: its library and
 /// targets that are never shipped.
@@ -97,11 +127,26 @@ pub(crate) enum Violation {
         reason: &'static str,
     },
     NoLibrary(String),
+    LibraryOutside {
+        name: String,
+        lib_root: PathBuf,
+    },
     NotNoStd(PathBuf),
     Extern {
         file: PathBuf,
         line: usize,
     },
+    Source {
+        file: PathBuf,
+        line: usize,
+        name: String,
+        reason: &'static str,
+    },
+    Unreadable {
+        file: PathBuf,
+        error: String,
+    },
+    Symlink(PathBuf),
     Closure {
         from: String,
         via: Vec<String>,
@@ -144,10 +189,38 @@ impl fmt::Display for Violation {
                 formatter,
                 "{name} is a pure crate with no library target (ADR 0004, C4, point 1)"
             ),
+            Self::LibraryOutside { name, lib_root } => write!(
+                formatter,
+                "{name}'s library root {} is outside its package: a pure crate's source is \
+                 read from its own directory (ADR 0004, C4, point 1)",
+                lib_root.display()
+            ),
             Self::NotNoStd(file) => write!(
                 formatter,
-                "{}: a pure crate's library root has the line `{NO_STD}`, unconditionally \
+                "{}: a pure crate's library root starts with `#![no_std]`, unconditionally \
                  (ADR 0004, C4, point 1)",
+                file.display()
+            ),
+            Self::Source {
+                file,
+                line,
+                name,
+                reason,
+            } => write!(
+                formatter,
+                "{}:{line}: names {name}: {reason} (ADR 0004, C4, point 1)",
+                file.display()
+            ),
+            Self::Unreadable { file, error } => write!(
+                formatter,
+                "{}: cannot be read as Rust source ({error}), so the pure-crate rules cannot \
+                 be checked on it (ADR 0004, C4, point 1)",
+                file.display()
+            ),
+            Self::Symlink(file) => write!(
+                formatter,
+                "{}: is a symbolic link: a pure crate's files are its own, so no link can \
+                 bring in source from where these rules do not look (ADR 0004, C4, point 1)",
                 file.display()
             ),
             Self::Extern { file, line } => write!(
@@ -362,10 +435,138 @@ pub(crate) fn extern_lines(text: &[u8]) -> Vec<usize> {
         .collect()
 }
 
-/// Whether a library root holds the `#![no_std]` line.
-pub(crate) fn has_no_std(text: &[u8]) -> bool {
-    text.split(|byte| *byte == b'\n')
-        .any(|line| line.trim_ascii() == NO_STD.as_bytes())
+/// The leading inner attributes of a file, `#![...]` from its start, each
+/// as the range of the tokens inside its brackets. An attribute that does
+/// not close ends the list.
+fn inner_attributes(tokens: &[Token]) -> Vec<Range<usize>> {
+    let mut found = Vec::new();
+    let mut index = 0;
+    while punct(tokens.get(index)) == Some('#')
+        && punct(tokens.get(index + 1)) == Some('!')
+        && punct(tokens.get(index + 2)) == Some('[')
+    {
+        let start = index + 3;
+        let mut depth = 1_usize;
+        let mut at = start;
+        while depth > 0 {
+            match tokens.get(at).map(|token| &token.kind) {
+                Some(TokenKind::Punct('[')) => depth += 1,
+                Some(TokenKind::Punct(']')) => depth -= 1,
+                Some(_) => {}
+                None => return found,
+            }
+            at += 1;
+        }
+        found.push(start..at - 1);
+        index = at;
+    }
+    found
+}
+
+/// The index of the `no_std` token of the library root's `#![no_std]`: an
+/// inner attribute among those the file starts with, holding nothing else.
+/// Comments and strings are not tokens, so text in them never counts.
+pub(crate) fn root_no_std(tokens: &[Token]) -> Option<usize> {
+    inner_attributes(tokens)
+        .into_iter()
+        .find(|range| range.len() == 1 && ident(tokens.get(range.start)) == Some("no_std"))
+        .map(|range| range.start)
+}
+
+/// What a pure library's source names that it may not, under any cfg:
+/// `std`; `no_std` other than at the token `allowed_no_std`; `unsafe`;
+/// assembly and the macros that read files, called or imported; a macro
+/// called through a fragment; `#[path]` or a fragment in an attribute; and
+/// `extern` other than an `extern crate alloc;` with no outer attribute. A
+/// raw identifier such as `r#unsafe` is a name, not the keyword.
+pub(crate) fn library_names(
+    tokens: &[Token],
+    allowed_no_std: Option<usize>,
+) -> Vec<(usize, String, &'static str)> {
+    let mut found = Vec::new();
+    // The depth of brackets in the attribute being read, and whether it is
+    // an outer attribute.
+    let mut attribute: Option<(usize, bool)> = None;
+    let mut fragment_reported = false;
+    // The index of the `]` that closed the last outer attribute.
+    let mut outer_end = None;
+    for (index, token) in tokens.iter().enumerate() {
+        let after = tokens.get(index + 1);
+        let line = token.line;
+        if let Some((depth, outer)) = attribute.as_mut() {
+            match token.kind {
+                TokenKind::Punct('[') => *depth += 1,
+                TokenKind::Punct(']') => {
+                    *depth = depth.saturating_sub(1);
+                    if *depth == 0 {
+                        if *outer {
+                            outer_end = Some(index);
+                        }
+                        attribute = None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let in_attribute = attribute.is_some();
+        match &token.kind {
+            TokenKind::Punct('#') if !in_attribute => {
+                let inner = punct(after) == Some('!');
+                let bracket = if inner { tokens.get(index + 2) } else { after };
+                if punct(bracket) == Some('[') {
+                    // The bracket itself is counted when it is reached.
+                    attribute = Some((0, !inner));
+                    fragment_reported = false;
+                }
+            }
+            TokenKind::Punct('$') => {
+                if in_attribute && !fragment_reported {
+                    fragment_reported = true;
+                    found.push((line, "#[$".to_owned(), FRAGMENT));
+                } else if let Some(name) = ident(after)
+                    && punct(tokens.get(index + 2)) == Some('!')
+                {
+                    found.push((line, format!("${name}!"), FRAGMENT));
+                }
+            }
+            TokenKind::Ident(word) => {
+                let is_macro = punct(after) == Some('!');
+                if word == "std" {
+                    found.push((line, word.clone(), STD));
+                } else if word == "no_std" && allowed_no_std != Some(index) {
+                    found.push((line, word.clone(), NO_STD));
+                } else if !token.raw && word == "unsafe" {
+                    found.push((line, word.clone(), UNSAFE));
+                } else if !token.raw && word == "extern" {
+                    let alloc = ident(after) == Some("crate")
+                        && ident(tokens.get(index + 2)) == Some("alloc")
+                        && punct(tokens.get(index + 3)) == Some(';');
+                    let gated = index
+                        .checked_sub(1)
+                        .is_some_and(|before| outer_end == Some(before));
+                    if !alloc || gated {
+                        found.push((line, word.clone(), EXTERN));
+                    }
+                } else if let Some((_, reason)) = FORBIDDEN_MACROS
+                    .iter()
+                    .find(|(name, _)| is_macro && name == word)
+                {
+                    found.push((line, format!("{word}!"), reason));
+                } else if in_attribute && word == "path" && punct(after) == Some('=') {
+                    found.push((line, "#[path]".to_owned(), ELSEWHERE));
+                }
+            }
+            _ => {}
+        }
+    }
+    for used in rust_source::use_paths(tokens) {
+        let last = used.path.rsplit("::").next().unwrap_or_default();
+        if let Some((_, reason)) = FORBIDDEN_MACROS.iter().find(|(name, _)| *name == last) {
+            found.push((used.line, used.path, reason));
+        }
+    }
+    found.sort_by_key(|(line, _, _)| *line);
+    found
 }
 
 fn shown(workspace: &Workspace, path: &Path) -> PathBuf {
@@ -378,8 +579,41 @@ fn read(path: &Path) -> Result<Vec<u8>, Error> {
     fs::read(path).map_err(Error::path_io("read file", path))
 }
 
-/// Every file below `dir`, in path order.
-fn all_files(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), Error> {
+/// Every file below `dir` in path order, and apart from them every
+/// symbolic link, which is not followed. The directory `skip` is left out.
+///
+/// # Errors
+///
+/// Returns an error if a directory cannot be listed.
+pub(crate) fn package_files(
+    dir: &Path,
+    skip: &Path,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Error> {
+    let mut files = Vec::new();
+    let mut links = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for path in list(&dir)? {
+            let metadata =
+                fs::symlink_metadata(&path).map_err(Error::path_io("read file type", &path))?;
+            if metadata.is_symlink() {
+                links.push(path);
+            } else if metadata.is_dir() {
+                if path != skip {
+                    pending.push(path);
+                }
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    links.sort();
+    Ok((files, links))
+}
+
+/// The entries of `dir`, in path order.
+fn list(dir: &Path) -> Result<Vec<PathBuf>, Error> {
     let mut entries = fs::read_dir(dir)
         .and_then(|entries| {
             entries
@@ -388,14 +622,7 @@ fn all_files(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), Error> {
         })
         .map_err(Error::path_io("list source directory", dir))?;
     entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            all_files(&path, found)?;
-        } else {
-            found.push(path);
-        }
-    }
-    Ok(())
+    Ok(entries)
 }
 
 /// The rules that need no compiler: the cargo configuration, each pure
@@ -429,26 +656,78 @@ pub(crate) fn static_violations(workspace: &Workspace) -> Result<(Vec<Violation>
     Ok((violations, configs.len()))
 }
 
-/// The library root's `#![no_std]` line, and `extern` in any file below
-/// the library's directory, whatever its extension: `include!` can read a
-/// file that is not Rust.
+/// The source rules of a pure crate. Every file of its package is read
+/// for `extern`, whatever its extension, and none may be a symbolic link.
+/// The `.rs` files below the library's directory, which are all the
+/// library can compile once `#[path]` and `include!` are refused, are read
+/// as tokens for what the library may not name.
 fn source_violations(workspace: &Workspace, member: &Member) -> Result<Vec<Violation>, Error> {
     let (Some(lib_root), Some(lib_dir)) = (&member.lib_root, member.lib_dir()) else {
         return Ok(vec![Violation::NoLibrary(member.name.clone())]);
     };
     let mut violations = Vec::new();
-    if !has_no_std(&read(lib_root)?) {
-        violations.push(Violation::NotNoStd(shown(workspace, lib_root)));
+    if !lib_dir.starts_with(&member.dir) {
+        violations.push(Violation::LibraryOutside {
+            name: member.name.clone(),
+            lib_root: shown(workspace, lib_root),
+        });
     }
-    let mut files = Vec::new();
-    all_files(lib_dir, &mut files)?;
+    let (files, links) = package_files(&member.dir, &workspace.target_dir)?;
+    violations.extend(
+        links
+            .iter()
+            .map(|link| Violation::Symlink(shown(workspace, link))),
+    );
+    let mut root_found = false;
     for file in files {
-        for line in extern_lines(&read(&file)?) {
+        let text = read(&file)?;
+        for line in extern_lines(&text) {
             violations.push(Violation::Extern {
                 file: shown(workspace, &file),
                 line,
             });
         }
+        let is_library_source = file.starts_with(lib_dir)
+            && file.extension().is_some_and(|extension| extension == "rs");
+        if !is_library_source {
+            continue;
+        }
+        let source = String::from_utf8(text).map_err(|_| "not UTF-8".to_owned());
+        match source
+            .and_then(|source| rust_source::tokens(&source).map_err(|error| error.to_string()))
+        {
+            Ok(tokens) => {
+                let allowed = if file == *lib_root {
+                    root_found = true;
+                    let allowed = root_no_std(&tokens);
+                    if allowed.is_none() {
+                        violations.push(Violation::NotNoStd(shown(workspace, lib_root)));
+                    }
+                    allowed
+                } else {
+                    None
+                };
+                for (line, name, reason) in library_names(&tokens, allowed) {
+                    violations.push(Violation::Source {
+                        file: shown(workspace, &file),
+                        line,
+                        name,
+                        reason,
+                    });
+                }
+            }
+            Err(error) => violations.push(Violation::Unreadable {
+                file: shown(workspace, &file),
+                error,
+            }),
+        }
+    }
+    if !root_found
+        && !violations
+            .iter()
+            .any(|found| matches!(found, Violation::LibraryOutside { .. }))
+    {
+        violations.push(Violation::NotNoStd(shown(workspace, lib_root)));
     }
     Ok(violations)
 }
@@ -543,8 +822,7 @@ pub(crate) fn core_sysroot(toolchain: &Path, targets: &[String], dir: &Path) -> 
         let from = toolchain.join("lib/rustlib").join(target).join("lib");
         let to = dir.join("lib/rustlib").join(target).join("lib");
         fs::create_dir_all(&to).map_err(Error::path_io("create sysroot directory", &to))?;
-        let mut libraries = Vec::new();
-        all_files(&from, &mut libraries)?;
+        let libraries = list(&from)?;
         let mut copied = Vec::new();
         for library in libraries {
             let name = library.file_name().unwrap_or_default().to_string_lossy();
