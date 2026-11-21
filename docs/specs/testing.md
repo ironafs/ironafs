@@ -13,7 +13,7 @@ change that weakens an obligation on class S or R code is class S
 Sections keep their numbers once the specification is reviewed. Labels
 follow [README](README.md), "Labelling claims". Source ids (T1, T2 and so
 on) are in section 12; outside documents are registered in the
-[README](README.md)'s register of editions (rows E3 to E8).
+[README](README.md)'s register of editions (rows E3 to E12).
 
 ## 1. What this implements
 
@@ -226,13 +226,19 @@ it is broken.
 1. **Unit tests** live in `src/<module>/tests.rs` (rule 15). In a pure
    crate they name only `core` and `alloc` paths, never `std`, not even
    under `cfg(test)`. A test that needs `std` is an integration test in
-   `tests/it/` `[T3: owner's decision 1]`.
+   `tests/it/` `[T3: owner's decision 1]`. A build of the library does not
+   compile its unit tests, and a test build links every development
+   dependency, so neither shows this rule holds: an `xtask` check reads
+   every source file under a pure crate's `src/`, test modules included,
+   and fails on a `std` path (5.5, the pull-request row) `[OWN]`.
 2. **Test support in pure crates.** A pure crate's unit tests may use
    `ironafs-test-support`'s `Property` and `Source`, whose use names no
    `std` path. Every other helper of that crate is used only from
    `tests/it/`, where the crate under test is linked as a dependency like
    any other user, so the helper and the test see the same copy of its
-   types `[T3: owner's decision 2]`.
+   types `[T3: owner's decision 2]`. The check of point 1 also fails on a
+   use of any other item of `ironafs-test-support` under a pure crate's
+   `src/`.
 3. **Integration tests:** `tests/it/main.rs` and one module per subject
    (rule 20). Tests generated from codec definitions go in
    `tests/it/generated.rs` and its children `tests/it/generated/<subject>.rs`,
@@ -254,9 +260,11 @@ it is broken.
    names the issue.
 6. **Fuzz targets:** `fuzz/fuzz_targets/<crate>_<subject>.rs` (rule 20).
    Tracked seeds are under `fuzz/seeds/<target>/`, built from the golden
-   vectors and the reject corpus. `fuzz/corpus/` and `fuzz/artifacts/` are
-   the engine's working directories and are ignored by git, so a crash
-   input is never committed or published by accident.
+   vectors and the reject corpus. The runner passes the engine its working
+   corpus directory and its crash-output prefix explicitly, both under
+   paths git ignores, so a crash input is never committed or published by
+   accident. By default the engine writes a crash input to its working
+   directory, under a prefix an option sets `[E9: CONFIRMED]`.
 7. **Simulator scenarios** and their seed lists live in `ironafs-sim`'s
    library, so the replay command and the tests call the same function.
 8. **Benchmarks:** `benches/<name>/main.rs` with `harness = false`
@@ -310,7 +318,8 @@ item that does not apply says why in one line. Ids are stable.
   the input (D3); on error, the offset is within the input; and the
   decoder's memory accounting, where its specification defines one, stays
   within the message's budget for every input, accepted or not. The
-  target's maximum input length is the message cap plus one, and its
+  target's maximum input length, which the engine takes as an option
+  `[E9: CONFIRMED]`, is the message cap plus one, and its
   tracked seeds include inputs at the cap and at the cap plus one, so the
   engine starts at the boundary instead of having to find it.
 - **D10 Stack:** the largest valid input decodes on a thread with the
@@ -351,7 +360,9 @@ item that does not apply says why in one line. Ids are stable.
   the seeded fake, the simulator's and the production driver. A rule that
   holds in one and not another fails on that side. A body that runs
   against fewer implementations than exist, or passes with no case run,
-  fails. An implementation that can inject faults runs the body with
+  fails. Which implementations exist is found by the seam census (5.5,
+  point 10), which reads the source rather than trusting the body's own
+  list. An implementation that can inject faults runs the body with
   faults off and asserts that none fired `[OWN: one body is what makes
   the simulator's answers the production driver's answers]`.
 - **S2 Fault conformance:** each fault the simulator injects (no space, a
@@ -472,7 +483,12 @@ Everything in 5.2.1, plus:
   error variant and every refusal or audit event of the catalogue, and
   each specification's refusal cases by their section 10 id, and fails if
   one is asserted by no test `[OWN: one error variant can serve several
-  guards, so the cases are counted, not only the variants]`.
+  guards, so the cases are counted, not only the variants]`. A test
+  claims a case by a line in its crate's `tests/refusal-cases.txt` (the
+  test's name, the specification, the case id); the check fails on a
+  case id its specification does not define and on a test name the
+  inventory does not hold, so the claims stay out of source and cannot
+  name a test that does not exist.
 - **N2 Every guard added or changed on class S or R code** is shown by a
   planted defect: the diff of the plant, the named assertion going red,
   the plant reverted, and the unplanted run green. A plant that does not
@@ -536,17 +552,22 @@ Everything in 5.2.1, plus:
    row by its id, and then fails listing every failing id.
 2. **Generated per-message tests.** The `xtask` generator that emits the
    codecs of `ironafs-proto`, `ironafs-ipc` and `ironafs-events` also
-   emits, for every message: D3 both ways; D4 for every variable-length
-   field at its cap and the cap plus one; D5 over its prefixes; D6 over
-   every padding and reserved byte and every discriminant; the memory
-   budget check; and D10. The generated files are checked in, and CI
+   emits, for every message it generates a decoder for: D3 both ways; D4
+   for every variable-length field at its cap and the cap plus one; D5
+   over its prefixes; D6 over every padding and reserved byte and every
+   discriminant; the memory budget check; and D10. For a message it
+   generates only an encoder for (an event carried to a log sink, for
+   example), it emits D4 on the encoder (a field at its cap encodes, the
+   cap plus one is refused) and, for a secret-bearing message, D8. The generated files are checked in, and CI
    regenerates them and fails on any difference. The generator's own tests
    plant codec defects (a padding byte not checked, a cap off by one) and
    show the generated tests turn red. A census check, with its own walker
    of the codec definitions rather than the generator's code, lists every
    obligation above by id (message, field, check) and reconciles it with
    the generated tests that ran; a missing one fails, shown by a planted
-   omission in the generator. Golden vectors are never generated: their
+   omission in the generator. The census takes from the definitions
+   whether each message has a decoder, an encoder or both, so an
+   encode-only message is not counted as missing its decoder tests. Golden vectors are never generated: their
    bytes must be independent of the code.
 3. **The simulator matrix.** A run is a scenario, a topology, a profile
    and a seed.
@@ -602,6 +623,9 @@ Everything in 5.2.1, plus:
    | Model tests | a planted divergence in the model is caught within the case budget |
    | Simulator invariants | one test-only mutation switch per invariant, caught within the pull-request seeds; exercise counts above zero |
    | Race scenarios | the interleaving witness (K5); a planted schedule that never interleaves fails |
+   | Fuzz targets | a planted panic in the decoder on the tracked seed at the cap, caught by the seed replay (5.3, point 6); a planted non-determinism (a different result on the second decode), caught by D9's same-result assertion |
+   | Seam conformance bodies (S1, S2) | a planted wrong implementation, a fake that breaks one rule of the seam, fails the body; a planted fault that surfaces as another error kind fails S2 |
+   | Published conformance corpora | a row with one expected byte changed fails, in the conformance runner's own test |
    | Guards on class S and R code | N2's planted defect |
    | `xtask` checks | `--self-test`, which plants a failure and confirms it is caught (workflow §3b) |
    | Clippy bans | each banned path resolves, since a path that names nothing bans nothing (a planted misspelling fails the check), and each ban fires on a planted call |
@@ -638,11 +662,22 @@ Everything in 5.2.1, plus:
      directories and files named `tests.rs` out of its report by default
      `[E5: CONFIRMED]`, which matches rule 15's unit-test files; other
      exclusions are file patterns in one checked-in list, each with a
-     reason, never source attributes or `cfg(coverage)` code.
-   - The report has four tables: hand-written code in the pure decoder and
-     state-machine crates; generated codec files; `ironafs-client`, the
-     drivers, `ironafs-os`, `ironafs-gss` and the operating-system layers,
-     per target; and `xtask`, `ironafs-sim` and `ironafs-test-support`.
+     reason, passed through the tool's file-name pattern option
+     `[E5: CONFIRMED]`, never source attributes or `cfg(coverage)` code.
+   - The report has four tables. The first is the hand-written code of the
+     pure decoder and state-machine crates: `ironafs-xdr`, `ironafs-rx`,
+     `ironafs-rxkad`, `ironafs-rxgk`, `ironafs-proto`, `ironafs-vfs`,
+     `ironafs-cache`, `ironafs-auth`, `ironafs-ipc`, `ironafs-config` and
+     `ironafs-events`. The second is generated codec files. The third is
+     `ironafs-client`, the drivers, `ironafs-os`, `ironafs-gss` and the
+     operating-system layers, per target. The fourth is everything else:
+     the pure crates that neither decode nor hold a state machine
+     (`ironafs-time`, `ironafs-crypto`), `xtask`, `ironafs-sim`,
+     `ironafs-test-support`, and any library target of `ironafsd` or
+     `ironafs-cli`. A crate added to C4, point 1, is assigned to a table
+     in the pull request that adds it, and `cargo xtask coverage` fails on
+     a crate in no table or in two `[OWN: a crate in no table escapes the
+     ratchet without anyone deciding it should]`.
    - **Floors.** For the first month of nightly figures, nothing fails on
      a figure. After it, the first table only has a ratchet: each crate's
      uncovered-line count is checked in, with one line for each uncovered
@@ -660,11 +695,12 @@ Everything in 5.2.1, plus:
      checklist's tool-pinning items. It is a standalone tool, not linked
      (rule 21). It runs tests through nextest when told to, splits a run
      into shards, and can limit a run to the mutants a diff touches
-     `[E6: CONFIRMED]`. Its exclusions live in its configuration file,
-     never as source attributes.
+     `[E6: CONFIRMED]`. Its exclusions live in its configuration file, as
+     name patterns `[E6: CONFIRMED]`, never as source attributes.
    - Nightly, sharded, over the pure crates and `ironafs-client`. On a
      pull request, limited to the diff over the pure crates it touches,
-     reported and not blocking until the nightly baseline is clean.
+     and report only (5.5, point 1). Making it required is a revisit
+     trigger of section 11, once the nightly baseline is clean.
    - Every invocation passes `--retries 0` to nextest (point 6).
    - Each surviving mutant is killed by a new test or listed in
      `tests/mutants-accepted.txt` with a one-line reason (an equivalent
@@ -673,6 +709,14 @@ Everything in 5.2.1, plus:
      out and unviable `[E6: CONFIRMED]`. A mutant that does not build, or
      a run that selected no test, is never "caught". A diff run with no
      mutants says so; a missing shard fails the job.
+   - The tool stops a mutant's tests after a timeout and moves on to the
+     next mutant `[E6: CONFIRMED]`. A timed-out mutant is reported in its
+     own count, never as caught or missed. Each one is handled like a
+     surviving mutant: a test that fails on it within its deadline is
+     added, or its line in `tests/mutants-accepted.txt` says the mutant
+     only makes the code hang `[OWN: a hang is a defect the suite should
+     report as a failure, but a timeout depends on the machine's speed,
+     so it proves less than a failing assertion]`.
    - Mutation testing does not replace N2's planted defects for class S
      guards.
 5. **The inventory ratchet** `[T3: owner's decision 9]`.
@@ -682,13 +726,29 @@ Everything in 5.2.1, plus:
      the filter `[E3: CONFIRMED]`. The inventory is keyed by crate, test
      binary, feature set and target, and compared with the checked-in
      `tests/inventory/<crate>.txt`.
+   - Each entry carries the tier and venue that run it, from 5.5's closed
+     set; an entry without one is the pull-request tier's on hosted
+     runners. A job reconciles the entries tagged for its own tier and
+     venue, and leaves the others to the job that is theirs: a venue test
+     that compiles on a hosted runner but cannot run there is filtered
+     out of the pull-request job and is checked by its venue's manifest,
+     which fails unless every entry tagged for it ran and passed. A tag
+     that names no tier or venue of 5.5 fails `[OWN: a test that only
+     its venue can run would otherwise have to be marked quarantined on
+     every pull request, which would make quarantine meaningless]`.
+   - A sharded run is reconciled over the union of its shards; a shard
+     that did not report fails the job (5.5, point 1).
    - The inventory is reconciled with the run's own results: a listed
      test that did not run and pass, ignored and filtered tests included,
      fails the job, except a test marked quarantined with its issue
      (point 6), which stays listed, may be skipped, and is printed by name
      as skipped.
    - A test in the run and missing from the inventory fails, so the file
-     stays exact; `cargo xtask inventory update` adds new tests.
+     stays exact; `cargo xtask inventory update` adds new tests for the
+     targets the developer's machine can list. For any other target, the
+     failing job prints the exact lines to add, and the contributor copies
+     them `[OWN: listing a target's tests needs a machine that runs that
+     target's test binaries]`.
    - Removal is checked against `main`'s inventory, not only the pull
      request's own files: every name gone from it needs a line in
      `tests/inventory/removed.txt` (name, reason, pull request), a file
@@ -703,20 +763,27 @@ Everything in 5.2.1, plus:
      same total.
 6. **No retries, and the flaky-test rule** (rule 7; rule 15).
    - Every profile and every command runs with retries at zero; a check
-     fails any profile or command with retries above zero.
+     fails any profile, per-test override, command or workflow environment
+     that sets retries above zero. nextest takes retries from its command
+     line, an environment variable, a profile and per-test overrides
+     `[E10: CONFIRMED]`, so the check reads all four.
    - A test that passes and fails on the same revision is a bug: an issue
      is opened with the seed, the machine and both runs, and the pull
      request that exposed it waits until the test is fixed or the issue is
-     linked as a blocker the owner accepts.
+     linked as a blocker the owner accepts. When one of the runs was a
+     scheduled job, the issue holds only what 5.5, point 2, lets leave
+     that job: no seed, input or replay command from it.
    - Quarantine means only an ignored or skipped test, never a retry, and
      needs an issue and the owner's decision. A quarantined test stays in
      the inventory, marked (point 5), so it cannot vanish.
    - A diagnostic re-run is a separate run and never changes the first
      result. A failing simulator seed is never flaky: it is a reproducer.
    - A timeout override cites measured times. Heavy tests join a
-     thread-capped test group instead of getting a longer timeout. A crate
-     that runs the simulator has a terminating timeout override, so a run
-     that never ends fails.
+     thread-capped test group instead of getting a longer timeout; nextest
+     limits how many tests of a group run at once `[E10: CONFIRMED]`. A
+     crate that runs the simulator has a per-test timeout that terminates
+     the test after a stated number of slow periods `[E10: CONFIRMED]`, so
+     a run that never ends fails.
 7. **Paired controls.** A harness check (a fixture, a scripted fault, a
    capture filter) is shown working by a paired run with the condition
    present and absent, giving opposite results. A scripted fault or crash
@@ -781,10 +848,10 @@ by nature.
 
 | Tier | Trigger | What runs | Budget | Venue |
 |---|---|---|---|---|
-| Pull request | every push to a pull request, and `main` | build; Clippy for Linux, macOS and Windows targets; nextest (unit, integration, generated, regression, fuzz seed replay); doc-tests; native build and tests on each operating system whose `cfg` code exists (rule 15); the layer smoke once the layer exists; the inventory ratchet; simulator scenarios on fixed seeds; counted benchmarks; every `xtask` check and its `--self-test`; the pure crates' build against `core` and `alloc` only; mutation testing over the diff (report only); freshness (advisory) | property tests 256 cases each; simulator 8 fixed seeds per applicable (scenario, topology, profile), 256 per race scenario; D5 per 5.2.1; each job under 20 minutes of wall time | GitHub-hosted runners only (O49, point 3) |
+| Pull request | every push to a pull request, and `main` | build; Clippy for Linux, macOS and Windows targets; nextest (unit, integration, generated, regression, fuzz seed replay); doc-tests; native build and tests on each operating system whose `cfg` code exists (rule 15); the layer smoke once the layer exists; the inventory ratchet; simulator scenarios on fixed seeds; counted benchmarks; every `xtask` check and its `--self-test`; the pure crates' build against `core` and `alloc` only, and the check of their `src/` files (5.1, point 1); the pull-request workflow check (point 11); mutation testing over the diff (report only); freshness (advisory) | property tests 256 cases each; simulator 8 fixed seeds per applicable (scenario, topology, profile), 256 per race scenario; D5 per 5.2.1; each job under 20 minutes of wall time | GitHub-hosted runners only (O49, point 3) |
 | Nightly | schedule | property tests with a fresh seed; fresh simulator seeds; event-sequence fuzzing; each fuzz target for its stated time; mutation testing, sharded; the coverage report; cross-target replay comparison; timed benchmarks once fixed hardware exists | property tests 25,600 cases each; simulator 64 fresh seeds per applicable (scenario, topology, profile); fuzzing 10 minutes per target; every D5 prefix | hosted Linux runners; timed benchmarks on the fixed machine (O49, point 2) |
-| Weekly | schedule | each fuzz target for its longer time, resuming from the carried corpus (point 6); corpus minimisation; the interoperability harness with every fault case of O48, point 2 | fuzzing 60 minutes per target | hosted Linux runners with the test cell (L40) |
-| Phase gate and pre-release | each phase gate, and before a release candidate | the per-OS acceptance cases and the layer gates (L13, L22, L41); the interoperability matrix; the compatibility corpora on every supported version; a soak against the simulator and the real cell; freshness (required) | as the gate's manifest lists; the soak 24 hours | to M3: hosted Linux runners with the containerised cell (O48, point 1) and a Linux guest (L40, point 2), and disposable Windows guests for the SMB spike. From M4: the private CI repository's isolated runners at reviewed revisions (O49, point 4), disposable guests, and labs (O49, point 5) |
+| Weekly | schedule | each fuzz target for its longer time, from its tracked seeds (point 6); the interoperability harness with every fault case of O48, point 2 | fuzzing 60 minutes per target | hosted Linux runners with the test cell (L40) |
+| Phase gate and pre-release | each phase gate, and before a release candidate | the per-OS acceptance cases and the layer gates (L13, L22, L41); the interoperability matrix; the compatibility corpora on every supported version; a soak against the simulator and the real cell; the inventory, coverage and mutation reports and the seam and ban census (point 10); freshness (required) | as the gate's manifest lists; the soak 24 hours | to M3: hosted Linux runners with the containerised cell (O48, point 1) and a Linux guest (L40, point 2), and disposable Windows guests for the SMB spike. From M4: the private CI repository's isolated runners at reviewed revisions (O49, point 4), disposable guests, and labs (O49, point 5) |
 
 1. **A tier passes only on proof that it ran.** Each tier has a checked-in
    manifest (fuzz targets, scenarios, shards, required jobs, by id). Each
@@ -803,7 +870,22 @@ by nature.
    it to the log, and what leaves the runner is built from an allowlist
    (job, target or scenario, revision, test name, outcome, failure class
    and failure kind), never from a test's free text, which can hold a
-   seed, an input or a replay command. Rule 15's printed seed therefore
+   seed, an input or a replay command. The coverage and mutation jobs may
+   also emit their figures and their list of mutants, which name code,
+   never an input. A scheduled job uploads no artefact and puts nothing a
+   test produced or read (an input, a corpus, a seed, test output) in a
+   cache, encrypted or not: on a public repository ciphertext is still
+   published, and a pull request's workflow can restore caches its base
+   branch created, forks included `[E8: CONFIRMED]`, so a cache is
+   readable by anyone who opens a pull request. Its runner keeps nothing
+   once the job ends, so until the private CI repository exists a fresh
+   seed that failed is kept nowhere; the maintainer reproduces the failure
+   by running the target privately at the reported revision, and a
+   failure that does not reproduce stays open (as its public issue when
+   ordinary, on the private route when restricted). From M4,
+   restricted-class jobs (fuzzing, decoder and invariant properties, the
+   guards of N2) run in the private CI repository, which keeps their
+   reproducers. Rule 15's printed seed therefore
    reaches the person who runs a test by hand, never a public scheduled
    log. A failing seed reaches tracked files only as a reviewed regression
    (5.3, point 7). The fixed seeds of the pull-request tier are public by
@@ -816,7 +898,10 @@ by nature.
    complete when its first attempt reported every manifest item as run,
    pass or fail; staleness and failure are separate alarms. Re-run
    attempts never count, and a result list cut short by a page or run
-   limit is refused, never read as complete. The check runs on pushes,
+   limit is refused, never read as complete: GitHub's list of workflow
+   runs gives at most 100 runs a page and at most 1,000 results for a
+   filtered search, and each run carries its attempt number
+   `[E12: CONFIRMED]`. The check runs on pushes,
    on pull requests and on its own schedule, never only inside the
    schedule it watches. On a pull request it is advisory; at a phase gate
    or release candidate it is required. It cannot alert while the
@@ -824,11 +909,12 @@ by nature.
    watcher in the private CI repository takes over `[T3: owner's
    decision 12]`.
 4. **No re-run to green.** A scheduled failure is reported (point 9); a
-   re-run never replaces the first result. Scheduled workflows never
-   cancel a run in progress, so a dispatched run cannot cancel a running
-   nightly.
+   re-run never replaces the first result. Scheduled workflows never set
+   the concurrency option that cancels a run in progress, so a dispatched
+   run cannot cancel a running nightly; without it, a run in progress
+   keeps running and the new run waits `[E11: CONFIRMED]`.
 5. **Fuzzing.** The engine runs only in scheduled jobs, time-boxed per
-   target; pull requests replay the tracked seeds (5.3, point 6). Each
+   target through its total-time option `[E9: CONFIRMED]`; pull requests replay the tracked seeds (5.3, point 6). Each
    target runs as its own invocation, so one target's crash never skips
    the rest; each is recorded as ran, crashed or not run. A check matches
    registered targets, fuzz binaries, tracked seed directories and run
@@ -836,27 +922,31 @@ by nature.
    checks that a job's fuzzing time plus a build reserve fits its timeout.
    When a tier cannot run every target, targets rotate, each with a
    maximum age; one past its age fails the freshness check.
-6. **The weekly corpus.** The weekly run resumes from the working corpus
-   the previous weekly run left. It is held in a cache that only scheduled
-   runs on the default branch write; a pull request's cache is scoped to
-   its own merge reference and cannot be restored by the default branch
-   or written to its scope `[E8: CONFIRMED]`. The nightly fuzz job
-   restores it on every run, because an entry not read for seven days is
-   evicted `[E8: CONFIRMED]`. A missing corpus starts from the tracked
-   seeds and the run reports it. Poisoning: only reviewed code on the
-   default branch writes the corpus, and the corpus only chooses where the
-   engine starts; the tracked seeds are always added, so a lost or altered
-   corpus cannot lower the floor below them, and an input in it that
-   crashes a target is a finding like any other. The corpus holds no crash
-   input: those are in the engine's crash directory, which is never cached
-   and never published in plaintext. Minimised inputs reach
-   `fuzz/seeds/<target>/` only through a reviewed pull request.
+6. **The fuzz corpus.** Until the private CI repository exists, every
+   scheduled fuzz run, nightly and weekly, starts from the target's
+   tracked seeds, and the working corpus it builds ends with its runner:
+   it is never cached, uploaded or carried to the next run (point 2). The
+   weekly run differs from the nightly one only in its time. From M4, the
+   private CI repository carries the corpus between its runs and
+   minimises it (the engine's merge option minimises a corpus while
+   keeping its coverage `[E9: CONFIRMED]`); a minimised input reaches
+   `fuzz/seeds/<target>/` only through a reviewed pull request. Poisoning:
+   only reviewed code writes a carried corpus, and the corpus only chooses
+   where the engine starts; the tracked seeds are always added, so a lost
+   or altered corpus cannot lower the floor below them, and an input in it
+   that crashes a target is a finding like any other. The engine's crash
+   output is never cached, uploaded or published, in plaintext or
+   encrypted `[OWN: a corpus that restarts each run loses the depth a
+   long campaign builds; that cost is accepted until a private place to
+   keep it exists, because a carried corpus on hosted runners is readable
+   by pull requests]`.
 7. **Third-party test servers** (O48, point 1) are pinned by image digest,
    and the `xtask` command re-verifies the digest at every start, so a
    replaced or poisoned image fails closed.
-8. **Build caches.** Warnings are denied through Cargo's setting, not
-   through compiler flags that invalidate the cache; no cache in a release
-   or publish job; no cached binaries. Pre-release runners are single-use,
+8. **Build caches.** Warnings are denied through the workspace lints
+   (rule 5), never through compiler flags added only in CI, so CI builds
+   what a developer builds; no cache in a release or publish job; no
+   cached binaries `[OWN]`. Pre-release runners are single-use,
    one job each.
 9. **Classifying and reporting scheduled failures.** Test jobs run with a
    read-only token and hold no secret. The runner classifies each failure
@@ -869,17 +959,52 @@ by nature.
    | a simulator invariant of authorisation or cache consistency (O22; O45, point 3) | restricted |
    | a test of a guard on class S or R code (N2) | restricted |
    | a panic, abort or other failure the runner cannot classify | restricted |
-   | any other test whose binary or scenario a checked-in list marks ordinary | ordinary |
+   | a failure of a test, or of a simulator invariant, that a checked-in list names as ordinary by its exact test name or invariant id, and whose failure record is that test's own check | ordinary |
 
-   A restricted result leaves only the job, the target, the revision, the
-   class and a digest in any public log, artefact or issue, and goes to the
-   maintainer through the private route of O30 and workflow §6. An ordinary
-   failure files or updates a public issue holding the job, the target or
-   scenario, the revision, the test's name and its failure kind from a
-   fixed list (assertion failed, timed out, simulator error, could not run),
-   and the statement that replay details are not published. A separate
-   reporter job, the only one with issue write access, reads the result
-   file as untrusted data and runs no code from the test jobs.
+   The ordinary list names single tests and invariants, never a whole
+   binary or scenario, since one integration binary or scenario holds
+   restricted and ordinary checks together. Rust's test assertions fail
+   by panicking, like a panic in the code under test, so the exit status
+   cannot tell them apart: a check in `ironafs-test-support`, and the
+   simulator's invariant check, write a structured failure record naming
+   the check before they fail, and the runner reads it from the captured
+   output. A failure of a listed test with no such record, or with a
+   record naming another test or invariant, is restricted `[OWN: a panic
+   in code under test is the failure most likely to be a vulnerability,
+   so it must never pass as an ordinary assertion]`.
+
+   A restricted result leaves only the job, the target, the revision and
+   the class in any public log or issue, and goes to the maintainer
+   through the private route of O30 and workflow §6. No digest of its
+   input is published: a digest of a short input can be reversed by
+   trying every input of that length, and a keyed digest would need a
+   secret the runner does not hold. An ordinary failure files or updates
+   a public issue holding the job, the target or scenario, the revision,
+   the test's name and its failure kind from a fixed list (assertion
+   failed, timed out, simulator error, could not run), and the statement
+   that replay details are not published. A separate reporter job, the
+   only one with issue write access, receives the allowlisted fields from
+   the test jobs through a handoff that creates no artefact, reads them as
+   untrusted data and runs no code from the test jobs.
+10. **Phase-gate evidence.** Each phase gate attaches to its record the
+    inventory of every tier and venue it ran (5.4, point 5), the latest
+    coverage report and the latest nightly mutation results, and a census
+    of every seam and every Clippy ban. The census is built by an `xtask`
+    walker that reads the source: for each seam trait, every
+    implementation and caller, and the conformance run (S1) and fault
+    conformance (S2) of each implementation; for each ban, what it names
+    and the planted call that fires it (5.4, point 1). An implementation
+    without a conformance run, or a ban that names nothing or that no
+    planted call fires, fails the gate. Where the census disagrees with a
+    specification (a seam the specification does not name, or a named
+    implementation that does not exist), the specification is amended, or
+    the code is changed, before the gate passes `[OWN: a gate that
+    trusts each specification's own list of seams cannot see the seam
+    nobody wrote down]`.
+11. **The pull-request workflow check.** An `xtask` check reads every
+    workflow a pull request triggers and fails if a job runs on a runner
+    label outside a checked-in list of GitHub-hosted labels (O49, point 3)
+    or runs a timed benchmark (5.6, point 3).
 
 ### 5.6 Benchmarks
 
@@ -944,7 +1069,9 @@ arithmetic, which D7 tests.
 3. A nightly or weekly failure never blocks unrelated pull requests. It
    opens an issue (5.5, point 9), and the next pull request that touches
    the failing area waits until it is fixed or the owner accepts the issue
-   as a blocker.
+   as a blocker. Until M4 the issue carries no seed (5.5, point 2), so the
+   failure is reproduced privately from its target and revision; one that
+   does not reproduce stays open, never closed as flaky.
 
 ## 8. Security
 
@@ -975,13 +1102,13 @@ arithmetic, which D7 tests.
 | C3, point 6; O45, point 3 | 5.3, point 3; 5.4, points 1 and 8 | an uncaught invariant mutation switch; a case-manifest entry at count zero; the two-process replay test |
 | C4, point 7 | `check-deps`; 8, point 2 | a shipped crate depending on `ironafs-sim` or `ironafs-test-support` |
 | O22; O46, points 1 and 3 | 5.2.8, N1 to N3 | the refusal-coverage check; an unmapped point, or a missing or failed gate result, keeps the mode out |
-| O45, point 6 | 5.3, point 3 | the event-sequence fuzz job missing from the nightly manifest fails the freshness check |
+| O45, point 6 | 5.3, point 3; 5.5, point 5 | the event-sequence fuzz target is a registered fuzz target, so its missing run line fails the fuzz manifest check |
 | O47, point 1 | 5.2.2, M1; 5.2.4, C2 | a planted divergence between client and model |
 | O47, point 2 | 5.4, points 2 and 9 | a property whose required label is under its minimum; the generator's known-answer test |
 | O47, point 3 | 5.2.1, D9; 5.5, point 5 | the fuzz manifest check on a decoder or target without its pair |
 | O48, point 5 | 5.2.5, L3 and L4 | a gate result with no venue named is missing evidence |
 | O49, point 1 | 5.6, point 1 | a planted skip of work changes a count |
-| O49, points 2 and 3 | 5.5 table; 5.6, points 3 and 5 | a timed benchmark in a pull-request workflow (reviewed in the workflow file) |
+| O49, points 2 and 3 | 5.5 table and point 11; 5.6, points 3 and 5 | the pull-request workflow check, on a runner label not in the hosted list or a timed benchmark in a pull-request workflow |
 | Rule 7, no retries | 5.4, point 6 | the retries check on a profile or command with retries above zero |
 | Rule 15, printed seeds | 5.4, point 9; 5.5, point 2 | a property failure report with no seed, in the generator's own tests |
 
@@ -1005,7 +1132,23 @@ build each part (10.6). Each has its paired passing case.
 - `transition_coverage_fails_on_uncovered_pair`;
 - `case_manifest_fails_on_unexercised_case`;
   `crash_outcome_class_at_zero_fails`;
-- `refusal_coverage_fails_on_unasserted_variant`;
+- `refusal_coverage_fails_on_unasserted_variant`, `_on_unasserted_event`,
+  `_on_unasserted_case_id`;
+- `pure_crate_src_check_fails_on_std_path`,
+  `_on_other_test_support_item`;
+- `inventory_check_reconciles_only_own_tier_and_venue`,
+  `_fails_on_unknown_venue_tag`, `_fails_on_unrun_venue_entry`,
+  `_reconciles_union_of_shards`;
+- `coverage_fails_on_crate_in_no_table`, `coverage_ratchet_fails_on_rise`,
+  `_on_function_without_reason`, `coverage_tool_checksum_mismatch_fails`;
+- `mutants_run_never_counts_unbuilt_mutant_caught`,
+  `_fails_on_missing_shard`;
+- `clippy_ban_fails_on_path_that_names_nothing`;
+- `differential_listing_fails_on_truncated_tree`;
+- `seam_census_fails_on_implementation_without_conformance`,
+  `ban_census_fails_on_unfired_ban`;
+- `pr_workflow_check_fails_on_unlisted_runner_label`,
+  `_on_timed_benchmark`;
 - `property_label_below_minimum_fails`;
 - `race_without_interleaving_witness_fails`;
 - `replay_test_red_on_planted_leaks`;
@@ -1018,8 +1161,9 @@ build each part (10.6). Each has its paired passing case.
   `freshness_fresh_on_failed_complete_run`,
   `freshness_incomplete_when_manifest_item_not_run`;
 - `scheduled_log_holds_no_planted_seed`, for a passing run, an ordinary
-  failure and a restricted failure;
-- `unclassified_failure_is_restricted`;
+  failure and a restricted failure; `scheduled_job_uploads_no_artefact`;
+- `unclassified_failure_is_restricted`,
+  `listed_test_panic_without_record_is_restricted`;
 - `fault_feature_absent_in_shipped_build`;
 - `server_image_digest_mismatch_fails`;
 - the `--self-test` of every new `xtask` command.
@@ -1070,7 +1214,9 @@ freshness check, the runner and the reporter (#75); the flaky-test rule
 and the retries check (#76); the fuzz crate and its manifest check (#45);
 the simulator (#79, #96); the timed-benchmark harness (#38); and, planned,
 the refusal-coverage check, the differential listing check, the seam
-conformance bodies and the release-build check of the fault feature.
+conformance bodies, the release-build check of the fault feature, the
+pure-crate source check, the seam and ban census, and the pull-request
+workflow check.
 
 ## 11. Revisit if
 
@@ -1103,10 +1249,12 @@ This page's own triggers:
 - the month of measurements is complete (the budgets of 5.5 and the
   coverage ratchet's start);
 - a pinned tool is abandoned, changes its licence, or changes a fact
-  registered in rows E3 to E8;
+  registered in rows E3 to E12;
 - a golden trace fixture passes its size cap;
 - fixed hardware for timed benchmarks exists (5.6, point 5);
-- the private CI repository exists (5.5, points 3 and 9).
+- the private CI repository exists (5.5, points 2, 3, 6 and 9);
+- the nightly mutation baseline is clean (then mutation testing over a
+  pull request's diff may become required, 5.4, point 4).
 
 ## 12. Sources
 
@@ -1117,10 +1265,14 @@ This page's own triggers:
 | T3 | DECISION | The owner's decisions recorded in issue #63 (section 1's list); the `no_std` decision is also in issue #53 | 1, 5 |
 | E3 | DOCUMENTATION | nextest, "Machine-readable output: test lists", register row E3 | 5.4 |
 | E4 | DOCUMENTATION | The rustc book, "Instrumentation-based code coverage", Rust 1.100.0, register row E4 | 5.4 |
-| E5 | DOCUMENTATION | cargo-llvm-cov, its README and its 0.9.1 release page, register row E5 | 5.4 |
-| E6 | DOCUMENTATION | cargo-mutants user guide, pages on nextest, sharding and the output directory, register row E6 | 5.4 |
+| E5 | DOCUMENTATION | cargo-llvm-cov 0.9.1, its README at the release's tag and its release page, register row E5 | 5.4 |
+| E6 | DOCUMENTATION | cargo-mutants user guide, pages on nextest, sharding, the output directory, filtering mutants and timeouts, register row E6 | 5.4 |
 | E7 | DOCUMENTATION | GitHub Docs, "Events that trigger workflows", section `schedule`, register row E7 | 5.5 |
-| E8 | DOCUMENTATION | GitHub Docs, "Dependency caching reference", cache access restrictions and eviction, register row E8 | 5.5 |
+| E8 | DOCUMENTATION | GitHub Docs, "Dependency caching reference", cache access restrictions, register row E8 | 5.5 |
+| E9 | DOCUMENTATION | LLVM, "libFuzzer – a library for coverage-guided fuzz testing", options and corpus merging, register row E9 | 5.1, 5.2, 5.5 |
+| E10 | DOCUMENTATION | nextest documentation, pages on test groups, slow tests and timeouts, and retries, register row E10 | 5.4 |
+| E11 | DOCUMENTATION | GitHub Docs, "Control the concurrency of workflows and jobs", register row E11 | 5.5 |
+| E12 | DOCUMENTATION | GitHub REST API, "List workflow runs for a workflow", register row E12 | 5.5 |
 | O | OWN | Every point tagged `[OWN]`, with its reason in place | 5 |
 
 Each outside page was read on 2026-11-21 (INSPECTED, workflow §3c), for
@@ -1134,26 +1286,21 @@ None.
 
 ## 13. Open questions
 
-- **Q1. An encrypted crash payload.** Whether a fuzz crash found by a
-  scheduled job before M4 may leave the job as ciphertext encrypted to the
-  maintainer's public key, or stays only as its digest until the private
-  CI repository exists, is decided with the scheduled workflows (#75).
-  This page holds either way: no seed, input or replay command is
-  published in plaintext, and a restricted result shows only its digest
-  (5.5, points 2 and 9).
-- **Q2. Specifications this page points to.** The simulator's
+- **Q1. Specifications this page points to.** The simulator's
   specification and the seams and scheduling specification (#71) are not
   yet reviewed. Where they set the mechanism (the trace's encoding, strict
   replay, the yield points), this page sets only what the tests must show;
   a difference found when they are reviewed is resolved in whichever is
   wrong, in the same pull request.
-- **Q3. Is a cache entry readable outside the repository's workflows?**
-  The weekly corpus (5.5, point 6) assumes a cache entry is not published.
-  If it is readable by anyone who can read the public repository, the
-  corpus is carried another way, settled with the scheduled workflows
-  (#75); the tracked-seed floor holds either way.
-- **Q4. The priority-change scheduler's bound** (K1) is cited only once
+- **Q2. The priority-change scheduler's bound** (K1) is cited only once
   its paper is registered; until then no probability is claimed for it.
+- **Q3. The reporter's issue write access.** O49, point 7, keeps
+  repository write access off every runner. The reporter (5.5, point 9)
+  holds only issue write access, runs no code from the test jobs and
+  builds only the default branch's reviewed code. Whether issue write
+  access on that job falls under point 7 is settled by the class S review
+  of the scheduled workflows (#75); if it does, the reporter moves off
+  hosted runners or files nothing until M4.
 
 ## 14. Review
 
