@@ -466,7 +466,8 @@ early or too late in use.
 1. `afs status` shows: version, cells, per-server state (up or down, last
    contact, round-trip time, callbacks held, revalidation mode), cache
    occupancy, pending stores and conflicts, the active security protocol,
-   and the caller's own token state. It never shows key material. A user
+   the families the callback service listens on (C34, point 2), and the
+   caller's own token state. It never shows key material. A user
    gets all of this in the user projection (O16): server state only as
    the caller's own credential context observed it, and the caller's own
    cache use and pending stores. Machine-wide per-server state and
@@ -1862,12 +1863,20 @@ and the reasons. It is a plan, and it promises no dates.
      phase (N8).
    - Audit (O9, O10) for the audited operations M2a performs (O9,
      point 5), among them the state directory's initialisation (N11,
-     point 6) and the per-cell configuration generation record's
-     initialisation, loss and reset (N27, point 6): the audit checkpoint (O10, point 2), and a
-     durable audit intent before a reset, which is refused if admission
-     fails (O10, points 8 and 10). A cell whose generation record is lost
-     recovers by the administrator's audited reset (N27, point 6);
-     removing the whole state directory is not the recovery path.
+     point 6) and the loss and reset of a cell's configuration
+     generation record (N27, point 6): the audit checkpoint (O10,
+     point 2), and, for the initialisation and the reset, a durable
+     audit intent before the effect, which is refused if admission
+     fails (O10, points 8 and 10). The initialisation's checkpoint is in
+     the directory it creates, so the order is: create the directory
+     without its format marker (N8, point 3), write the checkpoint with
+     the intent durably, then write the marker, then record the
+     outcome. A directory found at start without its marker is treated
+     as missing (N11, point 6): its intent is reported "outcome
+     uncertain" (O10, point 8), and it is initialised again. A cell
+     whose generation record is lost recovers by the administrator's
+     audited reset (N27, point 6); removing the whole state directory
+     is not the recovery path.
    - Linux OS policy (O17, point 4; O19): the envelope, whole-policy
      validation, the four states, reload fencing and the last good
      policy's store, written with the same atomic-file primitive as the

@@ -176,7 +176,11 @@ its own, or no log sink outside Linux still needs a site in `ironafs-os`
    script, and its normal dependencies are pure crates only, or crates
    an ADR names on the pure allowlist (empty today), each itself
    unconditionally `no_std` with no build script, procedural macro,
-   `links` key or features. An implementation behind `ironafs-crypto`
+   `links` key or features. The allowlist is a decision, not yet a
+   mechanism: `cargo xtask check-pure` and `check-deps` accept only
+   pure workspace crates today, and the ADR that names the first
+   allowlisted crate extends both checks to accept it. An
+   implementation behind `ironafs-crypto`
    that does not meet this is supplied when the client is composed
    (C5, point 1), outside the pure closure. `cargo xtask check`
    compiles each pure library for every supported target against a
@@ -255,19 +259,43 @@ provider adoption ends point 1's exception.
    provider adoption planned for M5 or M6 (or at M2b's crypto decision,
    if the provider chosen there backs them), the implementation behind
    `ironafs-crypto` for SHA-256 and HMAC-SHA-256 is IronAFS's own, in
-   safe Rust, for two callers only: the control IPC schema digest and
-   the installation key's opaque references (O6, point 2). It offers no
-   comparison or verification, and no session, token or packet key
-   passes through it. Its key material is zeroed through `ironafs-os`'s
-   wipe (O28, point 2). At the provider's adoption the provider takes
-   its place and it leaves the shipped build; it may stay in the tests
-   as a cross-check. A source adopted earlier for other operations does
+   safe Rust, for two callers only:
+   - the control IPC schema digest: SHA-256 over the canonical bytes of
+     the control endpoint's message definitions (C44, point 1),
+     computed by the generator when the codecs are generated and kept
+     as a constant, so that a definition version has one identifier.
+     Its input is public, and it is computed by `xtask`, not on a
+     user's host. Where the digest is shown or compared is the IPC
+     specification's, within C44;
+   - the installation key's opaque references (O6, point 2).
+
+   It offers no comparison or verification, and no session, token or
+   packet key passes through it. Its key material is zeroed through the
+   volatile wipe of point 5, which the composition supplies, since a
+   pure crate cannot depend on `ironafs-os` (O28, point 2). It is never
+   treated as approved cryptography: under `fips = "require"` (O31,
+   point 4) the daemon computes no opaque reference with it, and an
+   event that would carry one carries none, with the reason ("FIPS
+   policy: no approved HMAC"), never the raw identifier; that setting
+   refuses every cell anyway. Under `auto` on a host whose FIPS switch
+   is on, it still runs, because O31, point 4, refuses rxkad and NTLM
+   there and these two callers protect no AFS traffic; that residual is
+   the owner's. At the provider's adoption the provider takes its
+   place and it leaves the shipped build; it may stay in the tests as
+   a cross-check. A source adopted earlier for other operations does
    not end this exception by itself.
 
-   Nothing else is written in house under this exception: hashes other
-   than SHA-256, key-derivation functions, ciphers and AEADs are never
-   hand-rolled. rxkad's cipher remains point 2's own case. A new caller
-   or algorithm needs the owner's decision.
+   This is the one departure from coding standards rule 21, which says
+   that mainstream cryptography, SHA-2 and HMAC among it, is never
+   hand-rolled. Rule 21 is not edited (owner, 2026-11-20): for these two
+   functions, these two callers and until the sunset, this point takes
+   precedence over it; everywhere else rule 21 holds as written. The
+   exception adds no dependency, so the dependency rule (overview,
+   constraint 3; rule 21's list) is unchanged. Nothing else is written
+   in house under this exception: hashes other than SHA-256, MACs other
+   than HMAC-SHA-256, key-derivation functions, ciphers and AEADs are
+   never hand-rolled. rxkad's cipher remains point 2's own case. A new
+   caller or algorithm needs the owner's decision.
 2. rxkad's cipher (fcrypt) is written by IronAFS from the specification
    that C6 requires. It is never treated as approved cryptography.
 3. The Kerberos encryption-type operations rxgk needs run in the client,
@@ -302,7 +330,11 @@ provider adoption ends point 1's exception.
 
 Why: the constraint on dependencies allows crates for mainstream
 cryptography only, and rxkad's cipher is not mainstream. An interface
-keeps the choice of implementation out of the protocol code. `unsafe` is
+keeps the choice of implementation out of the protocol code. Point 1's
+dated exception trades a third-party dependency in a root daemon, before
+its provider is chosen, for two small functions checked against published
+vectors, for two callers that protect no AFS traffic (owner, 2026-11-20,
+#77). `unsafe` is
 forbidden workspace-wide until an ADR names the sites (`AGENTS.md`).
 
 ### C6. The protocol code is written from specifications

@@ -1563,9 +1563,9 @@ supported cell offers one of the reserved operations.
 3. **Copy-range without a capability** answers "not supported"; callers
    are expected to fall back to reading and writing. Whether the kernel
    and common tools do so is checked at M3, with the first writable
-   mount (O50, point 4); M2a's mount is read-only, so M2a checks only
-   the part that can run there, copies from `/afs`. If they do not, the
-   core copies by reading and writing under the caller's own grants, as
+   mount (O50, point 4): a copy-range call with both files in `/afs`,
+   which needs a writable mount. M2a's mount is read-only, so M2a makes
+   no part of this check. If they do not, the core copies by reading and writing under the caller's own grants, as
    ordinary writes.
 4. Reads of a hole return zeros. A hole-extent extension in read results
    is reserved in the adapter contract's extension arm (N41, point 10),
