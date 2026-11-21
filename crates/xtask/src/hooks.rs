@@ -28,7 +28,7 @@ struct Hook {
 const HOOKS: [Hook; 2] = [
     Hook {
         name: "pre-push",
-        command: "exec cargo xtask check\n",
+        command: "exec cargo xtask pre-push \"$1\" \"$2\"\n",
     },
     Hook {
         name: "commit-msg",
@@ -39,7 +39,8 @@ const HOOKS: [Hook; 2] = [
 const RESERVE_BACKUP: &str =
     "reserve hook backup (inspect the backup and remove it if no longer needed)";
 
-/// Installs the pre-push and commit-msg hooks in the directory Git reports.
+/// Installs the pre-push and commit-msg hooks in the directory Git reports,
+/// and brings managed hooks with stale contents up to date.
 ///
 /// # Errors
 ///
@@ -54,27 +55,31 @@ fn install_in(directory: &Path, force: bool, output: &mut impl Write) -> Result<
     // Check both destinations before changing either hook.
     for hook in HOOKS {
         let path = directory.join(hook.name);
-        if needs_install(&path, force)? {
-            pending.push((hook, path));
+        if let Some(replace) = needs_install(&hook, &path, force)? {
+            pending.push((hook, path, replace));
         }
     }
     if !pending.is_empty() {
         fs::create_dir_all(directory).map_err(Error::io("create hooks directory"))?;
-        for (hook, path) in pending {
-            install_hook(&hook, directory, &path, force, output)?;
+        for (hook, path, replace) in pending {
+            install_hook(&hook, directory, &path, replace, output)?;
         }
     }
     Ok(())
 }
 
-fn needs_install(path: &Path, force: bool) -> Result<bool, Error> {
+/// Whether to install the hook, and if so whether it replaces a file: a
+/// foreign hook with `force`, or a managed hook whose contents are stale.
+fn needs_install(hook: &Hook, path: &Path, force: bool) -> Result<Option<bool>, Error> {
     match managed_hook_exists(path) {
-        Ok(managed) => Ok(force || !managed),
+        Ok(false) => Ok(Some(force)),
+        Ok(true) if !force && is_current(hook, path)? => Ok(None),
+        Ok(true) => Ok(Some(true)),
         Err(Error::ForeignHook(_)) if force => {
             let backup = path.with_extension("xtask-backup");
             let error = match fs::symlink_metadata(&backup) {
                 Ok(_) => io::ErrorKind::AlreadyExists.into(),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Some(true)),
                 Err(error) => error,
             };
             Err(Error::path_io(RESERVE_BACKUP, &backup)(error))
@@ -87,7 +92,7 @@ fn install_hook(
     hook: &Hook,
     directory: &Path,
     path: &Path,
-    force: bool,
+    replace: bool,
     output: &mut impl Write,
 ) -> Result<(), Error> {
     let staged = directory.join(format!(".ironafs-{}-{}", hook.name, process::id()));
@@ -99,8 +104,8 @@ fn install_hook(
     let written =
         write_hook(&mut file, hook.command).map_err(Error::path_io("write hook", &staged));
     drop(file);
-    let installed = written.and_then(|()| publish_hook(&staged, path, force, output));
-    if force && installed.is_ok() {
+    let installed = written.and_then(|()| publish_hook(&staged, path, replace, output));
+    if replace && installed.is_ok() {
         return Ok(());
     }
     let cleaned =
@@ -123,10 +128,10 @@ fn write_hook(file: &mut File, command: &str) -> io::Result<()> {
 fn publish_hook(
     staged: &Path,
     path: &Path,
-    force: bool,
+    replace: bool,
     output: &mut impl Write,
 ) -> Result<(), Error> {
-    if force {
+    if replace {
         let backup = backup_foreign_hook(path)?;
         let replaced = fs::rename(staged, path).map_err(Error::path_io("replace hook", path));
         if let Some(backup) = backup {
@@ -210,6 +215,11 @@ fn managed_hook_exists(path: &Path) -> Result<bool, Error> {
         Err(error) => return Err(Error::path_io("inspect hook", path)(error)),
     }
     Err(Error::ForeignHook(path.to_path_buf()))
+}
+
+fn is_current(hook: &Hook, path: &Path) -> Result<bool, Error> {
+    let contents = fs::read(path).map_err(Error::path_io("read hook", path))?;
+    Ok(contents == format!("{HOOK_HEADER}{}", hook.command).as_bytes())
 }
 
 fn is_managed_hook(contents: &[u8]) -> bool {

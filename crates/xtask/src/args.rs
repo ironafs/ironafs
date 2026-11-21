@@ -13,12 +13,29 @@ mod tests;
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Task {
     Check,
-    CheckBans { self_test: bool },
-    CheckDeps { self_test: bool },
-    CheckGrants { self_test: bool },
-    CheckPure { self_test: bool },
-    InstallHook { force: bool },
+    CheckBans {
+        self_test: bool,
+    },
+    CheckDeps {
+        self_test: bool,
+    },
+    CheckGrants {
+        self_test: bool,
+    },
+    CheckPure {
+        self_test: bool,
+    },
+    Guard {
+        self_test: bool,
+    },
+    InstallHook {
+        force: bool,
+    },
     UninstallHook,
+    /// The pre-push hook, with the remote's name; Git also passes its URL.
+    PrePush {
+        remote: OsString,
+    },
     Trailers(TrailerMode),
 }
 
@@ -36,6 +53,7 @@ pub(super) enum UsageError {
     MissingHookSubcommand,
     MissingTrailerMode,
     MissingCommitMessagePath,
+    MissingPushRemote,
     UnknownCommand(OsString),
     UnknownHookSubcommand(OsString),
     UnknownTrailerMode(OsString),
@@ -49,6 +67,7 @@ impl fmt::Display for UsageError {
             Self::MissingHookSubcommand => write!(formatter, "missing hooks subcommand"),
             Self::MissingTrailerMode => write!(formatter, "missing trailers mode"),
             Self::MissingCommitMessagePath => write!(formatter, "missing commit message file path"),
+            Self::MissingPushRemote => write!(formatter, "missing pre-push remote name and URL"),
             Self::UnknownCommand(command) => {
                 write!(formatter, "unknown command {}", command.display())
             }
@@ -64,7 +83,7 @@ impl fmt::Display for UsageError {
         }?;
         write!(
             formatter,
-            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
+            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | guard [--self-test] | hooks install [--force] | hooks uninstall | pre-push <remote> <url> | trailers pr | trailers commit <file> | trailers main [file]"
         )
     }
 }
@@ -90,7 +109,15 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
         Some("check-pure") => Task::CheckPure {
             self_test: parse_self_test(&mut arguments)?,
         },
+        Some("guard") => Task::Guard {
+            self_test: parse_self_test(&mut arguments)?,
+        },
         Some("hooks") => parse_hooks(&mut arguments)?,
+        Some("pre-push") => {
+            let remote = arguments.next().ok_or(UsageError::MissingPushRemote)?;
+            arguments.next().ok_or(UsageError::MissingPushRemote)?;
+            Task::PrePush { remote }
+        }
         Some("trailers") => Task::Trailers(parse_trailers(&mut arguments)?),
         _ => return Err(UsageError::UnknownCommand(command)),
     };

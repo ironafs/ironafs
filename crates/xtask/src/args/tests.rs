@@ -143,3 +143,41 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
         assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
     }
 }
+
+#[test]
+fn parse_routes_guard_with_and_without_self_test() {
+    assert_eq!(
+        parse(["guard"].into_iter().map(OsString::from)),
+        Ok(Task::Guard { self_test: false })
+    );
+    assert_eq!(
+        parse(["guard", "--self-test"].into_iter().map(OsString::from)),
+        Ok(Task::Guard { self_test: true })
+    );
+    assert_eq!(
+        parse(["guard", "--force"].into_iter().map(OsString::from)),
+        Err(UsageError::UnexpectedArgument("--force".into()))
+    );
+}
+
+#[test]
+fn parse_routes_pre_push_with_its_remote_and_url() {
+    assert_eq!(
+        parse(
+            ["pre-push", "origin", "https://example.org/r.git"]
+                .into_iter()
+                .map(OsString::from)
+        ),
+        Ok(Task::PrePush {
+            remote: "origin".into()
+        })
+    );
+    assert_eq!(
+        parse(["pre-push"].into_iter().map(OsString::from)),
+        Err(UsageError::MissingPushRemote)
+    );
+    assert_eq!(
+        parse(["pre-push", "origin"].into_iter().map(OsString::from)),
+        Err(UsageError::MissingPushRemote)
+    );
+}
