@@ -653,10 +653,7 @@ fn pins_path() -> PathBuf {
 /// [`Failure::Definition`] if it does not parse.
 pub(crate) fn load() -> Result<Definition, Failure> {
     let path = pins_path();
-    let text = std::fs::read_to_string(&path).map_err(|error| Failure::Io {
-        operation: "read the cell pin file",
-        path: path.clone(),
-        error: error.to_string(),
-    })?;
+    let text =
+        std::fs::read_to_string(&path).map_err(Failure::io("read the cell pin file", &path))?;
     parse(&text).map_err(Failure::Definition)
 }

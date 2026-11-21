@@ -10,9 +10,11 @@
 //! synthetic, under the reserved `.invalid` top-level domain.
 
 mod definition;
+mod runtime;
 
 use std::fmt;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use definition::DefinitionError;
 
@@ -21,12 +23,32 @@ use definition::DefinitionError;
 pub(crate) enum Failure {
     /// The pin file has errors, each listed.
     Definition(Vec<DefinitionError>),
+    /// No container engine to run the cell on; names what was looked for.
+    EngineNotFound(&'static str),
+    /// An engine step ran and failed.
+    Step {
+        name: &'static str,
+        code: Option<i32>,
+        /// The end of the step's error output, unless the step is secret.
+        detail: String,
+    },
     /// A file or directory could not be read or written.
     Io {
         operation: &'static str,
         path: PathBuf,
         error: String,
     },
+}
+
+impl Failure {
+    /// Maps an I/O error at `path` to [`Failure::Io`].
+    pub(crate) fn io(operation: &'static str, path: &Path) -> impl FnOnce(io::Error) -> Self {
+        move |error| Self::Io {
+            operation,
+            path: path.to_path_buf(),
+            error: error.to_string(),
+        }
+    }
 }
 
 impl fmt::Display for Failure {
@@ -37,6 +59,16 @@ impl fmt::Display for Failure {
                 errors
                     .iter()
                     .try_for_each(|error| write!(formatter, "\n  {error}"))
+            }
+            Self::EngineNotFound(wanted) => {
+                write!(formatter, "no container engine: wanted {wanted}")
+            }
+            Self::Step { name, code, detail } => {
+                match code {
+                    Some(code) => write!(formatter, "step {name} failed with exit code {code}"),
+                    None => write!(formatter, "step {name} was ended by a signal"),
+                }?;
+                write!(formatter, ":\n{detail}")
             }
             Self::Io {
                 operation,
