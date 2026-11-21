@@ -458,12 +458,13 @@ hold everything.
   - M2a, the core and Linux, read-only and unauthenticated. The small
     Windows SMB identity spike (O50, point 2) runs beside it, and its
     issues sit in this milestone;
-  - M2b, rxkad;
+  - M2b, rxkad, gated on a specification route under ADR 0001;
   - M3, Linux writes and locks;
   - M4, macOS, starting with the macOS gate (L13);
-  - M5, Windows;
+  - M5, Windows, starting with the rest of the Windows gate (L22, L41);
   - M6, rxgk and other security work;
-  - M7, proposed later work (O51).
+  - M7, proposed later work (O51). Each item is scheduled only once its
+    issue is approved.
 
   Where ADR 0004 says "M2", it means M2a and M2b together; each test is
   placed in one of them by its issue.
