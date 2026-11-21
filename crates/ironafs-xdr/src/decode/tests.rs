@@ -870,12 +870,28 @@ fn array_whose_cap_is_the_largest_word_has_a_limit_on_every_target() {
 
 #[test]
 fn boxed_refuses_a_buffer_with_excess_capacity() {
-    // Converting it would shrink the block, a request the ledger never saw.
-    let mut buffer: Vec<u32> = Vec::with_capacity(8);
-    buffer.push(7);
+    // Converting it would shrink the block, a request the ledger never
+    // saw. Each buffer holds exactly its `N` elements, so its length
+    // passes and only the capacity check can refuse it.
+    let mut one: Vec<u32> = Vec::with_capacity(8);
+    one.push(7);
+    let mut two: Vec<u32> = Vec::with_capacity(8);
+    two.extend([7, 8]);
+    assert!(one.capacity() > one.len() && two.capacity() > two.len());
     let input = [0; 4];
     let (result, _) = decode_with!(&MESSAGE, &input, |decoder| {
-        let held = decoder.boxed::<u32, 1>(buffer, 0)?;
+        let held = decoder.boxed::<u32, 1>(one, 0)?;
+        decoder.read_u32()?;
+        Ok(held)
+    });
+    assert_error(
+        &result.unwrap_err(),
+        ErrorKind::AllocationFailed,
+        None,
+        Some(0),
+    );
+    let (result, _) = decode_with!(&MESSAGE, &input, |decoder| {
+        let held = decoder.boxed::<u32, 2>(two, 0)?;
         decoder.read_u32()?;
         Ok(held)
     });

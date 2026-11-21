@@ -325,8 +325,11 @@ fn zero_to_capacity_overwrites_contents_and_spare_capacity() {
     let mut out = Vec::with_capacity(16);
     out.extend_from_slice(&[0xaa; 16]);
     out.truncate(3);
+    let before = (out.as_ptr(), out.capacity());
     zero_to_capacity(&mut out);
-    assert_eq!(out, [0; 16]);
+    assert_eq!(out.len(), out.capacity());
+    assert!(out.iter().all(|byte| *byte == 0));
+    assert_eq!((out.as_ptr(), out.capacity()), before);
 }
 
 #[test]

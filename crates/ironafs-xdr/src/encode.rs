@@ -437,14 +437,14 @@ fn wipe(out: &mut Vec<u8>) {
 }
 
 /// Overwrites every byte of `out`'s capacity with zero, leaving it full.
+/// The spare bytes are written by `push` up to the capacity captured
+/// first: the one way of filling a buffer that Rust documents as never
+/// reallocating.
 fn zero_to_capacity(out: &mut Vec<u8>) {
     out.fill(0);
-    let capacity = out.capacity();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "rule 8: resizing within the capacity writes zeros over the spare bytes and never reallocates"
-    )]
-    out.resize(capacity, 0);
+    for _ in out.len()..out.capacity() {
+        out.push(0);
+    }
 }
 
 /// The encoded size of a fixed-length opaque of `n` bytes: `n` plus its
