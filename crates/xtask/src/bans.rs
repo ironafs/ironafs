@@ -22,7 +22,13 @@
 //! such file is checked the same way, and must carry every ban itself.
 //! `CLIPPY_CONF_DIR` comes before all of them: clippy then reads the
 //! directory it names for every crate. The check refuses to run while it
-//! is set, and `cargo xtask check` lints without it.
+//! is set, and `cargo xtask check` lints without it. A build script can
+//! set it again for its own crate's compiler (`cargo::rustc-env`), or set
+//! where clippy's lookup starts or its lint arguments, so the check runs
+//! the workspace's clippy and refuses any build script that does.
+//!
+//! The ban arrays are read in one format only (`read`); a ban key or a
+//! ban array line in any other form is refused, not skipped.
 //!
 //! What the bans cannot see is named in the root `clippy.toml`. The core's
 //! own rules (`ironafs-client` names no clock at all) are in `check-deps`,
@@ -37,9 +43,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::fixture::write_file;
-use crate::metadata;
 use crate::pure::{CLEARED_ENVIRONMENT, first_error};
 use crate::{Command, Error};
+use crate::{json, metadata};
 
 #[cfg(test)]
 mod tests;
@@ -170,6 +176,13 @@ pub(crate) enum Violation {
     Uncovered { lint: Lint, path: String },
     /// `CLIPPY_CONF_DIR` is set, to the value given.
     Overridden(String),
+    /// A line, numbered from 1, in a ban format `entries` cannot read.
+    Unreadable { line: usize, text: String },
+    /// A package's build script sets `name` for its crate's compiler,
+    /// a variable that changes what clippy runs with.
+    BuildOverride { package: String, name: String },
+    /// The workspace's clippy did not finish, with the error given.
+    Unbuilt(String),
 }
 
 impl fmt::Display for Violation {
@@ -203,6 +216,22 @@ impl fmt::Display for Violation {
                 "{CONF_DIR} is set (to {value:?}), so clippy would lint every crate with that \
                  directory's configuration instead of the files this check proves: unset it"
             ),
+            Self::Unreadable { line, text } => write!(
+                formatter,
+                "line {line} is in a ban format check-bans cannot read, so its bans would go \
+                 unchecked: `{text}`; write each ban as `{{ path = \"...\", reason = \"...\" }},` \
+                 on its own line under `disallowed-methods = [` or `disallowed-types = [`"
+            ),
+            Self::BuildOverride { package, name } => write!(
+                formatter,
+                "the build script of {package} sets {name} for its crate's compiler, which \
+                 changes the configuration or lints clippy runs with there: remove it"
+            ),
+            Self::Unbuilt(error) => write!(
+                formatter,
+                "the workspace's clippy did not finish, so not every build script's output was \
+                 read: {error}"
+            ),
         }
     }
 }
@@ -224,35 +253,70 @@ pub(crate) fn listed(clippy_toml: &str, path: &str) -> bool {
 /// lints without it.
 pub(crate) const CONF_DIR: &str = "CLIPPY_CONF_DIR";
 
-/// The `disallowed-methods` and `disallowed-types` entries of
-/// `clippy_toml`, as `listed` reads them, with the lint each is under.
-fn entries(clippy_toml: &str) -> Vec<(Lint, &str)> {
+/// A ban key's line, `disallowed-methods = [` or `disallowed-types = [`,
+/// indented or not, and the lint its array lists.
+fn key(trimmed: &str) -> Option<Lint> {
+    match trimmed {
+        "disallowed-methods = [" => Some(Lint::Method),
+        "disallowed-types = [" => Some(Lint::Type),
+        _ => None,
+    }
+}
+
+/// The path of a ban written as `{ path = "...", ... }`, optionally
+/// followed by a comma, holding one entry.
+fn entry(trimmed: &str) -> Option<&str> {
+    let rest = trimmed.strip_prefix("{ path = \"")?;
+    let (path, rest) = rest.split_once('"')?;
+    let closed = rest.ends_with('}') || rest.ends_with("},");
+    (closed && !rest.contains("path =")).then_some(path)
+}
+
+/// Reads the `disallowed-methods` and `disallowed-types` arrays of
+/// `clippy_toml` in the one format it accepts: the key on its own line,
+/// each ban on its own line as `entry` reads it, and `]` on its own line.
+/// Returns each entry with its lint, and each line that names a ban key or
+/// sits in a ban array in any other form, so a ban written otherwise is
+/// refused rather than skipped.
+fn read(clippy_toml: &str) -> (Vec<(Lint, &str)>, Vec<Violation>) {
     let mut lint = None;
     let mut found = Vec::new();
-    for line in clippy_toml.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('#') {
+    let mut refused = Vec::new();
+    for (index, line) in clippy_toml.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if trimmed.starts_with(']') && !line.starts_with(char::is_whitespace) {
-            lint = None;
-        } else if !line.starts_with(char::is_whitespace) && trimmed.contains('=') {
-            lint = if trimmed.starts_with("disallowed-methods") {
-                Some(Lint::Method)
-            } else if trimmed.starts_with("disallowed-types") {
-                Some(Lint::Type)
-            } else {
-                None
-            };
-        }
-        let (Some(lint), Some((_, rest))) = (lint, line.split_once("path = \"")) else {
-            continue;
+        let readable = match lint {
+            Some(_) if trimmed == "]" => {
+                lint = None;
+                true
+            }
+            Some(current) => entry(trimmed)
+                .map(|path| found.push((current, path)))
+                .is_some(),
+            None => {
+                lint = key(trimmed);
+                let names_a_ban = ["disallowed-methods", "disallowed-types"]
+                    .iter()
+                    .chain(&["disallowed_methods", "disallowed_types"])
+                    .any(|name| trimmed.contains(name));
+                lint.is_some() || !names_a_ban
+            }
         };
-        if let Some((path, _)) = rest.split_once('"') {
-            found.push((lint, path));
+        if !readable {
+            refused.push(Violation::Unreadable {
+                line: index + 1,
+                text: line.to_owned(),
+            });
         }
     }
-    found
+    (found, refused)
+}
+
+/// Each line of `clippy_toml` in a ban format `read` cannot read.
+pub(crate) fn unreadable(clippy_toml: &str) -> Vec<Violation> {
+    read(clippy_toml).1
 }
 
 /// Each method or type ban of the root `clippy_toml` that no entry of
@@ -260,7 +324,8 @@ fn entries(clippy_toml: &str) -> Vec<(Lint, &str)> {
 /// member's own file may ban more (its allocations, say), which rule 7
 /// does not need proved.
 pub(crate) fn uncovered(clippy_toml: &str) -> Vec<Violation> {
-    entries(clippy_toml)
+    read(clippy_toml)
+        .0
         .into_iter()
         .filter(|&(lint, path)| !BANS.iter().any(|ban| ban.lint == lint && ban.path == path))
         .map(|(lint, path)| Violation::Uncovered {
@@ -268,6 +333,55 @@ pub(crate) fn uncovered(clippy_toml: &str) -> Vec<Violation> {
             path: path.to_owned(),
         })
         .collect()
+}
+
+/// Whether `file`, relative to the workspace root, is a configuration in
+/// the root itself, under either name clippy looks for.
+pub(crate) fn root_config(file: &Path) -> bool {
+    file.parent() == Some(Path::new("")) && CONFIG_NAMES.iter().any(|name| file == Path::new(name))
+}
+
+/// Whether a build script's `cargo::rustc-env` variable `name` changes what
+/// clippy runs with: where its lookup starts (`CARGO_MANIFEST_DIR`), the
+/// directory it reads in place of that lookup (`CLIPPY_CONF_DIR`), or its
+/// lint arguments (`CLIPPY_ARGS`) and any other variable of its own.
+fn clippy_reads(name: &str) -> bool {
+    name == "CARGO_MANIFEST_DIR" || name.contains("CLIPPY")
+}
+
+/// Each variable clippy reads that a build script sets for its crate's
+/// compiler, from cargo's JSON `messages`. Cargo applies a build script's
+/// `rustc-env` after the variables `cargo xtask check` removes, so they
+/// are read from what the build scripts reported.
+pub(crate) fn build_overrides(messages: &str) -> Vec<Violation> {
+    let mut found = Vec::new();
+    for message in messages.lines().filter_map(|line| json::parse(line).ok()) {
+        if message.get("reason").and_then(json::Value::as_str) != Some("build-script-executed") {
+            continue;
+        }
+        let package = message
+            .get("package_id")
+            .and_then(json::Value::as_str)
+            .unwrap_or("a package");
+        let pairs = message
+            .get("env")
+            .and_then(json::Value::as_array)
+            .unwrap_or_default();
+        for pair in pairs {
+            if let Some(name) = pair
+                .as_array()
+                .and_then(<[json::Value]>::first)
+                .and_then(json::Value::as_str)
+                && clippy_reads(name)
+            {
+                found.push(Violation::BuildOverride {
+                    package: package.to_owned(),
+                    name: name.to_owned(),
+                });
+            }
+        }
+    }
+    found
 }
 
 /// The refusal to check while `value`, the environment's `CLIPPY_CONF_DIR`,
@@ -412,10 +526,11 @@ pub(crate) fn config_files(
 }
 
 /// Checks the bans of the workspace at `root`, whose member crates are in
-/// `member_dirs`: its `clippy.toml`, which must exist and whose every ban
-/// must be planted (`uncovered`), and every other configuration a member
-/// can be linted with (`config_files`), each with fixtures under its own
-/// directory below `dir`. With `conf_dir`, the environment's
+/// `member_dirs`: its `clippy.toml`, which must exist, and every other
+/// configuration a member can be linted with (`config_files`), each in a
+/// format `read` accepts (`unreadable`) and with fixtures under its own
+/// directory below `dir`. Every ban of a root configuration, under either
+/// name, must be planted (`uncovered`). With `conf_dir`, the environment's
 /// `CLIPPY_CONF_DIR`, set, clippy would read none of these, so the check
 /// refuses before it lints anything (`overridden`).
 ///
@@ -443,11 +558,10 @@ pub(crate) fn check_tree(
         let path = root.join(file);
         let text = fs::read_to_string(&path).map_err(Error::path_io("read", &path))?;
         let name = file.display().to_string();
-        let mut violations = if file == own {
-            uncovered(&text)
-        } else {
-            Vec::new()
-        };
+        let mut violations = unreadable(&text);
+        if root_config(file) {
+            violations.extend(uncovered(&text));
+        }
         violations.extend(check(&text, toolchain_toml, &dir.join(index.to_string()))?);
         found.extend(violations.into_iter().map(|violation| Found {
             file: name.clone(),
@@ -455,6 +569,52 @@ pub(crate) fn check_tree(
         }));
     }
     Ok(found)
+}
+
+/// The workspace's clippy run, with every crate linted under the
+/// configuration nearest it, the files this check proves: an inherited
+/// `CLIPPY_CONF_DIR` would put one other file in their place.
+pub(crate) fn workspace_clippy() -> Command {
+    let mut command = Command::new("cargo");
+    command
+        .args(["clippy", "--all-targets", "--workspace"])
+        .env("CARGO_BUILD_WARNINGS", "deny")
+        .env_remove(CONF_DIR);
+    command
+}
+
+/// What `Found` names for a build script's violation.
+const BUILD_SCRIPTS: &str = "build scripts";
+
+/// Runs the workspace's clippy at `root`, building into `target_dir`, and
+/// refuses each variable clippy reads that a build script sets for its
+/// crate's compiler (`build_overrides`): `CLIPPY_CONF_DIR` removed from
+/// the environment comes back that way, and the lookup or lint arguments
+/// with it. Cargo reports a build script's output again when it does not
+/// rerun it, so a built workspace is read without rebuilding.
+///
+/// # Errors
+///
+/// Returns an error if cargo cannot be started.
+pub(crate) fn check_build_scripts(root: &Path, target_dir: &Path) -> Result<Vec<Found>, Error> {
+    let mut command = workspace_clippy();
+    command
+        .current_dir(root)
+        .args(["--quiet", "--message-format", "json-render-diagnostics"])
+        .arg("--target-dir")
+        .arg(target_dir);
+    let output = command.output().map_err(Error::io("cargo clippy"))?;
+    let mut violations = build_overrides(&String::from_utf8_lossy(&output.stdout));
+    if !output.status.success() {
+        violations.push(Violation::Unbuilt(first_error(&output.stderr)));
+    }
+    Ok(violations
+        .into_iter()
+        .map(|violation| Found {
+            file: BUILD_SCRIPTS.to_owned(),
+            violation,
+        })
+        .collect())
 }
 
 /// Checks this repository's bans, or with `self_test` proves on planted
@@ -489,7 +649,8 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         &dir,
     );
     crate::fixture::remove_dir(&dir)?;
-    let violations = result?;
+    let mut violations = result?;
+    violations.extend(check_build_scripts(&workspace.root, &workspace.target_dir)?);
     if !violations.is_empty() {
         return Err(Error::Rules {
             check: CHECK,
@@ -502,7 +663,8 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         .collect();
     writeln!(
         output,
-        "check-bans: {} planted calls each tripped their ban in each of {}; no ban is unresolved",
+        "check-bans: {} planted calls each tripped their ban in each of {}; no ban is \
+         unresolved, and no build script changes what clippy runs with",
         BANS.len(),
         files.join(", ")
     )

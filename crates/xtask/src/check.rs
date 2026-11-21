@@ -60,16 +60,8 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     }
 }
 
-/// The workspace's clippy run, with every crate linted under the
-/// configuration nearest it, the files `check-bans` proves: an inherited
-/// `CLIPPY_CONF_DIR` would put one other file in their place.
 fn clippy() -> Command {
-    let mut command = Command::new("cargo");
-    command
-        .args(["clippy", "--all-targets", "--workspace"])
-        .env("CARGO_BUILD_WARNINGS", "deny")
-        .env_remove(crate::bans::CONF_DIR);
-    command
+    crate::bans::workspace_clippy()
 }
 
 fn run_command(command: &mut Command, name: &'static str) -> Result<(), Error> {

@@ -7,12 +7,16 @@
 //! planted line proves, on a crate whose own `clippy.toml` leaves out a
 //! ban, and with `CLIPPY_CONF_DIR` naming a directory whose configuration
 //! leaves out a ban, and proves the check fails on each, naming that ban
-//! and that file, or the variable.
+//! and that file, or the variable. It also refuses a ban array with an
+//! indented key, and a root `.clippy.toml`, whose unplanted ban is caught
+//! as in `clippy.toml`; and it builds a crate whose build script sets
+//! `CLIPPY_CONF_DIR` for its compiler and proves that refused, beside one
+//! whose build script sets another variable, which passes.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::{CHECK, CONF_DIR, Found, Lint, Violation, check_tree};
+use super::{CHECK, CONF_DIR, Found, Lint, Violation, check_build_scripts, check_tree};
 use crate::Error;
 use crate::fixture::{self, write_file};
 
@@ -27,6 +31,8 @@ const UNPLANTED: &str = "std::thread::sleep";
 /// The workspace's own configuration, and the one a planted crate's own
 /// configuration is written to.
 const ROOT_FILE: &str = "clippy.toml";
+/// The root name clippy prefers when both are present.
+const DOT_ROOT_FILE: &str = ".clippy.toml";
 const CRATE_DIR: &str = "crates/planted";
 const CRATE_FILE: &str = "crates/planted/clippy.toml";
 
@@ -35,6 +41,8 @@ const CRATE_FILE: &str = "crates/planted/clippy.toml";
 enum Place {
     /// In place of the workspace's `clippy.toml`.
     Root,
+    /// As the workspace's `.clippy.toml`, beside its `clippy.toml`.
+    DotRoot,
     /// As a member crate's own `clippy.toml`, beside the workspace's.
     Crate,
     /// In a directory outside the workspace that `CLIPPY_CONF_DIR` names.
@@ -95,19 +103,42 @@ const CASES: &[Case] = &[
         // Clippy would enforce it, but nothing would prove it still does.
         name: "a ban in clippy.toml that no planted line reaches",
         place: Place::Root,
+        plant: with_unplanted,
+        expect: |found| found.file == ROOT_FILE && unplanted(&found.violation),
+        needs: |_| true,
+    },
+    Case {
+        // Indenting the key is valid TOML; the array is still read.
+        name: "an indented ban key in clippy.toml whose array has an unplanted ban",
+        place: Place::Root,
+        plant: |text| {
+            with_unplanted(text).replace("disallowed-methods = [", "  disallowed-methods = [")
+        },
+        expect: |found| found.file == ROOT_FILE && unplanted(&found.violation),
+        needs: |_| true,
+    },
+    Case {
+        name: "a ban in a format check-bans cannot read",
+        place: Place::Root,
         plant: |text| {
             text.replace(
                 "disallowed-methods = [\n",
-                &format!(
-                    "disallowed-methods = [\n  {{ path = \"{UNPLANTED}\", reason = \"r\" }},\n"
-                ),
+                &format!("disallowed-methods = [\n  \"{UNPLANTED}\",\n"),
             )
         },
         expect: |found| {
             found.file == ROOT_FILE
-                && matches!(&found.violation, Violation::Uncovered { lint: Lint::Method, path }
-                    if path == UNPLANTED)
+                && (matches!(found.violation, Violation::Unreadable { .. })
+                    || matches!(&found.violation, Violation::Clippy(_)))
         },
+        needs: |found| matches!(found.violation, Violation::Unreadable { .. }),
+    },
+    Case {
+        // Clippy prefers `.clippy.toml` when both names are in a directory.
+        name: "a root .clippy.toml with a ban no planted line reaches",
+        place: Place::DotRoot,
+        plant: with_unplanted,
+        expect: |found| found.file == DOT_ROOT_FILE && unplanted(&found.violation),
         needs: |_| true,
     },
     Case {
@@ -124,6 +155,19 @@ const CASES: &[Case] = &[
     },
 ];
 
+/// `text` with a method ban on `UNPLANTED` added first to its methods.
+fn with_unplanted(text: &str) -> String {
+    text.replace(
+        "disallowed-methods = [\n",
+        &format!("disallowed-methods = [\n  {{ path = \"{UNPLANTED}\", reason = \"r\" }},\n"),
+    )
+}
+
+/// Whether `found` is the method ban on `UNPLANTED` that no line proves.
+fn unplanted(found: &Violation) -> bool {
+    matches!(found, Violation::Uncovered { lint: Lint::Method, path } if path == UNPLANTED)
+}
+
 /// `text` without the lines that name `path` as an entry.
 fn without(text: &str, path: &str) -> String {
     text.lines()
@@ -139,18 +183,29 @@ fn names(found: &Violation, path: &str) -> bool {
 }
 
 /// Writes a workspace under `dir` with `root` as its `clippy.toml` and one
-/// member crate, with `own` as that crate's `clippy.toml` if given, and
-/// checks it; with `elsewhere`, written to a directory outside the
-/// workspace that `CLIPPY_CONF_DIR` names.
+/// member crate, with the planted text written where its place says, and
+/// checks it: in place of `root`, as the root's `.clippy.toml`, as the
+/// crate's own `clippy.toml`, or in a directory outside the workspace that
+/// `CLIPPY_CONF_DIR` names.
 fn check_planted(
     dir: &Path,
     root: &str,
-    own: Option<&str>,
-    elsewhere: Option<&str>,
+    planted: (Place, &str),
     toolchain_toml: &str,
 ) -> Result<Vec<Found>, Error> {
+    let (place, text) = planted;
+    let own = matches!(place, Place::Crate).then_some(text);
+    let elsewhere = matches!(place, Place::ConfDir).then_some(text);
+    let root = if matches!(place, Place::Root) {
+        text
+    } else {
+        root
+    };
     let tree = dir.join("tree");
     write_file(&tree.join(ROOT_FILE), root)?;
+    if matches!(place, Place::DotRoot) {
+        write_file(&tree.join(DOT_ROOT_FILE), text)?;
+    }
     write_file(&tree.join(CRATE_DIR).join("Cargo.toml"), "")?;
     if let Some(own) = own {
         write_file(&tree.join(CRATE_FILE), own)?;
@@ -195,7 +250,13 @@ fn run_in(
     let mut report =
         |line: String| writeln!(output, "{line}").map_err(Error::io("report check-bans self-test"));
     let clean = "the repository's clippy.toml";
-    let found = check_planted(&dir.join("clean"), clippy_toml, None, None, toolchain_toml)?;
+    // The clean case plants the repository's file in its own place.
+    let found = check_planted(
+        &dir.join("clean"),
+        clippy_toml,
+        (Place::Root, clippy_toml),
+        toolchain_toml,
+    )?;
     if !found.is_empty() {
         return Err(failure(clean, &found));
     }
@@ -206,15 +267,12 @@ fn run_in(
             return Err(failure(case.name, &[]));
         }
         let case_dir = dir.join(format!("case-{index}"));
-        let found = match case.place {
-            Place::Root => check_planted(&case_dir, &planted, None, None, toolchain_toml)?,
-            Place::Crate => {
-                check_planted(&case_dir, clippy_toml, Some(&planted), None, toolchain_toml)?
-            }
-            Place::ConfDir => {
-                check_planted(&case_dir, clippy_toml, None, Some(&planted), toolchain_toml)?
-            }
-        };
+        let found = check_planted(
+            &case_dir,
+            clippy_toml,
+            (case.place, &planted),
+            toolchain_toml,
+        )?;
         match found.first() {
             Some(_) if found.iter().all(case.expect) && found.iter().any(case.needs) => {
                 for violation in &found {
@@ -224,11 +282,68 @@ fn run_in(
             _ => return Err(failure(case.name, &found)),
         }
     }
+    build_scripts(&dir.join("build"), toolchain_toml, &mut report)?;
     report(format!(
         "check-bans --self-test: the repository's bans passed and {} planted cases failed as \
          planted",
-        CASES.len()
+        CASES.len() + 1
     ))
+}
+
+/// The build-script case: a crate whose build script sets `name` for its
+/// compiler, under `dir`.
+fn build_script_crate(dir: &Path, name: &str, toolchain_toml: &str) -> Result<(), Error> {
+    let files = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"planted\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+             # Not part of the workspace whose target directory holds it.\n[workspace]\n"
+                .to_owned(),
+        ),
+        (
+            "build.rs",
+            // A directory that exists and holds no configuration.
+            format!(
+                "fn main() {{\n    let dir = std::env::var(\"OUT_DIR\").unwrap_or_default();\n    \
+                 println!(\"cargo::rustc-env={name}={{dir}}\");\n}}\n"
+            ),
+        ),
+        ("src/lib.rs", "pub fn planted() {}\n".to_owned()),
+        ("rust-toolchain.toml", toolchain_toml.to_owned()),
+    ];
+    for (file, text) in files {
+        write_file(&dir.join(file), &text)?;
+    }
+    Ok(())
+}
+
+/// Proves a build script that sets `CLIPPY_CONF_DIR` is refused, and one
+/// that sets another variable is not.
+fn build_scripts(
+    dir: &Path,
+    toolchain_toml: &str,
+    report: &mut impl FnMut(String) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let clean = "a build script that sets another variable";
+    let clean_dir = dir.join("clean");
+    build_script_crate(&clean_dir, "PLANTED", toolchain_toml)?;
+    let found = check_build_scripts(&clean_dir, &clean_dir.join("target"))?;
+    if !found.is_empty() {
+        return Err(failure(clean, &found));
+    }
+    report(format!("passed: {clean}"))?;
+    let case = "a build script that sets CLIPPY_CONF_DIR for its compiler";
+    let case_dir = dir.join("planted");
+    build_script_crate(&case_dir, CONF_DIR, toolchain_toml)?;
+    let found = check_build_scripts(&case_dir, &case_dir.join("target"))?;
+    let refused = |found: &Found| matches!(&found.violation, Violation::BuildOverride { name, .. } if name == CONF_DIR);
+    if found.is_empty() || !found.iter().all(refused) {
+        return Err(failure(case, &found));
+    }
+    for violation in &found {
+        report(format!("caught: {case}: {violation}"))?;
+    }
+    Ok(())
 }
 
 fn failure(case: &'static str, found: &[Found]) -> Error {

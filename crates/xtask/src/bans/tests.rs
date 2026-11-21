@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::ffi::OsStr;
 
 use super::{
-    BANS, Ban, CONF_DIR, Found, Lint, Violation, config_files, fired_violations, listed,
-    overridden, planted_source, uncovered,
+    BANS, Ban, CONF_DIR, Found, Lint, Violation, build_overrides, config_files, fired_violations,
+    listed, overridden, planted_source, root_config, uncovered, unreadable,
 };
 
 /// Clippy's short-format warning for `ban` fired on line `line`, spelt
@@ -337,5 +337,139 @@ fn new_violations_say_what_failed() {
         Violation::Overridden("/elsewhere".to_owned()).to_string(),
         "CLIPPY_CONF_DIR is set (to \"/elsewhere\"), so clippy would lint every crate with \
          that directory's configuration instead of the files this check proves: unset it"
+    );
+}
+
+#[test]
+fn uncovered_reads_an_indented_key() {
+    // Indenting a key is valid TOML; the array must still be read.
+    let mut methods = ban_paths(Lint::Method);
+    methods.push("std::thread::sleep");
+    let text = root_with(&methods, &ban_paths(Lint::Type))
+        .replace("disallowed-methods = [", "  disallowed-methods = [")
+        .replace("]\ndisallowed-types", "  ]\ndisallowed-types");
+    assert_eq!(unreadable(&text), []);
+    assert_eq!(
+        uncovered(&text),
+        [Violation::Uncovered {
+            lint: Lint::Method,
+            path: "std::thread::sleep".to_owned()
+        }]
+    );
+}
+
+#[test]
+fn unreadable_accepts_the_repository_configurations() {
+    assert_eq!(unreadable(include_str!("../../../../clippy.toml")), []);
+    assert_eq!(
+        unreadable(include_str!("../../../ironafs-xdr/clippy.toml")),
+        []
+    );
+    assert_eq!(
+        unreadable(&root_with(&ban_paths(Lint::Method), &ban_paths(Lint::Type))),
+        []
+    );
+}
+
+#[test]
+fn unreadable_reports_each_ban_format_the_reader_cannot_read() {
+    for (text, line) in [
+        ("disallowed-methods = [{ path = \"a::b\" }]\n", 1),
+        ("disallowed-methods = [\n  \"a::b\",\n]\n", 2),
+        (
+            "disallowed-types = [\n  { path = \"a::B\" }, { path = \"c::D\" },\n]\n",
+            2,
+        ),
+        (
+            "disallowed-methods = [\n  { reason = \"r\", path = \"a::b\" },\n]\n",
+            2,
+        ),
+        ("[[disallowed-methods]]\npath = \"a::b\"\n", 1),
+        ("\"disallowed-methods\" = [\n]\n", 1),
+        ("disallowed-methods = [ # bans\n]\n", 1),
+        ("x = 1\ndisallowed_types = [\n]\n", 2),
+    ] {
+        let found = unreadable(text);
+        assert!(
+            matches!(found.as_slice(), [Violation::Unreadable { line: at, .. }] if *at == line),
+            "{text:?}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn root_config_is_either_name_in_the_root() {
+    assert!(root_config(Path::new("clippy.toml")));
+    assert!(root_config(Path::new(".clippy.toml")));
+    assert!(!root_config(Path::new("crates/a/clippy.toml")));
+    assert!(!root_config(Path::new("crates/a/.clippy.toml")));
+}
+
+/// A build-script-executed message from cargo for `package` with `env`.
+fn executed(package: &str, env: &str) -> String {
+    format!(
+        "{{\"reason\":\"build-script-executed\",\"package_id\":\"{package}\",\
+         \"linked_libs\":[],\"linked_paths\":[],\"cfgs\":[],\"env\":{env},\
+         \"out_dir\":\"/t\"}}"
+    )
+}
+
+#[test]
+fn build_overrides_reports_a_variable_clippy_reads() {
+    for name in ["CLIPPY_CONF_DIR", "CLIPPY_ARGS", "CARGO_MANIFEST_DIR"] {
+        let messages = format!(
+            "{}\n{}\n",
+            executed("p#0.0.0", "[]"),
+            executed(
+                "q#0.0.0",
+                &format!("[[\"OTHER\",\"1\"],[\"{name}\",\"/x\"]]")
+            )
+        );
+        assert_eq!(
+            build_overrides(&messages),
+            [Violation::BuildOverride {
+                package: "q#0.0.0".to_owned(),
+                name: name.to_owned()
+            }],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn build_overrides_ignores_other_variables_and_messages() {
+    let messages = format!(
+        "{}\n{{\"reason\":\"compiler-artifact\",\"env\":[[\"CLIPPY_ARGS\",\"x\"]]}}\n\
+         not json\n",
+        executed("p#0.0.0", "[[\"OTHER\",\"1\"]]")
+    );
+    assert_eq!(build_overrides(&messages), []);
+}
+
+#[test]
+fn read_and_build_violations_say_what_failed() {
+    assert_eq!(
+        Violation::Unreadable {
+            line: 3,
+            text: "  \"a::b\",".to_owned()
+        }
+        .to_string(),
+        "line 3 is in a ban format check-bans cannot read, so its bans would go unchecked: \
+         `  \"a::b\",`; write each ban as `{ path = \"...\", reason = \"...\" },` on its own \
+         line under `disallowed-methods = [` or `disallowed-types = [`"
+    );
+    assert_eq!(
+        Violation::BuildOverride {
+            package: "q#0.0.0".to_owned(),
+            name: "CLIPPY_CONF_DIR".to_owned()
+        }
+        .to_string(),
+        "the build script of q#0.0.0 sets CLIPPY_CONF_DIR for its crate's compiler, which \
+         changes the configuration or lints clippy runs with there: remove it"
+    );
+    assert_eq!(
+        Violation::Unbuilt("error: e".to_owned()).to_string(),
+        "the workspace's clippy did not finish, so not every build script's output was read: \
+         error: e"
     );
 }

@@ -13,8 +13,8 @@ doc-valid-idents = ["IronAFS", "OpenAFS", "AuriStor", "FSKit", "macOS", ".."]
 
 # Coding standards rule 7: time and randomness come only through the Clock
 # and Rng interfaces of ironafs-time. One entry per line, written as
-# `path = "..."`: `cargo xtask check-bans` reads them so and proves each
-# fires on planted code. Clippy reads only the nearest clippy.toml, so a
+# `{ path = "...", reason = "..." },`: `cargo xtask check-bans` reads them
+# only so, refuses any other form, and proves each fires on planted code. Clippy reads only the nearest clippy.toml, so a
 # crate's own file replaces this one: it repeats every ban below, and
 # check-bans holds it to the same proof.
 #
