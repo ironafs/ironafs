@@ -6,9 +6,9 @@
 use std::path::PathBuf;
 
 use super::{
-    CRATES, Kind, OWN_LINTS, Rule, THIRD_PARTY, ThirdPartyLists, Violation, edition_violations,
-    graph_violations, inherits_workspace_edition, inherits_workspace_lints, kind_of,
-    lint_violations, own_lints_differences,
+    CRATES, Kind, OWN_LINTS, Rule, THIRD_PARTY, ThirdPartyLists, Violation, dependency_line,
+    edition_violations, graph_violations, inherits_workspace_edition, inherits_workspace_lints,
+    kind_of, lint_violations, own_lints_differences,
 };
 use crate::metadata::{Member, Package, Workspace};
 
@@ -159,7 +159,7 @@ fn graph_violations_pass_the_allowed_shape() {
             &["ironafs-cache", "ironafs-proto", "ironafs-rx"],
         ),
         ("ironafs-net", &["ironafs-rx", "ironafs-os", "outside"]),
-        ("ironafs-os", &["ironafs-time", "libc"]),
+        ("ironafs-os", &["libc"]),
         (
             "ironafs-fuse",
             &["ironafs-vfs", "ironafs-os", "ironafs-crypto"],
@@ -456,7 +456,7 @@ fn graph_violations_keep_layers_and_drivers_to_their_lists_and_the_core_off_driv
         ),
         ("ironafs-auth", &[]),
         ("ironafs-vfs", &[]),
-        ("ironafs-os", &["ironafs-time", "ironafs-proto"]),
+        ("ironafs-os", &["ironafs-proto"]),
         ("ironafs-time", &[]),
         ("ironafs-proto", &[]),
         (
@@ -690,4 +690,21 @@ fn edition_violations_want_the_inherited_edition_and_the_edition_the_reader_foll
         ]
     );
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn dependency_line_finds_every_kind_of_dependency_table() {
+    for manifest in [
+        "[package]\nname = \"a\"\n[dependencies]\n",
+        "[package]\n[dev-dependencies]\nx = \"1\"\n",
+        "[package]\n[build-dependencies]\n",
+        "[package]\n[target.'cfg(unix)'.dependencies]\n",
+        "[package]\ndependencies.x = \"1\"\n",
+    ] {
+        assert!(dependency_line(manifest).is_some(), "{manifest}");
+    }
+    assert_eq!(
+        dependency_line("[package]\n# no dependencies here\n[lints.rust]\n"),
+        None
+    );
 }

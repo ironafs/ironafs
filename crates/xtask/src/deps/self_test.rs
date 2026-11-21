@@ -62,7 +62,7 @@ fn clean() -> Fixture {
                 "ironafs-events",
             ],
         ),
-        ("ironafs-os", &["ironafs-time", "libc"]),
+        ("ironafs-os", &["libc"]),
         ("ironafs-net", &["ironafs-rx", "ironafs-os"]),
         ("ironafs-gss", &["ironafs-time", "gss-ffi"]),
         (
@@ -1147,6 +1147,20 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         }
     }
 
+    // The clean fixture's ironafs-os depends on libc, which its list allows;
+    // under the repository's rule that ironafs-os has no dependency table at
+    // all, that is caught.
+    let workspace = clean().load(&dir.join("tables"), CHECK, "dependency tables")?;
+    let (found, _) = check(&workspace, FIXTURE_THIRD_PARTY, &["ironafs-os"])?;
+    let as_planted = matches!(found.as_slice(), [Violation::DependencyTable { name, .. }] if name == "ironafs-os");
+    if !as_planted {
+        return Err(failure("ironafs-os with a dependency table", &found));
+    }
+    report(
+        output,
+        "caught: ironafs-os with a dependency table".to_owned(),
+    )?;
+
     let empty = Workspace {
         root: dir.to_path_buf(),
         target_dir: dir.to_path_buf(),
@@ -1162,7 +1176,7 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         output,
         format!(
             "check-deps --self-test: the clean fixture passed and {} planted cases failed as planted",
-            CASES.len() + 1
+            CASES.len() + 2
         ),
     )
 }
@@ -1193,5 +1207,5 @@ fn check_fixture(
     case: &'static str,
 ) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
     let workspace = fixture.load(dir, CHECK, case)?;
-    check(&workspace, FIXTURE_THIRD_PARTY)
+    check(&workspace, FIXTURE_THIRD_PARTY, &[])
 }
