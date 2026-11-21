@@ -137,3 +137,49 @@ fn decode_takes_the_secrecy_from_the_type() {
     let traced = decode_traced::<Sealed>(cut, u64::MAX, &mut |_| {}).unwrap_err();
     assert_eq!((traced.offset(), traced.extent()), (None, None));
 }
+
+/// A handwritten secret-bearing message whose decoder decodes a plain
+/// message from its own bytes on the side, and passes that decode's error
+/// on as its own: an error that already carries a position.
+#[derive(Debug)]
+struct Forwarding;
+
+impl Classified for Forwarding {
+    const SECRET: bool = true;
+}
+
+impl MessageType for Forwarding {
+    const MESSAGE: Message = Message {
+        name: "test.forwarding",
+        cap: 12,
+        budget: 8,
+    };
+}
+
+impl<'a> Decode<'a> for Forwarding {
+    const S_MIN: u64 = 12;
+    const DEPTH: u32 = 0;
+    const HEAP_RATIO: Option<u64> = Some(0);
+    const RESERVATIONS: Option<u64> = Some(0);
+
+    fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
+        let inner = decoder.fixed_opaque::<12>()?;
+        decode::<Plain>(&inner[..10]).map(|_| Self)
+    }
+}
+
+#[test]
+fn decode_strips_the_position_from_an_error_a_secret_decoder_passes_on() {
+    let forwarded = decode::<Plain>(&TWO[..10]).unwrap_err();
+    assert!(
+        forwarded.offset().is_some(),
+        "the inner error is positioned"
+    );
+    for error in [
+        decode::<Forwarding>(&TWO).unwrap_err(),
+        decode_traced::<Forwarding>(&TWO, u64::MAX, &mut |_| {}).unwrap_err(),
+    ] {
+        assert_eq!(error.kind(), ErrorKind::Truncated);
+        assert_eq!((error.offset(), error.extent()), (None, None));
+    }
+}

@@ -322,7 +322,9 @@ fn run<'a, 'h, T>(
             .limit(u64::from(message.cap));
         return Err(decoder.locate(error, 0, Some(input.len())));
     }
-    let value = decode_value(&mut decoder)?;
+    // A handwritten secret decoder can pass on an error from a decode of
+    // its own, which carries that decode's position.
+    let value = decode_value(&mut decoder).map_err(|error| decoder.redact(error))?;
     let remaining = decoder.remaining();
     if remaining > 0 {
         let error = Error::new(ErrorKind::TrailingBytes);
@@ -774,6 +776,16 @@ impl<'a> Decoder<'a, '_> {
             error
         } else {
             error.at(offset, extent)
+        }
+    }
+
+    /// `error` as the entry point returns it: without a position in a
+    /// secret-bearing message, wherever the error was built.
+    const fn redact(&self, error: Error) -> Error {
+        if self.secret {
+            error.unlocated()
+        } else {
+            error
         }
     }
 }

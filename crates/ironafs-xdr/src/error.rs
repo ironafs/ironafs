@@ -8,8 +8,9 @@
 //! secret-bearing message, where it happened. It never holds a value read
 //! from the input: no byte, no invalid word and no claimed length or count.
 //! The decoder builds an error from a secret-bearing message without a
-//! position at all, so no reporting boundary needs a redaction rule of its
-//! own.
+//! position at all, and the entry points strip one from any error a
+//! secret-bearing message's decoder passes on from a decode of its own,
+//! so no reporting boundary needs a redaction rule of its own.
 
 use core::fmt;
 
@@ -133,6 +134,14 @@ impl Error {
     pub(crate) const fn at(self, offset: usize, extent: Option<usize>) -> Self {
         Self {
             position: Some(Position { offset, extent }),
+            ..self
+        }
+    }
+
+    /// The error without where it happened, for a secret-bearing message.
+    pub(crate) const fn unlocated(self) -> Self {
+        Self {
+            position: None,
             ..self
         }
     }
