@@ -103,7 +103,9 @@ Point 10 of the list that local-ipc.md, 5.2 starts:
         step and is Idle.
       - Whenever the armed count is below the configured number, the
         daemon arms an Idle instance if there is one, and otherwise
-        creates and arms a new instance. It can: live handles are then
+        creates and arms a new instance. Its connect block is already
+        paid for, whatever the accounts then hold (5.2.1, rule 1). It
+        can: live handles are then
         armed + connections, below P by the configuration rule below.
       - Whenever an instance becomes Idle (Refused, or a connection
         released) while the armed count is already at the configured
@@ -144,14 +146,14 @@ Point 10 of the list that local-ipc.md, 5.2 starts:
       instance, so at most 2 × P in all `[D2 sheet 18]`. A connected
       instance's read and write blocks are inside its connection's
       admission allowance; a listener's connect block is the instance's
-      own charge, in the global account only, made when the instance is
-      created (5.2.1, rule 1). No block is charged twice. An operation's
-      buffer is one this connection has already reserved (the prefix,
-      envelope, frame or discard buffer for a read; a queued frame for a
-      write), at most one frame. So outstanding operations are bounded
-      in count and in bytes by the budgets of point 8. A block whose
-      completion never arrives stays counted, with its instance in
-      `Draining` (5.6.2).
+      in the endpoint's standing charge of P blocks, in the global
+      account only, made once when the endpoint starts (5.2.1, rule 1).
+      No block is charged twice. An operation's buffer is one this
+      connection has already reserved (the prefix, envelope, frame or
+      discard buffer for a read; a queued frame for a write), at most
+      one frame. So outstanding operations are bounded in count and in
+      bytes by the budgets of point 8. A block whose completion never
+      arrives stays counted, with its instance in `Draining` (5.6.2).
 
 ### 5.3 Versions
 
@@ -386,7 +388,10 @@ Paths and conventions are those of local-ipc.md, section 10.
     frames with a cancellation after the first short completion and a
     terminal completion delayed past the close are zeroed only at that
     completion;
-  - `pipe_pool`: P instances in use, in every state of 5.2, point 10's
+  - `pipe_pool`: with the global account at its budget and a handle
+    still free, a listener that becomes a connection is replaced at
+    once and the armed count returns to the configured number; P
+    instances in use, in every state of 5.2, point 10's
     table, `Draining` included; with the pool full, a connect that has
     just completed and fails admission is disconnected with no read and
     its instance listens again, with the armed count back at the

@@ -838,7 +838,10 @@ so a looser input is a fault, not a peer's habit.
    system before it reads any byte from the peer, through the endpoint's
    transport `[ADR 0004 C45.1: Firm]`. If the operating system gives no
    caller, the connection is closed; nothing is assumed. The one
-   exception is Windows `[OWN]`, applied as ADR 0005, sheets 18 and 19
+   exception is the Windows control pipe, and no other Windows
+   transport unless its endpoint specification adopts
+   local-ipc-windows.md by name `[OWN]`, applied as ADR 0005, sheets 18
+   and 19
    decide `[D2 sheets 18, 19]`:
    - the Windows rule, in full: [local-ipc-windows.md](local-ipc-windows.md), 5.4, point 1.
 2. **Admission:** [local-ipc-resources.md](local-ipc-resources.md), 5.4, point 2.
@@ -880,19 +883,27 @@ so a looser input is a fault, not a peer's habit.
      checks passed. That is one step under the connection's output
      lock, and a binding request's result slot is completed only under
      that same lock, by whichever path completes it (5.6.4, rule 4).
-     The step opens the connection only if all four hold when it runs:
-     the handler's success is what completed the binding request's
-     slot (not a deadline, and not a failure); the clock is before the
-     binding request's deadline; the clock is before the connection's
-     handshake deadline, read in the step itself, whether or not that
-     deadline's timer has yet run; and the state is `AwaitBinding`.
-     Then the handler's `REPLY` is appended, the state becomes `Open`
-     and the handshake slots are freed, in that order, and only then
-     is any other frame admitted or any `EVENT` queued. If any of the
-     four fails, the connection never opens: a slot already completed
-     by its deadline keeps that reply and the connection closes as a
-     failed binding; a passed handshake deadline or a `Closing` state
-     suppresses the result (point 13). The endpoint specification says
+     When the handler reports success, the step checks, in this order
+     and before it completes the slot, reading the clock itself whether
+     or not any timer has run:
+     1. the state is `AwaitBinding`. If the connection is `Closing` or
+        closed, the result is suppressed (point 13);
+     2. the clock is before the connection's handshake deadline. If
+        not, the connection enters `Closing` as for that deadline and
+        the result is suppressed;
+     3. the binding request's slot is still Pending. If it is already
+        Completed (by its deadline), it keeps that reply, and the
+        connection closes as a failed binding;
+     4. the clock is before the binding request's deadline. If not,
+        with the slot Pending, the step completes the slot as
+        `DeadlineExceeded`, appends that reply, and the connection
+        closes as a failed binding.
+
+     Only if all four pass does the step complete the slot with the
+     handler's success, append its `REPLY`, make the state `Open` and
+     free the handshake slots, in that order; only then is any other
+     frame admitted or any `EVENT` queued. In every other case the
+     connection never opens. The endpoint specification says
      what becomes of a capability spent on a binding that did not
      open. A
      binding that fails is answered with the endpoint's code and the
@@ -1019,6 +1030,10 @@ free.
       and only in the state the endpoint specification allows it;
     - a frame whose row is secret-bearing, on a connection that is not
       a checked connection (point 17): refused before its body is read;
+    - a `PART` or `REPLY` whose request id has taken its failure
+      transition (point 19): the envelope is checked as above and the
+      body is discarded undecoded, whatever it holds. This is the one
+      case in which a body the client reads is not decoded;
     - `REQUEST`, `CANCEL` or `NOTICE` from the daemon, or anything else:
       refused.
     Any refusal, and any decode error, fails the connection: the client
@@ -1156,18 +1171,24 @@ free.
      copied, and no function returns its bytes. A reply suppressed at
      5.4, point 13 never leaves that buffer.
    - **The gate, per endpoint and operating system** `[OWN]`. Each
-     endpoint specification names, for each operating system, the
-     daemon check a client makes and the gate that proves it there
-     (for the Windows control pipe, ADR 0005, sheet 20, in
-     local-ipc-windows.md, 10.5). Until that gate's result is recorded
-     for an endpoint on an operating system, no secret-bearing message
-     of that endpoint exists there in either direction: the client's
-     send and receive operations for secret-bearing bodies, and the
-     daemon's encode operation for them, are not built for that
-     target, by one constant per endpoint and operating system that
-     the generated code tests at compile time. The daemon therefore
-     cannot encode or transmit such a body there, whatever a client
-     does. One endpoint's gate never opens another's.
+     endpoint specification names, for each operating system, the daemon
+     check a client makes and the gate that proves it there (for the
+     Windows control pipe, ADR 0005, sheet 20, in local-ipc-windows.md,
+     10.5). Until that gate's result is recorded for an endpoint on an
+     operating system, no secret-bearing message of that endpoint exists
+     there in either direction: the client's send and receive operations
+     for secret-bearing bodies, and the daemon's encode operation for
+     them, are not built for that target, by one constant per endpoint
+     and operating system that the generated code tests at compile time.
+     The daemon therefore cannot encode or transmit such a body there,
+     whatever a client does. Nor does it admit one: with the constant
+     off, every request and notice row with a secret-bearing body is a
+     row the endpoint does not serve on that target. A `REQUEST` for it
+     is refused `NotSupported` at 5.4, point 9, its body discarded
+     unread by any decoder; a `NOTICE` for it is `NotSupported`, fatal.
+     So a peer with its own encoder reaches no decoder and no handler
+     for a secret-bearing body before the gate has passed. One
+     endpoint's gate never opens another's.
    - A terminal reply built in terminal capacity or in the reserved
      reply slot is never secret-bearing. It is an `ErrorReplyBody`,
      whose `text` holds no secret (5.1.6, point 2), or a streaming
@@ -1246,12 +1267,12 @@ free.
    - a message whose largest size (5.2, point 6) is above its frame
      class's cap, or a frame class cap above `ipc.frame.ceiling`;
    - a variable item without a cap; a cap or memory budget the static
-     proof of xdr.md 5.2, point 9 breaks.
-   It computes, for each endpoint, T, R (5.2.1, rules 1 and 2) and M:
-   the sum over the endpoint's mandatory rows of the pending bound
-   times the row's largest framed event plus `ipc.overhead.frame`
-   (5.2.1, rule 4), 0 with no such row. It computes each body's decode
-   charge (5.2, point 7), and emits them all.
+     proof of xdr.md 5.2, point 9 breaks. It computes, for each
+     endpoint, T, R (5.2.1, rules 1 and 2) and M: the sum, over the
+     endpoint's mandatory rows, of the row's pending bound × (the row's
+     largest framed event + one `ipc.overhead.frame`) (5.2.1, rule 4),
+     in checked arithmetic, 0 with no such row. It computes each body's
+     decode charge (5.2, point 7), and emits them all.
 4. **What each definition declares** `[OWN]`, in the generator's
    notation: per catalogue row, the facts of 5.3.3, point 2, a
    streaming row's one early-end form (5.5, point 6) and an event row's
@@ -1318,7 +1339,8 @@ free.
 | `AwaitHello` | a valid `Hello`, version chosen; the endpoint has no binding row | `Open` | `HelloReply` `ACCEPTED` queued first |
 | `AwaitHello` | a valid `Hello`, version chosen; the endpoint has a binding row | `AwaitBinding` | `HelloReply` `ACCEPTED` queued first; still a handshake connection, under the handshake deadline |
 | `AwaitHello` | any refusal of 5.4, points 3 to 5, or a deadline | Closing | `HelloReply` with its result where 5.4 gives one |
-| `AwaitBinding` | a binding row's handler reports the endpoint's checks passed | `Open` | its `REPLY` queued first; no `EVENT` or `PART` before this |
+| `AwaitBinding` | a binding row's handler reports the endpoint's checks passed, and all four checks of 5.4, point 6's opening step pass | `Open` | its `REPLY` queued first; no `EVENT` or `PART` before this |
+| `AwaitBinding` | the handler reports success and a check of the opening step fails | Closing | `DeadlineExceeded` for a passed request deadline; otherwise the result is suppressed |
 | `AwaitBinding` | a failed binding, any other frame (`NotBound`), any fatal error, or the handshake deadline | Closing | the binding's error reply or the closing notice, best effort |
 | `Open` | `REQUEST` | `Open` | exactly one `REPLY`, unless the connection closes first (5.4, point 13) |
 | `Open` | `CANCEL` | `Open` | 5.4, point 9b |
@@ -1353,7 +1375,9 @@ The rows for the Windows states (`PreAttestation`, `Draining`) are in
 3. **Cancel, deadline, close or result.** A request's handler result, a
    `CANCEL`, the request deadline (5.6.4, rule 2) and the connection's
    close meet at the request's one-shot result slot (ADR 0004, C39,
-   point 3); the first to arrive wins `[OWN]`. A result already produced
+   point 3); the first to arrive wins `[OWN]`, decided in one step
+   under the slot's lock with the clock read in that step, and a
+   completed slot never changes (5.6.4, rule 4). A result already produced
    is reported unchanged, even if its `REPLY` is not yet queued, and a
    later `CANCEL` or deadline does nothing. A `CANCEL` or a deadline
    that arrives first makes the handler stop at its next cancellation
@@ -1400,7 +1424,7 @@ In [local-ipc-resources.md](local-ipc-resources.md), 5.6.4.
 | version choice: the previous minor | computed only when `minor` ≥ 1 | n/a: at `M.0` only `M.0` is accepted |
 | client: the highest common version; the daemon range's shape | compares of (major, minor) pairs | `daemon_max.minor` − 1 is computed only when `daemon_max.minor` ≥ 1 |
 | digest record lengths: file name (u32), content (u64) | a name is at most 64 bytes (5.6.1, point 1); content above 2⁶⁴ − 1 bytes cannot exist in the set | the generator refuses the set (`try_from`) |
-| generator sizes: largest message size, T, R, M (a pending bound × a framed size, summed), decode charges, budgets | caps < 2³² | 64-bit `checked_add` and `checked_mul`; overflow refuses the definition |
+| generator sizes: largest message size, T, R, M (per row, a pending bound × (a framed size + `ipc.overhead.frame`), summed), decode charges, budgets | caps < 2³² | 64-bit `checked_add` and `checked_mul`; overflow refuses the definition |
 
 Rows for the accounts, queues, deadlines and client staging are in
 [local-ipc-resources.md](local-ipc-resources.md), section 6.
@@ -1424,7 +1448,7 @@ through xdr.md's bounded cursor.
    | 8 | `ExtensionOrder` | tags out of order or duplicated | fatal | none changed |
    | 9 | `ExtensionFlagMismatch` | a known tag with the wrong critical bit | fatal | none changed |
    | 10 | `UnknownMessage` | a number with no row, or newer than the chosen version | open for a `REQUEST` (its body discarded, 5.2.1, rule 2); fatal for a `NOTICE` | none changed |
-   | 11 | `NotSupported` | a reserved row the endpoint does not serve | open | none changed |
+   | 11 | `NotSupported` | a reserved row the endpoint does not serve, or a secret-bearing row before its gate has passed (5.5, point 6) | open for a `REQUEST`; fatal for a `NOTICE` | none changed |
    | 12 | `UnknownCriticalExtension` | N41, point 4 | open | none: checked before the handler |
    | 13 | `TooManyRequests` | the requests-in-flight budget | open | none changed |
    | 14 | `Busy` | a reservation failed (5.2.1), or the executor's queue was full (5.6.4, rule 3). Retryable | open | none changed |
@@ -1684,7 +1708,10 @@ cap in force:
   the handshake deadline and its timer held back, a successful binding
   still does not open; a binding request whose own deadline completed
   its slot first is answered `DeadlineExceeded`, the later success
-  opens nothing, and the connection closes; a failed binding closes;
+  opens nothing, and the connection closes; with the clock past the
+  binding request's deadline, that timer held back and the handshake
+  still live, a successful binding is answered `DeadlineExceeded` and
+  the connection closes without opening; a failed binding closes;
   the handshake deadline covers the wait; the connection counts as a
   handshake slot until it is `Open`.
 - `caller_before_bytes` (Linux, macOS): with a stand-in transport that
@@ -1706,6 +1733,13 @@ cap in force:
   named outside the connection's send operation; a credential read for
   one checked connection cannot be passed to another's send; nothing
   read or encoded before a reconnect can be sent after it.
+- `secret_gate_off`: on a test endpoint built with its gate constant
+  off, a stand-in peer with its own encoder sends a secret-bearing
+  `REQUEST` and `NOTICE`: the request is answered `NotSupported` with
+  its body discarded and no decoder or handler run, the notice is
+  fatal; and a stand-in daemon that sends a secret-bearing reply and
+  event to a client built with the gate off is refused before the body
+  is read. Neither side has the encode or send operation in its build.
 - `unchecked_refuses_secret_frame`: an unchecked client fails the
   connection on a secret-bearing reply, part or event before reading
   its body, and cannot send a request whose reply is secret-bearing.

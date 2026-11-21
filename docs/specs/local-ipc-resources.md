@@ -88,7 +88,7 @@ local-ipc-windows.md.
    | Open connections per caller key | 16 | 64 | `HelloReply` `BUSY`, then close |
    | Listening pipe instances (Windows) | 2 | 8 | n/a: the daemon never creates more |
    | Handshake deadline: from accept until the connection is `Open` or its refusal is queued | 5 s | 30 s | close; no reply |
-   | Frame deadline: from a frame's first byte until its last, read or discarded | 10 s | 60 s | close |
+   | Frame deadline: from a frame's first byte until its last, read or discarded, not counting time the daemon holds the frame at its envelope (5.6.4, rule 1) | 10 s | 60 s | close |
    | Write deadline: no byte of queued output written for this long | 30 s | 300 s | close; requests in flight are cancelled (5.6.3) |
    | Closing deadline: from entering `Closing` until the connection is closed | 5 s | 30 s | close, whatever is still queued |
    | Request deadline: from a `REQUEST`'s arrival until its result (5.6.4) | 60 s | 3,600 s | `DeadlineExceeded` (5.6.3, rule 3) |
@@ -181,13 +181,16 @@ account at the capture (5.4, point 2).
    `ipc.overhead.connection_requests` = 16 at most, counted under
    rule 6. Everything in the allowance is allocated once, at admission, and
    nothing in it grows. Storage that exists before any connection is
-   charged on its own, in the global account only: each Windows pipe
-   instance reserves one `ipc.overhead.operation` when it is created,
-   for its connect wait's block, and releases it when its handle is
-   closed; an instance that cannot reserve it is not created. If either
+   charged on its own, in the global account only: when a Windows pipe
+   endpoint starts, before it accepts anything, the daemon reserves P ×
+   `ipc.overhead.operation` once, for the connect block of every
+   instance the endpoint can ever hold (5.2, point 10), and keeps it
+   until the endpoint stops; if it cannot, the endpoint does not start.
+   Creating or arming an instance therefore reserves nothing, and no
+   request can take the space a replacement listener needs. If either
    account cannot cover the allowance, the connection is closed without
-   reading and without a reply; on Windows it never enters
-   `PreAttestation`.
+   reading and without a reply; on the Windows control pipe it never
+   enters `PreAttestation`.
 2. **A frame after the handshake** (state `Open` or `AwaitBinding`). The
    order of checks is 5.4, points 7 to 11; what each step holds:
    - The 4 length bytes and the 16 envelope bytes are read into the
@@ -249,9 +252,13 @@ account at the capture (5.4, point 2).
    differs (an outcome that cannot be confirmed in time); its reply is
    still paid from the handler's working set.
 4. **Output.**
-   - Every queued frame is charged its framed size plus
-     `ipc.overhead.frame` for its queue entry, against the connection's
-     output budget and in both accounts.
+   - A queued frame's whole charge is its framed size plus
+     `ipc.overhead.frame` for its queue entry. A reply, a part and a
+     droppable event are charged to the connection's **ordinary
+     occupancy**, against its output budget, and in both accounts. A
+     mandatory event is charged to its mandatory occupancy instead,
+     against M, which the allowance already holds (below); it is never
+     in ordinary occupancy.
    - An admitted request holds its terminal capacity until its one
      `REPLY` is queued or suppressed (5.4, point 13). Any terminal reply
      that is not the handler's own built reply (an error, `Busy`,
@@ -293,25 +300,37 @@ account at the capture (5.4, point 2).
        of its pending mandatory events, held against M and against
        nothing else. A mandatory event is pending from the step that
        appends it until its last byte is written or the connection is
-       closed, the time it is being written included.
+       closed, the time it is being written included. While pending it
+       counts as its row's largest whole charge, a constant: the row's
+       largest framed event plus one `ipc.overhead.frame`. That amount
+       is taken from M in the append step, before the event is encoded,
+       so encoding is paid for before it starts, and M is exactly the
+       sum of those constants over each row's pending bound.
      - A mandatory event is never tested against the output budget,
        against either account or against a paused reader: the rules
        above for a `PART` and a droppable `EVENT` do not apply to it. It
        is appended, under the output lock, behind the frames already
        queued, and is written in that order. Its space returns to M
        when it is written.
-     - The append succeeds whenever the row's declared bound holds. An
-       append past the bound is refused to its caller in the daemon,
-       with nothing appended. The framework drops no mandatory event
+     - The append is one step under the output lock and has three
+       results. **Appended:** the connection is `Open` and the row has
+       fewer pending events than its bound. **Not eligible:** the
+       connection is not `Open` (it is in `AwaitBinding`, where no
+       `EVENT` is sent, or it is `Closing` or closed, where nothing is
+       appended; local-ipc.md, 5.4, points 6 and 13); nothing is
+       appended. **Bound exceeded:** the connection is `Open` and the
+       row is at its bound; nothing is appended. The daemon's caller is
+       told which. The framework drops no mandatory event
        and decides nothing about the binding: which events are
        mandatory, how they are coalesced so the bound always holds,
        and what a refused append does to the binding are the endpoint
        specification's (for the adapter endpoint ADR 0004, S1; section
        13, Q6 of local-ipc.md lists what it must settle).
-   - While a connection's queue is at or above its budget, the daemon
-     reads no frame from it but a `CANCEL` (5.6.4, rule 1). A terminal
-     `REPLY` whose bytes are already reserved is still appended, after
-     the frames already in the queue. The queue can pass its budget only
+   - While a connection's ordinary occupancy is at or above its output
+     budget, the daemon reads no frame from it but a `CANCEL` (5.6.4,
+     rule 1). A terminal `REPLY` whose bytes are already reserved is
+     still appended, after the frames already in the queue. Ordinary
+     occupancy can pass the budget only
      by the funded terminal replies of requests already in flight, at
      most the requests-in-flight budget of them, each within its own
      reservation, so both accounts still hold.
@@ -374,8 +393,9 @@ The order of checks is local-ipc.md, 5.4. This part holds its points 2,
 
 2. **Admission,** in two steps, each one atomic step under the
    daemon's admission lock `[OWN]`:
-   - **At accept, before any read** (on Windows before the prefix read
-     is started; on Linux and macOS before the caller is read): the
+   - **At accept, before any read** (on the Windows control pipe,
+     and any endpoint that adopts its rule, before the prefix read is
+     started; elsewhere before the caller is read): the
      connection count, then the handshake budget for all callers, then
      the allowance of 5.2.1, rule 1 in the global account. A connection
      that fails any of them is closed without a read and without a
@@ -384,9 +404,9 @@ The order of checks is local-ipc.md, 5.4. This part holds its points 2,
      release, and its handshake slot until it is `Open` or released,
      whichever is first (5.2, point 10, Handoffs, on every operating
      system).
-   - **When the caller is known** (Linux and macOS: at once, still
-     before any read; Windows: at the capture, before any byte after the
-     prefix is read): the handshake budget per caller key, then the
+   - **When the caller is known** (at once, still before any read;
+     on the Windows control pipe at the capture, before any byte after
+     the prefix is read): the handshake budget per caller key, then the
      allowance in the caller's account. A connection that fails either
      is closed without reading further and without a reply. So an
      attested caller holds at most its own handshake budget of
@@ -414,17 +434,28 @@ The order of checks is local-ipc.md, 5.4. This part holds its points 2,
     - one **staging budget** per client connection, shared by all its
       live requests: set by the caller of the client library, at most 64
       MiB. What is retained for a staged part is its body, the `length`
-      − 16 bytes after the envelope, and one entry; the envelope is
-      checked and not kept, and no decoded value is kept. Before a
-      part's body is read the client reserves from that budget exactly
-      that: the body's bytes plus `ipc.overhead.frame`. With a stream's
-      first part the client also reserves, once, the row's largest
-      decode charge for a part or its reply (5.2, point 7), and holds
-      it until the stream has been shown or has failed. Under it each
-      part is decoded once to make its checks, the value dropped, and
-      decoded again, one part at a time, when the stream is shown; so
-      neither the checks nor the showing can run out of memory part
-      way. Staging is zeroed on release if the row is secret-bearing.
+      − 16 bytes after the envelope, one entry, and the part's decoded
+      value; the envelope is checked and not kept. Before a part's body
+      is read the client reserves from that budget the body's bytes,
+      `ipc.overhead.frame` and the part body's decode charge (5.2,
+      point 7). The part is decoded once, as it arrives, to make its
+      checks; the charge is then reduced to what the decoder's ledger
+      recorded, and the value is kept with its body until the stream is
+      shown or fails. Showing a stream decodes nothing and reserves
+      nothing: every decode that can fail has finished before any part
+      is shown, so a stream is shown whole or not at all. Staging is
+      zeroed on release if the row is secret-bearing.
+    - **Every other body a client decodes** is funded the same way,
+      from the same budget: before the body of a `REPLY` (a stream's
+      terminal reply and a reply with no parts alike) or of an `EVENT`
+      is read, the client reserves the body's bytes and that body's
+      decode charge, and holds them while the value lives. If the
+      reservation fails, a `REPLY`'s body is discarded, its envelope
+      closes the request id, and the request is failed as a
+      request-level failure with no `CANCEL` (nothing is left to
+      cancel); an `EVENT`'s body is discarded and the event is counted
+      as dropped if its row is droppable, and the connection fails if
+      its row is mandatory.
 
     Two kinds of failure are kept apart. A frame that breaks point 15
     (framing, envelope, a body that does not decode, `ExtensionOrder`,
@@ -531,7 +562,8 @@ applied to the IPC endpoints; the mechanisms are `[OWN]`.
    - A turn writes at most one frame's bytes of the connection's
      output, besides its one frame of input work.
    - **`CANCEL` under back-pressure.** While a connection's reads are
-     paused (5.2.1, rule 4: its queue at or above its budget, or its
+     paused (5.2.1, rule 4: its ordinary occupancy at or above its
+     output budget, or its
      reserved reply slot full) the daemon still reads the next frame's
      length and envelope into the record, which needs no reservation. If
      that frame is a `CANCEL`, it is handled at once; any other frame
@@ -544,7 +576,11 @@ applied to the IPC endpoints; the mechanisms are `[OWN]`.
      frame would need its body buffered, which is what the pause
      refuses. A frame whose body the daemon had begun to read when the
      pause began is read to its end, since its bytes are reserved, and
-     is handled when reading resumes.
+     is handled when reading resumes. A frame waiting at its envelope
+     is waiting on the daemon, not on its sender, so its frame deadline
+     does not run while it waits and resumes, with the time it had
+     left, when reading resumes; a stalled reader is still closed by
+     the write deadline.
 2. **Arrival and the request deadline.** The ingress thread records a
    frame's arrival when its 4-byte length is complete (5.4, point 7). An
    admitted request's deadline is its arrival plus the request deadline
@@ -593,9 +629,11 @@ applied to the IPC endpoints; the mechanisms are `[OWN]`.
      in both accounts, until the consumer has returned and any queued
      copy has been consumed.
 4. **The one-shot result slot.** Each admitted request has one slot
-   (ADR 0004, C39, point 3), completed exactly once, by whichever comes
-   first: the handler's result, a `CANCEL`, the request deadline, or
-   the connection's close (5.6.3, rule 3).
+   (ADR 0004, C39, point 3), completed exactly once. From Pending it is
+   completed by whichever comes first: the handler's result, a
+   `CANCEL`, the request deadline, or the connection's close (5.6.3,
+   rule 3). The table below gives every transition, those from Claimed
+   included, and it, not this sentence, is the rule.
    - **The commit claim.** The slot is Pending, Claimed or Completed,
      and every transition is one step under the slot's lock (for a
      binding request, its connection's output lock, 5.4, point 6). A mutating
@@ -604,17 +642,31 @@ applied to the IPC endpoints; the mechanisms are `[OWN]`.
      clock is before the request's absolute deadline, and the
      connection is neither `Closing` nor closed. The clock and the
      state are read in the step itself, so a deadline or close whose
-     timer or notification has not yet run still fails the claim. A
-     failed claim completes the slot as the cause says (`Cancelled`,
-     `DeadlineExceeded`, or no reply on a close) and the handler
-     changes nothing.
+     timer or notification has not yet run still fails the claim.
+     After a failed claim the handler changes nothing. If the slot was
+     Pending, the same step completes it as the cause says
+     (`DeadlineExceeded`, or no reply on a close); if it was already
+     Completed, the claim alters nothing.
+   - **Completed is final.** No event changes a Completed slot or its
+     published outcome: a later result, claim, `CANCEL`, deadline or
+     close does nothing.
+   - **Every step reads the clock and the connection's state itself,**
+     under the slot's lock; none relies on a timer having run. A step
+     that finds the deadline passed, or the connection `Closing` or
+     closed, takes the deadline's or the close's row below instead of
+     its own. The one exception is the handler's result on a Claimed
+     slot of an ordinary row, which is the handler's whatever the
+     clock says.
 
      | From | By | To | Who publishes, and what |
      |---|---|---|---|
-     | Pending | the handler's result (a read, or a refusal) | Completed | the handler: its result |
+     | Pending | the handler's result (a read, or a refusal), before the deadline and not closing | Completed | the handler: its result |
+     | Pending | the handler's result, at or after the deadline or while closing | Completed | as the next row: `DeadlineExceeded`, or nothing on a close; the result is discarded. Nothing was applied |
      | Pending | `CANCEL`, the deadline, or a close | Completed | that path: `Cancelled`, `DeadlineExceeded`, or nothing on a close. Nothing was applied |
      | Pending | the handler's claim, passing the checks above | Claimed | nothing yet |
-     | Claimed | the handler's result | Completed | the handler: its result, the ordinary success reply included |
+     | Claimed, ordinary row | the handler's result, at any time | Completed | the handler: its result, the ordinary success reply included (suppressed if the connection is closing, 5.4, point 13) |
+     | Claimed, outcome-unknown row | the handler's result, before the deadline | Completed | the handler: its result |
+     | Claimed, outcome-unknown row | the handler's result, at or after the deadline | Completed | as the deadline's row for such a row: `DeadlineExceeded` marked outcome unknown; the result is discarded and counted |
      | Claimed | `CANCEL` | Claimed | nothing; the `CANCEL` is ignored |
      | Claimed | the deadline, on an ordinary row | Claimed | nothing; the handler's result follows |
      | Claimed | the deadline, on a row its endpoint specification names as one whose outcome can be unknown (5.6.3, rule 4) | Completed | the deadline path: `DeadlineExceeded` marked outcome unknown. The handler's later result is discarded and counted |
@@ -628,9 +680,11 @@ applied to the IPC endpoints; the mechanisms are `[OWN]`.
      to bound. A row whose change waits on a server is one the endpoint
      specification names as outcome-unknown.
    - So `Cancelled`, and `DeadlineExceeded` not marked outcome unknown,
-     always mean nothing was applied. The worker is given the
-   deadline and a cancel token and checks them at its cancellation
-   points; every wait a handler makes is bounded by the deadline.
+     always mean nothing was applied.
+
+   The worker is given the deadline and a cancel token and checks them
+   at its cancellation points; every wait a handler makes is bounded by
+   the deadline.
 5. **A request is charged until its worker returns.** Completing the
    slot sends or suppresses the reply; it does not free the request.
    Its per-caller request slot, its executor place and every byte it
@@ -655,7 +709,7 @@ applied to the IPC endpoints; the mechanisms are `[OWN]`.
 |---|---|---|
 | in-flight counters (global and per caller key), heap-request, output-queue and terminal-capacity counters | each ≤ its budget | `checked_add` before a reservation, in both accounts or neither; subtraction only of what was added; a failure is a failed reservation or back-pressure, never a wrap |
 | ordinary occupancy + a frame's whole charge (framed size + `ipc.overhead.frame`) | ≤ the output budget for a `PART` or a droppable `EVENT` | `checked_add`; above the budget the frame is not built |
-| mandatory occupancy + a mandatory event's whole charge | ≤ M | `checked_add`; above M the append is refused to its caller (5.2.1, rule 4) |
+| mandatory occupancy + a row's largest whole charge (its largest framed event + `ipc.overhead.frame`), per pending event | ≤ M | `checked_add`; a row at its pending bound refuses the append to its caller (5.2.1, rule 4) |
 | the allowance A and the largest request reservation R, from configured values | budgets ≤ their ceilings | 64-bit `checked_add` and `checked_mul` at validation; overflow refuses the configuration |
 | arrival + the request deadline | deadline ≤ 3,600 s | the checked addition of `ironafs-time`'s deadline type; overflow refuses the request as `Internal` |
 | per-caller and total connection counters; requests in flight per connection and per caller key; executor queue entries; parts and part bytes sent | ≤ their budgets | compared before the increment; never wraps |
@@ -738,18 +792,24 @@ Item 7 of local-ipc.md, 10.2's list:
   again and a second mandatory event is appended under the same
   saturation; with reads paused and a stream filling the queue, a
   `CANCEL` that is the next frame is still handled, one sent behind
-  another request waits until output drains, and a frame half read when
-  the pause began is read to its end and handled afterwards (5.6.4, rule
+  another request waits until output drains, a frame parked at its
+  envelope for longer than the frame deadline is not closed for it and
+  is read when reading resumes, and a frame half read when the pause
+  began is read to its end and handled afterwards (5.6.4, rule
   1); an append past the row's declared bound is refused to its caller
-  and nothing queued is lost.
+  as bound exceeded and nothing queued is lost; with every row at
+  exactly its bound, mandatory occupancy equals M and each append up to
+  it succeeded; an append raced with the closing step is either queued
+  before the closing notice or answered not eligible, never reported
+  appended and unsent; an append in `AwaitBinding` is not eligible.
 - `stalled_reader`, `global_budget_exhausted`, `slow_peer`,
   `caps_per_caller`: the budgets of 5.2, point 8 and the reservation
   rules of 5.2.1, with allocator and counter checks: one caller at its
   byte budget gets `Busy` while a second caller's requests still run;
   every allocation, the decoder's and `Hello`'s `client_name` included,
   is inside a reservation: of both accounts, except the three charges
-  that 5.2.1 makes in the global account only (a pipe instance's
-  connect block, a connection's allowance before its caller is known,
+  that 5.2.1 makes in the global account only (a pipe endpoint's
+  standing connect blocks, a connection's allowance before its caller is known,
   a caller's account record), which are checked against the global
   account alone; the decode charge is
   reduced to the ledgers' total only after the extension walk; heap
@@ -757,9 +817,11 @@ Item 7 of local-ipc.md, 10.2's list:
   after its last charge, and stays paid for while a detached worker
   keeps it after its connection's allowance was released; listener
   blocks and the capture scratch are inside a reservation before they
-  are allocated; with one caller's account at its byte budget, a
-  second caller can still reserve the other half of the global budget
-  less the global-only charges then live.
+  are allocated; with one caller's account at its byte budget, the
+  global account itself still shows free at least the other half of
+  the global budget less the global-only charges then live. This is
+  asserted on the global account, whatever any other caller's own
+  budget lets it take.
 - `fair_turns`, `ingress_never_blocks`: one caller with its full number
   of connections sending small, unknown and cancelled frames without
   pause, and a second caller with one connection: the second's request
@@ -782,7 +844,13 @@ Item 7 of local-ipc.md, 10.2's list:
   when nothing was applied, and the success reply exactly when the
   change was. With the deadline's timer held back by the stand-in
   clock, a claim made after the absolute deadline fails and nothing is
-  applied; so does a claim on a connection already `Closing`. On a row
+  applied; so does a claim on a connection already `Closing`. With
+  the timer still held back, a read's result offered after the
+  deadline is answered `DeadlineExceeded`, and so is a claimed
+  outcome-unknown row's (marked outcome unknown), while a claimed
+  ordinary row's result is its own; in every case the reply is the
+  same as with the timer running on time. Nothing changes a Completed
+  slot. On a row
   named outcome-unknown, a deadline after the claim gives
   `DeadlineExceeded` marked outcome unknown, and the late result is
   discarded. A notice
@@ -800,8 +868,13 @@ Item 7 of local-ipc.md, 10.2's list:
   written; a part that does not decode fails the connection at once;
   after a request-level failure the terminal reply's envelope closes the
   id and the connection serves another request; two streams together
-  never stage more than the connection's staging budget; a well-formed
-  stream is shown only after its terminal reply.
+  never stage more than the connection's staging budget; with the
+  allocator made to fail at each point, a stream is shown whole or not
+  at all, and showing allocates nothing; a reply with no parts and an
+  event are decoded only inside a reservation; a late part and the late
+  reply of a failed id are discarded undecoded, a malformed body among
+  them included; a well-formed stream is shown only after its terminal
+  reply.
 - `config_bounds`: each policy budget at 0, at its ceiling, and one
   above; each rule of 5.2, point 9 broken; refused whole at start and on
   reload.
