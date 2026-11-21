@@ -40,9 +40,9 @@ fn select_full_offer_gives_exactly_allowed() {
 
 #[test]
 fn select_without_an_allowed_bit_omits_it() {
-    let offer = flags(u64::MAX & !NO_EXPORT_SUPPORT.bits());
+    let offer = flags(!NO_EXPORT_SUPPORT.bits());
     assert_eq!(select_flags(offer), INIT_EXT);
-    let offer = flags(u64::MAX & !INIT_EXT.bits());
+    let offer = flags(!INIT_EXT.bits());
     assert_eq!(select_flags(offer), NO_EXPORT_SUPPORT);
 }
 
