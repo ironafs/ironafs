@@ -8,102 +8,63 @@ use alloc::string::ToString;
 
 use super::{Surface, VfsError};
 
-/// Every value of the error set, each once, in the order of `position`.
-const ALL: [VfsError; 22] = [
-    VfsError::NotFound,
-    VfsError::Exists,
-    VfsError::Access,
-    VfsError::TokenRequired,
-    VfsError::TokenExpired,
-    VfsError::TokenRevoked,
-    VfsError::SecurityFloor,
-    VfsError::ReadOnly,
-    VfsError::NoSpace,
-    VfsError::QuotaExceeded,
-    VfsError::CrossDevice,
-    VfsError::Stale,
-    VfsError::Busy,
-    VfsError::Offline,
-    VfsError::TimedOut,
-    VfsError::NotYetStored,
-    VfsError::Interrupted,
-    VfsError::NotSupported,
-    VfsError::WouldBlock,
-    VfsError::Unreachable,
-    VfsError::Conflict,
-    VfsError::OutOfRange,
-];
+/// Builds, from one list, both `ALL` (every value, in the list's order) and
+/// `expected`, an exhaustive match with no wildcard giving each value its
+/// literal position and how it reaches applications. A new value does not
+/// compile until it is in the list, and once it is, it is in `ALL`.
+macro_rules! table {
+    ($($error:ident = $position:literal => $surface:ident,)*) => {
+        const ALL: &[VfsError] = &[$(VfsError::$error),*];
 
-/// Each value's place in `ALL`. The match has no wildcard, so a new value
-/// does not compile here until it is given a place, and
-/// `all_lists_every_error_once` then fails until `ALL` holds it.
-fn position(error: VfsError) -> usize {
-    match error {
-        VfsError::NotFound => 0,
-        VfsError::Exists => 1,
-        VfsError::Access => 2,
-        VfsError::TokenRequired => 3,
-        VfsError::TokenExpired => 4,
-        VfsError::TokenRevoked => 5,
-        VfsError::SecurityFloor => 6,
-        VfsError::ReadOnly => 7,
-        VfsError::NoSpace => 8,
-        VfsError::QuotaExceeded => 9,
-        VfsError::CrossDevice => 10,
-        VfsError::Stale => 11,
-        VfsError::Busy => 12,
-        VfsError::Offline => 13,
-        VfsError::TimedOut => 14,
-        VfsError::NotYetStored => 15,
-        VfsError::Interrupted => 16,
-        VfsError::NotSupported => 17,
-        VfsError::WouldBlock => 18,
-        VfsError::Unreachable => 19,
-        VfsError::Conflict => 20,
-        VfsError::OutOfRange => 21,
-    }
+        fn expected(error: VfsError) -> (usize, Surface) {
+            match error {
+                $(VfsError::$error => ($position, Surface::$surface),)*
+            }
+        }
+    };
 }
 
-/// How each value reaches applications, from ADR 0004, C46, point 1,
-/// written out without the crate's code and with no wildcard arm.
-fn expected_surface(error: VfsError) -> Surface {
-    match error {
-        VfsError::TokenRequired
-        | VfsError::TokenExpired
-        | VfsError::TokenRevoked
-        | VfsError::SecurityFloor => Surface::Permission,
-        VfsError::OutOfRange => Surface::InvalidArgument,
-        VfsError::NotFound
-        | VfsError::Exists
-        | VfsError::Access
-        | VfsError::ReadOnly
-        | VfsError::NoSpace
-        | VfsError::QuotaExceeded
-        | VfsError::CrossDevice
-        | VfsError::Stale
-        | VfsError::Busy
-        | VfsError::Offline
-        | VfsError::TimedOut
-        | VfsError::NotYetStored
-        | VfsError::Interrupted
-        | VfsError::NotSupported
-        | VfsError::WouldBlock
-        | VfsError::Unreachable
-        | VfsError::Conflict => Surface::Itself,
-    }
+// The surfaces are ADR 0004, C46, point 1's, written out without the
+// crate's code.
+table! {
+    NotFound = 0 => Itself,
+    Exists = 1 => Itself,
+    Access = 2 => Itself,
+    TokenRequired = 3 => Permission,
+    TokenExpired = 4 => Permission,
+    TokenRevoked = 5 => Permission,
+    SecurityFloor = 6 => Permission,
+    ReadOnly = 7 => Itself,
+    NoSpace = 8 => Itself,
+    QuotaExceeded = 9 => Itself,
+    CrossDevice = 10 => Itself,
+    Stale = 11 => Itself,
+    Busy = 12 => Itself,
+    Offline = 13 => Itself,
+    TimedOut = 14 => Itself,
+    NotYetStored = 15 => Itself,
+    Interrupted = 16 => Itself,
+    NotSupported = 17 => Itself,
+    WouldBlock = 18 => Itself,
+    Unreachable = 19 => Itself,
+    Conflict = 20 => Itself,
+    OutOfRange = 21 => InvalidArgument,
 }
 
 #[test]
-fn all_lists_every_error_once() {
-    for (index, error) in ALL.into_iter().enumerate() {
-        assert_eq!(position(error), index, "{error:?}");
+fn table_pins_each_error_at_its_literal_position() {
+    for (index, error) in ALL.iter().copied().enumerate() {
+        let (position, _) = expected(error);
+        assert_eq!(position, index, "{error:?} is out of the table's order");
+        assert_eq!(error as usize, position, "{error:?} is declared elsewhere");
     }
+    assert_eq!(ALL.len(), 22);
 }
 
 #[test]
 fn every_error_reaches_applications_as_c46_says() {
-    for error in ALL {
-        assert_eq!(error.surface(), expected_surface(error), "{error:?}");
+    for error in ALL.iter().copied() {
+        assert_eq!(error.surface(), expected(error).1, "{error:?}");
     }
 }
 
@@ -126,7 +87,7 @@ fn out_of_range_reaches_applications_as_invalid_argument() {
 
 #[test]
 fn error_messages_are_lowercase_without_a_trailing_period() {
-    for error in ALL {
+    for error in ALL.iter().copied() {
         let message = error.to_string();
         assert!(!message.is_empty(), "{error:?}");
         assert_eq!(message, message.to_lowercase(), "{error:?}");

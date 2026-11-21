@@ -4,8 +4,9 @@
 //! The contract between IronAFS's core and its operating-system layers
 //! (ADR 0004, C7): the values that cross it.
 //!
-//! - who acts: caller and handle capabilities, which only the core mints
-//!   ([`CallerCap`], [`HandleCap`], [`Mint`]; C8, C13), from the operating
+//! - who acts: caller and handle capabilities, minted through [`Mint`]
+//!   and accepted by the core only if it recorded them ([`CallerCap`],
+//!   [`HandleCap`]; C8, C13), from the operating
 //!   system's own statement of the caller ([`Attestation`]);
 //! - when: the ingress record of each request, with its arrival and cancel
 //!   token ([`Ingress`]; C39, point 3);

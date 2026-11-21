@@ -11,7 +11,8 @@
 //! liveness and nonce), so a capability minted for another binding, or
 //! made by a crate that built its own `Mint`, is refused at run time
 //! (C8, point 2). Only the composition, the core and the test-only crates
-//! name `Mint`; `cargo xtask check-deps` refuses its name anywhere else.
+//! name `Mint`; `cargo xtask check-deps` refuses its name anywhere else,
+//! within the limits its mint check states.
 //!
 //! Each compile-fail example below differs from code that compiles only in
 //! the property it shows, and is checked to fail with its one named error.
@@ -147,7 +148,9 @@ pub enum Attestation {
 /// point 2). The type cannot keep other crates from naming `Mint`;
 /// `cargo xtask check-deps` does: only `ironafs-vfs`, the composition
 /// (`ironafsd`), the core (`ironafs-client`) and the test-only crates
-/// (`ironafs-sim`, `ironafs-test-support`) may name it.
+/// (`ironafs-sim`, `ironafs-test-support`) may name it, and none of them
+/// but this crate hands it out publicly, within the limits that check
+/// states.
 #[derive(Debug)]
 pub struct Mint(());
 
