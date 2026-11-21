@@ -10,7 +10,6 @@
 //! Private Enterprise Number is assigned, and a printable-ASCII `MSG`.
 
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::error::Error;
 use core::fmt;
 
@@ -18,7 +17,8 @@ use crate::catalogue::Stream;
 use crate::event::Event;
 use crate::fit::{EncodeError, Encoded, fit};
 use crate::redaction::Policy;
-use crate::render::{Rendered, push_decimal};
+use crate::render::{Limits, is_text, push_decimal, write_message, write_value, written_fields};
+use crate::sink::Sink;
 
 #[cfg(test)]
 mod tests;
@@ -138,9 +138,9 @@ impl Origin {
 /// let encoded = encoder.encode(&event)?;
 /// assert_eq!(
 ///     encoded.bytes(),
-///     b"<28>1 - client1 ironafsd 42 ironafs.diag.1 - 3 events lost: queue full \
-///       event=events.lost v=1 subsystem=events audience=operational \
-///       f_reason=\"queue full\" f_count=3"
+///     b"<28>1 - client1 ironafsd 42 ironafs.diag.1 - event=events.lost v=1 \
+///       subsystem=events audience=operational f_reason=\"queue full\" f_count=3 \
+///       msg=\"3 events lost: queue full\""
 /// );
 /// # Ok::<(), Box<dyn core::error::Error>>(())
 /// ```
@@ -177,65 +177,69 @@ impl SyslogEncoder {
     /// [`EncodeError::OverSizeLimit`] if the event's identity and required
     /// fields alone do not fit.
     pub fn encode(&self, event: &Event) -> Result<Encoded, EncodeError> {
-        fit(event, self.policy, self.cap, |rendered| {
-            self.write(event, rendered)
+        fit(event, self.policy, self.cap, &|sink, limits, truncated| {
+            self.write(sink, event, limits, truncated);
         })
     }
 
-    fn write(&self, event: &Event, rendered: &Rendered) -> Vec<u8> {
+    /// Writes the header, then IronAFS's pairs, then the message last, in
+    /// quotes. Every value that can hold server text is escaped and quoted,
+    /// and escaping leaves no bare `"`, so server text cannot end its value
+    /// or imitate a pair (`docs/specs/events.md` §5.9, point 6).
+    fn write(&self, out: &mut dyn Sink, event: &Event, limits: Limits, truncated: bool) {
+        let mut out = out;
         let def = event.def();
         let facility = match def.stream {
             Stream::Diagnostic => FACILITY_DAEMON,
             Stream::Audit => FACILITY_AUDIT,
         };
-        let mut out = String::new();
-        out.push('<');
+        out.put(b"<");
         push_decimal(
             &mut out,
             u64::from(facility) * 8 + u64::from(def.severity.number()),
         );
-        out.push_str(">1 - ");
-        out.push_str(self.origin.hostname.as_deref().unwrap_or("-"));
-        out.push(' ');
-        out.push_str(self.origin.app_name.as_str());
-        out.push(' ');
+        out.put(b">1 - ");
+        out.put(self.origin.hostname.as_deref().unwrap_or("-").as_bytes());
+        out.put(b" ");
+        out.put(self.origin.app_name.as_str().as_bytes());
+        out.put(b" ");
         match self.origin.procid {
             Some(procid) => push_decimal(&mut out, u64::from(procid)),
-            None => out.push('-'),
+            None => out.put(b"-"),
         }
-        out.push_str(match def.stream {
-            Stream::Diagnostic => " ironafs.diag.",
-            Stream::Audit => " ironafs.audit.",
+        out.put(match def.stream {
+            Stream::Diagnostic => b" ironafs.diag.",
+            Stream::Audit => b" ironafs.audit.",
         });
         push_decimal(&mut out, u64::from(def.id));
-        out.push_str(" - ");
-        out.push_str(&rendered.message);
-        out.push_str(" event=");
-        out.push_str(def.name);
-        out.push_str(" v=");
+        out.put(b" - event=");
+        out.put(def.name.as_bytes());
+        out.put(b" v=");
         push_decimal(&mut out, u64::from(def.version));
-        out.push_str(" subsystem=");
-        out.push_str(def.subsystem.name());
-        out.push_str(" audience=");
-        out.push_str(def.audience.name());
+        out.put(b" subsystem=");
+        out.put(def.subsystem.name().as_bytes());
+        out.put(b" audience=");
+        out.put(def.audience.name().as_bytes());
         if event.is_direct() {
-            out.push_str(" direct=1");
+            out.put(b" direct=1");
         }
-        if rendered.truncated {
-            out.push_str(" truncated=1");
+        if truncated {
+            out.put(b" truncated=1");
         }
-        for field in &rendered.fields {
-            out.push_str(" f_");
-            out.push_str(field.name);
-            out.push('=');
-            if field.text {
-                out.push('"');
-                out.push_str(&field.value);
-                out.push('"');
+        for (spec, value) in written_fields(event, self.policy, limits) {
+            out.put(b" f_");
+            out.put(spec.name.as_bytes());
+            out.put(b"=");
+            if is_text(spec) {
+                out.put(b"\"");
+                write_value(&mut out, value, limits.text);
+                out.put(b"\"");
             } else {
-                out.push_str(&field.value);
+                write_value(&mut out, value, limits.text);
             }
         }
-        out.into_bytes()
+        out.put(b" msg=\"");
+        write_message(&mut out, event, self.policy, limits);
+        out.put(b"\"");
     }
 }

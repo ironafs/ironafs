@@ -38,6 +38,7 @@ mod limit;
 mod metrics;
 mod redaction;
 mod render;
+mod sink;
 pub mod syslog;
 
 pub use catalogue::{

@@ -11,15 +11,13 @@
 //! names of upper-case letters, digits and `_` that start with a letter,
 //! so it never writes a trusted field.
 
-use alloc::string::String;
-use alloc::vec::Vec;
-
 use crate::catalogue::Stream;
 use crate::event::Event;
 use crate::field::hex_digit;
 use crate::fit::{EncodeError, Encoded, fit};
 use crate::redaction::Policy;
-use crate::render::{Rendered, push_decimal};
+use crate::render::{Limits, push_decimal, write_message, write_value, written_fields};
+use crate::sink::Sink;
 use crate::syslog::AppName;
 
 #[cfg(test)]
@@ -85,35 +83,28 @@ impl JournaldEncoder {
     /// [`EncodeError::OverSizeLimit`] if the event's identity and required
     /// fields alone do not fit.
     pub fn encode(&self, event: &Event) -> Result<Encoded, EncodeError> {
-        fit(event, self.policy, self.cap, |rendered| {
-            self.write(event, rendered)
+        fit(event, self.policy, self.cap, &|sink, limits, truncated| {
+            self.write(sink, event, limits, truncated);
         })
     }
 
-    fn write(&self, event: &Event, rendered: &Rendered) -> Vec<u8> {
+    fn write(&self, out: &mut dyn Sink, event: &Event, limits: Limits, truncated: bool) {
+        let mut out = out;
         let def = event.def();
-        let mut out = Vec::new();
-        let mut number = String::new();
-        push_field(&mut out, "MESSAGE", rendered.message.as_bytes());
-        push_field(
-            &mut out,
-            "MESSAGE_ID",
-            message_id(def.stream, def.id).as_bytes(),
-        );
-        number.clear();
-        push_decimal(&mut number, u64::from(def.severity.number()));
-        push_field(&mut out, "PRIORITY", number.as_bytes());
+        // Every value below is escaped printable ASCII or a number, so none
+        // holds a newline and each takes the simple form.
+        out.put(b"MESSAGE=");
+        write_message(&mut out, event, self.policy, limits);
+        out.put(b"\n");
+        push_field(&mut out, "MESSAGE_ID", &message_id(def.stream, def.id));
+        push_number(&mut out, "PRIORITY", u64::from(def.severity.number()));
         push_field(
             &mut out,
             "SYSLOG_IDENTIFIER",
             self.identifier.as_str().as_bytes(),
         );
-        number.clear();
-        push_decimal(&mut number, u64::from(def.id));
-        push_field(&mut out, "IRONAFS_EVENT", number.as_bytes());
-        number.clear();
-        push_decimal(&mut number, u64::from(def.version));
-        push_field(&mut out, "IRONAFS_EVENT_VERSION", number.as_bytes());
+        push_number(&mut out, "IRONAFS_EVENT", u64::from(def.id));
+        push_number(&mut out, "IRONAFS_EVENT_VERSION", u64::from(def.version));
         push_field(&mut out, "IRONAFS_EVENT_NAME", def.name.as_bytes());
         push_field(&mut out, "IRONAFS_STREAM", def.stream.name().as_bytes());
         push_field(
@@ -125,58 +116,70 @@ impl JournaldEncoder {
         if event.is_direct() {
             push_field(&mut out, "IRONAFS_DIRECT", b"1");
         }
-        if rendered.truncated {
+        if truncated {
             push_field(&mut out, "IRONAFS_TRUNCATED", b"1");
         }
-        let mut name = String::new();
-        for field in &rendered.fields {
-            name.clear();
-            name.push_str("IRONAFS_F_");
-            name.push_str(&field.name.to_ascii_uppercase());
-            push_field(&mut out, &name, field.value.as_bytes());
+        for (spec, value) in written_fields(event, self.policy, limits) {
+            out.put(b"IRONAFS_F_");
+            for &byte in spec.name.as_bytes() {
+                out.put(&[byte.to_ascii_uppercase()]);
+            }
+            out.put(b"=");
+            write_value(&mut out, value, limits.text);
+            out.put(b"\n");
         }
-        out
     }
 }
 
-/// The `MESSAGE_ID` of an event: the prefix, then the stream and the id as
-/// four lower-case hex digits each. The same for every version, so the
-/// journal catalogue keys on the event's meaning.
+/// The `MESSAGE_ID` of an event, as 32 lower-case hex digits: the prefix,
+/// then the stream and the id as four digits each. The same for every
+/// version, so the journal catalogue keys on the event's meaning.
 #[must_use]
-pub fn message_id(stream: Stream, id: u16) -> String {
+pub fn message_id(stream: Stream, id: u16) -> [u8; 32] {
     let stream_number: u16 = match stream {
         Stream::Diagnostic => 1,
         Stream::Audit => 2,
     };
-    let mut out = String::from(MESSAGE_ID_PREFIX);
-    for value in [stream_number, id] {
-        for shift in [12_u16, 8, 4, 0] {
-            // Each nibble is below 16, so the cast cannot truncate.
-            out.push(hex_digit(
-                u8::try_from((value >> shift) & 0x0f).unwrap_or(0),
-            ));
-        }
+    let mut out = [b'0'; 32];
+    let digits = MESSAGE_ID_PREFIX
+        .bytes()
+        .chain([stream_number, id].into_iter().flat_map(|value| {
+            [12_u16, 8, 4, 0].map(|shift| {
+                // Each nibble is below 16, so the conversion cannot fail.
+                hex_digit(u8::try_from((value >> shift) & 0x0f).unwrap_or(0))
+            })
+        }));
+    for (slot, digit) in out.iter_mut().zip(digits) {
+        *slot = digit;
     }
     out
 }
 
-/// Appends one field, in the simple form when the value holds no newline
+/// Writes a decimal field.
+fn push_number(out: &mut impl Sink, name: &str, number: u64) {
+    out.put(name.as_bytes());
+    out.put(b"=");
+    push_decimal(out, number);
+    out.put(b"\n");
+}
+
+/// Writes one field, in the simple form when the value holds no newline
 /// and in the length-prefixed form when it does.
-pub(crate) fn push_field(out: &mut Vec<u8>, name: &str, value: &[u8]) {
-    out.extend_from_slice(name.as_bytes());
+pub(crate) fn push_field(out: &mut impl Sink, name: &str, value: &[u8]) {
+    out.put(name.as_bytes());
     if value.contains(&b'\n') {
-        out.push(b'\n');
+        out.put(b"\n");
         // A `usize` length always fits in 64 bits on the targets IronAFS
         // builds for; on overflow the length written would be wrong, so the
         // field is left empty instead.
         let length = u64::try_from(value.len()).unwrap_or(0);
-        out.extend_from_slice(&length.to_le_bytes());
+        out.put(&length.to_le_bytes());
         if length != 0 {
-            out.extend_from_slice(value);
+            out.put(value);
         }
     } else {
-        out.push(b'=');
-        out.extend_from_slice(value);
+        out.put(b"=");
+        out.put(value);
     }
-    out.push(b'\n');
+    out.put(b"\n");
 }

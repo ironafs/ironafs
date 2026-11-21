@@ -151,3 +151,31 @@ fn errors_display_in_lower_case_with_no_value() {
         "field volume of event volume.offline has another kind"
     );
 }
+
+#[test]
+fn with_refuses_a_static_value_outside_the_fields_choices() {
+    let builder = Event::builder(&catalogue::AUDIT_GAP, Role::Daemon).unwrap();
+    assert_eq!(
+        builder.with("kind", "anything at all").err(),
+        Some(EventError::ValueNotAllowed {
+            event: "audit.gap",
+            field: "kind"
+        })
+    );
+}
+
+#[test]
+fn debug_shows_no_field_value() {
+    let event = Event::builder(&catalogue::VOLUME_OFFLINE, Role::Daemon)
+        .unwrap()
+        .with("volume", 123_456_u64)
+        .unwrap()
+        .with("message", ServerText::from_wire(b"sensitive"))
+        .unwrap()
+        .build()
+        .unwrap();
+    let shown = alloc::format!("{event:?}");
+    assert!(!shown.contains("123456"), "{shown}");
+    assert!(!shown.contains("sensitive"), "{shown}");
+    assert!(shown.contains("volume.offline"), "{shown}");
+}

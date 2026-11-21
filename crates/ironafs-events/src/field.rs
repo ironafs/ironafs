@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::catalogue::FieldKind;
+use crate::sink::Sink;
 
 #[cfg(test)]
 mod tests;
@@ -210,7 +211,7 @@ impl ServerText {
     /// escapes, never splitting one, and [`TRUNCATION_MARKER`] if anything
     /// was left out here or when the text arrived. Returns whether the
     /// marker was written.
-    pub(crate) fn render(&self, out: &mut String, limit: Option<usize>) -> bool {
+    pub(crate) fn render(&self, out: &mut impl Sink, limit: Option<usize>) -> bool {
         let mut written = 0_usize;
         let mut cut = self.cut;
         for &byte in &self.bytes {
@@ -224,7 +225,7 @@ impl ServerText {
             written = next;
         }
         if cut {
-            out.push_str(TRUNCATION_MARKER);
+            out.put(TRUNCATION_MARKER.as_bytes());
         }
         cut
     }
@@ -259,18 +260,11 @@ impl Escape {
         }
     }
 
-    fn push_to(self, out: &mut String) {
+    fn push_to(self, out: &mut impl Sink) {
         match self {
-            Self::Plain(byte) => out.push(char::from(byte)),
-            Self::Backslashed(byte) => {
-                out.push('\\');
-                out.push(char::from(byte));
-            }
-            Self::Hex(byte) => {
-                out.push_str("\\x");
-                out.push(hex_digit(byte >> 4));
-                out.push(hex_digit(byte & 0x0f));
-            }
+            Self::Plain(byte) => out.put(&[byte]),
+            Self::Backslashed(byte) => out.put(&[b'\\', byte]),
+            Self::Hex(byte) => out.put(&[b'\\', b'x', hex_digit(byte >> 4), hex_digit(byte)]),
         }
     }
 }
@@ -285,14 +279,18 @@ pub(crate) const fn escape(byte: u8) -> Escape {
 
 /// Appends `text` escaped, with no limit. Static text is IronAFS's own,
 /// but is escaped the same way so no field ever holds a control byte.
-pub(crate) fn push_escaped(out: &mut String, text: &str) {
+pub(crate) fn push_escaped(out: &mut impl Sink, text: &str) {
     for &byte in text.as_bytes() {
         escape(byte).push_to(out);
     }
 }
 
-pub(crate) fn hex_digit(nibble: u8) -> char {
-    char::from_digit(u32::from(nibble & 0x0f), 16).unwrap_or('0')
+/// The lower-case hex digit of the low four bits of `nibble`.
+pub(crate) fn hex_digit(nibble: u8) -> u8 {
+    b"0123456789abcdef"
+        .get(usize::from(nibble & 0x0f))
+        .copied()
+        .unwrap_or(b'0')
 }
 
 /// An opaque reference: the daemon's keyed hash of an object (ADR 0004,
@@ -308,10 +306,9 @@ impl Reference {
         Self(bytes)
     }
 
-    pub(crate) fn push_hex(&self, out: &mut String) {
+    pub(crate) fn push_hex(&self, out: &mut impl Sink) {
         for &byte in &self.0 {
-            out.push(hex_digit(byte >> 4));
-            out.push(hex_digit(byte));
+            out.put(&[hex_digit(byte >> 4), hex_digit(byte)]);
         }
     }
 }

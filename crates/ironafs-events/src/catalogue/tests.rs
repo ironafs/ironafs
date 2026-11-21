@@ -6,7 +6,8 @@
 
 use alloc::vec::Vec;
 
-use super::{ALL, Audience, MAX_FIELDS, Roles, Stream, find};
+use super::{ALL, Audience, FieldKind, MAX_FIELDS, Roles, Stream, Subsystem, find};
+use crate::limit::Loss;
 
 fn is_name(text: &str, max: usize, extra: &[u8]) -> bool {
     !text.is_empty()
@@ -148,4 +149,59 @@ fn find_returns_the_definition_of_that_stream_and_id() {
         Some("events.lost")
     );
     assert_eq!(find(Stream::Diagnostic, 65_535), None);
+}
+
+#[test]
+fn an_event_has_at_most_one_server_text_field() {
+    for def in ALL {
+        let count = def
+            .fields
+            .iter()
+            .filter(|field| field.kind == FieldKind::ServerText)
+            .count();
+        assert!(count <= 1, "{} has {count} server text fields", def.name);
+    }
+}
+
+#[test]
+fn static_fields_and_only_they_have_well_formed_choices() {
+    for def in ALL {
+        for field in def.fields {
+            assert_eq!(
+                field.kind == FieldKind::Static,
+                !field.choices.is_empty(),
+                "{}.{}",
+                def.name,
+                field.name
+            );
+            for choice in field.choices {
+                assert!(
+                    !choice.is_empty()
+                        && choice.len() <= 32
+                        && choice.bytes().all(|byte| (0x20..=0x7e).contains(&byte)),
+                    "{}.{}: {choice:?}",
+                    def.name,
+                    field.name
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_summary_events_choices_are_the_names_the_code_writes() {
+    let choices =
+        |def: &super::EventDef, name: &str| def.fields[def.field_index(name).unwrap()].choices;
+    let reasons = choices(&super::EVENTS_LOST, "reason");
+    for loss in Loss::ALL {
+        assert!(reasons.contains(&loss.reason()), "{loss:?}");
+    }
+    let subsystems = choices(&super::EVENTS_SUPPRESSED, "subsystem");
+    for subsystem in Subsystem::ALL {
+        assert!(subsystems.contains(&subsystem.name()), "{subsystem:?}");
+    }
+    let streams = choices(&super::EVENTS_OVER_SIZE, "stream");
+    for stream in [Stream::Diagnostic, Stream::Audit] {
+        assert!(streams.contains(&stream.name()), "{stream:?}");
+    }
 }

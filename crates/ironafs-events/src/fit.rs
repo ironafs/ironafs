@@ -13,7 +13,8 @@ use crate::catalogue::Stream;
 use crate::event::Event;
 use crate::field::Value;
 use crate::redaction::Policy;
-use crate::render::{Limits, Rendered, render};
+use crate::render::{Limits, truncated};
+use crate::sink::{Count, Sink};
 
 /// A complete encoded message, within its sink's cap.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,24 +73,45 @@ impl fmt::Display for EncodeError {
 
 impl Error for EncodeError {}
 
-/// Encodes `event` with `encode` within `cap` bytes, cutting as section
-/// 5.10 says.
+/// Writes one message into a sink: the event, the limits it is rendered
+/// under, and whether those limits cut it.
+pub(crate) type Writer<'a> = dyn Fn(&mut dyn Sink, Limits, bool) + 'a;
+
+/// Encodes `event` with `write` within `cap` bytes, cutting as section
+/// 5.10 says. Every candidate is measured by writing it into a [`Count`];
+/// the one buffer is allocated at the chosen message's exact size, after it
+/// is known to fit.
 pub(crate) fn fit(
     event: &Event,
     policy: Policy,
     cap: usize,
-    encode: impl Fn(&Rendered) -> Vec<u8>,
+    write: &Writer<'_>,
 ) -> Result<Encoded, EncodeError> {
-    let attempt = |limits: Limits| {
-        let rendered = render(event, policy, limits);
-        let bytes = encode(&rendered);
-        (bytes.len() <= cap).then_some(Encoded {
-            bytes,
-            truncated: rendered.truncated,
-        })
+    let fits = |limits: Limits| {
+        let truncated = truncated(event, policy, limits);
+        let mut count = Count::default();
+        write(&mut count, limits, truncated);
+        (count.0 <= cap).then_some((limits, truncated, count.0))
     };
-    if let Some(whole) = attempt(Limits::NONE) {
-        return Ok(whole);
+    let (limits, truncated, size) = choose(event, fits).ok_or_else(|| {
+        let def = event.def();
+        EncodeError::OverSizeLimit {
+            stream: def.stream,
+            id: def.id,
+        }
+    })?;
+    let mut bytes = Vec::with_capacity(size);
+    write(&mut bytes, limits, truncated);
+    Ok(Encoded { bytes, truncated })
+}
+
+/// The limits of the message to send: the whole event if it fits; else the
+/// largest server text rendering that fits with every field; else, with
+/// optional fields dropped, the whole text or the largest rendering that
+/// fits; else none.
+fn choose<T>(event: &Event, fits: impl Fn(Limits) -> Option<T>) -> Option<T> {
+    if let Some(whole) = fits(Limits::NONE) {
+        return Some(whole);
     }
     let longest = longest_text(event);
     for drop_optional in [false, true] {
@@ -98,37 +120,35 @@ pub(crate) fn fit(
                 text: None,
                 drop_optional,
             };
-            if let Some(encoded) = attempt(whole_text) {
-                return Ok(encoded);
+            if let Some(found) = fits(whole_text) {
+                return Some(found);
             }
         }
         let limits = |text| Limits {
             text: Some(text),
             drop_optional,
         };
-        let Some(mut best) = attempt(limits(0)) else {
+        let Some(mut best) = fits(limits(0)) else {
             continue;
         };
         // The largest length that fits lies in 0..longest: bisect, keeping
         // `low` a length that fits and `high` one past the last candidate.
+        // The size grows with the length because an event has at most one
+        // server text field (section 5.1, point 4).
         let mut low = 0_usize;
         let mut high = longest;
         while high.saturating_sub(low) > 1 {
             let middle = low + (high - low) / 2;
-            if let Some(encoded) = attempt(limits(middle)) {
+            if let Some(found) = fits(limits(middle)) {
                 low = middle;
-                best = encoded;
+                best = found;
             } else {
                 high = middle;
             }
         }
-        return Ok(best);
+        return Some(best);
     }
-    let def = event.def();
-    Err(EncodeError::OverSizeLimit {
-        stream: def.stream,
-        id: def.id,
-    })
+    None
 }
 
 /// The longest escaped rendering of any server text value in `event`.

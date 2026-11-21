@@ -295,48 +295,161 @@ impl FieldKind {
 /// One field of an event definition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FieldSpec {
+    pub(crate) name: &'static str,
+    pub(crate) kind: FieldKind,
+    pub(crate) class: DataClass,
+    pub(crate) required: bool,
+    pub(crate) choices: &'static [&'static str],
+}
+
+impl FieldSpec {
     /// The field's name: lower-case ASCII letters, digits and `_`, at most
     /// 24 bytes.
-    pub name: &'static str,
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
     /// The value's type.
-    pub kind: FieldKind,
+    #[must_use]
+    pub const fn kind(&self) -> FieldKind {
+        self.kind
+    }
+
     /// What the value may reveal.
-    pub class: DataClass,
+    #[must_use]
+    pub const fn class(&self) -> DataClass {
+        self.class
+    }
+
     /// Whether every event of this definition carries it.
-    pub required: bool,
+    #[must_use]
+    pub const fn required(&self) -> bool {
+        self.required
+    }
+
+    /// For a static text field, the only values it takes; empty for every
+    /// other kind (`docs/specs/events.md` §5.2, point 3).
+    #[must_use]
+    pub const fn choices(&self) -> &'static [&'static str] {
+        self.choices
+    }
 }
 
 /// One catalogue entry (ADR 0004, O1, point 2).
+///
+/// Only the catalogue defines events: no other crate can build an
+/// `EventDef`, so every definition an event, the limiter or an encoder
+/// sees is one the catalogue's tests check.
+///
+/// ```compile_fail,E0451
+/// use ironafs_events::{Audience, EventDef, Roles, Severity, Stream, Subsystem};
+///
+/// static FORGED: EventDef = EventDef {
+///     stream: Stream::Audit,
+///     id: 9,
+///     version: 1,
+///     name: "forged",
+///     severity: Severity::Notice,
+///     audience: Audience::Audit,
+///     subsystem: Subsystem::Daemon,
+///     fields: &[],
+///     template: "anything",
+///     meaning: "",
+///     remedy: "",
+///     producers: Roles::ALL,
+/// };
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EventDef {
-    /// The stream; ids are unique within it.
-    pub stream: Stream,
-    /// The id, never reused (ADR 0004, O2, point 1).
-    pub id: u16,
-    /// The version, from 1.
-    pub version: u8,
-    /// The name: lower-case ASCII letters, digits, `.` and `_`, at most 32
-    /// bytes, unique in the catalogue.
-    pub name: &'static str,
-    /// The severity.
-    pub severity: Severity,
-    /// Who the event is for.
-    pub audience: Audience,
-    /// Where it comes from.
-    pub subsystem: Subsystem,
-    /// Its fields, at most [`MAX_FIELDS`].
-    pub fields: &'static [FieldSpec],
-    /// The message, with `{name}` placeholders for fields.
-    pub template: &'static str,
-    /// What the event means.
-    pub meaning: &'static str,
-    /// What an operator does about it.
-    pub remedy: &'static str,
-    /// The roles allowed to emit it.
-    pub producers: Roles,
+    pub(crate) stream: Stream,
+    pub(crate) id: u16,
+    pub(crate) version: u8,
+    pub(crate) name: &'static str,
+    pub(crate) severity: Severity,
+    pub(crate) audience: Audience,
+    pub(crate) subsystem: Subsystem,
+    pub(crate) fields: &'static [FieldSpec],
+    pub(crate) template: &'static str,
+    pub(crate) meaning: &'static str,
+    pub(crate) remedy: &'static str,
+    pub(crate) producers: Roles,
 }
 
 impl EventDef {
+    /// The stream; ids are unique within it.
+    #[must_use]
+    pub const fn stream(&self) -> Stream {
+        self.stream
+    }
+
+    /// The id, never reused (ADR 0004, O2, point 1).
+    #[must_use]
+    pub const fn id(&self) -> u16 {
+        self.id
+    }
+
+    /// The version, from 1.
+    #[must_use]
+    pub const fn version(&self) -> u8 {
+        self.version
+    }
+
+    /// The name: lower-case ASCII letters, digits, `.` and `_`, at most 32
+    /// bytes, unique in the catalogue.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The severity.
+    #[must_use]
+    pub const fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    /// Who the event is for.
+    #[must_use]
+    pub const fn audience(&self) -> Audience {
+        self.audience
+    }
+
+    /// Where it comes from.
+    #[must_use]
+    pub const fn subsystem(&self) -> Subsystem {
+        self.subsystem
+    }
+
+    /// Its fields, at most [`MAX_FIELDS`].
+    #[must_use]
+    pub const fn fields(&self) -> &'static [FieldSpec] {
+        self.fields
+    }
+
+    /// The message, with `{name}` placeholders for fields.
+    #[must_use]
+    pub const fn template(&self) -> &'static str {
+        self.template
+    }
+
+    /// What the event means.
+    #[must_use]
+    pub const fn meaning(&self) -> &'static str {
+        self.meaning
+    }
+
+    /// What an operator does about it.
+    #[must_use]
+    pub const fn remedy(&self) -> &'static str {
+        self.remedy
+    }
+
+    /// The roles allowed to emit it.
+    #[must_use]
+    pub const fn producers(&self) -> Roles {
+        self.producers
+    }
+
     /// The position of the field called `name`, if the event has one.
     #[must_use]
     pub fn field_index(&self, name: &str) -> Option<usize> {

@@ -155,10 +155,12 @@ Section 9 shows where each is kept and which test fails if it is broken.
 1. The catalogue is a static table of event definitions. Each names its
    stream (diagnostic or audit), id, version, name, severity, audience,
    subsystem, fields, template, meaning, remedy and producer roles.
-2. A field value can be built only from a closed list of types, through a
-   sealed trait. Secret types are not on the list, and no type outside
-   this crate can be added to it, so the compiler refuses a secret as a
-   field.
+2. Event definitions exist only in the catalogue: no other crate can
+   build one. A field value can be built only from a closed list of
+   types, through a sealed trait. Secret types are not on the list, and
+   no type outside this crate can be added to it, so the compiler refuses
+   a secret as a field. Static text is only ever one of its field's
+   catalogue choices.
 3. Server-supplied text is held only as `ServerText`, which keeps at most
    256 bytes and renders only as escaped printable ASCII.
 4. Each field has a data class. Redaction looks only at the class and the
@@ -167,9 +169,9 @@ Section 9 shows where each is kept and which test fails if it is broken.
 5. The rate limiter keeps one bucket per subsystem and takes the instant
    as an argument. Every event it refuses is counted. Audit is never
    rate limited.
-6. Each encoder writes a complete message, checks it against its cap,
-   and fits it by truncating server text and then dropping optional
-   fields, marking the truncation. If the event's identity and required
+6. Each encoder measures a complete message before it allocates it,
+   checks the size against its cap, and fits it by truncating server text
+   and then dropping optional fields, marking the truncation. If the event's identity and required
    fields alone do not fit, it returns `OverSizeLimit`, and the caller
    sends the catalogue's "over the size limit" event instead.
 
@@ -207,8 +209,12 @@ Section 9 shows where each is kept and which test fails if it is broken.
    limiter's state (5.6). `[OWN]`
 4. A field has a name (lower-case ASCII letters, digits and `_`, at most
    24 bytes, unique within its event), a kind (5.2), a data class (5.4),
-   and whether it is required. `[OWN]`, so that the journald field name
-   of 5.8, point 4, stays within 5.8, point 3.
+   and whether it is required. A static text field also has its list of
+   choices: 1 to 32 bytes of printable ASCII each; no other kind has
+   choices. An event has at most one server text field. `[OWN]`: the name
+   limit keeps the journald field name of 5.8, point 4, within 5.8, point
+   3; the choices bound every static value; one server text field keeps
+   the size of a cut message growing with its length (5.10, point 2).
 5. The template is text with `{name}` placeholders. Every placeholder
    names a field of the event, and the template holds no other `{` or
    `}`. `[OWN]`
@@ -229,6 +235,11 @@ Section 9 shows where each is kept and which test fails if it is broken.
    | diagnostic | 200 | `volume.offline` | warning | operational | volume | `volume` (unsigned, identifier, yes), `message` (server text, server text, no) | daemon |
    | audit | 1 | `audit.gap` | warning | audit | daemon | `first` (unsigned, public, yes), `last` (unsigned, public, yes), `kind` (static, public, yes) | daemon |
 
+   The static fields' choices: `events.lost` `reason`, the five loss
+   reasons of 5.6, point 6; `events.suppressed` `subsystem`, the names of
+   5.1, point 3; `events.over_size` `stream`, `diagnostic` and `audit`;
+   `audit.gap` `kind`, the three kinds below.
+
    `events.over_size` is the "event dropped: over the size limit" event
    of ADR 0005, point 1.7. Its `stream` and `event` fields name the
    dropped event. `audit.gap`'s `kind` is one of `known-loss`,
@@ -236,32 +247,46 @@ Section 9 shows where each is kept and which test fails if it is broken.
    audit fields (O9, point 3) are the audit specification's. No entry is
    published yet, so none is frozen (O2, point 2). `[OWN]`
 
+9. Only the catalogue builds an `EventDef` or a `FieldSpec`: their fields
+   are private to this crate, and other crates read them through methods.
+   So every definition the builder, the limiter and the encoders see is
+   one the catalogue's tests check (points 1 to 6). `[ADR 0004 O1.3:
+   Working]`, `[OWN]` for the mechanism.
+
 ### 5.2 Field values and secret types
 
 1. A field's kind is one of: unsigned (from `u8`, `u16`, `u32`, `u64`),
-   signed (from `i32`, `i64`), boolean, static text (`&'static str`),
-   server text (`ServerText`, 5.3), and reference (`Reference`, 32
-   bytes). `[OWN]`
+   signed (from `i32`, `i64`), boolean, static text (`&'static str`, one
+   of the field's choices, 5.1, point 4), server text (`ServerText`, 5.3),
+   and reference (`Reference`, 32 bytes). `[OWN]`
 2. A value is built only through the trait `FieldSource`, which is
    sealed: it is implemented for exactly the types of point 1, and no
    other crate can implement it. So no type outside that list can become
    a field: a token, a key, a session key or a Kerberos ticket is
    refused by the compiler. `[ADR 0004 O5.1: Firm]`
-3. Static text is text written in IronAFS's own source. Text that
-   arrives at run time from outside the process reaches an event only as
-   server text. `[ADR 0004 O5.3: Firm]`
-4. A value's kind must equal its field's kind; a value for a field the
-   event does not have, a second value for one field, and a missing
-   required field are each refused (7). `[OWN]`
+3. A static text value must equal one of its field's catalogue choices,
+   and the event keeps the catalogue's own string, not the caller's. So
+   no run-time text, however it was made, reaches an event as static
+   text. Text that arrives at run time from outside the process reaches
+   an event only as server text. `[ADR 0004 O5.3: Firm]`
+4. A value's kind must equal its field's kind; a static value outside
+   its choices, a value for a field the event does not have, a second
+   value for one field, and a missing required field are each refused
+   (7). `[OWN]`
 5. `REDACTION_MARKER` is the text `[redacted]`. A secret type's `Debug`
    and `Display` print only the marker, written through
    `write_redacted`. This crate cannot force that on a type it does not
    own: each secret type's owner does it, and its tests check it.
    `[ADR 0004 O5.1: Firm]`
-6. The limit: the type system refuses secret *types*. Code that copies a
-   secret's bytes into an allowed type (an integer, a static string)
-   defeats it. Secret types offer no accessor that does that, and review
-   checks it. `[OWN]`
+6. The limit: the type system refuses secret *types*; it cannot know
+   where a value's bytes came from. Code that copies a secret's bytes
+   into an integer, into `ServerText`, or into a `Reference` defeats it,
+   and a pure crate with no dependencies has no way to check the origin
+   of bytes it is given. Secret types offer no accessor that does that,
+   and review checks it. `ServerText` is always escaped and its field's
+   class is set by the catalogue; a `Reference` is the daemon's keyed
+   hash (O6, point 2), and the daemon is the only producer of the events
+   that carry one. `[OWN]`
 
 ### 5.3 Server-supplied text
 
@@ -275,8 +300,8 @@ Section 9 shows where each is kept and which test fails if it is broken.
    - every other byte (controls, `0x7F`, and every byte of a non-ASCII
      character) is written as `\x` and two lower-case hex digits.
 
-   So a rendering holds only printable ASCII, never a newline, never `=`
-   at the start, and is at most four times the kept bytes.
+   So a rendering holds only printable ASCII, never a newline and never
+   a bare `"` or `\`, and is at most four times the kept bytes.
    `[ADR 0004 O5.3: Firm]`, `[OWN]` for the escape alphabet.
 3. A truncated rendering never splits an escape: it holds the escapes of
    a prefix of the kept bytes, and is followed by `TRUNCATION_MARKER`,
@@ -319,6 +344,10 @@ Section 9 shows where each is kept and which test fails if it is broken.
    `EventBuilder::build()` refuses a missing required field.
 4. An event holds at most 8 values; the builder never allocates more.
    `[OWN]`
+5. The `Debug` of an event or a builder shows the event's name, the
+   direct flag and the names of the fields set, never a value: redaction
+   applies only when an encoder writes the event. `[ADR 0004 O5.2:
+   Firm]`
 
 ### 5.6 Rate limiting and loss counters
 
@@ -331,7 +360,8 @@ Section 9 shows where each is kept and which test fails if it is broken.
    crate has no dependencies (O1, point 1), so it takes the reading, not
    the seam's type. `[ADR 0004 O1.1: Working]`
 3. The bucket is a virtual-scheduling rate check: with interval
-   `T = 1e9 / rate` nanoseconds (integer division, at least 1) and
+   `T = 1e9 / rate` nanoseconds (rounded up, so the admitted rate never
+   exceeds the configured one) and
    tolerance `tau = T * (burst - 1)`, an event at `now` is admitted when
    `now + tau >= tat`, and then `tat = max(tat, now) + T`. A sum that
    would overflow 64 bits refuses the event (and counts it). `[OWN]`, a
@@ -428,11 +458,16 @@ Section 9 shows where each is kept and which test fails if it is broken.
 5. `SD` is `-`: no structured data until a Private Enterprise Number is
    assigned `[ADR 0004 O8.4: Working]`.
 6. `MSG` is printable ASCII only, so it is RFC 5424's `MSG-ANY` with no
-   byte-order mark `[R1 §6.4: CONFIRMED]`: the message (5.8, point 4),
-   then ` event=<name> v=<version> subsystem=<subsystem>
-   audience=<audience>`, then ` direct=1` and ` truncated=1` where they
-   apply, then for each written field ` f_<name>=<value>`, text values
-   in double quotes.
+   byte-order mark `[R1 §6.4: CONFIRMED]`. It is a list of `key=value`
+   pairs separated by one space: `event=<name> v=<version>
+   subsystem=<subsystem> audience=<audience>`, then ` direct=1` and
+   ` truncated=1` where they apply, then for each written field
+   ` f_<name>=<value>`, text values in double quotes, and last
+   ` msg="<message>"` (5.8, point 4). Every value that can hold server
+   text is in quotes, and escaping (5.3) leaves no bare `"` or `\`, so
+   server text can neither end its value nor imitate a pair: a reader
+   that takes the pairs in order finds IronAFS's own keys first and the
+   message last. `[OWN]`
 7. The cap is `SYSLOG_FALLBACK_MAX` = 480 octets over the whole message:
    RFC 5424, section 6.1, requires every receiver to accept that much
    `[R1 §6.1: CONFIRMED]`, `[ADR 0005 1.7: Working]`. With the largest
@@ -442,13 +477,21 @@ Section 9 shows where each is kept and which test fails if it is broken.
 
 ### 5.10 Fitting to the cap and marking truncation
 
-1. Each encoder first writes the whole message. If it fits the cap, it
-   is the result.
+1. Each candidate message is first written into a counter that keeps no
+   bytes, so its exact size is known before anything is allocated. The
+   one output buffer is allocated at the chosen message's exact size,
+   after it is known to fit. Every other allocation is bounded by the
+   catalogue (at most 8 fields, static text from the choices) and by
+   `SERVER_TEXT_MAX`. The first candidate is the whole message; if it
+   fits the cap, it is the result.
 2. Otherwise the encoder finds the largest rendering length `L` such
    that, with every server text value rendered at most `L` bytes plus the
    marker (5.3, point 3) and `truncated` set, the message fits. It
    searches by bisection over `0..` the longest rendering (at most 1,024
-   bytes, 5.3, point 2).
+   bytes, 5.3, point 2). Below the whole length every candidate carries
+   the marker, and an event has at most one server text field (5.1,
+   point 4), so the size never falls as `L` grows and bisection finds the
+   largest `L`.
 3. If even `L = 0` does not fit, it drops every optional field, marks
    `truncated`, tries the server text whole, and then searches again as
    point 2 says. With point 1, that is at most 24 encodings of one event.
@@ -477,7 +520,8 @@ Section 9 shows where each is kept and which test fails if it is broken.
 ## 7. Errors and failure
 
 1. `EventError`: `RoleNotAllowed`, `DirectAudit`, `UnknownField`,
-   `KindMismatch`, `DuplicateField`, `MissingField`, each naming the event
+   `KindMismatch`, `DuplicateField`, `ValueNotAllowed`, `MissingField`,
+   each naming the event
    and, where it applies, the field. No error carries a field's value.
 2. `EncodeError::OverSizeLimit { stream, id }`.
 3. `OriginError`: an application name that is empty, longer than 48
@@ -512,7 +556,10 @@ Section 9 shows where each is kept and which test fails if it is broken.
 | O1.2: every field has a data class | `FieldSpec::class` is not optional; 5.4, point 2 | `catalogue::tests::every_field_has_an_allowed_class` |
 | O2.6: ids 16-bit, versions 8-bit, catalogue version | `EventDef` field types; 5.1 | `catalogue::tests::ids_are_unique_per_stream` |
 | O3.2, O9.2: role check, audit only from the daemon | 5.5, point 1; 5.1, point 6 | `event::tests::builder_refuses_a_role_the_definition_does_not_list`, `catalogue::tests::audit_events_come_only_from_the_daemon` |
-| O3.3, O7.3: refused records counted | 5.6, points 5 and 6 | `limit::tests::suppressed_events_are_counted`, `limit::tests::loss_counters_record_and_take`, `it::limit::every_refusal_is_counted` |
+| O3.3, O7.3: refused records counted, in the part this crate holds: every limiter refusal is counted, and `LossCounters` counts what callers record. Builder refusals are errors returned to the caller, not events lost; recording encoder outcomes and delivering the drained summaries are the callers' (O3, O7; issue #94, part (d)) | 5.6, points 5 and 6 | `limit::tests::suppressed_events_are_counted`, `limit::tests::loss_counters_record_and_take`, `it::limit::every_refusal_is_counted` |
+| O1.3: events only from the catalogue | 5.1, point 9; 5.2, point 3 | the `compile_fail` doc-test on `EventDef`; `event::tests::with_refuses_a_static_value_outside_the_fields_choices` |
+| O5.2: no value in `Debug` | 5.5, point 5 | `event::tests::debug_shows_no_field_value` |
+| O5.3 in syslog: server text cannot imitate IronAFS's pairs | 5.9, point 6 | `it::syslog::server_text_cannot_imitate_the_key_value_suffix`, `it::syslog::every_encoding_is_printable_ascii_within_its_cap` |
 | O4.5: a direct write is never audit | 5.5, point 2 | `event::tests::direct_audit_is_refused` |
 | O5.1: no secret type as a field; marker | 5.2 | the two `compile_fail` doc-tests on `FieldSource`; `it::redaction::formatting_a_secret_prints_the_marker` |
 | O5.3: server text never as it arrived | 5.3 | `field::tests::escape_*`, `it::server_text::server_text_never_reaches_the_output_raw` and `it::server_text::a_newline_in_server_text_cannot_add_a_journal_field` (both shown failing on a planted pass-through) |
@@ -562,9 +609,9 @@ fuzz target `ironafs_events_server_text` is added with the fuzz crate
 1. The largest `events.over_size` and the largest one-range `audit.gap`
    with the largest syslog header (64-byte host name, 48-byte
    application name, 10-digit process id) encode within 480 octets:
-   310 octets (a 150-octet header, a 59-octet message, 101 octets of
-   event fields) and 356 octets (152, 72 and 132), counted by hand from
-   5.9 and asserted exactly.
+   316 octets (a 150-octet header, 100 octets of pairs, and the 59-octet
+   message with ` msg="` and its closing quote) and 362 octets (152, 131
+   and 72 plus 7), counted by hand from 5.9 and asserted exactly.
 2. A flood of 10,000 events from one subsystem at one instant admits the
    burst, and the suppressed count equals the rest exactly.
 
@@ -614,14 +661,16 @@ transport (2, point 2).
 
 ## 13. Open questions
 
-1. Where the sink caps live. ADR 0005, point 1.7, puts the cap check in
-   `ironafs-os`, which may not depend on `ironafs-events` (check-deps).
-   This crate defines `JOURNALD_MAX_DATAGRAM` and `SYSLOG_FALLBACK_MAX`
-   for fitting; the transport needs the same values. Issue #94.
+1. Where the sink caps live: this crate defines `JOURNALD_MAX_DATAGRAM`
+   and `SYSLOG_FALLBACK_MAX` for fitting; the transport in `ironafs-os`,
+   which may not depend on this crate (check-deps), defines the same
+   values for its own check, and a test that sees both proves them
+   equal. That test lands with the transport. Issue #94, part (d).
 2. Whether `/dev/log` accepts RFC 5424 input (ADR 0005, point 1.7:
    UNVERIFIED). Issue #94, part (d).
-3. The canonical secret wrapper and its zeroing belong to the crates that
-   hold secrets; they adopt `write_redacted` (5.2, point 5). Issue #94.
+3. The canonical secret wrapper, its zeroing, and where the redaction
+   marker's text lives for it belong to the crates that hold secrets
+   (5.2, point 5), decided when the first of them lands. Issue #94.
 
 ## 14. Review
 

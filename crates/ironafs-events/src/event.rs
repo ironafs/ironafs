@@ -49,6 +49,14 @@ pub enum EventError {
         /// The field's name.
         field: &'static str,
     },
+    /// A static text value that is not one of the field's catalogue
+    /// choices.
+    ValueNotAllowed {
+        /// The event's name.
+        event: &'static str,
+        /// The field's name.
+        field: &'static str,
+    },
     /// A required field has no value.
     MissingField {
         /// The event's name.
@@ -76,6 +84,12 @@ impl fmt::Display for EventError {
             Self::DuplicateField { event, field } => {
                 write!(formatter, "field {field} of event {event} is already set")
             }
+            Self::ValueNotAllowed { event, field } => {
+                write!(
+                    formatter,
+                    "field {field} of event {event} has no such choice"
+                )
+            }
             Self::MissingField { event, field } => {
                 write!(
                     formatter,
@@ -89,18 +103,58 @@ impl fmt::Display for EventError {
 impl Error for EventError {}
 
 /// An event under construction: a definition, the role emitting it, and
-/// field values checked one by one.
-#[derive(Clone, Debug)]
+/// field values checked one by one. Its `Debug` shows no value.
+#[derive(Clone)]
 pub struct EventBuilder {
     event: Event,
 }
 
+impl fmt::Debug for EventBuilder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("EventBuilder")
+            .field(&self.event)
+            .finish()
+    }
+}
+
 /// A complete event: every required field has a value of its field's kind.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Its `Debug` shows the event's name, the direct flag and the names of the
+/// fields set, never a value: redaction applies only when an encoder writes
+/// the event (`docs/specs/events.md` §5.4).
+#[derive(Clone, PartialEq, Eq)]
 pub struct Event {
     def: &'static EventDef,
     direct: bool,
     values: [Option<Value>; MAX_FIELDS],
+}
+
+impl fmt::Debug for Event {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let set = self
+            .def
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.value(*index).is_some())
+            .map(|(_, spec)| spec.name);
+        formatter
+            .debug_struct("Event")
+            .field("event", &self.def.name)
+            .field("direct", &self.direct)
+            .field("fields", &FieldNames(set))
+            .finish_non_exhaustive()
+    }
+}
+
+/// Formats field names as a list, from an iterator it can clone.
+struct FieldNames<I>(I);
+
+impl<I: Iterator<Item = &'static str> + Clone> fmt::Debug for FieldNames<I> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_list().entries(self.0.clone()).finish()
+    }
 }
 
 impl Event {
@@ -113,7 +167,7 @@ impl Event {
     ///     .with("volume", 536_870_915_u64)?
     ///     .with("message", ServerText::from_wire(b"salvaging"))?
     ///     .build()?;
-    /// assert_eq!(event.def().name, "volume.offline");
+    /// assert_eq!(event.def().name(), "volume.offline");
     /// # Ok::<(), ironafs_events::EventError>(())
     /// ```
     ///
@@ -200,12 +254,21 @@ impl EventBuilder {
             .field_index(name)
             .and_then(|index| Some((def.fields.get(index)?, self.event.values.get_mut(index)?)))
             .ok_or(EventError::UnknownField { event: def.name })?;
-        let value = value.into_value();
+        let mut value = value.into_value();
         if value.kind() != spec.kind {
             return Err(EventError::KindMismatch {
                 event: def.name,
                 field: spec.name,
             });
+        }
+        if let Value::Static(text) = value {
+            // Keep the catalogue's own string: static text is only ever one
+            // of the field's choices, whatever the caller's string was.
+            let choice = spec.choices.iter().find(|choice| **choice == text);
+            value = Value::Static(choice.ok_or(EventError::ValueNotAllowed {
+                event: def.name,
+                field: spec.name,
+            })?);
         }
         if slot.is_some() {
             return Err(EventError::DuplicateField {

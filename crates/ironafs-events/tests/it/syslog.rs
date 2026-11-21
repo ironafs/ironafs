@@ -11,7 +11,7 @@ use ironafs_events::syslog::{
 use ironafs_events::{EncodeError, Event, Policy, Role, ServerText, Stream, catalogue};
 use ironafs_test_support::{Property, Source};
 
-use crate::support::{arbitrary_event, syslog_encoder};
+use crate::support::{arbitrary_event, parse_syslog, syslog_encoder};
 
 fn volume_offline() -> Event {
     Event::builder(&catalogue::VOLUME_OFFLINE, Role::Daemon)
@@ -40,8 +40,9 @@ fn volume_offline_under_the_routine_policy_matches_its_vector() {
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(encoded.bytes()),
-        "<28>1 - client1 ironafsd 4242 ironafs.diag.200 - volume [omitted] offline: down\\x0a\\xc3\\xa9 \
-         event=volume.offline v=1 subsystem=volume audience=operational f_message=\"down\\x0a\\xc3\\xa9\""
+        "<28>1 - client1 ironafsd 4242 ironafs.diag.200 - event=volume.offline v=1 subsystem=volume \
+         audience=operational f_message=\"down\\x0a\\xc3\\xa9\" \
+         msg=\"volume [omitted] offline: down\\x0a\\xc3\\xa9\""
     );
 }
 
@@ -52,9 +53,9 @@ fn volume_offline_revealing_identifiers_matches_its_vector() {
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(encoded.bytes()),
-        "<28>1 - client1 ironafsd 4242 ironafs.diag.200 - volume 536870915 offline: down\\x0a\\xc3\\xa9 \
-         event=volume.offline v=1 subsystem=volume audience=operational f_volume=536870915 \
-         f_message=\"down\\x0a\\xc3\\xa9\""
+        "<28>1 - client1 ironafsd 4242 ironafs.diag.200 - event=volume.offline v=1 subsystem=volume \
+         audience=operational f_volume=536870915 f_message=\"down\\x0a\\xc3\\xa9\" \
+         msg=\"volume 536870915 offline: down\\x0a\\xc3\\xa9\""
     );
 }
 
@@ -80,8 +81,9 @@ fn a_direct_audit_free_event_with_no_procid_and_a_long_host_matches_its_vector()
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(encoded.bytes()),
-        "<28>1 - - afs - ironafs.diag.1 - 1 events lost: sink unavailable event=events.lost v=1 \
-         subsystem=events audience=operational direct=1 f_reason=\"sink unavailable\" f_count=1"
+        "<28>1 - - afs - ironafs.diag.1 - event=events.lost v=1 subsystem=events \
+         audience=operational direct=1 f_reason=\"sink unavailable\" f_count=1 \
+         msg=\"1 events lost: sink unavailable\""
     );
 }
 
@@ -118,9 +120,9 @@ fn the_largest_over_size_event_fits_the_fallback_cap() {
         "{} octets",
         encoded.bytes().len()
     );
-    // Counted by hand from section 5.9: a 150-octet header, a 59-octet
-    // message and 101 octets of event fields.
-    assert_eq!(encoded.bytes().len(), 310);
+    // Counted by hand from section 5.9: a 150-octet header, 100 octets of
+    // pairs, and the 59-octet message with ` msg="` and its closing quote.
+    assert_eq!(encoded.bytes().len(), 316);
 }
 
 #[test]
@@ -144,9 +146,9 @@ fn the_largest_one_range_gap_fits_the_fallback_cap() {
         "{} octets",
         encoded.bytes().len()
     );
-    // Counted by hand from section 5.9: a 152-octet header, a 72-octet
-    // message and 132 octets of event fields.
-    assert_eq!(encoded.bytes().len(), 356);
+    // Counted by hand from section 5.9: a 152-octet header, 131 octets of
+    // pairs, and the 72-octet message with ` msg="` and its closing quote.
+    assert_eq!(encoded.bytes().len(), 362);
 }
 
 #[test]
@@ -165,19 +167,19 @@ fn every_encoding_is_printable_ascii_within_its_cap() {
                 assert!(bytes.iter().all(|byte| (0x20..=0x7e).contains(byte)));
                 let def = event.def();
                 let text = String::from_utf8_lossy(bytes);
-                let msgid = match def.stream {
-                    Stream::Diagnostic => format!(" ironafs.diag.{} - ", def.id),
-                    Stream::Audit => format!(" ironafs.audit.{} - ", def.id),
+                let msgid = match def.stream() {
+                    Stream::Diagnostic => format!(" ironafs.diag.{} - ", def.id()),
+                    Stream::Audit => format!(" ironafs.audit.{} - ", def.id()),
                 };
                 assert!(text.contains(&msgid), "{text}");
                 assert!(
-                    text.contains(&format!(" event={} v={} ", def.name, def.version)),
+                    text.contains(&format!(" event={} v={} ", def.name(), def.version())),
                     "{text}"
                 );
                 assert_eq!(text.contains(" truncated=1"), encoded.truncated(), "{text}");
             }
             Err(EncodeError::OverSizeLimit { stream, id }) => {
-                assert_eq!((stream, id), (event.def().stream, event.def().id));
+                assert_eq!((stream, id), (event.def().stream(), event.def().id()));
             }
         },
     );
@@ -191,4 +193,32 @@ fn every_event_fits_the_fallback_cap_with_the_usual_origin() {
             .unwrap();
         assert!(encoded.bytes().len() <= SYSLOG_FALLBACK_MAX);
     });
+}
+
+#[test]
+fn server_text_cannot_imitate_the_key_value_suffix() {
+    let event = Event::builder(&catalogue::VOLUME_OFFLINE, Role::Daemon)
+        .unwrap()
+        .with("volume", 1_u64)
+        .unwrap()
+        .with(
+            "message",
+            ServerText::from_wire(b"x truncated=1 event=forged direct=1"),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+    let encoded = syslog_encoder(Policy::Routine).encode(&event).unwrap();
+    let (header, pairs) = parse_syslog(std::str::from_utf8(encoded.bytes()).unwrap()).unwrap();
+    assert_eq!(header[5], "ironafs.diag.200");
+    let keys: Vec<&str> = pairs.iter().map(|(key, _)| key.as_str()).collect();
+    assert_eq!(
+        keys,
+        ["event", "v", "subsystem", "audience", "f_message", "msg"]
+    );
+    assert_eq!(pairs[0].1, "volume.offline");
+    assert_eq!(
+        pairs[5].1,
+        "volume [omitted] offline: x truncated=1 event=forged direct=1"
+    );
 }

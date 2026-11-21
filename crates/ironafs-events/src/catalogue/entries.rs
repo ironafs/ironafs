@@ -14,8 +14,41 @@ const fn field(name: &'static str, kind: FieldKind, class: DataClass, required: 
         kind,
         class,
         required,
+        choices: &[],
     }
 }
+
+/// A required static text field that takes only `choices`.
+const fn choice(name: &'static str, choices: &'static [&'static str]) -> FieldSpec {
+    FieldSpec {
+        name,
+        kind: FieldKind::Static,
+        class: DataClass::Public,
+        required: true,
+        choices,
+    }
+}
+
+/// The reasons `events.lost` names: [`Loss::reason`](crate::Loss::reason)
+/// of each loss.
+const LOSS_REASONS: &[&str] = &[
+    "over the size limit",
+    "queue full",
+    "sink stalled",
+    "sink unavailable",
+    "truncated, delivered in part",
+];
+
+/// The subsystems' names, as [`Subsystem::name`] gives them.
+const SUBSYSTEM_NAMES: &[&str] = &[
+    "events", "daemon", "rx", "server", "volume", "cache", "config", "adapter",
+];
+
+/// The streams' names, as [`Stream::name`] gives them.
+const STREAM_NAMES: &[&str] = &["diagnostic", "audit"];
+
+/// The kinds of audit gap (ADR 0004, O9, point 4).
+const GAP_KINDS: &[&str] = &["known-loss", "uncertain", "possible-loss"];
 
 /// Events lost at a bound, with the reason and how many (ADR 0004, O3,
 /// point 3, and O7, point 3).
@@ -28,7 +61,7 @@ pub static EVENTS_LOST: EventDef = EventDef {
     audience: Audience::Operational,
     subsystem: Subsystem::Events,
     fields: &[
-        field("reason", FieldKind::Static, DataClass::Public, true),
+        choice("reason", LOSS_REASONS),
         field("count", FieldKind::Unsigned, DataClass::Public, true),
     ],
     template: "{count} events lost: {reason}",
@@ -48,7 +81,7 @@ pub static EVENTS_SUPPRESSED: EventDef = EventDef {
     audience: Audience::Operational,
     subsystem: Subsystem::Events,
     fields: &[
-        field("subsystem", FieldKind::Static, DataClass::Public, true),
+        choice("subsystem", SUBSYSTEM_NAMES),
         field("count", FieldKind::Unsigned, DataClass::Public, true),
     ],
     template: "{count} {subsystem} events suppressed by the rate limit",
@@ -68,7 +101,7 @@ pub static EVENTS_OVER_SIZE: EventDef = EventDef {
     audience: Audience::Operational,
     subsystem: Subsystem::Events,
     fields: &[
-        field("stream", FieldKind::Static, DataClass::Public, true),
+        choice("stream", STREAM_NAMES),
         field("event", FieldKind::Unsigned, DataClass::Public, true),
     ],
     template: "event dropped: over the size limit ({stream} event {event})",
@@ -157,7 +190,7 @@ pub static AUDIT_GAP: EventDef = EventDef {
     fields: &[
         field("first", FieldKind::Unsigned, DataClass::Public, true),
         field("last", FieldKind::Unsigned, DataClass::Public, true),
-        field("kind", FieldKind::Static, DataClass::Public, true),
+        choice("kind", GAP_KINDS),
     ],
     template: "audit events {first} to {last}: {kind}",
     meaning: "Audit events in this sequence range were lost, or may have been.",

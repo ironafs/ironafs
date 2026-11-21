@@ -64,11 +64,11 @@ fn every_refusal_is_counted() {
                 let def = DEFINITIONS[*which];
                 if limiter.admit(def, now) == Admission::Suppressed {
                     assert_ne!(
-                        def.stream,
+                        def.stream(),
                         ironafs_events::Stream::Audit,
                         "audit was suppressed"
                     );
-                    refused[def.subsystem.index()] += 1;
+                    refused[def.subsystem().index()] += 1;
                 }
             }
             for subsystem in Subsystem::ALL {

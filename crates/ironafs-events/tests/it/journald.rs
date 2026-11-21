@@ -151,11 +151,11 @@ fn every_encoding_parses_names_well_and_stays_within_its_cap() {
                         let def = event.def();
                         assert_eq!(
                             field(&fields, "IRONAFS_EVENT"),
-                            Some(def.id.to_string().as_bytes())
+                            Some(def.id().to_string().as_bytes())
                         );
                         assert_eq!(
                             field(&fields, "IRONAFS_EVENT_NAME"),
-                            Some(def.name.as_bytes())
+                            Some(def.name().as_bytes())
                         );
                         assert_eq!(
                             field(&fields, "IRONAFS_TRUNCATED").is_some(),
@@ -172,15 +172,15 @@ fn every_encoding_parses_names_well_and_stays_within_its_cap() {
                             !dropped || encoded.truncated(),
                             "a field was dropped unmarked"
                         );
-                        for spec in def.fields.iter().filter(|spec| spec.required) {
-                            let name = format!("IRONAFS_F_{}", spec.name.to_ascii_uppercase());
-                            let omitted = spec.class == ironafs_events::DataClass::Identifier
-                                && def.stream == catalogue::Stream::Diagnostic;
+                        for spec in def.fields().iter().filter(|spec| spec.required()) {
+                            let name = format!("IRONAFS_F_{}", spec.name().to_ascii_uppercase());
+                            let omitted = spec.class() == ironafs_events::DataClass::Identifier
+                                && def.stream() == catalogue::Stream::Diagnostic;
                             assert_eq!(field(&fields, &name).is_some(), !omitted, "{name}");
                         }
                     }
                     Err(EncodeError::OverSizeLimit { stream, id }) => {
-                        assert_eq!((stream, id), (event.def().stream, event.def().id));
+                        assert_eq!((stream, id), (event.def().stream(), event.def().id()));
                         assert!(*cap < JOURNALD_MAX_DATAGRAM);
                     }
                 }

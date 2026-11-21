@@ -14,12 +14,12 @@ use crate::syslog::AppName;
 #[test]
 fn message_id_is_the_prefix_then_the_stream_and_the_id() {
     assert_eq!(
-        message_id(Stream::Diagnostic, 200),
-        "771546f4bcf0d0b7054f7530000100c8"
+        &message_id(Stream::Diagnostic, 200),
+        b"771546f4bcf0d0b7054f7530000100c8"
     );
     assert_eq!(
-        message_id(Stream::Audit, 0xffff),
-        "771546f4bcf0d0b7054f75300002ffff"
+        &message_id(Stream::Audit, 0xffff),
+        b"771546f4bcf0d0b7054f75300002ffff"
     );
 }
 

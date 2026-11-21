@@ -100,7 +100,7 @@ pub enum Admission {
 /// assert_eq!(limiter.admit(def, 0), Admission::Suppressed);
 /// // One second later one more event fits.
 /// assert_eq!(limiter.admit(def, 1_000_000_000), Admission::Admitted);
-/// assert_eq!(limiter.suppressed(def.subsystem), 1);
+/// assert_eq!(limiter.suppressed(def.subsystem()), 1);
 /// # Ok::<(), ironafs_events::LimitError>(())
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,8 +117,9 @@ impl RateLimiter {
     pub fn new(config: LimitConfig) -> Self {
         // `rate` is 1 to 1,000,000, so the interval is 1,000 to 10^9
         // nanoseconds, and the tolerance at most 10^9 * (10^6 - 1), well
-        // within 64 bits.
-        let interval = (NANOS_PER_SECOND / u64::from(config.rate)).max(1);
+        // within 64 bits. Rounding up keeps the admitted rate at or below
+        // the configured one.
+        let interval = NANOS_PER_SECOND.div_ceil(u64::from(config.rate)).max(1);
         let tolerance = interval.saturating_mul(u64::from(config.burst).saturating_sub(1));
         Self {
             interval,

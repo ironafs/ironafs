@@ -136,3 +136,22 @@ fn loss_counters_record_and_take() {
         assert_eq!(counters.get(loss), 0);
     }
 }
+
+#[test]
+fn the_interval_rounds_up_so_the_rate_is_never_exceeded() {
+    // 10^9 / 999,999 is 1,000.001 ns: an interval of 1,000 ns would allow
+    // 1,000,000 events a second.
+    let mut limiter = limiter(999_999, 1);
+    let def = &catalogue::SERVER_UNREACHABLE;
+    assert_eq!(limiter.admit(def, 0), Admission::Admitted);
+    assert_eq!(limiter.admit(def, 1_000), Admission::Suppressed);
+    assert_eq!(limiter.admit(def, 1_001), Admission::Admitted);
+}
+
+#[test]
+fn a_tolerance_sum_that_overflows_is_suppressed_and_counted() {
+    let mut limiter = limiter(1, 3);
+    let def = &catalogue::SERVER_UNREACHABLE;
+    assert_eq!(limiter.admit(def, u64::MAX - SECOND), Admission::Suppressed);
+    assert_eq!(limiter.suppressed(Subsystem::Server), 1);
+}

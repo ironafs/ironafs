@@ -135,3 +135,20 @@ fn the_replacement_for_a_refused_event_names_it() {
         "{text}"
     );
 }
+
+#[test]
+fn the_output_is_allocated_once_at_its_exact_size() {
+    let event = volume_offline(Some(&[b'\n'; SERVER_TEXT_MAX]));
+    for bytes in [
+        journald_encoder(Policy::Routine)
+            .encode(&event)
+            .unwrap()
+            .into_bytes(),
+        syslog_encoder(Policy::Routine)
+            .encode(&event)
+            .unwrap()
+            .into_bytes(),
+    ] {
+        assert_eq!(bytes.capacity(), bytes.len());
+    }
+}

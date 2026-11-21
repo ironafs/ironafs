@@ -7,7 +7,9 @@
 use ironafs_events::{Event, Policy, Role, SERVER_TEXT_MAX, ServerText, catalogue};
 use ironafs_test_support::{Property, Source};
 
-use crate::support::{escape, field, journald_encoder, parse_journald, syslog_encoder};
+use crate::support::{
+    escape, field, journald_encoder, parse_journald, parse_journald_forms, syslog_encoder,
+};
 
 fn volume_offline(bytes: &[u8]) -> Event {
     Event::builder(&catalogue::VOLUME_OFFLINE, Role::Daemon)
@@ -24,6 +26,12 @@ fn volume_offline(bytes: &[u8]) -> Event {
 fn a_newline_in_server_text_cannot_add_a_journal_field() {
     let event = volume_offline(b"x\nPRIORITY=0\n_PID=1\nMESSAGE_ID=0");
     let encoded = journald_encoder(Policy::Routine).encode(&event).unwrap();
+    // Escaped text holds no newline, so every field takes the simple form:
+    // the length-prefixed form would frame a raw newline safely and hide a
+    // missing escape.
+    for (name, _, length_prefixed) in parse_journald_forms(encoded.bytes()).unwrap() {
+        assert!(!length_prefixed, "{name} took the length-prefixed form");
+    }
     let fields = parse_journald(encoded.bytes()).unwrap();
     assert_eq!(field(&fields, "PRIORITY"), Some(&b"4"[..]));
     assert_eq!(field(&fields, "_PID"), None);
@@ -68,12 +76,8 @@ fn server_text_never_reaches_the_output_raw() {
                     .all(|byte| (0x20..=0x7e).contains(byte))
             );
             let text = String::from_utf8(syslog.bytes().to_vec()).unwrap();
-            let written = text
-                .split(" f_message=\"")
-                .nth(1)
-                .unwrap()
-                .strip_suffix('"')
-                .unwrap();
+            let after = text.split_once(" f_message=\"").unwrap().1;
+            let written = after.split_once("\" msg=\"").unwrap().0;
             let kept = written
                 .strip_suffix(ironafs_events::TRUNCATION_MARKER)
                 .unwrap_or(written);
