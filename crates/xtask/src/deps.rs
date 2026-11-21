@@ -6,8 +6,10 @@
 //!
 //! Every member's manifest inherits the workspace lints and the workspace
 //! edition, and every target is in the edition the source checks' token
-//! reader follows.
+//! reader follows. Only the crates `mint_source` lists name the capability
+//! mint of `ironafs-vfs`.
 
+mod mint_source;
 pub(crate) mod pure_source;
 mod self_test;
 
@@ -301,6 +303,10 @@ pub(crate) enum Violation {
         line: usize,
         word: &'static str,
     },
+    NamesMint {
+        file: PathBuf,
+        line: usize,
+    },
     NoLibrary(String),
     NoSource(String),
     Unreadable {
@@ -457,6 +463,14 @@ impl fmt::Display for Violation {
                 "{}:{line}: says {word}: no file of ironafs-client names a macro that reads \
                  files, even in a comment or a string, so no misread token can hide one \
                  (ADR 0004, C4, point 2)",
+                file.display()
+            ),
+            Self::NamesMint { file, line } => write!(
+                formatter,
+                "{}:{line}: names the capability mint: only ironafs-vfs, the composition \
+                 (ironafsd), the core (ironafs-client) and the test-only crates ironafs-sim \
+                 and ironafs-test-support may name it, so no other code can look like it mints \
+                 (ADR 0004, C8, point 2)",
                 file.display()
             ),
             Self::NoLibrary(name) => write!(
@@ -880,7 +894,8 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         .collect();
     writeln!(
         output,
-        "check-deps: {} crates passed ({}); {} source files of ironafs-client read",
+        "check-deps: {} crates passed ({}); {} source files of ironafs-client read; \
+         the capability mint named only where allowed",
         names.len(),
         names.join(", "),
         scanned.len()
@@ -903,5 +918,6 @@ fn check(
     violations.extend(edition_violations(workspace)?);
     let (found, scanned) = pure_source::scan(workspace)?;
     violations.extend(found);
+    violations.extend(mint_source::scan(workspace)?);
     Ok((violations, scanned))
 }
