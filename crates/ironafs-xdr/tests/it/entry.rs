@@ -169,14 +169,19 @@ impl MessageType for Forwarding {
 impl<'a> Decode<'a> for Forwarding {
     const S_MIN: u64 = 12;
     const DEPTH: u32 = 0;
-    const HEAP_RATIO: Option<u64> = Some(0);
-    const RESERVATIONS: Option<u64> = Some(0);
+    // The inner decode is `Plain`'s, over at most this message's bytes.
+    const HEAP_RATIO: Option<u64> = <Plain as Decode<'a>>::HEAP_RATIO;
+    const RESERVATIONS: Option<u64> = <Plain as Decode<'a>>::RESERVATIONS;
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         let inner = decoder.fixed_opaque::<12>()?;
         decode::<Plain>(&inner[..10]).map(|_| Self)
     }
 }
+
+// Its inner decode requests what `Plain`'s does, so it is no more proven
+// than `Plain` is.
+const _: () = assert!(!proven::<Forwarding>());
 
 #[test]
 fn decode_strips_the_position_from_an_error_a_secret_decoder_passes_on() {

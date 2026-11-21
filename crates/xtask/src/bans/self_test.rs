@@ -7,9 +7,9 @@
 //! planted line proves, on a crate whose own `clippy.toml` leaves out a
 //! ban, and with `CLIPPY_CONF_DIR` naming a directory whose configuration
 //! leaves out a ban, and proves the check fails on each, naming that ban
-//! and that file, or the variable. It also refuses a ban array with an
-//! indented key, and a root `.clippy.toml`, whose unplanted ban is caught
-//! as in `clippy.toml`; and it builds a crate whose build script sets
+//! and that file, or the variable. It also reads a ban array with an
+//! indented key, and a root `.clippy.toml`, and proves an unplanted ban in
+//! either caught as in `clippy.toml`; and it builds a crate whose build script sets
 //! `CLIPPY_CONF_DIR` for its compiler and proves that refused, beside one
 //! whose build script sets another variable, which passes.
 
