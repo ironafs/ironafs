@@ -42,6 +42,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-71-seams](2026-11-21-m2a-71-seams.md) | Issue #71: the `Rpc` and `Disk` seams and the scheduling model |
 | [2026-11-21-m2a-71-types](2026-11-21-m2a-71-types.md) | Issue #71: the seam interface types in their crates, and `check-seams` |
 | [2026-11-21-m2a-91-cache](2026-11-21-m2a-91-cache.md) | Issue #91: the node table, node identity and aliases in `ironafs-cache` |
+| [2026-11-21-m2a-91-cache-fence](2026-11-21-m2a-91-cache-fence.md) | Issue #91: the fence table and the fence check in `ironafs-cache` |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
