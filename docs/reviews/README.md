@@ -38,6 +38,14 @@ the evidence that refutes it.
 | [2026-11-21-m1-close-sweep](2026-11-21-m1-close-sweep.md) | The documentation sweep against ADR 0004 at M1's exit |
 | [2026-11-21-m2a-90-convergence](2026-11-21-m2a-90-convergence.md) | Issue #54: convergence rules for review rounds |
 | [2026-11-21-m2a-13-remainder](2026-11-21-m2a-13-remainder.md) | Issue #46: `check-pure`'s exact matrix of compiled crates, targets and profiles, and the crate root's form |
+| [2026-11-21-m2a-01-xdr-spec](2026-11-21-m2a-01-xdr-spec.md) | Issue #42: `docs/specs/`, its template and the XDR profile with caps |
+| [2026-11-21-m2a-11-remainder](2026-11-21-m2a-11-remainder.md) | Issue #44: the exhaustive sweep and wire-message variants |
+| [2026-11-21-commit-message-errata](2026-11-21-commit-message-errata.md) | Errata: squash messages on `main` that lack the disclosure line, and the wrapping style |
+| [2026-11-21-m2a-68-crypto-part1](2026-11-21-m2a-68-crypto-part1.md) | Issue #68, part one: `ironafs-crypto`, the random source interface and the production `Rng` |
+| [2026-11-21-m2a-47-cell-part1](2026-11-21-m2a-47-cell-part1.md) | Issue #47, first part: `cargo xtask cell`'s pinned definition, engine runner, teardown and verified install |
+| [2026-11-21-m2a-64-corpora](2026-11-21-m2a-64-corpora.md) | Issue #64: rules for published conformance corpora in `docs/specs/README.md` |
+| [2026-11-21-m2a-56-directory-format](2026-11-21-m2a-56-directory-format.md) | Issue #56: the AFS directory format, the version from documents only |
+| [2026-11-21-m2a-71-seams](2026-11-21-m2a-71-seams.md) | Issue #71: the `Rpc` and `Disk` seams and the scheduling model |
 | [2026-11-21-adr-0006-review](2026-11-21-adr-0006-review.md) | Issue #52: ADR 0006, what an unprotected Rx packet may change |
 
 ADRs carry their review records in their own Review sections
