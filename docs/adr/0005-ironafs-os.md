@@ -9,10 +9,11 @@ amendment it needs is issue #49, in the same pull request.
 ## Context
 
 - **ADR 0004 decides that this crate exists and what it is for.**
-  - C4, point 3, lists `ironafs-os` among the drivers and bindings: "small
-    operating-system bindings".
-  - C5, point 5, gives it "the few calls that have no safe route": the
-    clock pairs of C37, peer credentials (C43), the service controls, the
+  - C4, point 3, as accepted, lists `ironafs-os` among the drivers and
+    bindings: "small operating-system bindings".
+  - C5, point 5, as accepted before the amendment this pull request
+    makes (Consequences), gave it "the few calls that have no safe
+    route": the clock pairs of C37, peer credentials (C43), the service controls, the
     log calls of O8, the dump controls of O26 and, on Windows, the FIPS
     algorithm-mode query (O31, point 4). It needs `unsafe`, so it "gets its
     own ADR with a closed list of named sites and safe interfaces on top,
@@ -23,8 +24,8 @@ amendment it needs is issue #49, in the same pull request.
     OS-bindings crate (dump controls, the logging shim, clocks)".
   - C33, point 2, decides DNS discovery on Windows (`DnsQueryEx`) and macOS
     (`DNSServiceQueryRecord`). Neither has a safe route, and C5, point 5,
-    does not list them. Constraint 2 allows `unsafe` only in a named binding
-    crate with its own ADR, and C4, point 3, names no other crate for
+    as accepted, did not list them. Constraint 2 allows `unsafe` only in
+    a named binding crate with its own ADR, and C4, point 3, names no other crate for
     operating-system calls, so they belong here (Decision, point 3). Any
     other home would be a new binding crate, which C4 would have to name
     first.
@@ -330,8 +331,10 @@ Revisit point 6 if: C33 is revisited.
    native helper, and non-Rust source, outside this crate) are not in
    this check: they are enforced by review, under point 6.6, which makes
    any change in any crate that adds non-Rust source, or adds or edits
-   a build script so that it does either, class S, and coding standards
-   rule 20's named build scripts. A build script can run native code without any
+   a build script so that it does either, class S, and by coding
+   standards rule 20, which asks a written reason for any `build.rs`
+   (a named list of build scripts comes with the pending layout change;
+   Consequences). A build script can run native code without any
    `extern` block, so the check above does not catch it.
 6. **DNS on Linux and other Unix builds is not in this crate** (C33,
    point 3; C4, point 6). One first-party DNS client in safe Rust, the same
@@ -2044,7 +2047,10 @@ token buffers (O28, point 2; row 24; owner, 2026-11-20). The same amendment name
   closed list adds a kind of call this point does not name". C4,
   point 3's row for `ironafs-os` becomes: "small operating-system
   bindings (C5), and the safe transport that carries encoded events to
-  the operating system's log sinks (O8)". Large journal fields have no
+  the operating system's log sinks (O8)", and C4's "Revisit if" gains:
+  "or no log sink outside Linux still needs a site in `ironafs-os`
+  (then the safe log transport could live in a crate without
+  `unsafe`)". Large journal fields have no
   site (Decision 1, point 7), so the text names none. The C34, point 2,
   amendment for single-family operation is a separate Working
   amendment, not part of this pull request.
@@ -2074,42 +2080,63 @@ token buffers (O28, point 2; row 24; owner, 2026-11-20). The same amendment name
 
 ADR 0001 asks each platform's ADR to say which linked components meet
 GPLv3's "System Libraries" definition, checked per component. This is
-that check for the closed list. It is not legal advice.
+that check for the closed list. It is not legal advice, and it decides
+no macOS or Windows component's status: that is the owner's (below).
 
-- **The definition** (GPLv3 §1, `LICENSES/GPL-3.0-or-later.txt`,
-  CONFIRMED): the System Libraries of a work are what "(a) is included in
-  the normal form of packaging a Major Component, but which is not part
-  of that Major Component, and (b) serves only to enable use of the work
-  with that Major Component, or to implement a Standard Interface for
-  which an implementation is available to the public in source code
-  form". A Major Component is "a major essential component (kernel,
-  window system, and so on) of the specific operating system (if any) on
-  which the executable work runs, or a compiler used to produce the
-  work". Corresponding Source "does not include the work's System
-  Libraries".
+- **The definitions** (GPLv3 §1, `LICENSES/GPL-3.0-or-later.txt`,
+  quoted exactly, CONFIRMED):
+  - "A “Standard Interface” means an interface that either is an
+    official standard defined by a recognized standards body, or, in the
+    case of interfaces specified for a particular programming language,
+    one that is widely used among developers working in that language."
+  - "The “System Libraries” of an executable work include anything,
+    other than the work as a whole, that (a) is included in the normal
+    form of packaging a Major Component, but which is not part of that
+    Major Component, and (b) serves only to enable use of the work with
+    that Major Component, or to implement a Standard Interface for which
+    an implementation is available to the public in source code form. A
+    “Major Component”, in this context, means a major essential
+    component (kernel, window system, and so on) of the specific
+    operating system (if any) on which the executable work runs, or a
+    compiler used to produce the work, or an object code interpreter
+    used to run it."
+  - "The “Corresponding Source” for a work in object code form means
+    all the source code needed to generate, install, and (for an
+    executable work) run the object code and to modify the work, [...].
+    However, it does not include the work's System Libraries, [...]."
+- **How each row is read.** A component qualifies only if (a) holds for
+  a named Major Component and one of (b)'s two routes holds: "serves
+  only to enable use of the work with that Major Component" (the
+  *serves-only route*), or implementing a Standard Interface of which
+  some implementation, by anyone, is public in source form (the
+  *Standard Interface route*). Each is assessed separately below. OPEN
+  marks what is not verified for this ADR: the normal packaging, the
+  Major Component's boundary, and which Standard Interfaces each called
+  function belongs to and whether a public-source implementation exists.
 
-| Component | Linked how | Reading | Status |
-|---|---|---|---|
-| Linux kernel (`syscall` for `getrandom`; the socket, `mount`, `madvise` and `prctl` calls through the C library) | not linked: system calls | The kernel is itself a Major Component; IronAFS talks to it and links none of it (ADR 0001, "Out of scope"). | CONFIRMED (GPLv3 §1 names the kernel; ADR 0001) |
-| glibc (rows 1, 8, 11 to 15, 21 to 23) | dynamically | Shipped with the distribution and not part of the kernel, and it implements Standard Interfaces (ISO C, POSIX) with public source: both limbs of (b) read on it. Its licence is LGPL-2.1-or-later, which is GPLv3-compatible, so the outcome does not depend on the reading. | System Library reading UNVERIFIED; compatibility CONFIRMED (licence) |
-| musl (static Linux build) | statically, into the binary | Not a System Library: it is conveyed inside the work. MIT-licensed, so compatible; its notices travel with the binary (ADR 0001, "Releases"). | CONFIRMED (licence); notices are the Linux packaging decision's |
-| macOS libSystem (clocks, dump limit, peer credentials, `poll`, `dns_sd`, unified logging) | dynamically | Ships with macOS and is Apple's interface to the kernel; Apple does not support statically linked binaries, so a program reaches the kernel only through it. Limb (a) reads on it; limb (b)'s "serves only to enable use of the work with that Major Component" is the open point, because libSystem also offers much more. | UNVERIFIED (Apple's statement on static linking to be inspected at source) |
-| macOS Security.framework (`SecRandomCopyBytes`, row 9) | dynamically | Ships with macOS; whether a framework with broad functions "serves only" to enable use with the operating system is the same open point. | UNVERIFIED |
-| The macOS C shim | statically, IronAFS's own code | Part of the work, under GPL-3.0-or-later; it calls only libSystem. Built by the platform compiler, which is itself a Major Component when used to produce the work. | CONFIRMED (own code) |
-| Windows Kernel32.dll, Dnsapi.dll, Bcrypt.dll (rows 3, 4, 6, 10) | dynamically (`raw-dylib`, no import library from a crate) | Ship with Windows and are its documented interfaces (Microsoft's function pages name each DLL; Context). Limb (a) reads on them; limb (b)'s "serves only" is the same open point. No Windows source is public, so the Standard Interface limb does not apply. | DLL names CONFIRMED; System Library reading UNVERIFIED |
-| Windows DLLs of rows 17 to 20 (expected Kernel32.dll and Advapi32.dll) | dynamically | As above. | DLL names MISSING until point 5.4's check runs; reading UNVERIFIED |
+| Component | Linked how | (a): candidate Major Component | (b): serves-only route | (b): Standard Interface route | Status |
+|---|---|---|---|---|---|
+| Linux kernel (`syscall` for `getrandom`; the socket, `mount`, `madvise` and `prctl` calls through the C library) | not linked: system calls | The kernel is itself a Major Component; IronAFS talks to it and links none of it (ADR 0001, "Out of scope"). | not needed | not needed | CONFIRMED (GPLv3 §1 names the kernel; ADR 0001) |
+| glibc (rows 1, 8, 11 to 15, 21 to 23) | dynamically | OPEN: the kernel, as each distribution packages it, or another component; packaging and boundary not verified | OPEN: not relied on | Reads on its ISO C and POSIX functions (official standards; glibc's own source is public); OPEN per Linux-specific function | System Library reading UNVERIFIED. Its licence is LGPL-2.1-or-later, which is GPLv3-compatible, so the outcome does not depend on the reading: compatibility CONFIRMED (licence) |
+| musl (static Linux build) | statically, into the binary | not assessed | not assessed | not assessed | The static build is assessed under musl's own licence (MIT, GPLv3-compatible) and its notices, which travel with the binary (ADR 0001, "Releases"), without relying on the System Libraries exception. CONFIRMED (licence); notices are the Linux packaging decision's |
+| macOS libSystem (clocks, dump limit, peer credentials, `poll`, `dns_sd`, unified logging) | dynamically | OPEN: ships with macOS; whether it is packaged with a Major Component (the kernel or the operating system's core) and not part of it is not verified. Apple's statement that it does not support statically linked binaries is UNVERIFIED (to be inspected at source). | OPEN: libSystem offers much more than enabling use with the kernel | OPEN: some calls are POSIX (`poll`, `clock_gettime`), others Apple's own (`clock_gettime_nsec_np`, `dns_sd`, unified logging); per interface, not verified | owner's decision; UNVERIFIED |
+| macOS Security.framework (`SecRandomCopyBytes`, row 9) | dynamically | OPEN, as for libSystem | OPEN: a framework with broad functions | OPEN: not verified for this interface | owner's decision; UNVERIFIED |
+| The macOS C shim | statically, IronAFS's own code | Part of the work, under GPL-3.0-or-later; it calls only libSystem. Built by the platform compiler, which is a Major Component when used to produce the work. | not needed | not needed | CONFIRMED (own code) |
+| Windows Kernel32.dll, Dnsapi.dll, Bcrypt.dll (rows 3, 6, 10) | dynamically (`raw-dylib`, no import library from a crate) | OPEN: ship with Windows and are its documented interfaces (Microsoft's function pages name each DLL; Context); packaging with a named Major Component and the boundary not verified | OPEN | OPEN: whether each called interface is a Standard Interface, and whether any public-source implementation of it exists (a third party's counts), is not verified | DLL names CONFIRMED; owner's decision; UNVERIFIED |
+| Windows DLL of row 4 (`QueryUnbiasedInterruptTimePrecise`) | dynamically | OPEN, as above | OPEN | OPEN, as above | Import target MISSING: the function's page names Kernel32.dll and lists API-set and KernelBase hosts, so point 5.4's link-and-run check sets it; owner's decision; UNVERIFIED |
+| Windows DLLs of rows 17 to 20 (expected Kernel32.dll and Advapi32.dll) | dynamically | OPEN, as above | OPEN | OPEN, as above | DLL names MISSING until point 5.4's check runs; owner's decision; UNVERIFIED |
 
-- **Owner item.** The proprietary macOS and Windows components (libSystem,
-  Security.framework and the Windows DLLs) plausibly meet the definition
-  through limb (a), but limb (b)'s "serves only to enable use of the work
-  with that Major Component" is not settled by the licence text for a
-  library that does much more than that. The Free Software Foundation's
-  own FAQ is commonly read as allowing a GPL program to link the
-  operating system's own libraries (UNVERIFIED: not read for this ADR).
-  How IronAFS relies on this, before the first macOS or Windows release,
-  is the owner's decision; ADR 0001's research note already lists the
-  System Libraries reading among the questions for a lawyer. Nothing
-  here blocks the Linux phases: glibc is compatible either way.
+- **Owner item.** Whether the proprietary macOS and Windows components
+  (libSystem, Security.framework and the Windows DLLs) meet the
+  definition needs (a) for a named Major Component and one of (b)'s two
+  routes, and every one of those is OPEN above. The Free Software
+  Foundation's own FAQ is commonly read as allowing a GPL program to
+  link the operating system's own libraries (UNVERIFIED: not read for
+  this ADR). How IronAFS relies on this, before the first macOS or
+  Windows release, is the owner's decision; ADR 0001's research note
+  already lists the System Libraries reading among the questions for a
+  lawyer. Nothing here blocks the Linux phases: glibc is compatible
+  either way, and the static build rests on musl's own licence.
 
 ## Alternatives considered
 
@@ -2292,6 +2319,13 @@ reviewed a frozen copy identified by its SHA-256, not a commit.
 - **Rounds 12 to 14** (both seats) verified only each diff. GLM passed
   each. GPT found 2 majors, then 1, then 3 minors only; the minors were
   fixed and recorded, and the rounds stopped under the stop rule.
-- **Not yet reviewed:** the section "Linked operating-system components
-  and GPLv3" and the ADR 0004 amendment text in this pull request are new
-  and are reviewed before the pull request is ready.
+- **Round 15** (GPT and GLM, scoped to the text new in this pull
+  request: the GPLv3 section, point 1.5, the rule 5 and rule 20
+  consequences, this section, the review record and the ADR 0004
+  amendment): FAIL, 4 majors and 5 minors (GPT), 2 majors and 4
+  minors (GLM), mostly the same. The GPLv3 section now quotes the
+  definitions exactly and assesses (a) and each route of (b) per
+  component, leaving every macOS and Windows reading open for the
+  owner; C4 gains its trigger; the citations and the sweep are
+  corrected. One minor (the status line's pull request number) waits
+  for the pull request. A scoped verification follows.

@@ -149,8 +149,9 @@ every filesystem operation into a hand-written continuation.
 ### C4. Crates and their dependency rules
 
 **Working.** Revisit if: a boundary below forces a dependency that point 4
-forbids, or the first implementation of a crate shows it has no content of
-its own.
+forbids, the first implementation of a crate shows it has no content of
+its own, or no log sink outside Linux still needs a site in `ironafs-os`
+(then the safe log transport could live in a crate without `unsafe`).
 
 1. **Pure crates** have no I/O and no `unsafe`, and are fuzzed where they
    decode:

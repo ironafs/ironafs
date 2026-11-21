@@ -704,20 +704,38 @@ The full record, with every finding and its disposition, is
     volatile wipe of key material and token buffers (O28, point 2).
     C5's "Revisit if" gains "or the `ironafs-os` ADR's closed list adds
     a kind of call this point does not name". C4, point 3's row for
-    `ironafs-os` names the safe log transport. No firm decision changes;
-    C4 and C5 are working decisions.
+    `ironafs-os` names the safe log transport, and C4's "Revisit if"
+    gains "or no log sink outside Linux still needs a site in
+    `ironafs-os` (then the safe log transport could live in a crate
+    without `unsafe`)". No firm decision changes; C4 and C5 are working
+    decisions.
   - Evidence: ADR 0005's sweep of the M2a work found these calls with
     no stable safe route in `std` (its Context and Decision, point 2),
     and the owner decided on 2026-11-20 that they belong in
-    `ironafs-os`.
+    `ironafs-os`. For the log transport (ADR 0005, Decision 1, point 7;
+    owner, 2026-11-20): the Linux journald and syslog writes need no
+    `unsafe`, but the macOS shim and, later, the Windows Event Log are
+    sinks of the same module and need sites, and `ironafsd` and `afs`
+    share one transport (O4, point 1), so it sits beside those sites as
+    a module that forbids `unsafe` itself.
   - Sweep: the repository was searched for "C5, point 5", "C5.5",
     "few calls that have no safe route", "small operating-system
-    bindings", "closed list" and "ironafs-os".
+    bindings", "closed list", "ironafs-os" and the ADR's number,
+    "0004". The files that state C4's or C5's rule for this crate were
+    read at every hit: `AGENTS.md`, coding standards rule 5,
+    `crates/xtask/src/deps.rs` and its `pure_source.rs`, and
+    `crates/ironafs-time/src/lib.rs`. None restates C5, point 5's list
+    or C4, point 3's row, so none changes. `README.md` and
+    `docs/workflow.md` cite ADR 0004 for other decisions; the other hits
+    are review records and research notes, which record their own dates
+    and are not rewritten.
     - C5, point 5, its "Revisit if" and C4, point 3's row (part 1):
       rewritten as above.
-    - C4, point 7, C37, point 2, and
-      C46 (part 1), and O8, point 2, and O31, point 4 (part 3): name
-      `ironafs-os` for calls that are on the new list. Unchanged.
+    - C4, point 7, C37, point 2, and Consequences, point 4 (part 1),
+      and O8, point 2, and O31, point 4 (part 3): name `ironafs-os`
+      for calls that are on the new list. Unchanged.
+    - ADR 0005's Context describes C4, point 3, and C5, point 5, as
+      accepted before this amendment, and says so.
     - `crates/xtask/src/deps.rs`: the lint-table exception list stays
       empty until ADR 0005 is accepted, and its message cites C5,
       point 5, for the workspace lints, which still hold. Unchanged.
