@@ -644,7 +644,7 @@ Other limits `[OWN]`:
 | `cb.request_max` | 65 536 bytes | the request cap the service registers with Rx | `rx.in.request_ceiling` ([rx.md](rx.md), 5.2): the largest break a server sends is MISSING (Q1), and a break above the cap costs the whole server's suspect epoch, so the cap is as high as Rx allows; Rx's per-peer and total caps bound the memory |
 | `cb.reply_max` | 1 024 bytes | the reply cap the service registers with Rx | the largest reply is `cb.identity.reply`; a small reply cap leaves Rx's per-peer budget to requests |
 | `cb.rate.key_units` | 4 096 work units per second | the rate at which one server key's break-class calls are processed at once; identity-class calls are not charged (5.6, point 8) | a work unit is one file id applied in one cell: one indexed lookup of that file id in the node table, and one counter change per context that holds it, so its work is bounded by the cache's count of contexts (#91); the genuine rate of a server's breaks is MISSING (Q4) |
-| `cb.rate.key_burst` | 8 192 work units | the bucket size for one server key | holds one break at `cb.callback.request`'s largest from a source whose servers are in one cell (2 731 units if a file id is 12 bytes) with room for more; a largest break looked up in three or more cells, rare, passes the burst and goes to the over-limit path (row B3), which covers it with a server-wide advance and never discards it |
+| `cb.rate.key_burst` | 8 192 work units | the bucket size for one server key | holds one break at `cb.callback.request`'s largest from a source whose servers are in one cell (2 731 units if a file id is 12 bytes) with room for more; a largest break looked up in four or more cells (1 + 2 730 × 4 = 10 921 units; three cells is 8 191, within the burst), rare, passes the burst and goes to the over-limit path (row B3), which covers it with a server-wide advance and never discards it |
 | `cb.rate.total_units` | 32 768 work units per second, burst 65 536 | all break-class calls from known servers together | bounds the callback thread's time per second, so breaks from one server cannot starve the others or the service's other work |
 | `cb.unmatched.table_entries` | 256 sources | the per-source table for sources that match no known server | a fixed table, as Rx's drop table ([rx.md](rx.md), 5.9, point 4); one aggregate entry beyond it |
 | `cb.unmatched.units` | 1 024 work units per second per source, burst 4 096; 4 096 per second in total, burst 8 192 | break-class calls from sources that match no known server | such a break only suspends the files it names (5.6, point 9, row B2), so a low rate costs little; beyond it, the call is discarded (row B4) |
@@ -890,9 +890,11 @@ point 7). The service never sends a datagram itself.
    at once (point 9). A call whose units are not is an over-limit call:
    it is not processed per file, and the keys of the servers its source
    could be wait for the tick (point 7; row B3). Identity-class calls
-   are not charged, never wait for the tick and are never dropped by the
-   service `[OWN]`: each is answered from a prebuilt reply in O(1) (5.5,
-   point 7), so none is ever more than the service can process. Their
+   are not charged, never wait for the tick and are never dropped for
+   load `[OWN]`: each is answered from a prebuilt reply in O(1) (5.5,
+   point 7), so none is ever more than the service can process. One from
+   a source that matches no known server, or over its message cap, is
+   discarded by rows I2 and I4, for what it is, not for load. Their
    only wait is their queue's (point 14), which C24 bounds. So the
    service itself never moves an epoch for a probe (C31's probe row).
    What a probe flood can still do is what any flood of packets can:
@@ -1138,8 +1140,11 @@ Every value read from a request is untrusted (coding standards rule 2).
 3. **`suspect_epoch`** takes the client-wide counter's next value by one
    atomic fetch-and-add (5.6, point 1), which rises by 1 and is checked:
    a take that would pass `u64::MAX` returns no value. Then no new record
-   is created, so no call to a server without a record is sent (it fails
-   with the generic failure), and for an advance: the key is served as if every entry were suspect for
+   is created, so no call to a server without a record is started: the
+   client returns `EpochExhausted`, an outcome of this specification,
+   before Rx is asked for anything, so nothing is sent; the operation
+   that wanted the call fails with C46, point 1's "unreachable", the cause
+   in the side channel `[OWN]`. For an advance: the key is served as if every entry were suspect for
    every serve, and the record is retired at the next opportunity
    `[OWN]`. Even at the most the ticks allow for every key together, this
    takes far longer than any daemon runs, so it is a guard, not a case.
@@ -1172,6 +1177,10 @@ Every value read from a request is untrusted (coding standards rule 2).
    confirmed and nothing is answered, so Rx keeps holding, then pauses,
    and the pause generation fences every server (5.6, point 4). Failing
    to run the tick only ever delays work; it never drops a break unseen.
+6. **`EpochExhausted`**, this specification's one local outcome: the
+   client-wide counter can give no value (section 6, point 3), so a call
+   to a server without a record is not started and nothing is sent. The
+   operation fails with C46, point 1's "unreachable".
 
 ## 8. Security
 
