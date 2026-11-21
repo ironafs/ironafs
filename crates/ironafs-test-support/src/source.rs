@@ -74,14 +74,16 @@ impl Source {
 
     /// Draws one choice in `0..=max` and records it.
     fn draw(&mut self, max: u64) -> u64 {
+        self.draw_with(max, |generator| fresh_choice(generator, max))
+    }
+
+    /// Draws one choice in `0..=max` and records it, taking it from `fresh`
+    /// in a fresh run. A replayed run reads the given choices instead, so
+    /// `fresh` decides only how often each choice is drawn, never what the
+    /// choice means.
+    fn draw_with(&mut self, max: u64, fresh: impl FnOnce(&mut SplitMix64) -> u64) -> u64 {
         let choice = match &mut self.origin {
-            Origin::Fresh(generator) => {
-                // Scales a full-width output onto 0..=max (the high half of
-                // the 128-bit product); max == u64::MAX gives the output
-                // unchanged.
-                let wide = u128::from(generator.next_u64()) * (u128::from(max) + 1);
-                u64::try_from(wide >> 64).unwrap_or(max)
-            }
+            Origin::Fresh(generator) => fresh(generator).min(max),
             Origin::Replay { choices, position } => {
                 let choice = choices.get(*position).copied().unwrap_or(0);
                 *position = position.saturating_add(1);
@@ -182,8 +184,30 @@ impl Source {
         len: RangeInclusive<usize>,
         mut element: impl FnMut(&mut Self) -> T,
     ) -> Vec<T> {
-        let count = self.usize_in(len);
-        (0..count).map(|_| element(self)).collect()
+        let (min, max) = len.into_inner();
+        assert!(min <= max, "vec_of needs a non-empty length range");
+        // A fresh run picks the length up front, without recording it. Each
+        // element past `min` is then preceded by a recorded "one more"
+        // choice, and the vector ends with a recorded "no more" even at
+        // `max`, where it is read and ignored. Deleting an element's
+        // choices together with its continuation then removes exactly that
+        // element, and the draws after the vector keep their own choices.
+        let target = match &mut self.origin {
+            Origin::Fresh(generator) => {
+                let span = u64::try_from(max - min).unwrap_or(u64::MAX);
+                min.saturating_add(usize::try_from(fresh_choice(generator, span)).unwrap_or(0))
+            }
+            Origin::Replay { .. } => max,
+        };
+        let mut values: Vec<T> = (0..min).map(|_| element(self)).collect();
+        loop {
+            let more = values.len() < target;
+            if self.draw_with(1, |_| u64::from(more)) == 0 || values.len() >= max {
+                break;
+            }
+            values.push(element(self));
+        }
+        values
     }
 
     /// Picks one of `items`, shrinking toward the first.
@@ -206,4 +230,16 @@ impl Source {
         // The index is below the length, so `get` always finds an item.
         items.get(index).unwrap_or(first)
     }
+}
+
+/// A fresh choice in `0..=max` from one generator output.
+fn fresh_choice(generator: &mut SplitMix64, max: u64) -> u64 {
+    scale(generator.next_u64(), max)
+}
+
+/// Scales a full-width `output` onto `0..=max` (the high half of the
+/// 128-bit product); `max == u64::MAX` gives the output unchanged.
+fn scale(output: u64, max: u64) -> u64 {
+    let wide = u128::from(output) * (u128::from(max) + 1);
+    u64::try_from(wide >> 64).unwrap_or(max)
 }

@@ -59,6 +59,47 @@ fn shrink_vector_reaches_single_failing_element() {
 }
 
 #[test]
+fn shrink_vector_followed_by_draw_reaches_minimum() {
+    for seed in 0..16 {
+        let shrunk = shrink_first_failure(
+            seed,
+            10_000,
+            |source| (source.vec_of(0..=8, Source::u8), source.u8()),
+            |(values, trailer)| values.iter().any(|value| *value >= 100) && *trailer >= 7,
+        );
+        assert_eq!(shrunk.payload, (vec![100], 7), "seed {seed}");
+    }
+}
+
+#[test]
+fn shrink_nested_vectors_reach_minimum() {
+    for seed in 0..16 {
+        let shrunk = shrink_first_failure(
+            seed,
+            10_000,
+            |source| {
+                (
+                    source.vec_of(0..=4, |source| source.vec_of(0..=4, Source::u8)),
+                    source.u8(),
+                )
+            },
+            |(outer, trailer)| outer.iter().flatten().any(|value| *value >= 100) && *trailer >= 7,
+        );
+        assert_eq!(shrunk.payload, (vec![vec![100]], 7), "seed {seed}");
+    }
+}
+
+#[test]
+fn shrink_integer_finds_small_value_below_threshold() {
+    // Not monotone: 2 fails, 3 to 999 pass, 1000 and above fail. Binary
+    // search alone would stop at 1000.
+    let shrunk = shrink_first_failure(1, 10_000, Source::u64, |value| {
+        *value == 2 || *value >= 1000
+    });
+    assert_eq!(shrunk.payload, 2);
+}
+
+#[test]
 fn shrink_pair_reaches_shortlex_minimum() {
     let shrunk = shrink_first_failure(
         3,

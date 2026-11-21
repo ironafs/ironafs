@@ -100,9 +100,31 @@ fn signed_draws_reach_the_extremes() {
 }
 
 #[test]
-fn vec_of_draws_length_then_elements() {
-    let mut source = Source::replay(vec![2, 9, 8, 7]);
-    assert_eq!(source.vec_of(1..=5, Source::u8), vec![9, 8, 7]);
+fn vec_of_draws_continuation_before_each_element_past_minimum() {
+    let mut source = Source::replay(vec![9, 8, 1, 7, 1, 6, 0, 5]);
+    assert_eq!(
+        (source.vec_of(2..=5, Source::u8), source.u8()),
+        (vec![9, 8, 7, 6], 5)
+    );
+}
+
+#[test]
+fn vec_of_reads_and_ignores_continuation_at_maximum() {
+    let mut source = Source::replay(vec![1, 5, 1, 6, 1, 3]);
+    assert_eq!(
+        (source.vec_of(0..=2, Source::u8), source.u8()),
+        (vec![5, 6], 3)
+    );
+}
+
+#[test]
+fn fresh_vec_lengths_cover_their_range() {
+    let mut seen = [false; 4];
+    for seed in 0..200 {
+        let mut source = Source::fresh(SplitMix64::new(seed));
+        seen[source.vec_of(0..=3, Source::u8).len()] = true;
+    }
+    assert_eq!(seen, [true; 4]);
 }
 
 #[test]

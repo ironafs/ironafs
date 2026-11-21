@@ -17,6 +17,11 @@ mod tests;
 /// largest first so that big simplifications are found cheaply.
 const CHUNK_SIZES: [usize; 4] = [8, 4, 2, 1];
 
+/// How many of the smallest values are tried one by one before a binary
+/// search, so that a small failing value below a larger failing threshold
+/// is still found.
+const SMALL_VALUES: u64 = 4;
+
 /// The outcome of shrinking.
 #[derive(Debug)]
 pub(crate) struct Shrunk<P> {
@@ -146,7 +151,7 @@ impl<P, F: FnMut(&[u64]) -> Option<(Vec<u64>, P)>> Shrinker<P, F> {
     }
 
     /// Lowers together every choice that repeats a value, for failures that
-    /// need two parts of the input to agree (two equal bytes, a length that
+    /// need two parts of the input to agree (two equal bytes, a field that
     /// matches a count), which lowering one choice at a time cannot reach.
     fn minimise_repeated(&mut self) {
         let mut seen = Vec::new();
@@ -171,28 +176,44 @@ impl<P, F: FnMut(&[u64]) -> Option<(Vec<u64>, P)>> Shrinker<P, F> {
         }
     }
 
-    /// Finds, by binary search between zero and `current`, the smallest
-    /// value that still fails when written at every one of `positions`.
+    /// Lowers the value written at every one of `positions`, which all
+    /// hold `current`. The values below [`SMALL_VALUES`] are tried first,
+    /// in order, and the first that fails is kept. Otherwise a binary
+    /// search between there and `current` finds a threshold: a failing
+    /// value whose predecessor passed. That is the smallest failing value
+    /// when failures are monotone above the small values; when they are
+    /// not, the value kept still fails but a smaller one may exist.
     fn minimise_at(&mut self, positions: &[usize], current: u64) {
-        // Every probe at or above `high` has failed; every probe below
-        // `low` has passed. Zero is probed first.
-        let mut low = 0;
-        let mut high = current;
-        let mut probe = 0;
-        while low < high && !self.budget_exhausted {
-            let mut candidate = self.best.clone();
-            for position in positions {
-                if let Some(choice) = candidate.get_mut(*position) {
-                    *choice = probe;
-                }
+        let small = SMALL_VALUES.min(current);
+        for probe in 0..small {
+            if self.budget_exhausted || self.try_at(positions, probe) {
+                return;
             }
-            if self.try_candidate(candidate) {
+        }
+        // Every probe at or above `high` has failed; every probe below
+        // `low` has passed.
+        let mut low = small;
+        let mut high = current;
+        while low < high && !self.budget_exhausted {
+            let probe = low + (high - low) / 2;
+            if self.try_at(positions, probe) {
                 high = probe;
             } else {
                 low = probe + 1;
             }
-            probe = low + (high - low) / 2;
         }
+    }
+
+    /// Tries the best sequence with `value` written at every one of
+    /// `positions`. Returns whether it was kept.
+    fn try_at(&mut self, positions: &[usize], value: u64) -> bool {
+        let mut candidate = self.best.clone();
+        for position in positions {
+            if let Some(choice) = candidate.get_mut(*position) {
+                *choice = value;
+            }
+        }
+        self.try_candidate(candidate)
     }
 }
 
