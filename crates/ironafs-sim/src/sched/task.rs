@@ -10,8 +10,8 @@ use std::sync::{Arc, Condvar, MutexGuard};
 use ironafs_time::{Clock, Rng};
 
 use super::{
-    Body, Delivery, Failure, Pending, RunState, Shared, SignalId, SimDeadline, State, Wait, Waited,
-    catch, hex,
+    Action, Body, Delivery, Failure, Incoming, RunState, Shared, SignalId, SimDeadline, State,
+    Wait, Waited, catch, hex,
 };
 use crate::trace::{ErrorCode, EventKind, TaskId, is_word};
 
@@ -201,6 +201,72 @@ impl TaskCx {
         }
     }
 
+    /// Takes the next world call for `endpoint`, waiting for one by
+    /// `deadline`. A yield point: the wait on the endpoint's queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns how the wait ended if no call arrived before it did.
+    pub fn accept(&self, endpoint: u32, deadline: SimDeadline) -> Result<Incoming, Waited> {
+        let signal = self.shared.lock().inbox_signal(endpoint);
+        loop {
+            match self.wait(Wait {
+                signal: Some(signal),
+                cancel: None,
+                deadline,
+            }) {
+                Waited::Signalled => {}
+                other => return Err(other),
+            }
+            let mut state = self.shared.lock();
+            if let Some((push, request)) = state.take_incoming(endpoint) {
+                let decision = state.decision;
+                state.emit(format!(
+                    "d{decision} {} accept p{push} {}",
+                    self.id,
+                    hex(&request)
+                ));
+                return Ok(Incoming { push, request });
+            }
+        }
+    }
+
+    /// Answers a world call: the answer reaches the world after a latency
+    /// drawn from the network stream, unless the call has settled by then.
+    /// Not a yield point.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "taken by value so each world call is answered once"
+    )]
+    pub fn respond(&self, incoming: Incoming, reply: &[u8]) {
+        let mut state = self.shared.lock();
+        let decision = state.decision;
+        let push = incoming.push;
+        state.emit(format!(
+            "d{decision} {} respond p{push} {}",
+            self.id,
+            hex(reply)
+        ));
+        if !state.pushes.contains_key(&push) {
+            return;
+        }
+        let now = self
+            .shared
+            .clock
+            .boot()
+            .unwrap_or(ironafs_time::BootInstant::from_nanos(0));
+        let latency = state.latency();
+        let due = now.checked_add(latency).unwrap_or(now);
+        state.queue(
+            EventKind::Answer,
+            due,
+            Action::Answer {
+                push,
+                reply: reply.to_vec(),
+            },
+        );
+    }
+
     /// Waits at the gate, with the mutex released, until a new grant is
     /// posted; returns whether that grant tears the task down.
     fn await_grant<'a>(&self, mut state: MutexGuard<'a, State>) -> (MutexGuard<'a, State>, bool) {
@@ -232,27 +298,19 @@ fn schedule_delivery(
     signal: SignalId,
     request: &[u8],
 ) {
-    let (low, high) = state.latency;
-    let latency = state.network.u64_in(low..=high).unwrap_or(low);
+    let latency = state.latency();
     let now = shared
         .clock
         .boot()
         .unwrap_or(ironafs_time::BootInstant::from_nanos(0));
-    let due = now
-        .checked_add(std::time::Duration::from_nanos(latency))
-        .unwrap_or(now);
-    let creation = state.next_event;
-    state.next_event = creation.saturating_add(1);
-    state.events.insert(
-        (EventKind::Delivery, creation),
-        Pending {
-            due,
-            since: None,
-            action: Delivery {
-                call,
-                signal,
-                request: request.to_vec(),
-            },
-        },
+    let due = now.checked_add(latency).unwrap_or(now);
+    state.queue(
+        EventKind::Delivery,
+        due,
+        Action::Deliver(Delivery {
+            call,
+            signal,
+            request: request.to_vec(),
+        }),
     );
 }

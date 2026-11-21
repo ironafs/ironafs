@@ -47,16 +47,25 @@ impl fmt::Display for TaskId {
 pub enum EventKind {
     /// A server model's reply delivered to a waiting call.
     Delivery,
+    /// An attempt of a world call reaching its endpoint, or lost.
+    Arrive,
+    /// An acceptor's answer reaching the world.
+    Answer,
+    /// A world call's timeout.
+    Expire,
 }
 
 impl EventKind {
-    const ALL: [Self; 1] = [Self::Delivery];
+    const ALL: [Self; 4] = [Self::Delivery, Self::Arrive, Self::Answer, Self::Expire];
 
     /// The kind's name in a trace.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Delivery => "delivery",
+            Self::Arrive => "arrive",
+            Self::Answer => "answer",
+            Self::Expire => "expire",
         }
     }
 

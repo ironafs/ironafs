@@ -11,7 +11,10 @@ use std::time::Duration;
 
 use ironafs_time::{AwakeDeadline, BootDeadline};
 
-use super::{Config, Failure, Outcome, SchedPlants, Setup, SimDeadline, TaskCx, Wait, Waited, run};
+use super::{
+    Config, Failure, Outcome, Polled, Push, SchedPlants, Served, Setup, SimDeadline, TaskCx, Wait,
+    Waited, World, run,
+};
 use crate::trace::{Entry, How, TaskId, chosen_identities, decisions, terminal};
 
 fn boot_in(cx: &TaskCx, after: Duration) -> SimDeadline {
@@ -428,4 +431,239 @@ fn a_real_sleep_past_the_watchdog_is_an_unconfirmed_lost_baton() {
     );
     assert_eq!(terminal(&outcome.trace), Some("end failed lost-baton:t0"));
     assert!(!outcome.trace.contains(" t0 end returned"));
+}
+
+/// A world for the push tests: a call `push` starts one push to endpoint
+/// 0; a call `hold` starts one and holds the call until the push
+/// settles, then releases it with `late` if the push was answered, or
+/// drops it; any other call is answered `ok`. Attempts up to `lose` are
+/// lost.
+#[derive(Default)]
+struct PushWorld {
+    lose: u32,
+    pushes: Vec<Push>,
+    held: Option<u64>,
+    releases: Vec<(u64, Option<Vec<u8>>)>,
+    settled: Vec<(u64, Option<Vec<u8>>)>,
+}
+
+#[derive(Clone, Default)]
+struct SharedWorld(Arc<Mutex<PushWorld>>);
+
+impl SharedWorld {
+    fn losing(lose: u32) -> Self {
+        Self(Arc::new(Mutex::new(PushWorld {
+            lose,
+            ..PushWorld::default()
+        })))
+    }
+
+    fn settled(&self) -> Vec<(u64, Option<Vec<u8>>)> {
+        self.0.lock().unwrap().settled.clone()
+    }
+}
+
+fn push_to_zero(token: u64) -> Push {
+    Push {
+        token,
+        endpoint: 0,
+        request: b"brk".to_vec(),
+        attempts: 3,
+        interval: Duration::from_secs(1),
+        timeout: Duration::from_secs(10),
+    }
+}
+
+impl World for SharedWorld {
+    fn serve(&mut self, call: u64, request: &[u8]) -> Served {
+        let mut world = self.0.lock().unwrap();
+        match request {
+            b"push" => {
+                world.pushes.push(push_to_zero(7));
+                Served::Reply(b"ok".to_vec())
+            }
+            b"hold" => {
+                world.pushes.push(push_to_zero(8));
+                world.held = Some(call);
+                Served::Hold
+            }
+            _ => Served::Reply(b"ok".to_vec()),
+        }
+    }
+
+    fn admit(&mut self, _token: u64, attempt: u32) -> bool {
+        attempt > self.0.lock().unwrap().lose
+    }
+
+    fn settled(&mut self, token: u64, response: Option<Vec<u8>>) {
+        let mut world = self.0.lock().unwrap();
+        world.settled.push((token, response.clone()));
+        if let Some(call) = world.held.take() {
+            let release = response.map(|_| b"late".to_vec());
+            world.releases.push((call, release));
+        }
+    }
+
+    fn poll(&mut self) -> Polled {
+        let mut world = self.0.lock().unwrap();
+        Polled {
+            pushes: std::mem::take(&mut world.pushes),
+            releases: std::mem::take(&mut world.releases),
+        }
+    }
+}
+
+/// A caller sends `request`; an acceptor on endpoint 0 answers `ack` to
+/// whatever it accepts, if anything arrives within 20 s, and stays 20 s
+/// more, since a run ends when its tasks have.
+fn caller_and_acceptor(setup: &mut Setup, world: &SharedWorld, request: &'static [u8]) {
+    setup.world(world.clone());
+    setup.task("caller", move |cx: &TaskCx| {
+        match cx.call(request, boot_in(cx, Duration::from_secs(30))) {
+            Ok(reply) => cx.op("reply", "c0", Some(u64::try_from(reply.len()).unwrap())),
+            Err(waited) => cx.op("no-reply", waited.name(), None),
+        }
+    });
+    setup.task("service", |cx: &TaskCx| {
+        match cx.accept(0, boot_in(cx, Duration::from_secs(20))) {
+            Ok(incoming) => {
+                assert_eq!(incoming.request, b"brk");
+                cx.respond(incoming, b"ack");
+                // Stay until the answer has reached the world.
+                let waited = cx.wait(Wait {
+                    signal: None,
+                    cancel: None,
+                    deadline: boot_in(cx, Duration::from_secs(20)),
+                });
+                assert_eq!(waited, Waited::DeadlinePassed);
+            }
+            Err(waited) => cx.op("no-call", waited.name(), None),
+        }
+    });
+}
+
+#[test]
+fn a_world_push_reaches_an_accepting_task_and_its_answer_settles_it() {
+    let world = SharedWorld::default();
+    let outcome = run_with(&Config::new("push", 3), |setup| {
+        caller_and_acceptor(setup, &world, b"push");
+    });
+    assert_eq!(outcome.failure, None, "{}", outcome.trace);
+    for line in [
+        " world push p0 e0 62726b\n",
+        " world arrive p0 try 1\n",
+        " t1 accept p0 62726b\n",
+        " t1 respond p0 61636b\n",
+        " world answer p0 61636b\n",
+    ] {
+        assert!(outcome.trace.contains(line), "{line}: {}", outcome.trace);
+    }
+    assert_eq!(world.settled(), vec![(7, Some(b"ack".to_vec()))]);
+    let again = run_with(&Config::new("push", 3), |setup| {
+        caller_and_acceptor(setup, &SharedWorld::default(), b"push");
+    });
+    assert_eq!(outcome.trace, again.trace);
+}
+
+#[test]
+fn a_lost_attempt_is_retried_and_every_attempt_lost_expires_as_failed() {
+    let world = SharedWorld::losing(1);
+    let outcome = run_with(&Config::new("lose-one", 3), |setup| {
+        caller_and_acceptor(setup, &world, b"push");
+    });
+    assert_eq!(outcome.failure, None, "{}", outcome.trace);
+    assert!(outcome.trace.contains(" world lose p0 try 1\n"));
+    assert!(outcome.trace.contains(" world arrive p0 try 2\n"));
+    assert_eq!(outcome.trace.matches(" accept p0 ").count(), 1);
+    assert_eq!(world.settled(), vec![(7, Some(b"ack".to_vec()))]);
+
+    let world = SharedWorld::losing(3);
+    let outcome = run_with(&Config::new("lose-all", 3), |setup| {
+        caller_and_acceptor(setup, &world, b"push");
+    });
+    assert_eq!(outcome.failure, None, "{}", outcome.trace);
+    for attempt in 1..=3 {
+        assert!(
+            outcome
+                .trace
+                .contains(&format!(" world lose p0 try {attempt}\n"))
+        );
+    }
+    assert!(!outcome.trace.contains(" world arrive p0"));
+    assert!(outcome.trace.contains(" world expire p0\n"));
+    assert!(outcome.trace.contains(" t1 op no-call deadline-passed\n"));
+    assert_eq!(world.settled(), vec![(7, None)]);
+}
+
+#[test]
+fn a_held_call_is_answered_when_the_world_releases_it_and_dropped_on_none() {
+    let world = SharedWorld::default();
+    let outcome = run_with(&Config::new("hold", 2), |setup| {
+        caller_and_acceptor(setup, &world, b"hold");
+    });
+    assert_eq!(outcome.failure, None, "{}", outcome.trace);
+    let hold = outcome.trace.find(" world hold c0\n").unwrap();
+    let answer = outcome.trace.find(" world answer p0 ").unwrap();
+    let reply = outcome.trace.find(" world reply c0 6c617465\n").unwrap();
+    assert!(hold < answer && answer < reply, "{}", outcome.trace);
+    assert!(outcome.trace.contains(" t0 op reply c0 4\n"));
+
+    let world = SharedWorld::losing(3);
+    let outcome = run_with(&Config::new("hold-lost", 2), |setup| {
+        caller_and_acceptor(setup, &world, b"hold");
+    });
+    assert_eq!(outcome.failure, None, "{}", outcome.trace);
+    let expire = outcome.trace.find(" world expire p0\n").unwrap();
+    let drop = outcome.trace.find(" world drop c0\n").unwrap();
+    assert!(expire < drop);
+    assert!(outcome.trace.contains(" t0 op no-reply deadline-passed\n"));
+}
+
+#[test]
+fn a_push_no_task_accepts_expires_and_the_run_still_ends() {
+    let world = SharedWorld::default();
+    let outcome = run_with(&Config::new("no-acceptor", 4), |setup| {
+        setup.world(world.clone());
+        setup.task("caller", |cx: &TaskCx| {
+            let reply = cx.call(b"push", boot_in(cx, Duration::from_secs(1)));
+            assert_eq!(reply, Ok(b"ok".to_vec()));
+            step(cx);
+            let waited = cx.wait(Wait {
+                signal: None,
+                cancel: None,
+                deadline: boot_in(cx, Duration::from_secs(15)),
+            });
+            assert_eq!(waited, Waited::DeadlinePassed);
+        });
+    });
+    assert_eq!(outcome.failure, None, "{}", outcome.trace);
+    assert!(outcome.trace.contains(" world arrive p0 try 1\n"));
+    assert!(outcome.trace.contains(" world expire p0\n"));
+    assert_eq!(world.settled(), vec![(7, None)]);
+    assert_eq!(terminal(&outcome.trace), Some("end ok"));
+}
+
+#[test]
+fn a_late_respond_after_expiry_changes_nothing() {
+    let world = SharedWorld::default();
+    let outcome = run_with(&Config::new("late", 1), |setup| {
+        setup.world(world.clone());
+        setup.task("caller", |cx: &TaskCx| {
+            let _ = cx.call(b"push", boot_in(cx, Duration::from_secs(1)));
+        });
+        setup.task("slow", |cx: &TaskCx| {
+            let incoming = cx.accept(0, boot_in(cx, Duration::from_secs(20))).unwrap();
+            let waited = cx.wait(Wait {
+                signal: None,
+                cancel: None,
+                deadline: boot_in(cx, Duration::from_secs(30)),
+            });
+            assert_eq!(waited, Waited::DeadlinePassed);
+            cx.respond(incoming, b"ack");
+        });
+    });
+    assert_eq!(outcome.failure, None, "{}", outcome.trace);
+    assert!(outcome.trace.contains(" t1 respond p0 61636b\n"));
+    assert!(!outcome.trace.contains(" world answer p0"));
+    assert_eq!(world.settled(), vec![(7, None)]);
 }
