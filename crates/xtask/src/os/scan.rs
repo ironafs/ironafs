@@ -20,8 +20,9 @@
 //! `cfg` in a file that holds a site (other than the gate of its unit-test
 //! module), and `target_env` anywhere but the crate root's target
 //! allowlist and the gates by which a row's `abi.rs` chooses its C
-//! library's declarations (`#[cfg(target_env = "gnu")] mod gnu;`, and
-//! `musl`; ADR 0005, point 5.2, declares `struct msghdr` per C library).
+//! library's declarations (`#[cfg(target_env = "gnu")] mod gnu;` and
+//! `pub(super) use gnu::...;`, and `musl`'s; ADR 0005, point 5.2, declares
+//! `struct msghdr` per C library).
 //! Those library files may hold no site, so a musl build compiles exactly
 //! the glibc build's sites; their declarations are proved on each library
 //! by `check-abi`.
@@ -48,8 +49,9 @@ pub(crate) const CFG: &str = "a file that holds a site names cfg only as `#[cfg(
                               for it (ADR 0005, point 6.7)";
 pub(crate) const TARGET_ENV: &str = "target_env is named only in the crate root's target \
                                      allowlist and in an abi.rs's gates \
-                                     `#[cfg(target_env = \"<gnu|musl>\")] mod <gnu|musl>;`, \
-                                     so a musl build compiles the glibc build's sites";
+                                     `#[cfg(target_env = \"<gnu|musl>\")]` on that library's \
+                                     `mod` or `pub(super) use`, so a musl build compiles the \
+                                     glibc build's sites";
 pub(crate) const LIBRARY_SITE: &str = "a C library's declaration file (abi/gnu.rs, abi/musl.rs) \
                                        holds no site, so a musl build's sites are the glibc \
                                        build's (ADR 0005, points 5.2 and 6.7)";
@@ -159,7 +161,8 @@ pub(crate) fn place_of(path: &std::path::Path) -> Place {
 const LIBRARIES: &[&str] = &["gnu", "musl"];
 
 /// Whether the `target_env` at `index` is the whole condition of a gate
-/// `#[cfg(target_env = "<library>")] mod <library>;`.
+/// `#[cfg(target_env = "<library>")]` on the library's own module or an
+/// import from it.
 fn library_gate(tokens: &[Token], index: usize) -> bool {
     let at = |offset: usize| tokens.get(index + offset);
     let before = |offset: usize| index.checked_sub(offset).and_then(|at| tokens.get(at));
@@ -175,9 +178,38 @@ fn library_gate(tokens: &[Token], index: usize) -> bool {
         && punct(at(1)) == Some('=')
         && punct(at(3)) == Some(')')
         && punct(at(4)) == Some(']')
-        && ident(at(5)) == Some("mod")
-        && ident(at(6)) == Some(library)
-        && punct(at(7)) == Some(';')
+        && gated_item(tokens, index + 5, library)
+}
+
+/// Whether the item at `at` is `mod <library>;` or
+/// `pub(super) use <library>::...;` with no renaming: the module of the
+/// library's declarations, or an import from it.
+fn gated_item(tokens: &[Token], at: usize, library: &str) -> bool {
+    let token = |offset: usize| tokens.get(at + offset);
+    if ident(token(0)) == Some("mod") {
+        return ident(token(1)) == Some(library) && punct(token(2)) == Some(';');
+    }
+    let import = ident(token(0)) == Some("pub")
+        && punct(token(1)) == Some('(')
+        && ident(token(2)) == Some("super")
+        && punct(token(3)) == Some(')')
+        && ident(token(4)) == Some("use")
+        && ident(token(5)) == Some(library)
+        && matches!(token(6).map(|token| &token.kind), Some(TokenKind::PathSep));
+    let Some(end) = tokens
+        .get(at..)
+        .unwrap_or_default()
+        .iter()
+        .position(|token| punct(Some(token)) == Some(';'))
+    else {
+        return false;
+    };
+    import
+        && !tokens
+            .get(at..at + end)
+            .unwrap_or_default()
+            .iter()
+            .any(|token| ident(Some(token)) == Some("as"))
 }
 
 /// Reads the sites and problems of one file of the crate, at `place`.

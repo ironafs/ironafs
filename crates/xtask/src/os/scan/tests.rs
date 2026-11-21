@@ -306,7 +306,9 @@ fn outside_crate_finds_unsafe_foreign_blocks_and_link_attributes_only() {
 /// them (ADR 0005, point 5.2: `struct msghdr` and `struct cmsghdr` are
 /// declared per C library).
 const LIBRARY_GATES: &str = "#[cfg(target_env = \"gnu\")]\nmod gnu;\n\
-                             #[cfg(target_env = \"musl\")]\nmod musl;\n";
+                             #[cfg(target_env = \"musl\")]\nmod musl;\n\
+                             #[cfg(target_env = \"gnu\")]\npub(super) use gnu::{cmsghdr, msghdr};\n\
+                             #[cfg(target_env = \"musl\")]\npub(super) use musl::{cmsghdr, msghdr};\n";
 
 #[test]
 fn scan_allows_target_env_in_an_abi_file_only_to_gate_a_c_library_module() {
@@ -317,13 +319,16 @@ fn scan_allows_target_env_in_an_abi_file_only_to_gate_a_c_library_module() {
     for place in [Place::Other, Place::Library] {
         assert_eq!(
             whats(&read_at(LIBRARY_GATES, place)),
-            [TARGET_ENV, TARGET_ENV],
+            [TARGET_ENV; 4],
             "{place:?}"
         );
     }
     for planted in [
         // A gate on anything but the module of its own library.
         "#[cfg(target_env = \"musl\")]\nmod gnu;\n",
+        "#[cfg(target_env = \"musl\")]\npub(super) use gnu::msghdr;\n",
+        "#[cfg(target_env = \"musl\")]\npub use musl::msghdr;\n",
+        "#[cfg(target_env = \"musl\")]\npub(super) use musl as gnu;\n",
         "#[cfg(target_env = \"musl\")]\nconst PLANTED: u8 = 0;\n",
         "#[cfg(target_env = \"uclibc\")]\nmod uclibc;\n",
         "#[cfg(not(target_env = \"musl\"))]\nmod gnu;\n",
