@@ -788,9 +788,9 @@ integrity, anyone on the network path (ADR 0004, A13). They can try:
 
 | Invariant (section 1) | Kept by | Test that fails if it is broken |
 |---|---|---|
-| Constraint 4: no panics, checked arithmetic, byte limits | 5.2; 5.4; section 6; 7, point 3 | fuzz target `ironafs-xdr_decode` (10.4); reject corpus (10.3); `decode_rejects_length_over_cap`; the workspace lints (coding standards rule 1) |
+| Constraint 4: no panics, checked arithmetic, byte limits | 5.2; 5.4; section 6; 7, point 3 | fuzz target `ironafs-xdr_decode` (10.4); reject corpus (10.3), cases R2 to R4; the workspace lints (coding standards rule 1) |
 | C3, point 1: pure, no socket, clock or randomness | the crate has no dependencies and no I/O (section 3, point 6) | PROPOSED: a dependency-graph check in `cargo xtask check` that `ironafs-xdr` has no dependencies and imports no `std::net`, `std::time` or `std::fs` (gap, #46) |
-| C4, point 1: no I/O, no `unsafe`, fuzzed, size caps | as C3; `unsafe_code = "forbid"`; 5.2 | the compiler (workspace lint); fuzz target (10.4); `decode_rejects_length_over_cap` |
+| C4, point 1: no I/O, no `unsafe`, fuzzed, size caps | as C3; `unsafe_code = "forbid"`; 5.2 | the compiler (workspace lint); fuzz target (10.4); reject corpus (10.3), cases R2 to R4 |
 | C4, point 4: no pure crate depends on a driver or the client | no dependencies at all | the same dependency-graph check (gap, #46) |
 | C6, points 1, 2 and 4: written from a specification with named sources; nothing coded from an unverified fact | this document; every point labelled; section 12 | review of this specification (section 14); a point without a label is a review finding |
 | N31, points 1 and 2: wire facts only from an allowlisted specification passage or an independent fixture | every wire fact here cites a section of X1 that register row E1 allowlists; golden vectors use IronAFS's own test types and values, derived by hand (10.1); no capture is used (12.1) | review; each vector's derivation comment |
@@ -836,22 +836,22 @@ struct sealed {                                   /* secret-bearing */
 };
 ```
 
-| Cap name | Kind | Declared bound | Cap | Direction | Memory budget | Secret |
-|---|---|---|---|---|---|---|
-| `test.note` | message | none | 128 | both | 128 | |
-| `test.note.title` | string | 32 bytes | 32 | both | | |
-| `test.note.what.target` | string | 16 bytes | 16 | both | | |
-| `test.note.owner` | string | 8 bytes | 8 | both | | |
-| `test.note.body` | opaque | 64 bytes | 16, below its bound | both | | |
-| `test.names` | array | none | 16 | both | | |
-| `test.tags` | array | 3 elements | 16, below the 36 bytes its bound allows | both | | |
-| `test.solos` | array | none | 16 | both | | |
-| `test.deep` | message | none | 192 | both | 1024 | |
-| `test.wide` | message | none | 244 | both | 1024 | |
-| `test.every` | message | none | 256 | both | 4096 | |
-| `test.sealed` | message | none | 64 | both | 64 | |
-| `test.sealed.key` | opaque | 16 bytes | 16 | both | | yes |
-| `test.sealed.tag` | string | 8 bytes | 8 | both | | |
+| Cap name | Field | Kind | Declared bound | Cap | Direction | Memory budget | Secret | Why |
+|---|---|---|---|---|---|---|---|---|
+| `test.note` | message | message | none | 128 | both | 128 | | room for G12 (44 bytes) and the cases of 10.3; R12 is one byte over. The budget is r(`note`) = 1 times the cap |
+| `test.note.title` | `title` | string | 32 bytes | 32 | both | | | equal to its bound, so R1 and P4 pin the bound's check before the cap's |
+| `test.note.what.target` | `what.target` | string | 16 bytes | 16 | both | | | equal to its bound |
+| `test.note.owner` | `owner` | string | 8 bytes | 8 | both | | | equal to its bound (`label`) |
+| `test.note.body` | `body` | opaque | 64 bytes | 16, below its bound | both | | | below its bound, so R2 and P4 test `CapExceeded` apart from the bound |
+| `test.names` | the array | array | none | 16 | both | | | small, so two or three labels cross its limit (R5, R5b, P4) |
+| `test.tags` | the array | array | 3 elements | 16, below the 36 bytes its bound allows | both | | | below what its bound allows, so R1a and P4 isolate `LengthOverBound` |
+| `test.solos` | the array | array | none | 16 | both | | | a zero-sized element type, so the ledger, not a capacity, is what the budget reads (5.2, point 9) |
+| `test.deep` | message | message | none | 192 | both | 1024 | | exactly one value of the 16-level chain; the budget is the test types' default |
+| `test.wide` | message | message | none | 244 | both | 1024 | | exactly the TRUE arm and its discriminant; the budget is the test types' default |
+| `test.every` | message | message | none | 256 | both | 4096 | | room for one value of each profile type; the budget covers its out-of-line field and arrays |
+| `test.sealed` | message | message | none | 64 | both | 64 | | room for a full `sealed` value; nothing is copied from the input (5.1, point 8) |
+| `test.sealed.key` | `key` | opaque | 16 bytes | 16 | both | | yes | equal to its bound; the secret field of 5.1, point 8 |
+| `test.sealed.tag` | `tag` | string | 8 bytes | 8 | both | | | equal to its bound (`label`) |
 
 Each `label` in `pair` and `names` has the cap 8. Each test type decoded
 on its own, without a message row above, is a message with the cap 128

@@ -270,7 +270,7 @@ Every specification ends with a Sources section. The rules come from
     exact revision and the date read; the retrieval URL and any reuse
     statement obtained from its editor or registrar are recorded. Its
     section "Historical Implementation Notes" contains fragments of
-    another implementation's code: it is excluded by name. It is never
+    another implementation's code: it is excluded by name. That section is never
     read, never put in a model's prompt, and never cited. Every
     specification that cites the draft says so in its Sources section.
 13. **Mailing-list archives:** attributable public prose only. A post
