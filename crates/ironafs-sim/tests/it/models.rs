@@ -342,7 +342,7 @@ fn fetch64_at_and_across_2_and_4_gib_and_a_server_that_refuses_it() {
                 FS1,
                 Procedure::FsFetchData {
                     fid: big(),
-                    offset: u32::try_from(GIB2 - 16).unwrap(),
+                    offset: u32::try_from(GIB2 - 17).unwrap(),
                     length: 16,
                 },
             )
@@ -359,7 +359,7 @@ fn fetch64_at_and_across_2_and_4_gib_and_a_server_that_refuses_it() {
     assert_eq!(data(&log[4]), server.content(big(), GIB4 + 92, 8).unwrap());
     assert_eq!(status(&log[4]).length, GIB4 + 100);
     assert_eq!(log[5], Ok(Answer::Abort(UNKNOWN_PROCEDURE)));
-    assert_eq!(Some(data(&log[6])), server.content(big(), GIB2 - 16, 16));
+    assert_eq!(Some(data(&log[6])), server.content(big(), GIB2 - 17, 16));
 }
 
 #[test]
