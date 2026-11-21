@@ -32,7 +32,7 @@
 //! of crate, target and profile the compiler's own outputs show it
 //! compiled must be exactly those expected.
 
-mod matrix;
+pub(crate) mod matrix;
 mod self_test;
 
 use std::collections::BTreeSet;

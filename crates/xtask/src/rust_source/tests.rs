@@ -3,7 +3,7 @@
 
 //! Tests for the Rust token reader and the `std` paths it finds.
 
-use super::{LexError, Token, TokenKind, std_paths, tokens, use_paths};
+use super::{LexError, Token, TokenKind, std_paths, tokens, tokens_with_strings, use_paths};
 
 fn idents(source: &str) -> Vec<String> {
     tokens(source)
@@ -356,5 +356,25 @@ fn tokens_read_an_inner_attribute_at_the_start_and_a_leading_byte_order_mark() {
             .first()
             .map(|token| &token.kind),
         Some(&TokenKind::Punct('#'))
+    );
+}
+
+#[test]
+fn tokens_with_strings_keep_the_text_of_plain_and_raw_strings_only() {
+    let source = r#"#[expect(unsafe_code, reason = "linux-clock")] let a = r"x \y"; let b = b"no"; let c = c"no"; let d = "a\"b";"#;
+    let strings: Vec<String> = tokens_with_strings(source)
+        .unwrap()
+        .into_iter()
+        .filter_map(|token| match token.kind {
+            TokenKind::Str(text) => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(strings, ["linux-clock", "x \\y", "a\\\"b"]);
+    assert!(
+        tokens(source)
+            .unwrap()
+            .iter()
+            .all(|token| !matches!(token.kind, TokenKind::Str(_)))
     );
 }

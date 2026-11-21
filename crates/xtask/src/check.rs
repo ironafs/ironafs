@@ -48,6 +48,8 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         crate::deps::run(self_test, output)?;
         crate::grants::run(self_test, output)?;
         crate::pure::run(self_test, output)?;
+        crate::os::run(self_test, output)?;
+        crate::abi::run(self_test, output)?;
     }
 
     check_reuse_result(

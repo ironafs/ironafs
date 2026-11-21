@@ -119,6 +119,16 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             &["check-pure", "--self-test"][..],
             Task::CheckPure { self_test: true },
         ),
+        (&["check-os"][..], Task::CheckOs { self_test: false }),
+        (
+            &["check-os", "--self-test"][..],
+            Task::CheckOs { self_test: true },
+        ),
+        (&["check-abi"][..], Task::CheckAbi { self_test: false }),
+        (
+            &["check-abi", "--self-test"][..],
+            Task::CheckAbi { self_test: true },
+        ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Ok(task));
     }
