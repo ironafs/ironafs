@@ -7,7 +7,8 @@ use super::SplitMix64;
 
 #[test]
 fn next_u64_from_seed_zero_matches_reference_outputs() {
-    // The first outputs of the reference generator seeded with zero.
+    // The first outputs of the reference `splitmix.c` seeded with zero, as
+    // the module documentation records how they were checked.
     let expected = [
         0xe220_a839_7b1d_cdaf,
         0x6e78_9e6a_a1b9_65f4,
