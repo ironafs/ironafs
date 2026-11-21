@@ -11,7 +11,7 @@ use ironafs_xdr::{
     BorrowedBytes, BorrowedWord, Decode, Encode, ErrorKind, Message, Reservation, decode, encode,
 };
 
-use crate::support::{self, hex, traced};
+use crate::support::{self, hex, size, traced};
 use crate::types::{
     BLOB, Blob, DEEP, Deep, ENTRY, EVERY, Entry, Every, FIVE, Five, INTS, Ints, LABEL, Label,
     NAMES, NOTE, Names, Note, PAIR, Pair, SEALED, SHADE, SOLOS, Sealed, Shade, Solos, TAGS, Tags,
@@ -26,8 +26,8 @@ impl<T: for<'a> Decode<'a> + Encode + PartialEq + Debug> Tested for T {}
 /// The heap ratio and reservation ratio of `T`.
 fn ratios<T: Tested>() -> (u64, u64) {
     (
-        <T as Decode<'static>>::HEAP_RATIO,
-        <T as Decode<'static>>::RESERVATIONS,
+        <T as Decode<'static>>::HEAP_RATIO.unwrap(),
+        <T as Decode<'static>>::RESERVATIONS.unwrap(),
     )
 }
 
@@ -92,19 +92,18 @@ fn check_ledger<T: Tested>(message: &Message, length: usize, accepted: bool, see
 }
 
 /// P1 and P3: every generated value encodes to whole units, to exactly
-/// its computed size, and decodes back to itself.
+/// the size the profile's table gives (`size`, computed apart from the
+/// codec), and decodes back to itself.
 fn encodes_and_decodes_back<T: Tested>(
     name: &str,
     message: &'static Message,
     generate: fn(&mut Source) -> T,
+    size: fn(&T) -> usize,
 ) {
     Property::new(format!("{name}: decode(encode(x)) = x")).check(generate, |value| {
         let bytes = encode(message, value).unwrap();
         assert_eq!(bytes.len() % 4, 0, "not whole units");
-        assert_eq!(
-            u64::try_from(bytes.len()).unwrap(),
-            value.encoded_len().unwrap()
-        );
+        assert_eq!(bytes.len(), size(value), "not the profile's size");
         let (decoded, seen) = traced::<T>(message, &bytes);
         assert_eq!(&decoded.unwrap(), value);
         check_ledger::<T>(message, bytes.len(), true, &seen);
@@ -169,80 +168,81 @@ fn all_properties<T: Tested>(
     name: &str,
     message: &'static Message,
     generate: fn(&mut Source) -> T,
+    size: fn(&T) -> usize,
 ) {
-    encodes_and_decodes_back(name, message, generate);
+    encodes_and_decodes_back(name, message, generate, size);
     accepted_inputs_are_canonical(name, message, generate);
     prefixes_are_truncated(name, message, generate);
 }
 
 #[test]
 fn shade_properties_hold() {
-    all_properties::<Shade>("shade", &SHADE, support::shade);
+    all_properties::<Shade>("shade", &SHADE, support::shade, size::shade);
 }
 
 #[test]
 fn entry_properties_hold() {
-    all_properties::<Entry>("entry", &ENTRY, support::entry);
+    all_properties::<Entry>("entry", &ENTRY, support::entry, size::entry);
 }
 
 #[test]
 fn label_properties_hold() {
-    all_properties::<Label>("label", &LABEL, support::label);
+    all_properties::<Label>("label", &LABEL, support::label, size::label);
 }
 
 #[test]
 fn note_properties_hold() {
-    all_properties::<Note>("note", &NOTE, support::note);
+    all_properties::<Note>("note", &NOTE, support::note, size::note);
 }
 
 #[test]
 fn pair_properties_hold() {
-    all_properties::<Pair>("pair", &PAIR, support::pair);
+    all_properties::<Pair>("pair", &PAIR, support::pair, size::pair);
 }
 
 #[test]
 fn names_properties_hold() {
-    all_properties::<Names>("names", &NAMES, support::names);
+    all_properties::<Names>("names", &NAMES, support::names, size::names);
 }
 
 #[test]
 fn tags_properties_hold() {
-    all_properties::<Tags>("tags", &TAGS, support::tags);
+    all_properties::<Tags>("tags", &TAGS, support::tags, size::tags);
 }
 
 #[test]
 fn solos_properties_hold() {
-    all_properties::<Solos>("solos", &SOLOS, support::solos);
+    all_properties::<Solos>("solos", &SOLOS, support::solos, size::solos);
 }
 
 #[test]
 fn ints_properties_hold() {
-    all_properties::<Ints>("ints", &INTS, support::ints);
+    all_properties::<Ints>("ints", &INTS, support::ints, size::ints);
 }
 
 #[test]
 fn five_properties_hold() {
-    all_properties::<Five>("five", &FIVE, support::five);
+    all_properties::<Five>("five", &FIVE, support::five, size::five);
 }
 
 #[test]
 fn blob_properties_hold() {
-    all_properties::<Blob>("blob", &BLOB, support::blob);
+    all_properties::<Blob>("blob", &BLOB, support::blob, size::blob);
 }
 
 #[test]
 fn wide_properties_hold() {
-    all_properties::<Wide>("wide", &WIDE, support::wide);
+    all_properties::<Wide>("wide", &WIDE, support::wide, size::wide);
 }
 
 #[test]
 fn deep_properties_hold() {
-    all_properties::<Deep>("deep", &DEEP, support::deep);
+    all_properties::<Deep>("deep", &DEEP, support::deep, size::deep);
 }
 
 #[test]
 fn every_properties_hold() {
-    all_properties::<Every>("every", &EVERY, support::every);
+    all_properties::<Every>("every", &EVERY, support::every, size::every);
 }
 
 /// The kind and cap or field name of an error.
@@ -288,7 +288,7 @@ fn encoder_refuses_what_decoder_rejects() {
     assert_eq!(named(&refused), named(&rejected));
 
     // tags: four empty labels, 16 bytes within the cap, one over the bound.
-    let four = Tags(vec![Label::default(); 4]);
+    let four = Tags(vec![Label(vec![]); 4]);
     let refused = encode(&TAGS, &four).unwrap_err();
     let bytes = hex("00000004 00000000 00000000 00000000 00000000");
     let rejected = decode::<Tags>(&TAGS, &bytes).unwrap_err();

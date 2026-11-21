@@ -12,9 +12,11 @@
 //! ledger (5.2, point 9). Array elements are decoded by a loop, never by
 //! recursion, so a count never sets the stack's depth (5.1, point 4).
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
 use core::mem::size_of;
+use core::ops::Deref;
 
 use crate::limits::{DEPTH_MAX, INLINE_MAX, INLINE_OPAQUE_MAX};
 use crate::{Cap, Error, ErrorKind, Message};
@@ -41,11 +43,12 @@ pub trait Decode<'a>: Sized {
     /// The nesting depth, counted in structures, unions and arrays.
     const DEPTH: u32;
     /// `r(T)`: an upper bound on the bytes requested from the allocator
-    /// per byte of encoding.
-    const HEAP_RATIO: u64;
+    /// per byte of encoding, or `None` where computing it overflowed,
+    /// which [`proven`] refuses (section 6, A8).
+    const HEAP_RATIO: Option<u64>;
     /// `q(T)`: an upper bound on the reservations made per unit of
-    /// encoding.
-    const RESERVATIONS: u64;
+    /// encoding, or `None` where computing it overflowed.
+    const RESERVATIONS: Option<u64>;
 
     /// Decodes one value at the decoder's position.
     ///
@@ -56,11 +59,43 @@ pub trait Decode<'a>: Sized {
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error>;
 }
 
+/// The value a fixed-length array holds in the slots after an element
+/// fails to decode, so that the array is built without running any code
+/// that could allocate or fail. It is a constant, fixed when the program
+/// is built; the array holding it is dropped with the error.
+pub trait Vacant {
+    /// The placeholder value.
+    const VACANT: Self;
+}
+
+/// A value held out of line, in a one-element buffer reserved through the
+/// ledger (`docs/specs/xdr.md`, 5.2, point 10.2), so that its parent's
+/// inline size stays small whichever arm or component it is.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OutOfLine<T>(Box<[T; 1]>);
+
+impl<T> Deref for OutOfLine<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        let [value] = &*self.0;
+        value
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for OutOfLine<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, formatter)
+    }
+}
+
 /// The end of the input that the elements of a variable-length array may
 /// not pass, and the cap it comes from.
 #[derive(Clone, Copy, Debug)]
 struct Limit {
-    end: usize,
+    /// An absolute offset, in 64 bits so that a cap up to 2³² − 1 adds to
+    /// any offset on every target (section 6, A5).
+    end: u64,
     cap: &'static Cap,
 }
 
@@ -149,45 +184,81 @@ const fn within_limits<'a, T: Decode<'a>>() {
 }
 
 /// Whether `T`'s worst case fits `message`: its nesting depth and inline
-/// size are within the profile's limits, and its heap ratio times the
-/// message cap is within the memory budget (5.2, points 9.3 and 10). The
-/// generated code asserts it in a constant for each message, so a message
-/// that does not fit does not build on that target.
-///
-/// The product saturates, and a saturated product is above any budget, so
-/// an overflow fails the assertion too.
+/// size are within the profile's limits, its heap ratio times the message
+/// cap is within the memory budget, and its reservation count over the
+/// message cap is computable (5.2, points 9.3, 9.5 and 10). The generated
+/// code asserts it in a constant for each message, so a message that does
+/// not fit does not build on that target. A ratio whose computation
+/// overflowed, or a product that overflows, is not proven (section 6, A8).
 #[must_use]
 pub const fn proven<'a, T: Decode<'a>>(message: &Message) -> bool {
+    let cap = message.cap as u64;
+    let Some(heap_ratio) = T::HEAP_RATIO else {
+        return false;
+    };
+    let Some(reservations) = T::RESERVATIONS else {
+        return false;
+    };
+    let heap_fits = match heap_ratio.checked_mul(cap) {
+        Some(worst) => worst <= message.budget,
+        None => false,
+    };
     T::DEPTH <= DEPTH_MAX
         && size_of::<T>() <= INLINE_MAX
-        && T::HEAP_RATIO.saturating_mul(message.cap as u64) <= message.budget
+        && heap_fits
+        && reservations.checked_mul(cap).is_some()
 }
 
 /// `r` of a variable-length array of `T`: its element slots, each
 /// `size_of::<T>()`, per byte of the at least `T::S_MIN` bytes each element
-/// encodes to, plus `r(T)` (5.2, point 9.3). Saturates, failing
-/// [`proven`], on overflow.
+/// encodes to, plus `r(T)` (5.2, point 9.3). `None` on overflow, or for an
+/// element that encodes to no bytes.
 #[must_use]
-pub const fn array_heap_ratio<'a, T: Decode<'a>>() -> u64 {
-    let slot = size_of::<T>() as u64;
-    if T::S_MIN == 0 {
-        return u64::MAX;
-    }
-    slot.div_ceil(T::S_MIN).saturating_add(T::HEAP_RATIO)
+pub const fn array_heap_ratio<'a, T: Decode<'a>>() -> Option<u64> {
+    slot_ratio::<T>(T::HEAP_RATIO)
 }
 
 /// `q` of a variable-length array of `T`: one reservation for its buffer,
 /// or its elements' (5.2, point 9.5).
 #[must_use]
-pub const fn array_reservations<'a, T: Decode<'a>>() -> u64 {
-    max(1, T::RESERVATIONS)
+pub const fn array_reservations<'a, T: Decode<'a>>() -> Option<u64> {
+    max(Some(1), T::RESERVATIONS)
 }
 
-/// The larger of two constants, for the generated code's `r` and `q` of
-/// structures and unions.
+/// `r` of a value of `T` held out of line: a one-element array
+/// (5.2, point 9.3).
 #[must_use]
-pub const fn max(a: u64, b: u64) -> u64 {
-    if a > b { a } else { b }
+pub const fn out_of_line_heap_ratio<'a, T: Decode<'a>>() -> Option<u64> {
+    slot_ratio::<T>(T::HEAP_RATIO)
+}
+
+/// `q` of a value of `T` held out of line: its own slot, and its
+/// reservations (5.2, point 9.5).
+#[must_use]
+pub const fn out_of_line_reservations<'a, T: Decode<'a>>() -> Option<u64> {
+    match T::RESERVATIONS {
+        Some(reservations) => reservations.checked_add(1),
+        None => None,
+    }
+}
+
+/// ⌈`size_of::<T>()` ÷ `T::S_MIN`⌉ + `inner`, checked.
+const fn slot_ratio<'a, T: Decode<'a>>(inner: Option<u64>) -> Option<u64> {
+    let slot = size_of::<T>() as u64;
+    match (inner, slot.checked_div(T::S_MIN)) {
+        (Some(inner), Some(_)) => slot.div_ceil(T::S_MIN).checked_add(inner),
+        _ => None,
+    }
+}
+
+/// The larger of two ratios, for the generated code's `r` and `q` of
+/// structures and unions; `None` if either is.
+#[must_use]
+pub const fn max(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if a > b { a } else { b }),
+        _ => None,
+    }
 }
 
 /// Runs `decode_value` over `input` as one message.
@@ -329,19 +400,18 @@ impl<'a> Decoder<'a, '_> {
         })
     }
 
-    /// Borrows a fixed-length opaque of `n` bytes and checks its padding.
+    /// Borrows a fixed-length opaque of `N` bytes and checks its padding.
     ///
     /// # Errors
     ///
     /// `CapExceeded` or `Truncated` if the item, padding included, would
     /// pass an end of the cursor, before anything is read; `NonZeroPadding`
     /// at the first padding byte that is not zero.
-    pub fn fixed_opaque(&mut self, n: usize) -> Result<&'a [u8], Error> {
+    pub fn fixed_opaque<const N: usize>(&mut self) -> Result<&'a [u8; N], Error> {
         let start = self.offset;
-        let padded = padded_len(n).ok_or_else(|| self.truncated(start))?;
-        self.check_end(start, start.checked_add(padded))?;
-        let data = self.take(n)?;
-        self.padding(n)?;
+        self.check_item_end(start, padded_len(offset64(N)))?;
+        let data = self.take_array::<N>()?;
+        self.padding(N)?;
         Ok(data)
     }
 
@@ -355,14 +425,10 @@ impl<'a> Decoder<'a, '_> {
     /// As [`Decoder::fixed_opaque`].
     pub fn fixed_opaque_inline<const N: usize>(&mut self) -> Result<[u8; N], Error> {
         const { assert!(N <= INLINE_OPAQUE_MAX) };
-        let start = self.offset;
-        let data = self.fixed_opaque(N)?;
-        data.first_chunk::<N>()
-            .copied()
-            .ok_or_else(|| self.truncated(start))
+        self.fixed_opaque::<N>().copied()
     }
 
-    /// Copies a fixed-length opaque of `n` bytes into a buffer reserved
+    /// Copies a fixed-length opaque of `N` bytes into a buffer reserved
     /// through the ledger: how a fixed-length opaque longer than
     /// [`INLINE_OPAQUE_MAX`](crate::limits::INLINE_OPAQUE_MAX) bytes is
     /// held out of line (5.2, point 10.2). `field` names the request.
@@ -373,12 +439,39 @@ impl<'a> Decoder<'a, '_> {
     /// cursor, checked before the buffer is reserved (5.4, point 2);
     /// `BudgetExceeded` or `AllocationFailed` from the reservation;
     /// `NonZeroPadding` as [`Decoder::fixed_opaque`].
-    pub fn fixed_opaque_owned(&mut self, n: usize, field: &'static str) -> Result<Vec<u8>, Error> {
+    pub fn fixed_opaque_owned<const N: usize>(
+        &mut self,
+        field: &'static str,
+    ) -> Result<Box<[u8; N]>, Error> {
         let start = self.offset;
-        let padded = padded_len(n).ok_or_else(|| self.truncated(start))?;
-        self.check_end(start, start.checked_add(padded))?;
-        let buffer = self.reserve(n, field, start)?;
-        self.copy_into(buffer, n)
+        self.check_item_end(start, padded_len(offset64(N)))?;
+        let buffer = self.reserve(N, field, start)?;
+        let buffer = self.copy_into(buffer, N)?;
+        self.boxed(buffer, start)
+    }
+
+    /// Decodes a value of `T` held out of line (5.2, point 10.2): it
+    /// checks that `T::S_MIN` bytes fit before both ends of the cursor,
+    /// then reserves one slot through the ledger, named `field`, then
+    /// decodes the value into it (5.4, point 2). No count word is read.
+    ///
+    /// A `T` that encodes to no bytes may not be held out of line; such a
+    /// call does not build.
+    ///
+    /// # Errors
+    ///
+    /// `CapExceeded` or `Truncated` on entry; `BudgetExceeded` or
+    /// `AllocationFailed` from the reservation; then the value's error.
+    pub fn out_of_line<T: Decode<'a>>(
+        &mut self,
+        field: &'static str,
+    ) -> Result<OutOfLine<T>, Error> {
+        const { assert!(T::S_MIN >= UNIT) };
+        let start = self.offset;
+        self.check_item_end(start, Some(T::S_MIN))?;
+        let mut slot = self.reserve(1, field, start)?;
+        slot.push(T::decode(self)?);
+        self.boxed(slot, start).map(OutOfLine)
     }
 
     /// Borrows variable-length opaque data or a string from the input,
@@ -439,12 +532,11 @@ impl<'a> Decoder<'a, '_> {
             .checked_mul(T::S_MIN)
             .filter(|bytes| *bytes <= u64::from(cap.bytes))
             .ok_or_else(|| self.cap_exceeded(cap, start))?;
-        self.check_item_end(start, at_least)?;
+        self.check_item_end(start, Some(at_least))?;
         let count = usize::try_from(count).map_err(|_| self.cap_exceeded(cap, start))?;
         let mut elements = self.reserve(count, cap.name, start)?;
-        let array_end = usize::try_from(cap.bytes)
-            .ok()
-            .and_then(|bytes| self.offset.checked_add(bytes))
+        let array_end = offset64(self.offset)
+            .checked_add(u64::from(cap.bytes))
             .ok_or_else(|| self.cap_exceeded(cap, start))?;
         let enclosing = self.limit;
         if enclosing.is_none_or(|limit| array_end <= limit.end) {
@@ -470,30 +562,26 @@ impl<'a> Decoder<'a, '_> {
     /// Decodes a fixed-length array of `N` elements of `T`, held inline.
     /// On entry it checks that `N` times `T::S_MIN` bytes fit before an
     /// end of the cursor (5.4, point 2); the elements are then decoded by
-    /// a loop.
+    /// a loop, which stops at the first error. The slots after it hold
+    /// [`Vacant::VACANT`], a constant, and are dropped with the error.
     ///
     /// # Errors
     ///
     /// `CapExceeded` or `Truncated` on entry, then the first element's
     /// error.
-    pub fn fixed_array<T: Decode<'a> + Default, const N: usize>(
-        &mut self,
-    ) -> Result<[T; N], Error> {
+    pub fn fixed_array<T: Decode<'a> + Vacant, const N: usize>(&mut self) -> Result<[T; N], Error> {
         const { assert!(T::S_MIN >= UNIT) };
         let start = self.offset;
-        let at_least = u64::try_from(N)
-            .ok()
-            .and_then(|n| n.checked_mul(T::S_MIN))
-            .ok_or_else(|| self.truncated(start))?;
+        let at_least = offset64(N).checked_mul(T::S_MIN);
         self.check_item_end(start, at_least)?;
         let mut failure = None;
         let elements = core::array::from_fn(|_| {
             if failure.is_some() {
-                return T::default();
+                return T::VACANT;
             }
             T::decode(self).unwrap_or_else(|error| {
                 failure = Some(error);
-                T::default()
+                T::VACANT
             })
         });
         failure.map_or(Ok(elements), Err)
@@ -510,32 +598,30 @@ impl<'a> Decoder<'a, '_> {
         if n > cap.bytes {
             return Err(self.cap_exceeded(cap, start));
         }
-        let n = usize::try_from(n).map_err(|_| self.cap_exceeded(cap, start))?;
-        let padded = padded_len(n).ok_or_else(|| self.cap_exceeded(cap, start))?;
-        let end = self.offset.checked_add(padded);
-        self.check_end(start, end)?;
-        Ok(n)
+        self.check_item_end(start, padded_len(u64::from(n)))?;
+        usize::try_from(n).map_err(|_| self.cap_exceeded(cap, start))
     }
 
-    /// Checks that `at_least` bytes from the current offset fit before both
-    /// ends of the cursor, for an item that starts at `start`.
-    fn check_item_end(&self, start: usize, at_least: u64) -> Result<(), Error> {
-        let end = usize::try_from(at_least)
-            .ok()
-            .and_then(|bytes| self.offset.checked_add(bytes));
+    /// Checks that `at_least` bytes (`None` past `u64::MAX`) from the
+    /// current offset fit before both ends of the cursor, for an item that
+    /// starts at `start`.
+    fn check_item_end(&self, start: usize, at_least: Option<u64>) -> Result<(), Error> {
+        let end = at_least.and_then(|bytes| offset64(self.offset).checked_add(bytes));
         self.check_end(start, end)
     }
 
-    /// Checks an item that starts at `start` and would end at `end` (`None`
-    /// past `usize::MAX`) against the cursor's two ends: the tightest
-    /// array limit first, then the input's end (5.4, point 5).
-    fn check_end(&self, start: usize, end: Option<usize>) -> Result<(), Error> {
+    /// Checks an item that starts at `start` and would end at the absolute
+    /// offset `end` (`None` past `u64::MAX`) against the cursor's two
+    /// ends: the tightest array limit first, then the input's end (5.4,
+    /// point 5). The arithmetic is in 64 bits on every target (section 6,
+    /// A3 and A5).
+    fn check_end(&self, start: usize, end: Option<u64>) -> Result<(), Error> {
         if let Some(limit) = self.limit
             && end.is_none_or(|end| end > limit.end)
         {
             return Err(self.cap_exceeded(limit.cap, start));
         }
-        if end.is_none_or(|end| end > self.input.len()) {
+        if end.is_none_or(|end| end > offset64(self.input.len())) {
             return Err(self.truncated(start));
         }
         Ok(())
@@ -544,9 +630,9 @@ impl<'a> Decoder<'a, '_> {
     /// Takes `n` bytes through the cursor.
     fn take(&mut self, n: usize) -> Result<&'a [u8], Error> {
         let start = self.offset;
-        let end = start.checked_add(n);
-        self.check_end(start, end)?;
-        let bytes = end
+        self.check_item_end(start, Some(offset64(n)))?;
+        let bytes = start
+            .checked_add(n)
             .and_then(|end| self.input.get(start..end))
             .ok_or_else(|| self.truncated(start))?;
         self.offset = start.saturating_add(n);
@@ -565,7 +651,7 @@ impl<'a> Decoder<'a, '_> {
     /// (5.4, point 8).
     fn padding(&mut self, n: usize) -> Result<(), Error> {
         let start = self.offset;
-        let padding = self.take(pad(n))?;
+        let padding = self.take(n.wrapping_neg() % 4)?;
         match padding.iter().position(|byte| *byte != 0) {
             Some(index) => {
                 let at = start.saturating_add(index);
@@ -583,6 +669,18 @@ impl<'a> Decoder<'a, '_> {
         }
         self.padding(n)?;
         Ok(buffer)
+    }
+
+    /// Turns a buffer reserved for exactly `N` elements and filled with
+    /// them into a box, in place: the conversion reallocates only when the
+    /// capacity differs from the length, which is refused instead, so no
+    /// request bypasses the ledger.
+    fn boxed<T, const N: usize>(&self, buffer: Vec<T>, at: usize) -> Result<Box<[T; N]>, Error> {
+        let failed = || self.locate(Error::new(ErrorKind::AllocationFailed), at, None);
+        if size_of::<T>() != 0 && buffer.capacity() != N {
+            return Err(failed());
+        }
+        Box::<[T; N]>::try_from(buffer).map_err(|_| failed())
     }
 
     /// Reserves `count` slots of `T` through the ledger, for the item whose
@@ -629,14 +727,17 @@ impl<'a> Decoder<'a, '_> {
     }
 }
 
-/// The padding after `n` data bytes: 0 to 3 (section 6, A1).
-const fn pad(n: usize) -> usize {
-    (4 - n % 4) % 4
+/// An offset or length in 64 bits. No supported target has a `usize`
+/// wider than 64 bits; on one that had, the value would saturate, which
+/// only makes it fail a check.
+fn offset64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
-/// `n` plus its padding, or `None` on overflow (section 6, A2).
-const fn padded_len(n: usize) -> Option<usize> {
-    n.checked_add(pad(n))
+/// `n` plus its padding to the unit, or `None` on overflow (section 6, A1
+/// and A2).
+const fn padded_len(n: u64) -> Option<u64> {
+    n.checked_add(n.wrapping_neg() % 4)
 }
 
 macro_rules! decode_number {
@@ -644,8 +745,8 @@ macro_rules! decode_number {
         impl<'a> Decode<'a> for $type {
             const S_MIN: u64 = $size;
             const DEPTH: u32 = 0;
-            const HEAP_RATIO: u64 = 0;
-            const RESERVATIONS: u64 = 0;
+            const HEAP_RATIO: Option<u64> = Some(0);
+            const RESERVATIONS: Option<u64> = Some(0);
 
             fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
                 decoder.$read()
@@ -653,6 +754,16 @@ macro_rules! decode_number {
         }
     };
 }
+
+macro_rules! vacant_number {
+    ($($type:ty),*) => {$(
+        impl Vacant for $type {
+            const VACANT: Self = 0;
+        }
+    )*};
+}
+
+vacant_number!(i32, u32, i64, u64);
 
 decode_number!(i32, 4, read_i32);
 decode_number!(u32, 4, read_u32);
@@ -663,8 +774,8 @@ decode_number!(u64, 8, read_u64);
 impl<'a> Decode<'a> for () {
     const S_MIN: u64 = 0;
     const DEPTH: u32 = 0;
-    const HEAP_RATIO: u64 = 0;
-    const RESERVATIONS: u64 = 0;
+    const HEAP_RATIO: Option<u64> = Some(0);
+    const RESERVATIONS: Option<u64> = Some(0);
 
     fn decode(_: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         Ok(())

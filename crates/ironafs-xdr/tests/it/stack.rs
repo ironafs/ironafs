@@ -69,7 +69,9 @@ fn decode_fits_small_stack() {
         unsigned_hyper: u64::MAX,
         flag: true,
         shade: Shade::Vivid,
-        big: bytes(100),
+        big: Box::new(std::array::from_fn(|index| {
+            u8::try_from(index % 251).unwrap()
+        })),
         var: bytes(8),
         name: label(8),
         fixed: [7, 8],

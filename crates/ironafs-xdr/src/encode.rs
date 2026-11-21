@@ -12,6 +12,7 @@
 //! refuse.
 
 use alloc::vec::Vec;
+use core::fmt;
 
 use crate::{Cap, Error, ErrorKind, Message};
 
@@ -39,7 +40,9 @@ pub trait Encode {
 }
 
 /// The output of one message: its buffer, and the bytes it may still take.
-#[derive(Debug)]
+///
+/// Its `Debug` shows the message's name and the bytes still to write,
+/// never the output, which may hold a secret-bearing message.
 pub struct Encoder<'o> {
     out: &'o mut Vec<u8>,
     remaining: u64,
@@ -47,7 +50,23 @@ pub struct Encoder<'o> {
     cap: u32,
 }
 
+impl fmt::Debug for Encoder<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Encoder")
+            .field("message", &self.message)
+            .field("remaining", &self.remaining)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Encodes `value` as one `message` into a new buffer.
+///
+/// For a secret-bearing message this is [`encode_into`] with a fresh, empty
+/// buffer: the codec requests it once and never grows it, and the caller
+/// owns it from then on, so the caller moves it into the type that zeroes
+/// it on drop (`docs/specs/xdr.md`, 5.1, point 8). On error the buffer has
+/// been zeroed and dropped.
 ///
 /// # Errors
 ///
@@ -58,12 +77,23 @@ pub fn encode<T: Encode + ?Sized>(message: &Message, value: &T) -> Result<Vec<u8
     Ok(out)
 }
 
-/// Encodes `value` as one `message` into `out`, which is cleared first.
+/// Encodes `value` as one `message` into `out`, the caller's buffer.
 ///
-/// The whole size is requested once, before anything is written, so a
-/// buffer the caller zeroes on drop holds the only copy of a secret-bearing
-/// message (`docs/specs/xdr.md`, 5.1, point 8). On error `out` is left
-/// empty, and nothing from it may be sent.
+/// The contract for a secret-bearing message (`docs/specs/xdr.md`, 5.1,
+/// point 8, and 5.5, point 3), which holds for every message:
+///
+/// - **Reuse.** Whatever `out` held, and its spare capacity, is overwritten
+///   with zeros before anything else, so a reservation that must move the
+///   buffer releases only zeros.
+/// - **One request.** The whole size is requested once, before anything is
+///   written, and the output is written by `push` alone, so the buffer
+///   never grows and no reallocation leaves a copy behind.
+/// - **Failure.** On any error, everything written and the spare capacity
+///   are overwritten with zeros, and `out` is left empty. Nothing from it
+///   may be sent.
+/// - **Drop.** The caller zeroes `out` on drop; this crate cannot, since
+///   zeroing that the compiler may not remove needs code a pure crate may
+///   not contain.
 ///
 /// # Errors
 ///
@@ -75,7 +105,17 @@ pub fn encode_into<T: Encode + ?Sized>(
     value: &T,
     out: &mut Vec<u8>,
 ) -> Result<(), Error> {
-    out.clear();
+    wipe(out);
+    let written = write(message, value, out);
+    if written.is_err() {
+        wipe(out);
+    }
+    written
+}
+
+/// Sizes `value`, requests the output once and writes it into `out`,
+/// which is empty.
+fn write<T: Encode + ?Sized>(message: &Message, value: &T, out: &mut Vec<u8>) -> Result<(), Error> {
     let too_large = Error::new(ErrorKind::MessageTooLarge)
         .named(message.name)
         .limit(u64::from(message.cap));
@@ -102,17 +142,31 @@ pub fn encode_into<T: Encode + ?Sized>(
         message: message.name,
         cap: message.cap,
     };
-    let written = value.encode(&mut encoder).and_then(|()| {
-        if encoder.remaining == 0 {
-            Ok(())
-        } else {
-            Err(encoder.overrun())
-        }
-    });
-    if written.is_err() {
-        encoder.out.clear();
+    value.encode(&mut encoder)?;
+    if encoder.remaining == 0 {
+        Ok(())
+    } else {
+        Err(encoder.overrun())
     }
-    written
+}
+
+/// Overwrites every byte `out` holds, and its spare capacity, with zeros,
+/// and leaves it empty with the same capacity. The writes stay: the
+/// memory remains the caller's, reachable through `out`.
+fn wipe(out: &mut Vec<u8>) {
+    zero_to_capacity(out);
+    out.clear();
+}
+
+/// Overwrites every byte of `out`'s capacity with zero, leaving it full.
+fn zero_to_capacity(out: &mut Vec<u8>) {
+    out.fill(0);
+    let capacity = out.capacity();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "rule 8: resizing within the capacity writes zeros over the spare bytes and never reallocates"
+    )]
+    out.resize(capacity, 0);
 }
 
 /// The encoded size of a fixed-length opaque of `n` bytes: `n` plus its
@@ -234,14 +288,22 @@ impl Encoder<'_> {
         self.put_u32(u32::from(value))
     }
 
-    /// Writes a fixed-length opaque: its bytes, then zero padding.
+    /// Writes a fixed-length opaque of its declared width `N`: its bytes,
+    /// then zero padding. The width is in the type, so data of any other
+    /// length does not build:
+    ///
+    /// ```compile_fail
+    /// # use ironafs_xdr::{Encoder, Error};
+    /// fn write(encoder: &mut Encoder<'_>, short: &[u8; 96]) -> Result<(), Error> {
+    ///     encoder.put_fixed_opaque::<100>(short)
+    /// }
+    /// ```
     ///
     /// # Errors
     ///
     /// As [`Encoder::put_i32`].
-    pub fn put_fixed_opaque(&mut self, data: &[u8]) -> Result<(), Error> {
-        self.put_bytes(data)?;
-        self.put_padding(data.len())
+    pub fn put_fixed_opaque<const N: usize>(&mut self, data: &[u8; N]) -> Result<(), Error> {
+        self.put_data(data)
     }
 
     /// Writes variable-length opaque data or a string: its length word, its
@@ -253,7 +315,7 @@ impl Encoder<'_> {
     pub fn put_opaque(&mut self, cap: &Cap, data: &[u8]) -> Result<(), Error> {
         opaque_len(cap, data.len())?;
         self.put_u32(word_length(cap, data.len())?)?;
-        self.put_fixed_opaque(data)
+        self.put_data(data)
     }
 
     /// Writes a variable-length array: its count word, then each element.
@@ -274,6 +336,12 @@ impl Encoder<'_> {
     /// Any element's error.
     pub fn put_fixed_array<T: Encode>(&mut self, elements: &[T]) -> Result<(), Error> {
         elements.iter().try_for_each(|element| element.encode(self))
+    }
+
+    /// Writes `data`, then its zero padding.
+    fn put_data(&mut self, data: &[u8]) -> Result<(), Error> {
+        self.put_bytes(data)?;
+        self.put_padding(data.len())
     }
 
     fn put_padding(&mut self, n: usize) -> Result<(), Error> {

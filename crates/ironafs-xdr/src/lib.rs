@@ -34,8 +34,8 @@
 //! impl<'a> Decode<'a> for Greeting {
 //!     const S_MIN: u64 = 8;
 //!     const DEPTH: u32 = 1;
-//!     const HEAP_RATIO: u64 = 1;
-//!     const RESERVATIONS: u64 = 1;
+//!     const HEAP_RATIO: Option<u64> = Some(1);
+//!     const RESERVATIONS: Option<u64> = Some(1);
 //!
 //!     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
 //!         Ok(Self { count: decoder.read_u32()?, name: decoder.opaque_owned(&NAME)? })
@@ -70,8 +70,8 @@
 //! # impl<'a, T: Decode<'a>> Decode<'a> for Level<T> {
 //! #     const S_MIN: u64 = T::S_MIN;
 //! #     const DEPTH: u32 = T::DEPTH + 1;
-//! #     const HEAP_RATIO: u64 = T::HEAP_RATIO;
-//! #     const RESERVATIONS: u64 = T::RESERVATIONS;
+//! #     const HEAP_RATIO: Option<u64> = T::HEAP_RATIO;
+//! #     const RESERVATIONS: Option<u64> = T::RESERVATIONS;
 //! #     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
 //! #         T::decode(decoder).map(Self)
 //! #     }
@@ -90,8 +90,8 @@
 //! # impl<'a, T: Decode<'a>> Decode<'a> for Level<T> {
 //! #     const S_MIN: u64 = T::S_MIN;
 //! #     const DEPTH: u32 = T::DEPTH + 1;
-//! #     const HEAP_RATIO: u64 = T::HEAP_RATIO;
-//! #     const RESERVATIONS: u64 = T::RESERVATIONS;
+//! #     const HEAP_RATIO: Option<u64> = T::HEAP_RATIO;
+//! #     const RESERVATIONS: Option<u64> = T::RESERVATIONS;
 //! #     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
 //! #         T::decode(decoder).map(Self)
 //! #     }
@@ -113,8 +113,8 @@ mod spec;
 
 pub use borrowed::{BorrowedBytes, BorrowedHyper, BorrowedWord};
 pub use decode::{
-    Decode, Decoder, Mark, Reservation, array_heap_ratio, array_reservations, decode,
-    decode_traced, max, proven,
+    Decode, Decoder, Mark, OutOfLine, Reservation, Vacant, array_heap_ratio, array_reservations,
+    decode, decode_traced, max, out_of_line_heap_ratio, out_of_line_reservations, proven,
 };
 pub use encode::{
     Encode, Encoder, array_len, encode, encode_into, fixed_array_len, fixed_opaque_len, opaque_len,

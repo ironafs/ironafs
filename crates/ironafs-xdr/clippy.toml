@@ -14,7 +14,8 @@ doc-valid-idents = ["IronAFS", "OpenAFS", "AuriStor", "FSKit", "macOS", ".."]
 # encoder requests its output once (docs/specs/xdr.md, 5.2, point 9.2, and
 # 5.5, point 3). These allocate, or may reallocate, outside both. The two
 # reservation sites carry the named exceptions; review covers what this
-# list misses.
+# list misses: `Vec::from` and other conversions through `From`, which
+# Clippy cannot name by path without banning `From::from` everywhere.
 disallowed-methods = [
   { path = "alloc::vec::Vec::with_capacity", reason = "reserve through the decoder's ledger" },
   { path = "alloc::vec::Vec::reserve", reason = "reserve through the decoder's ledger" },
@@ -29,7 +30,12 @@ disallowed-methods = [
   { path = "alloc::vec::Vec::shrink_to_fit", reason = "reallocates outside the ledger" },
   { path = "alloc::vec::Vec::into_boxed_slice", reason = "may reallocate outside the ledger" },
   { path = "core::iter::Extend::extend", reason = "may reallocate; fill a reserved buffer by push" },
+  { path = "alloc::vec::Vec::splice", reason = "may reallocate; fill a reserved buffer by push" },
   { path = "core::iter::Iterator::collect", reason = "allocates outside the ledger" },
+  { path = "slice::to_vec", reason = "allocates outside the ledger" },
+  { path = "slice::repeat", reason = "allocates outside the ledger" },
+  { path = "slice::concat", reason = "allocates outside the ledger" },
+  { path = "slice::join", reason = "allocates outside the ledger" },
   { path = "alloc::borrow::ToOwned::to_owned", reason = "allocates outside the ledger" },
   { path = "alloc::boxed::Box::new", reason = "allocates outside the ledger" },
   { path = "alloc::string::ToString::to_string", reason = "allocates outside the ledger" },

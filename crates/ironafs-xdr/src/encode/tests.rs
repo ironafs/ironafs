@@ -7,11 +7,13 @@
     reason = "the tests build their values and buffers outside the encoder"
 )]
 
+use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use super::{
     Encode, Encoder, array_len, encode, encode_into, fixed_opaque_len, opaque_len, word_length,
+    zero_to_capacity,
 };
 use crate::{Cap, Error, ErrorKind, Message};
 
@@ -130,17 +132,6 @@ fn opaque_len_checks_bound_before_cap() {
 }
 
 #[test]
-fn put_opaque_refuses_what_its_size_refuses() {
-    let error = encode(&MESSAGE, &Short(b"abcde")).unwrap_err();
-    assert_error(
-        &error,
-        ErrorKind::CapExceeded,
-        Some("test.m.short"),
-        Some(4),
-    );
-}
-
-#[test]
 fn array_len_compares_count_with_bound_and_bytes_with_cap() {
     // Four elements of 4 bytes: 16 bytes, but the count is checked first.
     assert_error(
@@ -206,7 +197,7 @@ fn encode_into_requests_once_and_never_grows() {
     let mut out = Vec::new();
     encode_into(&MESSAGE, &Short(b"abc"), &mut out).unwrap();
     assert_eq!(out, [0, 0, 0, 3, b'a', b'b', b'c', 0]);
-    // A buffer that already holds the room is written in place.
+    // A buffer that already has the room is written in place.
     let mut out = Vec::with_capacity(8);
     out.push(0xee);
     let before = out.as_ptr();
@@ -253,4 +244,79 @@ fn bool_encodes_as_zero_or_one() {
         }
     }
     assert_eq!(encode(&MESSAGE, &Flags).unwrap(), [0, 0, 0, 0, 0, 0, 0, 1]);
+}
+
+#[test]
+fn put_opaque_refuses_over_cap_even_after_a_size_pass_that_passed() {
+    /// Sizes itself as 12 bytes, then writes 5 bytes under a cap of 4.
+    struct Sneaky;
+    impl Encode for Sneaky {
+        fn encoded_len(&self) -> Result<u64, Error> {
+            Ok(12)
+        }
+
+        fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+            encoder.put_opaque(&SHORT, b"abcde")
+        }
+    }
+    let error = encode(&MESSAGE, &Sneaky).unwrap_err();
+    assert_error(
+        &error,
+        ErrorKind::CapExceeded,
+        Some("test.m.short"),
+        Some(4),
+    );
+}
+
+#[test]
+fn encoder_debug_shows_no_output_bytes() {
+    /// Writes a key-like word, then formats the encoder.
+    struct Peek;
+    impl Encode for Peek {
+        fn encoded_len(&self) -> Result<u64, Error> {
+            Ok(4)
+        }
+
+        fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+            encoder.put_u32(0x5ec2_e7ed)?;
+            let plain = format!("{encoder:?}");
+            let alternate = format!("{encoder:#?}");
+            for text in [plain, alternate] {
+                assert!(!text.contains("94"), "{text}");
+                assert!(!text.contains("237"), "{text}");
+                assert!(!text.contains("out"), "{text}");
+            }
+            Ok(())
+        }
+    }
+    encode(&MESSAGE, &Peek).unwrap();
+}
+
+#[test]
+fn zero_to_capacity_overwrites_contents_and_spare_capacity() {
+    let mut out = Vec::with_capacity(16);
+    out.extend_from_slice(&[0xaa; 16]);
+    out.truncate(3);
+    zero_to_capacity(&mut out);
+    assert_eq!(out, [0; 16]);
+}
+
+#[test]
+fn encode_into_failure_leaves_buffer_empty_in_place() {
+    let mut out = Vec::with_capacity(32);
+    out.extend_from_slice(&[0xaa; 32]);
+    let before = (out.as_ptr(), out.capacity());
+    let error = encode_into(&MESSAGE, &Liar, &mut out).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::MessageTooLarge);
+    assert_eq!(out, []);
+    assert_eq!((out.as_ptr(), out.capacity()), before);
+}
+
+#[test]
+fn encode_into_reuses_a_buffer_holding_old_bytes() {
+    let mut out = vec![0xaa; 32];
+    let before = out.as_ptr();
+    encode_into(&MESSAGE, &Short(b"ab"), &mut out).unwrap();
+    assert_eq!(out, [0, 0, 0, 2, b'a', b'b', 0, 0]);
+    assert_eq!(out.as_ptr(), before);
 }

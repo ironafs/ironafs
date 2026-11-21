@@ -10,7 +10,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::{Decoder, Ledger, Reservation, run};
+use super::{Decoder, Ledger, Reservation, Vacant, run};
 use crate::{Cap, Error, ErrorKind, Message};
 
 const MESSAGE: Message = Message {
@@ -54,7 +54,7 @@ const FEW: Cap = Cap {
 };
 
 /// A string label, as an array element.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct Label(Vec<u8>);
 
 const LABEL: Cap = Cap {
@@ -63,11 +63,15 @@ const LABEL: Cap = Cap {
     bytes: 8,
 };
 
+impl Vacant for Label {
+    const VACANT: Self = Label(Vec::new());
+}
+
 impl<'a> super::Decode<'a> for Label {
     const S_MIN: u64 = 4;
     const DEPTH: u32 = 0;
-    const HEAP_RATIO: u64 = 1;
-    const RESERVATIONS: u64 = 1;
+    const HEAP_RATIO: Option<u64> = Some(1);
+    const RESERVATIONS: Option<u64> = Some(1);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         decoder.opaque_owned(&LABEL).map(Label)
@@ -141,7 +145,7 @@ fn decode_rejects_input_over_message_cap_before_reading() {
 fn decode_accepts_input_of_exactly_message_cap() {
     let input = vec![0; 128];
     let (result, _) = decode_with!(&MESSAGE, &input, |decoder| {
-        decoder.fixed_opaque(128).map(<[u8]>::len)
+        decoder.fixed_opaque::<128>().map(|data| data.len())
     });
     assert_eq!(result.unwrap(), 128);
 }
@@ -204,14 +208,14 @@ fn read_enum_rejects_an_undeclared_value_at_its_word() {
 fn fixed_opaque_rejects_each_non_zero_padding_byte_at_its_offset() {
     let valid = [0x61, 0x62, 0x63, 0x64, 0x65, 0, 0, 0];
     let (result, _) = decode_with!(&MESSAGE, &valid, |decoder| {
-        decoder.fixed_opaque(5).map(<[u8]>::to_vec)
+        decoder.fixed_opaque::<5>().map(|data| data.to_vec())
     });
     assert_eq!(result.unwrap(), b"abcde");
     for index in 5..8 {
         let mut input = valid;
         input[index] = 1;
         let (result, _) = decode_with!(&MESSAGE, &input, |decoder| {
-            decoder.fixed_opaque(5).map(<[u8]>::len)
+            decoder.fixed_opaque::<5>().map(|data| data.len())
         });
         assert_error(
             &result.unwrap_err(),
@@ -226,7 +230,7 @@ fn fixed_opaque_rejects_each_non_zero_padding_byte_at_its_offset() {
 fn fixed_opaque_short_of_its_padding_is_truncated_at_its_start() {
     let (result, _) = decode_with!(&MESSAGE, &[0, 0, 0, 0, 1, 2, 3, 4, 5], |decoder| {
         decoder.read_u32()?;
-        decoder.fixed_opaque(5).map(<[u8]>::len)
+        decoder.fixed_opaque::<5>().map(|data| data.len())
     });
     assert_error(&result.unwrap_err(), ErrorKind::Truncated, None, Some(4));
 }
@@ -241,15 +245,15 @@ fn fixed_opaque_inline_copies_its_bytes() {
 fn fixed_opaque_owned_checks_its_whole_size_before_reserving() {
     let input = [7; 8];
     let (result, seen) = decode_with!(&MESSAGE, &input, |decoder| {
-        decoder.fixed_opaque_owned(100, "test.m.big")
+        decoder.fixed_opaque_owned::<100>("test.m.big")
     });
     assert_error(&result.unwrap_err(), ErrorKind::Truncated, None, Some(0));
     assert_eq!(seen, []);
     let input = [7; 100];
     let (result, seen) = decode_with!(&MESSAGE, &input, |decoder| {
-        decoder.fixed_opaque_owned(100, "test.m.big")
+        decoder.fixed_opaque_owned::<100>("test.m.big")
     });
-    assert_eq!(result.unwrap(), input);
+    assert_eq!(*result.unwrap(), input);
     assert_eq!(
         seen,
         [Reservation {
@@ -504,8 +508,8 @@ const WIDE: Cap = Cap {
 impl<'a> super::Decode<'a> for Long {
     const S_MIN: u64 = 4;
     const DEPTH: u32 = 0;
-    const HEAP_RATIO: u64 = 0;
-    const RESERVATIONS: u64 = 0;
+    const HEAP_RATIO: Option<u64> = Some(0);
+    const RESERVATIONS: Option<u64> = Some(0);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         decoder.opaque(&LONG).map(|_| Long)
@@ -546,8 +550,8 @@ fn nested_array_keeps_the_tighter_enclosing_limit() {
     impl<'a> super::Decode<'a> for Inner {
         const S_MIN: u64 = 4;
         const DEPTH: u32 = 1;
-        const HEAP_RATIO: u64 = 0;
-        const RESERVATIONS: u64 = 1;
+        const HEAP_RATIO: Option<u64> = Some(0);
+        const RESERVATIONS: Option<u64> = Some(1);
 
         fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
             decoder.array::<u32>(&WIDE).map(|_| Inner)
@@ -645,5 +649,222 @@ fn unknown_discriminant_is_located_at_its_mark() {
         ErrorKind::UnknownDiscriminant,
         Some("test.m.u"),
         Some(0),
+    );
+}
+
+/// A type whose heap ratio is the largest a constant can hold.
+struct Greedy;
+
+impl<'a> super::Decode<'a> for Greedy {
+    const S_MIN: u64 = 4;
+    const DEPTH: u32 = 0;
+    const HEAP_RATIO: Option<u64> = Some(u64::MAX);
+    const RESERVATIONS: Option<u64> = Some(0);
+
+    fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
+        decoder.read_u32().map(|_| Greedy)
+    }
+}
+
+#[test]
+fn proven_refuses_a_worst_case_that_overflows() {
+    let everything = Message {
+        name: "test.m",
+        cap: 1,
+        budget: u64::MAX,
+        secret: false,
+    };
+    // u64::MAX × 1 is exactly the budget: proven.
+    assert!(super::proven::<Greedy>(&everything));
+    // u64::MAX × 2 overflows: not proven, however large the budget.
+    let twice = Message {
+        cap: 2,
+        ..everything
+    };
+    assert!(!super::proven::<Greedy>(&twice));
+}
+
+/// A label whose `Default` would panic, as one that allocates or fails
+/// might: a fixed array must never call it.
+#[derive(Debug, PartialEq, Eq)]
+struct Loud(Vec<u8>);
+
+impl Default for Loud {
+    fn default() -> Self {
+        panic!("Default called on a fixed-array element")
+    }
+}
+
+impl Vacant for Loud {
+    const VACANT: Self = Loud(Vec::new());
+}
+
+impl<'a> super::Decode<'a> for Loud {
+    const S_MIN: u64 = 4;
+    const DEPTH: u32 = 0;
+    const HEAP_RATIO: Option<u64> = Some(1);
+    const RESERVATIONS: Option<u64> = Some(1);
+
+    fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
+        decoder.opaque_owned(&LABEL).map(Loud)
+    }
+}
+
+#[test]
+fn fixed_array_after_an_element_error_builds_no_element() {
+    let input = [&[0, 0, 0, 9][..], &[0; 8]].concat();
+    let (result, _) = decode_with!(&MESSAGE, &input, Decoder::fixed_array::<Loud, 2>);
+    assert_error(
+        &result.unwrap_err(),
+        ErrorKind::LengthOverBound,
+        Some("test.m.label"),
+        Some(0),
+    );
+}
+
+#[test]
+fn nested_array_child_element_past_parent_limit_is_parent_cap_exceeded() {
+    // The outer array (cap 8, limit 12) holds one inner array of labels
+    // whose own cap (16, limit 24) is wider. The inner count of 1 needs 4
+    // bytes from 8, within the outer limit; its label's length word at 8
+    // says 4 bytes, which would end at 16, past the outer limit.
+    const OUTER: Cap = Cap {
+        name: "test.m.outer",
+        bound: None,
+        bytes: 8,
+    };
+    #[derive(Debug)]
+    struct Inner;
+    impl<'a> super::Decode<'a> for Inner {
+        const S_MIN: u64 = 4;
+        const DEPTH: u32 = 1;
+        const HEAP_RATIO: Option<u64> = Some(7);
+        const RESERVATIONS: Option<u64> = Some(1);
+
+        fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
+            decoder.array::<Label>(&WIDE).map(|_| Inner)
+        }
+    }
+    let input = [&[0, 0, 0, 1][..], &[0, 0, 0, 1], &[0, 0, 0, 4], b"abcd"].concat();
+    let (result, seen) = decode_with!(&MESSAGE, &input, |decoder| {
+        decoder.array::<Inner>(&OUTER).map(|v| v.len())
+    });
+    assert_error(
+        &result.unwrap_err(),
+        ErrorKind::CapExceeded,
+        Some("test.m.outer"),
+        Some(8),
+    );
+    let names: Vec<&str> = seen.iter().map(|reservation| reservation.name).collect();
+    assert_eq!(names, ["test.m.outer", "test.m.wide"]);
+}
+
+/// A four-byte type whose own ratios are the largest a constant holds.
+struct GreedyWord(#[expect(dead_code, reason = "only its size matters")] u32);
+
+impl<'a> super::Decode<'a> for GreedyWord {
+    const S_MIN: u64 = 4;
+    const DEPTH: u32 = 0;
+    const HEAP_RATIO: Option<u64> = Some(u64::MAX);
+    const RESERVATIONS: Option<u64> = Some(u64::MAX);
+
+    fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
+        decoder.read_u32().map(GreedyWord)
+    }
+}
+
+#[test]
+fn slot_ratios_are_checked_not_saturated() {
+    // A zero-sized slot adds nothing: exactly u64::MAX.
+    assert_eq!(super::array_heap_ratio::<Greedy>(), Some(u64::MAX));
+    // A four-byte slot over four bytes adds 1: overflow.
+    assert_eq!(super::array_heap_ratio::<GreedyWord>(), None);
+    assert_eq!(super::out_of_line_heap_ratio::<GreedyWord>(), None);
+    assert_eq!(super::out_of_line_reservations::<GreedyWord>(), None);
+    assert_eq!(super::array_reservations::<Label>(), Some(1));
+    assert_eq!(super::max(Some(3), None), None);
+    assert_eq!(super::max(Some(3), Some(7)), Some(7));
+    let message = Message {
+        name: "test.m",
+        cap: 2,
+        budget: u64::MAX,
+        secret: false,
+    };
+    assert!(!super::proven::<GreedyWord>(&message));
+}
+
+#[test]
+fn out_of_line_checks_its_minimum_before_reserving_its_slot() {
+    let (result, seen) = decode_with!(&MESSAGE, &[0, 0, 0], |decoder| {
+        decoder.out_of_line::<u32>("test.m.held").map(|held| *held)
+    });
+    assert_error(&result.unwrap_err(), ErrorKind::Truncated, None, Some(0));
+    assert_eq!(seen, []);
+    let (result, seen) = decode_with!(&MESSAGE, &[0, 0, 0, 7], |decoder| {
+        decoder.out_of_line::<u32>("test.m.held").map(|held| *held)
+    });
+    assert_eq!(result.unwrap(), 7);
+    assert_eq!(
+        seen,
+        [Reservation {
+            bytes: 4,
+            name: "test.m.held"
+        }]
+    );
+}
+
+#[test]
+fn out_of_line_inside_an_array_is_held_to_its_limit() {
+    // An array of 4 bytes (limit 8) whose one element reads a word, then
+    // holds a u32 out of line from offset 8: its minimum passes the limit.
+    const SMALL: Cap = Cap {
+        name: "test.m.small",
+        bound: None,
+        bytes: 4,
+    };
+    #[derive(Debug)]
+    struct Held;
+    impl<'a> super::Decode<'a> for Held {
+        const S_MIN: u64 = 4;
+        const DEPTH: u32 = 1;
+        const HEAP_RATIO: Option<u64> = Some(8);
+        const RESERVATIONS: Option<u64> = Some(2);
+
+        fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
+            decoder.read_u32()?;
+            decoder.out_of_line::<u32>("test.m.held").map(|_| Held)
+        }
+    }
+    let input = [[0, 0, 0, 1], [0, 0, 0, 0], [0, 0, 0, 7]].concat();
+    let (result, seen) = decode_with!(&MESSAGE, &input, |decoder| {
+        decoder.array::<Held>(&SMALL).map(|v| v.len())
+    });
+    assert_error(
+        &result.unwrap_err(),
+        ErrorKind::CapExceeded,
+        Some("test.m.small"),
+        Some(8),
+    );
+    assert_eq!(seen.len(), 1);
+}
+
+#[test]
+fn array_whose_cap_is_the_largest_word_has_a_limit_on_every_target() {
+    // The limit is the count word's end plus 2³² − 1, held in 64 bits.
+    const HUGE: Cap = Cap {
+        name: "test.m.huge",
+        bound: None,
+        bytes: u32::MAX,
+    };
+    let (result, seen) = decode_with!(&MESSAGE, &[0, 0, 0, 0], |decoder| {
+        decoder.array::<u32>(&HUGE).map(|v| v.len())
+    });
+    assert_eq!(result.unwrap(), 0);
+    assert_eq!(
+        seen,
+        [Reservation {
+            bytes: 0,
+            name: "test.m.huge"
+        }]
     );
 }

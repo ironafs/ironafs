@@ -47,7 +47,7 @@ use core::mem::size_of;
 
 use ironafs_xdr::limits::INLINE_MAX;
 use ironafs_xdr::{
-    BorrowedBytes, BorrowedWord, Cap, Decode, Decoder, Encode, Encoder, Error, Message,
+    BorrowedBytes, BorrowedWord, Cap, Decode, Decoder, Encode, Encoder, Error, Message, Vacant,
     array_heap_ratio, array_len, array_reservations, fixed_array_len, fixed_opaque_len, max,
     opaque_len, proven, sum,
 };
@@ -105,8 +105,8 @@ impl Shade {
 impl<'a> Decode<'a> for Shade {
     const S_MIN: u64 = 4;
     const DEPTH: u32 = 0;
-    const HEAP_RATIO: u64 = 0;
-    const RESERVATIONS: u64 = 0;
+    const HEAP_RATIO: Option<u64> = Some(0);
+    const RESERVATIONS: Option<u64> = Some(0);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         decoder.read_enum("test.shade", Self::declared)
@@ -132,8 +132,8 @@ pub(crate) const FLAG: Message = alone("test.flag");
 impl<'a> Decode<'a> for Flag {
     const S_MIN: u64 = 4;
     const DEPTH: u32 = 0;
-    const HEAP_RATIO: u64 = 0;
-    const RESERVATIONS: u64 = 0;
+    const HEAP_RATIO: Option<u64> = Some(0);
+    const RESERVATIONS: Option<u64> = Some(0);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         decoder.read_bool("test.flag").map(Self)
@@ -181,8 +181,8 @@ const _: () = assert!(size_of::<Solo>() == 0);
 impl<'a> Decode<'a> for Solo {
     const S_MIN: u64 = 4;
     const DEPTH: u32 = 0;
-    const HEAP_RATIO: u64 = 0;
-    const RESERVATIONS: u64 = 0;
+    const HEAP_RATIO: Option<u64> = Some(0);
+    const RESERVATIONS: Option<u64> = Some(0);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         decoder.read_enum("test.solo", |value| (value == 5).then_some(Self))
@@ -220,8 +220,8 @@ pub(crate) const ENTRY: Message = alone("test.entry");
 impl<'a> Decode<'a> for Entry {
     const S_MIN: u64 = 4;
     const DEPTH: u32 = 1;
-    const HEAP_RATIO: u64 = 1;
-    const RESERVATIONS: u64 = 1;
+    const HEAP_RATIO: Option<u64> = Some(1);
+    const RESERVATIONS: Option<u64> = Some(1);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         let at = decoder.mark();
@@ -267,16 +267,20 @@ pub(crate) const LABEL_CAP: Cap = Cap {
 };
 
 /// `label`: a string of at most 8 bytes.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Label(pub(crate) Vec<u8>);
 
 pub(crate) const LABEL: Message = alone("test.label");
 
+impl Vacant for Label {
+    const VACANT: Self = Label(Vec::new());
+}
+
 impl<'a> Decode<'a> for Label {
     const S_MIN: u64 = 4;
     const DEPTH: u32 = 0;
-    const HEAP_RATIO: u64 = 1;
-    const RESERVATIONS: u64 = 1;
+    const HEAP_RATIO: Option<u64> = Some(1);
+    const RESERVATIONS: Option<u64> = Some(1);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         decoder.opaque_owned(&LABEL_CAP).map(Self)
@@ -331,8 +335,8 @@ pub(crate) const NOTE: Message = Message {
 impl<'a> Decode<'a> for Note {
     const S_MIN: u64 = 16;
     const DEPTH: u32 = 1 + Entry::DEPTH;
-    const HEAP_RATIO: u64 = max(1, Entry::HEAP_RATIO);
-    const RESERVATIONS: u64 = max(1, Entry::RESERVATIONS);
+    const HEAP_RATIO: Option<u64> = max(Some(1), Entry::HEAP_RATIO);
+    const RESERVATIONS: Option<u64> = max(Some(1), Entry::RESERVATIONS);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         Ok(Self {
@@ -363,7 +367,7 @@ impl Encode for Note {
 // ---- pair, names, tags, solos, ints: arrays ----
 
 /// `pair`: a fixed-length array of two labels.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Pair(pub(crate) [Label; 2]);
 
 pub(crate) const PAIR: Message = alone("test.pair");
@@ -371,8 +375,8 @@ pub(crate) const PAIR: Message = alone("test.pair");
 impl<'a> Decode<'a> for Pair {
     const S_MIN: u64 = 2 * Label::S_MIN;
     const DEPTH: u32 = 1 + Label::DEPTH;
-    const HEAP_RATIO: u64 = Label::HEAP_RATIO;
-    const RESERVATIONS: u64 = Label::RESERVATIONS;
+    const HEAP_RATIO: Option<u64> = Label::HEAP_RATIO;
+    const RESERVATIONS: Option<u64> = Label::RESERVATIONS;
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         decoder.fixed_array().map(Self)
@@ -406,8 +410,8 @@ macro_rules! array_type {
         impl<'a> Decode<'a> for $name {
             const S_MIN: u64 = 4;
             const DEPTH: u32 = 1 + <$element as Decode<'a>>::DEPTH;
-            const HEAP_RATIO: u64 = array_heap_ratio::<$element>();
-            const RESERVATIONS: u64 = array_reservations::<$element>();
+            const HEAP_RATIO: Option<u64> = array_heap_ratio::<$element>();
+            const RESERVATIONS: Option<u64> = array_reservations::<$element>();
 
             fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
                 decoder.array(&$cap).map(Self)
@@ -442,8 +446,8 @@ pub(crate) const FIVE: Message = alone("test.five");
 impl<'a> Decode<'a> for Five {
     const S_MIN: u64 = 8;
     const DEPTH: u32 = 0;
-    const HEAP_RATIO: u64 = 0;
-    const RESERVATIONS: u64 = 0;
+    const HEAP_RATIO: Option<u64> = Some(0);
+    const RESERVATIONS: Option<u64> = Some(0);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         decoder.fixed_opaque_inline().map(Self)
@@ -475,8 +479,8 @@ pub(crate) const BLOB: Message = alone("test.blob");
 impl<'a> Decode<'a> for Blob {
     const S_MIN: u64 = 4;
     const DEPTH: u32 = 0;
-    const HEAP_RATIO: u64 = 1;
-    const RESERVATIONS: u64 = 1;
+    const HEAP_RATIO: Option<u64> = Some(1);
+    const RESERVATIONS: Option<u64> = Some(1);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         decoder.opaque_owned(&BLOB_CAP).map(Self)
@@ -507,8 +511,8 @@ pub(crate) struct Quad {
 impl<'a> Decode<'a> for Quad {
     const S_MIN: u64 = 240;
     const DEPTH: u32 = 1;
-    const HEAP_RATIO: u64 = 0;
-    const RESERVATIONS: u64 = 0;
+    const HEAP_RATIO: Option<u64> = Some(0);
+    const RESERVATIONS: Option<u64> = Some(0);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         Ok(Self {
@@ -554,8 +558,8 @@ pub(crate) const WIDE: Message = Message {
 impl<'a> Decode<'a> for Wide {
     const S_MIN: u64 = 4;
     const DEPTH: u32 = 1 + Quad::DEPTH;
-    const HEAP_RATIO: u64 = 0;
-    const RESERVATIONS: u64 = 0;
+    const HEAP_RATIO: Option<u64> = Some(0);
+    const RESERVATIONS: Option<u64> = Some(0);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         if decoder.read_bool("test.wide.big")? {
@@ -597,8 +601,8 @@ pub(crate) struct Deep16 {
 impl<'a> Decode<'a> for Deep16 {
     const S_MIN: u64 = 72;
     const DEPTH: u32 = 1;
-    const HEAP_RATIO: u64 = 0;
-    const RESERVATIONS: u64 = 0;
+    const HEAP_RATIO: Option<u64> = Some(0);
+    const RESERVATIONS: Option<u64> = Some(0);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         Ok(Self {
@@ -631,8 +635,8 @@ macro_rules! deep_link {
         impl<'a> Decode<'a> for $name {
             const S_MIN: u64 = 8 + $next::S_MIN;
             const DEPTH: u32 = 1 + $next::DEPTH;
-            const HEAP_RATIO: u64 = 0;
-            const RESERVATIONS: u64 = 0;
+            const HEAP_RATIO: Option<u64> = Some(0);
+            const RESERVATIONS: Option<u64> = Some(0);
 
             fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
                 Ok(Self {
@@ -705,8 +709,8 @@ pub(crate) const SEALED: Message = Message {
 impl<'a> Decode<'a> for Sealed<'a> {
     const S_MIN: u64 = 12;
     const DEPTH: u32 = 1;
-    const HEAP_RATIO: u64 = 0;
-    const RESERVATIONS: u64 = 0;
+    const HEAP_RATIO: Option<u64> = Some(0);
+    const RESERVATIONS: Option<u64> = Some(0);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         Ok(Self {
@@ -757,7 +761,7 @@ pub(crate) struct Every {
     pub(crate) unsigned_hyper: u64,
     pub(crate) flag: bool,
     pub(crate) shade: Shade,
-    pub(crate) big: Vec<u8>,
+    pub(crate) big: Box<[u8; BIG_LEN]>,
     pub(crate) var: Vec<u8>,
     pub(crate) name: Label,
     pub(crate) fixed: [u32; 2],
@@ -776,8 +780,8 @@ impl<'a> Decode<'a> for Every {
     const S_MIN: u64 = 4 + 4 + 8 + 8 + 4 + 4 + 100 + 4 + 4 + 8 + 4 + 4;
     // The list of labels and the entry are each one level below.
     const DEPTH: u32 = 2;
-    const HEAP_RATIO: u64 = max(array_heap_ratio::<Label>(), Entry::HEAP_RATIO);
-    const RESERVATIONS: u64 = max(array_reservations::<Label>(), Entry::RESERVATIONS);
+    const HEAP_RATIO: Option<u64> = max(array_heap_ratio::<Label>(), Entry::HEAP_RATIO);
+    const RESERVATIONS: Option<u64> = max(array_reservations::<Label>(), Entry::RESERVATIONS);
 
     fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
         Ok(Self {
@@ -787,7 +791,7 @@ impl<'a> Decode<'a> for Every {
             unsigned_hyper: decoder.read_u64()?,
             flag: decoder.read_bool("test.every.flag")?,
             shade: decoder.read_enum("test.every.shade", Shade::declared)?,
-            big: decoder.fixed_opaque_owned(BIG_LEN, BIG_FIELD)?,
+            big: decoder.fixed_opaque_owned(BIG_FIELD)?,
             var: decoder.opaque_owned(&VAR)?,
             name: Label::decode(decoder)?,
             fixed: decoder.fixed_array()?,
@@ -800,7 +804,7 @@ impl<'a> Decode<'a> for Every {
 impl Encode for Every {
     fn encoded_len(&self) -> Result<u64, Error> {
         let mut total = 32;
-        total = sum(total, fixed_opaque_len(self.big.len())?)?;
+        total = sum(total, fixed_opaque_len(BIG_LEN)?)?;
         total = sum(total, opaque_len(&VAR, self.var.len())?)?;
         total = sum(total, self.name.encoded_len()?)?;
         total = sum(total, fixed_array_len(&self.fixed)?)?;

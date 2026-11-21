@@ -240,11 +240,105 @@ pub(crate) fn every(source: &mut Source) -> Every {
         unsigned_hyper: source.u64(),
         flag: source.bool(),
         shade: shade(source),
-        big: source.bulk_bytes(100..=100),
+        big: Box::new(array(source)),
         var: source.bytes(0..=8),
         name: label(source),
         fixed: [source.u32(), source.u32()],
         list: labels(source, 4, 16),
         what: entry(source),
+    }
+}
+
+/// Each test type's encoded size, from the table of `docs/specs/xdr.md`,
+/// 5.1, computed apart from the codec's own `encoded_len`.
+pub(crate) mod size {
+    use crate::types::{
+        Blob, Deep, Entry, Every, Five, Ints, Label, Names, Note, Pair, Shade, Solos, Tags, Wide,
+    };
+
+    /// A string or variable-length opaque of `n` bytes: 4 + n + pad(n).
+    fn string(n: usize) -> usize {
+        4 + n + (4 - n % 4) % 4
+    }
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "rule 15: every size function has the property's signature"
+    )]
+    pub(crate) fn shade(_: &Shade) -> usize {
+        4
+    }
+
+    pub(crate) fn entry(entry: &Entry) -> usize {
+        match entry {
+            Entry::Plain => 4,
+            Entry::Linked(target) => 4 + string(target.len()),
+            Entry::Stamped(_) => 4 + 8,
+        }
+    }
+
+    pub(crate) fn label(label: &Label) -> usize {
+        string(label.0.len())
+    }
+
+    pub(crate) fn note(note: &Note) -> usize {
+        string(note.title.len())
+            + entry(&note.what)
+            + string(note.owner.len())
+            + string(note.body.len())
+    }
+
+    pub(crate) fn pair(pair: &Pair) -> usize {
+        pair.0.iter().map(label).sum()
+    }
+
+    pub(crate) fn names(names: &Names) -> usize {
+        4 + names.0.iter().map(label).sum::<usize>()
+    }
+
+    pub(crate) fn tags(tags: &Tags) -> usize {
+        4 + tags.0.iter().map(label).sum::<usize>()
+    }
+
+    pub(crate) fn solos(solos: &Solos) -> usize {
+        4 + 4 * solos.0.len()
+    }
+
+    pub(crate) fn ints(ints: &Ints) -> usize {
+        4 + 4 * ints.0.len()
+    }
+
+    pub(crate) fn five(_: &Five) -> usize {
+        8
+    }
+
+    pub(crate) fn blob(blob: &Blob) -> usize {
+        string(blob.0.len())
+    }
+
+    pub(crate) fn wide(wide: &Wide) -> usize {
+        match wide {
+            Wide::Small => 4,
+            Wide::Big(_) => 4 + 4 * 60,
+        }
+    }
+
+    pub(crate) fn deep(_: &Deep) -> usize {
+        16 * 8 + 64
+    }
+
+    pub(crate) fn every(every: &Every) -> usize {
+        4 + 4
+            + 8
+            + 8
+            + 4
+            + 4
+            + 100
+            + string(every.var.len())
+            + label(&every.name)
+            + 2 * 4
+            + 4
+            + every.list.iter().map(label).sum::<usize>()
+            + entry(&every.what)
     }
 }
