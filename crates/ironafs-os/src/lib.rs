@@ -58,12 +58,15 @@ compile_error!(
 
 mod clock;
 mod dump;
+mod peer;
 mod random;
 
 #[cfg(target_os = "linux")]
 mod linux_clock;
 #[cfg(target_os = "linux")]
 mod linux_dontdump;
+#[cfg(target_os = "linux")]
+mod linux_peercred;
 #[cfg(target_os = "linux")]
 mod linux_random;
 mod mem_wipe;
@@ -77,8 +80,11 @@ pub use linux_clock::read_clock;
 #[cfg(target_os = "linux")]
 pub use linux_dontdump::SecretBuffer;
 #[cfg(target_os = "linux")]
+pub use linux_peercred::peer_credentials;
+#[cfg(target_os = "linux")]
 pub use linux_random::fill_random;
 pub use mem_wipe::wipe;
+pub use peer::{PeerCredentials, PeerError};
 pub use random::RandomError;
 #[cfg(target_os = "linux")]
 pub use unix_nodump::disable_dumps;
