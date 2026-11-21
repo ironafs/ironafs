@@ -572,7 +572,7 @@ point 7). Then, in order; the first failure decides `[OWN]`:
    | Field | Type | Written by | Meaning |
    |---|---|---|---|
    | `trust` | none, or trusted until an instant on the boot clock (callbacks.md's field) | raised only here (point 6); lowered by callbacks.md, 5.6, point 11, and by point 7's end | C32, points 1 and 3 |
-   | `lowerings` | `u64`, rises by 1 at every lowering, checked (section 6) | point 7 | the lowering count; recorded by every call that records a fence tuple, so a raise can tell which promises it covers (point 7) |
+   | `lowerings` | `u64`, rises by 1 at every lowering, checked (callbacks.md's field, 5.6, point 1) | callbacks.md, 5.6, point 11, which includes point 7's end | the lowering count; recorded by every call that records a fence tuple (callbacks.md, 5.6, point 3), so a raise can tell which promises it covers (point 7) |
    | `ka_due` | none, or a boot-clock deadline | points 4 and 5 | when the next keepalive may be sent |
    | `ka_in_flight` | none, or the call's record: its send stamp once known, the K values it recorded (callbacks.md, 5.6, point 3), the network generation, and `lowerings`, all as at the send | point 4 | at most one keepalive in flight per K |
    | `ka_conn` | none, or the keepalive connection and the count of its channels used (0 to 4) | point 4 | the connection's identity is Rx's; this field never holds it |
@@ -756,8 +756,10 @@ point 7). Then, in order; the first failure decides `[OWN]`:
      that has ended.
    - **Every lowering** callbacks.md, 5.6, point 11, makes also raises
      `lowerings`, by one, before any event is queued (C16, point 1).
-   callbacks.md, 5.6, point 5's first branch must carry this coverage
-   condition; section 13, Q3 names that change.
+   callbacks.md carries this condition: it records `lowerings` with
+   every call's fence tuple (its 5.6, point 3), compares it in the first
+   branch of its 5.6, point 5, and raises it at every lowering and at the
+   end above (its 5.6, point 11).
 8. **A failed keepalive** `[ADR 0004 C32.4: Working]`. Every outcome
    other than `Completed`, and a `Completed` reply that fails to decode,
    is a failed keepalive: `Aborted`, `Timeout`, `DeadlineExceeded`,
@@ -1319,21 +1321,11 @@ server release, date, scenario and the evidence label EXECUTED.
   rows whose source column names a release or a registration request,
   for numbers only. It is the owner's decision on clean-room policy (ADR
   0001).
-- **Q3. The coverage condition in the serve path.** 5.6, point 7, makes
-  a raised trust cover only entries validated since K's last lowering.
-  callbacks.md, 5.6, point 5's first branch ("K trusted and `hold` = 0")
-  does not yet compare a lowering count, and callbacks.md, 5.6, point
-  11's lowerings do not yet raise one. Without the condition, a keepalive
-  after a failed call (an ABORT above all, which may not advance an
-  epoch, ADR 0006 D1.5) would put entries validated before the failure
-  back under trust with no further cap, against C32, point 3.
-  Recommendation: amend callbacks.md in the same pull request as this
-  specification, or before either leaves draft: add `lowerings` to its
-  record (5.6, point 1), record it with the fence tuple (point 3),
-  compare it in the first branch of point 5, and raise it at every
-  lowering of point 11 and when a raised trust reaches its end (this
-  specification's 5.6, point 7, "End"), which point 11's "and nothing
-  else does" then names.
+- **Q3. The coverage condition in the serve path.** Settled in this
+  version: callbacks.md records K's `lowerings` with every call's fence
+  tuple, compares it in the trusted branch of its 5.6, point 5, raises it
+  at every lowering and at a lapse (its 5.6, point 11), and tests it
+  (its C25). Kept here so that the question's number stays stable.
 - **Q4. The keepalive procedure.** The capabilities draft recommends the
   capability query where clients formerly called the time procedure
   (K2 §4.1). This version keeps the time procedure (5.1.2).
