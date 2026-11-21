@@ -39,3 +39,20 @@ compile_error!(
     "ironafs-os builds only for the targets of ADR 0005, point 5.3: x86_64 and aarch64 Linux \
      (glibc and musl), aarch64 macOS, and x86_64 and aarch64 Windows (MSVC)"
 );
+
+mod clock;
+mod random;
+
+#[cfg(target_os = "linux")]
+mod linux_clock;
+#[cfg(target_os = "linux")]
+mod linux_random;
+mod mem_wipe;
+
+pub use clock::{ClockError, OsClock};
+#[cfg(target_os = "linux")]
+pub use linux_clock::read_clock;
+#[cfg(target_os = "linux")]
+pub use linux_random::fill_random;
+pub use mem_wipe::wipe;
+pub use random::RandomError;
