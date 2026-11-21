@@ -908,8 +908,10 @@ The full record, with every finding and its disposition, is
       dependency, and the provider's decision is still made under the
       `add-dependency` checklist at M2b-03 or M5-32.
     - `docs/coding-standards.md` rule 21: unchanged, by the owner's
-      decision (above); C5, point 1, states the precedence. The
-      overview's constraint 3, part 3's dependency rule, `README.md`
+      decision (above); C5, point 1, states the precedence, the
+      test-only cross-check after the sunset included. Whether rule 21
+      gets a dated pointer line to C5, point 1, is open for the owner.
+      The overview's constraint 3, part 3's dependency rule, `README.md`
       and `AGENTS.md` say a dependency is used only for mainstream
       cryptography or an operating system's own interfaces; the
       exception adds no dependency, so they agree. Unchanged. Rules 15
@@ -926,20 +928,34 @@ The full record, with every finding and its disposition, is
       maintainer's session, contributors and their agents); no bot acts
       on them. Of the M2a issues that cite the amended text, #81
       (M2a-64), #77 (M2a-67), #93 (M2a-32) and #94 (M2a-33) already
-      cite it; M2a-16, M2a-35, M2a-46, M2a-58 and M2a-75 are planned and
-      cite it when filed.
+      cite it; M2a-16, M2a-35, M2a-58 and M2a-75 are planned and cite
+      it when filed. N46, point 3's check is M3's (M3-16), so no M2a
+      issue cites it.
   - Review rounds: class S on the strongest row, from families that
     wrote neither the amendment nor the decision.
     - Round 1 on `e6f3ece..3ba1a4c`: GLM (`glm-5.3`, high) PASS, 4
       minor; DeepSeek (`deepseek-flash`, max) FAIL, 1 blocker, 4 major
       and 4 minor. The blocker (C5's exception against rule 21's "never
-      hand-rolled") was answered by the owner's decision to leave rule
-      21 unedited: C5, point 1, now states the precedence, and the
-      conflict is put to the owner. The majors (the schema digest
-      undefined; no durable intent for the initialisation; `fips =
-      "require"` unstated; N46's M2a part unclear) and the minors (the
-      count of decisions; `afs status` and O12, point 1; the wipe site,
-      now in point 5 after #101; the pure allowlist against `xtask`;
-      the rounds still to record) were fixed in one commit after
-      `main` (with #101) was merged in.
-    - Further rounds: pending.
+      hand-rolled") is settled by the owner's decision of 2026-11-20 to
+      leave rule 21 unedited: C5, point 1, now states the precedence.
+      The majors (the schema digest undefined; no durable intent for the
+      initialisation; `fips = "require"` unstated; N46's M2a part
+      unclear) and the minors (the count of decisions; `afs status` and
+      O12, point 1; the wipe site, now in point 5 after #101; the pure
+      allowlist against `xtask`; the rounds still to record) were fixed
+      in one commit after `main` (with #101) was merged in.
+    - Round 2, the fixes in `b3c0c85` (after `db28d59`, a merge of
+      `main`): DeepSeek (`deepseek-flash`, max) FAIL, 1 blocker and 4
+      minor. The blocker (the precedence's authority unclear, and rule
+      21 carrying no pointer to C5) is held for the owner: C5, point 1,
+      and this entry now say that the owner's decision of 2026-11-20
+      settles the conflict with rule 21 unedited, and whether to add a
+      dated pointer line to rule 21, its wording unchanged, is the
+      owner's open question (options: keep as is, or the pointer line;
+      recommended: the pointer line). The minors were fixed: the
+      published vectors made a requirement of point 1 (#64, #77); the
+      test-only cross-check after the sunset reconciled with rule 21,
+      whose text does not exempt test code; this round recorded; the
+      planned M2a-46 dropped from the sweep (N46's check is M3-16).
+    - Further rounds: pending (the owner's answer on rule 21, then a
+      check of this round's fixes).

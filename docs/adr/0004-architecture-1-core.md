@@ -269,7 +269,12 @@ provider adoption ends point 1's exception.
      specification's, within C44;
    - the installation key's opaque references (O6, point 2).
 
-   It offers no comparison or verification, and no session, token or
+   Before either function ships, it passes published vectors: the NIST
+   CAVP SHA-256 files and RFC 4231's HMAC-SHA-256 test cases, each named
+   in its test, in a conformance layer that enters the tree under the
+   specifications README's rule for published corpora, with its licence
+   entry and provenance row (#64); no vector made by this code or by a
+   crate in the cargo graph is its own oracle (#77). It offers no comparison or verification, and no session, token or
    packet key passes through it. Its key material is zeroed through the
    volatile wipe of point 5, which the composition supplies, since a
    pure crate cannot depend on `ironafs-os` (O28, point 2). It is never
@@ -287,15 +292,21 @@ provider adoption ends point 1's exception.
 
    This is the one departure from coding standards rule 21, which says
    that mainstream cryptography, SHA-2 and HMAC among it, is never
-   hand-rolled. Rule 21 is not edited (owner, 2026-11-20): for these two
-   functions, these two callers and until the sunset, this point takes
-   precedence over it; everywhere else rule 21 holds as written. The
-   exception adds no dependency, so the dependency rule (overview,
-   constraint 3; rule 21's list) is unchanged. Nothing else is written
-   in house under this exception: hashes other than SHA-256, MACs other
-   than HMAC-SHA-256, key-derivation functions, ciphers and AEADs are
-   never hand-rolled. rxkad's cipher remains point 2's own case. A new
-   caller or algorithm needs the owner's decision.
+   hand-rolled. The conflict is settled by the owner's decision of
+   2026-11-20 (#77): rule 21 is not edited, and for these two functions
+   this point takes precedence over it, for these two callers until the
+   sunset and, after it, only for the test-only cross-check above. Rule
+   21's text does not exempt test code (it lists test helpers among what
+   IronAFS writes, and its test and fuzz manifests follow the same
+   rule), so the cross-check needs this precedence too. Everywhere else
+   rule 21 holds as written. Whether rule 21 gets a dated pointer line
+   to this point, its wording unchanged, is an open question for the
+   owner. The exception adds no dependency, so the dependency rule
+   (overview, constraint 3; rule 21's list) is unchanged. Nothing else
+   is written in house under this exception: hashes other than SHA-256,
+   MACs other than HMAC-SHA-256, key-derivation functions, ciphers and
+   AEADs are never hand-rolled. rxkad's cipher remains point 2's own
+   case. A new caller or algorithm needs the owner's decision.
 2. rxkad's cipher (fcrypt) is written by IronAFS from the specification
    that C6 requires. It is never treated as approved cryptography.
 3. The Kerberos encryption-type operations rxgk needs run in the client,
@@ -332,10 +343,10 @@ Why: the constraint on dependencies allows crates for mainstream
 cryptography only, and rxkad's cipher is not mainstream. An interface
 keeps the choice of implementation out of the protocol code. Point 1's
 dated exception trades a third-party dependency in a root daemon, before
-its provider is chosen, for two small functions checked against published
-vectors, for two callers that protect no AFS traffic (owner, 2026-11-20,
-#77). `unsafe` is
-forbidden workspace-wide until an ADR names the sites (`AGENTS.md`).
+its provider is chosen, for two small functions that must pass published
+vectors before they ship (#64, #77), for two callers that protect no AFS
+traffic (owner, 2026-11-20, #77). `unsafe` is forbidden workspace-wide
+until an ADR names the sites (`AGENTS.md`).
 
 ### C6. The protocol code is written from specifications
 
