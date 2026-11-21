@@ -689,6 +689,22 @@ The full record, with every finding and its disposition, is
     - Round 3 on `4ce1c33..ea23d5d`: GLM PASS and GPT PASS, each with
       one minor (no production check of N13's gate), fixed in the next
       commit.
+- **Documentation sweep, 2026-11-21 (M1's exit).** The repository's
+  public descriptions were checked against this ADR. The full list, with
+  what changed and why, is
+  [docs/reviews/2026-11-21-m1-close-sweep.md](../reviews/2026-11-21-m1-close-sweep.md).
+  No decision changed.
+  - Changed: coding standards rule 21 (no async runtime, C3);
+    `docs/workflow.md` §5 (macOS 27 on Apple silicon, L8; the matrix,
+    L36 to L39); dated pointers to the answer in three research notes
+    (two in the platform-support note); the date of acceptance in the
+    ADR index.
+  - Left to its own pull request: coding standards rule 20's per-OS
+    crates (C4), whose replacement is drafted and lands with the layout
+    page.
+  - Checked and unchanged: `README.md`, `AGENTS.md`, `CONTRIBUTING.md`,
+    `AI.md`, the skills, and `docs/workflow.md` §2 and §6, which earlier
+    pull requests brought in line (#23, #35, #36, #37, #39).
 - **Amendment, 2026-11-21 (#49, with ADR 0005 in the same pull
   request): C5, point 5, and C4, point 3's row for `ironafs-os`.**
   - What changed: C5, point 5's list of calls with no safe route gains
