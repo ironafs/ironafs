@@ -26,6 +26,13 @@ enum Origin {
     /// Choices read from bytes, as [`Source::from_bytes`] describes; zero
     /// once they run out.
     Bytes { bytes: Vec<u8>, position: usize },
+    /// Choices given by an exhaustive sweep, as `Replay` reads them, also
+    /// recording how far each draw's choice can go in the sweep.
+    Enumerate {
+        choices: Vec<u64>,
+        position: usize,
+        limits: Vec<u64>,
+    },
 }
 
 /// Draws test inputs for a property and records each choice it made.
@@ -188,6 +195,33 @@ impl Source {
         self.record
     }
 
+    /// A source for an exhaustive sweep: it replays `prefix` as
+    /// [`Source::from_choices`] does, and records for each draw the largest
+    /// choice the sweep visits there ([`Source::into_enumeration`]).
+    pub(crate) fn enumerating(prefix: Vec<u64>) -> Self {
+        Self {
+            origin: Origin::Enumerate {
+                choices: prefix,
+                position: 0,
+                limits: Vec::new(),
+            },
+            record: Vec::new(),
+            widths: Vec::new(),
+            spans: Vec::new(),
+        }
+    }
+
+    /// The choices drawn so far, and the largest choice an exhaustive sweep
+    /// visits at each; empty limits for any source but
+    /// [`Source::enumerating`].
+    pub(crate) fn into_enumeration(self) -> (Vec<u64>, Vec<u64>) {
+        let limits = match self.origin {
+            Origin::Enumerate { limits, .. } => limits,
+            Origin::Fresh(_) | Origin::Replay { .. } | Origin::Bytes { .. } => Vec::new(),
+        };
+        (self.record, limits)
+    }
+
     /// The choices drawn so far and the elements' spans in them.
     pub(crate) fn into_recording(self) -> Recording {
         Recording {
@@ -208,7 +242,9 @@ impl Source {
         element: impl FnOnce(&mut Self) -> T,
     ) -> Option<T> {
         let start = self.record.len();
-        if self.draw_with(1, |_| u64::from(more)) == 0 || !room {
+        // Without room, the choice is read and ignored, so a sweep visits
+        // only its zero: the value is the same either way.
+        if self.draw_limited(1, u64::from(room), |_| u64::from(more)) == 0 || !room {
             return None;
         }
         // Reserve the span's place first, so that it comes before the spans
@@ -233,15 +269,29 @@ impl Source {
     /// `fresh` decides only how often each choice is drawn, never what the
     /// choice means.
     fn draw_with(&mut self, max: u64, fresh: impl FnOnce(&mut SplitMix64) -> u64) -> u64 {
+        self.draw_limited(max, max, fresh)
+    }
+
+    /// Draws one choice in `0..=max` as [`Source::draw_with`] does; an
+    /// exhaustive sweep visits only the choices up to `sweep_max`, which
+    /// is at most `max`, because the larger ones give the same value.
+    fn draw_limited(
+        &mut self,
+        max: u64,
+        sweep_max: u64,
+        fresh: impl FnOnce(&mut SplitMix64) -> u64,
+    ) -> u64 {
         let width = byte_width(max);
         let choice = match &mut self.origin {
             Origin::Fresh(generator) => fresh(generator).min(max),
-            Origin::Replay { choices, position } => {
-                let choice = choices.get(*position).copied().unwrap_or(0);
-                *position = position.saturating_add(1);
-                // A shrunk sequence can put a choice where a smaller bound
-                // is drawn; reduce it rather than reject the sequence.
-                reduce(choice, max)
+            Origin::Replay { choices, position } => replayed(choices, position, max),
+            Origin::Enumerate {
+                choices,
+                position,
+                limits,
+            } => {
+                limits.push(sweep_max.min(max));
+                replayed(choices, position, max)
             }
             Origin::Bytes { bytes, position } => {
                 let read = bytes.iter().skip(*position).take(usize::from(width));
@@ -438,7 +488,7 @@ impl Source {
                 let span = u64::try_from(max - min).unwrap_or(u64::MAX);
                 min.saturating_add(usize::try_from(fresh_choice(generator, span)).unwrap_or(0))
             }
-            Origin::Replay { .. } | Origin::Bytes { .. } => max,
+            Origin::Replay { .. } | Origin::Bytes { .. } | Origin::Enumerate { .. } => max,
         };
         let mut values: Vec<T> = (0..min).map(|_| element(self)).collect();
         loop {
@@ -481,7 +531,7 @@ impl Source {
                 let span = u64::try_from(max_bytes).unwrap_or(u64::MAX);
                 usize::try_from(fresh_choice(generator, span)).unwrap_or(0)
             }
-            Origin::Replay { .. } | Origin::Bytes { .. } => max_bytes,
+            Origin::Replay { .. } | Origin::Bytes { .. } | Origin::Enumerate { .. } => max_bytes,
         };
         let mut text = String::new();
         loop {
@@ -601,6 +651,15 @@ fn scalar_at(index: u64) -> char {
         code
     };
     char::from_u32(code).unwrap_or('\0')
+}
+
+/// The next of the given `choices`, or zero past their end, reduced into
+/// `0..=max`: a shrunk sequence can put a choice where a smaller bound is
+/// drawn, and it is reduced rather than the sequence rejected.
+fn replayed(choices: &[u64], position: &mut usize, max: u64) -> u64 {
+    let choice = choices.get(*position).copied().unwrap_or(0);
+    *position = position.saturating_add(1);
+    reduce(choice, max)
 }
 
 /// Reduces a replayed `choice` into `0..=max`.
