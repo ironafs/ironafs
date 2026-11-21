@@ -293,6 +293,56 @@ impl Source {
         self.vec_of(len, Self::u8)
     }
 
+    /// Draws a large byte string whose length is in `len`, recorded as two
+    /// choices only: the length, then a seed that fills the bytes.
+    ///
+    /// Seed zero gives all zero bytes; any other seed `n` gives the outputs
+    /// of [`SplitMix64::new(n)`](SplitMix64::new), each written
+    /// little-endian, the last one cut to the length. Shrinking lowers the
+    /// length first, then the seed toward zero, and never works byte by
+    /// byte, so a multi-MiB input costs two choices and a fill.
+    ///
+    /// Use [`Source::bytes`] when the property depends on particular byte
+    /// values (a parser's tags, lengths and delimiters), so that each byte
+    /// shrinks on its own; its cost grows with the length (two choices a
+    /// byte), so keep it to inputs of a few KiB. Use `bulk_bytes` for large
+    /// payloads whose content the code under test only carries or checks
+    /// as a whole (opaque XDR data, file contents, Rx jumbogram payloads):
+    /// a failure that depends on the length shrinks to the shortest
+    /// length, but one that depends on particular bytes shrinks only to
+    /// the lowest seed that still fails.
+    ///
+    /// ```
+    /// use ironafs_test_support::Source;
+    ///
+    /// let mut source = Source::from_seed(5);
+    /// let payload = source.bulk_bytes(0..=4 << 20);
+    /// assert!(payload.len() <= 4 << 20);
+    /// assert_eq!(source.choices().len(), 2);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if `len` is empty.
+    pub fn bulk_bytes(&mut self, len: RangeInclusive<usize>) -> Vec<u8> {
+        let (min, max) = len.into_inner();
+        assert!(min <= max, "bulk_bytes needs a non-empty length range");
+        let length = self.usize_in(min..=max);
+        let seed = self.u64();
+        let mut bytes = vec![0; length];
+        if seed != 0 {
+            let mut generator = SplitMix64::new(seed);
+            for chunk in bytes.chunks_mut(8) {
+                let output = generator.next_u64().to_le_bytes();
+                chunk
+                    .iter_mut()
+                    .zip(output)
+                    .for_each(|(byte, value)| *byte = value);
+            }
+        }
+        bytes
+    }
+
     /// Draws a vector whose length is in `len`, each element from
     /// `element`, shrinking toward fewer and simpler elements.
     ///

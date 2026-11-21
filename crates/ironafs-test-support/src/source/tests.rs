@@ -377,3 +377,58 @@ fn fresh_strings_stay_within_cap_and_cover_ranges() {
     assert!(ascii && wider && astral);
     assert!(lengths.iter().all(|seen| *seen), "{lengths:?}");
 }
+
+#[test]
+fn bulk_bytes_records_length_then_seed() {
+    let mut source = Source::from_seed(23);
+    let bytes = source.bulk_bytes(0..=1 << 20);
+    assert_eq!(source.choices().len(), 2);
+    assert_eq!(source.choices()[0], u64::try_from(bytes.len()).unwrap());
+}
+
+#[test]
+fn bulk_bytes_fills_from_the_seed_little_endian() {
+    let mut source = Source::from_choices(vec![10, 7]);
+    let bytes = source.bulk_bytes(2..=20);
+    let mut generator = SplitMix64::new(7);
+    let mut expected = generator.next_u64().to_le_bytes().to_vec();
+    expected.extend_from_slice(&generator.next_u64().to_le_bytes()[..4]);
+    assert_eq!(bytes, expected);
+}
+
+#[test]
+fn bulk_bytes_seed_zero_is_all_zero() {
+    let mut source = Source::from_choices(vec![5]);
+    assert_eq!(source.bulk_bytes(3..=9), vec![0; 8]);
+    assert_eq!(source.into_record(), vec![5, 0]);
+}
+
+#[test]
+fn bulk_bytes_seeds_zero_and_one_differ() {
+    let zero = Source::from_choices(vec![16, 0]).bulk_bytes(0..=16);
+    let one = Source::from_choices(vec![16, 1]).bulk_bytes(0..=16);
+    assert_ne!(zero, one);
+}
+
+#[test]
+fn bulk_bytes_fresh_lengths_stay_in_range() {
+    let mut source = Source::from_seed(29);
+    let mut seen = [false; 4];
+    for _ in 0..200 {
+        let length = source.bulk_bytes(5..=8).len();
+        assert!((5..=8).contains(&length), "{length}");
+        seen[length - 5] = true;
+    }
+    assert_eq!(seen, [true; 4]);
+}
+
+#[test]
+fn bulk_bytes_empty_length_range_panics_with_message() {
+    let (start, end) = (5, 4);
+    let result = panic::catch_unwind(|| Source::from_choices(Vec::new()).bulk_bytes(start..=end));
+    let payload = result.unwrap_err();
+    assert_eq!(
+        payload.downcast_ref::<&str>(),
+        Some(&"bulk_bytes needs a non-empty length range")
+    );
+}

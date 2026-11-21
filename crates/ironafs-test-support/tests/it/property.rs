@@ -224,3 +224,34 @@ fn run_planted_record_array_shrinks_to_one_record() {
         assert_eq!(replayed, *failure.value(), "seed {seed}");
     }
 }
+
+#[test]
+fn run_planted_bulk_length_shrinks_to_threshold_and_seed_zero() {
+    let failure = Property::new("planted bulk length")
+        .seed(3)
+        .run(
+            |source| source.bulk_bytes(0..=64 << 10),
+            |bytes| assert!(bytes.len() < 1000),
+        )
+        .unwrap_err();
+    assert_eq!(failure.value().len(), 1000);
+    assert_eq!(failure.choices(), [1000]);
+}
+
+#[test]
+fn run_planted_bulk_content_keeps_a_failing_seed() {
+    // Fails only when the payload is long enough and its first byte is odd,
+    // so the seed cannot shrink to zero.
+    let failure = Property::new("planted bulk content")
+        .seed(4)
+        .run(
+            |source| source.bulk_bytes(0..=64 << 10),
+            |bytes| assert!(bytes.len() < 100 || bytes[0] % 2 == 0),
+        )
+        .unwrap_err();
+    assert_eq!(failure.value().len(), 100);
+    let seed = failure.choices()[1];
+    assert!(seed != 0 && failure.value()[0] % 2 == 1, "{seed}");
+    let mut replay = Source::from_choices(failure.choices().to_vec());
+    assert_eq!(replay.bulk_bytes(0..=64 << 10), *failure.value());
+}
