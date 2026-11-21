@@ -40,6 +40,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-13-remainder](2026-11-21-m2a-13-remainder.md) | Issue #46: `check-pure`'s exact matrix of compiled crates, targets and profiles, and the crate root's form |
 | [2026-11-21-m2a-01-xdr-spec](2026-11-21-m2a-01-xdr-spec.md) | Issue #42: `docs/specs/`, its template and the XDR profile with caps |
 | [2026-11-21-m2a-63-testing](2026-11-21-m2a-63-testing.md) | Issue #63: the test strategy |
+| [2026-11-21-m2a-79-mutation](2026-11-21-m2a-79-mutation.md) | Issue #73: mutation testing with the pinned cargo-mutants, and the planted-defect probe for class S guards |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
