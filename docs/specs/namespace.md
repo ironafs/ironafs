@@ -747,9 +747,28 @@ follows is the table, `[OWN]` where a row says so.
    the status reply that granted it, the VL lookup) was obtained with
    authentication in that context; a request made under a credential
    uses only such entries and such replies (C19, point 1). A context
-   without a credential keeps none of them: each of its requests fetches
-   the target and asks the VL service again (C20, point 1). Nothing is
-   shared between contexts.
+   without a credential keeps none of the three across requests: each of
+   its requests fetches the target and asks the VL service again (C20,
+   point 1). Nothing of the three is shared between contexts.
+
+   **What does outlive a request** `[OWN]`, exactly: the node table's
+   identity records (5.6.1, point 8), which are shared by every context
+   and hold only a node's key, its parent, its anchor, its containing
+   root and a root node's anchor chain. They carry no data, no status, no
+   grant, no trust, no version choice and no binding: a node record
+   says only that a path of these names led to an object with this key,
+   and every use of it goes through this context's own grants (C22,
+   point 6), its own bindings (this point) and the check that each
+   binding leads to the root node on the path. So keeping them is not
+   keeping "data from an unauthenticated call" (C20, point 1), and an
+   anonymous request's records can never decide another request's
+   answer: the most they do is make a later request fail with
+   `AnchorMismatch` if its own resolution leads elsewhere. The directory
+   data a lookup reads (a directory object, a snapshot, a lookup result)
+   is a cache entry under C18, point 1, and under C20, point 1 it lives,
+   for a context without a credential, only in the request that fetched
+   it; the cache's specifications apply that rule, and this
+   specification relies on it.
 10. **An authenticated crossing without authenticated location data**
     `[ADR 0004 C19.1: Firm]`, and `[OWN]` for the outcome. A crossing for
     a request made under a credential needs a VL entry obtained with
@@ -992,7 +1011,7 @@ come from the configuration, which only the administrator writes.
 | A target that smuggles a path, a second separator, a substitution or an encoded octet | the grammar refuses `/`, a second `:`, `#`, `%` and `@` in a base name, every control and non-ASCII octet, and every form it does not name (5.4) |
 | A target naming any cell, to make the client send DNS queries for chosen names | one discovery per crossing, through the negative cache, only where discovery is enabled (5.6.2, point 7). A residual stays: a fileserver can make a client look up a name once per negative-cache lifetime, as a user typing a path can |
 | Steering a path to the read/write version, or a backup, against the administrator's layout | the selection follows the target's own marks, the containing version and only the VL entry's read-only id (5.6.2); a VL entry that hides every read-only site makes the read-only path fail, never fall back to the read/write version (5.6.2, point 5); a version id of 0 is refused on every row (5.6.2, point 4). A forged target or VL entry under the null class can still choose the volume for that one unauthenticated request: the null class's residual (N5; O23; A13) |
-| Unauthenticated location or target data steering an authenticated path | kept entries rest only on replies obtained with authentication in that context, and a request under a credential uses only those (5.6.2, point 9; C19, point 1); without an authenticated VL lookup the crossing fails closed with `LocationUnauthenticated` (5.6.2, point 10); a context without a credential keeps nothing, its version choices included, beyond the request (C20, point 1); a credentialed crossing inside a volume first resolves its own authenticated binding into it, and every binding, cached or resolved again, must lead to the root node already on the path, else `AnchorMismatch` and no crossing (5.6.2, point 9) |
+| Unauthenticated location or target data steering an authenticated path | kept entries rest only on replies obtained with authentication in that context, and a request under a credential uses only those (5.6.2, point 9; C19, point 1); without an authenticated VL lookup the crossing fails closed with `LocationUnauthenticated` (5.6.2, point 10); a context without a credential keeps no target, VL entry, binding, version choice or data beyond the request (C20, point 1); only the shared node table's identity records outlive it, and they carry no trust, version or binding, so they decide nothing for another request (5.6.2, point 9); a credentialed crossing inside a volume first resolves its own authenticated binding into it, and every binding, cached or resolved again, must lead to the root node already on the path, else `AnchorMismatch` and no crossing (5.6.2, point 9) |
 | A cached target outliving the mount point's change or the reader's right | the decoded target is that object's cached data, used only under the reader's current grant at that data version; a callback break, a new data version or a revoked right ends it (5.6.2, points 8 and 9) |
 | Links that climb with `..` and re-cross mount points to multiply work (SMB) | one visited set for the whole request, refusing any repeated mount point or link, and capping total crossings and hops (5.6.1, point 7) |
 | Silently serving a read/write volume when the read-only sites fail | no silent change of version (5.6.2, point 5) |
@@ -1232,8 +1251,11 @@ one context does the lookups.
   and the OS keeps a directory `d` there; the authenticated context,
   reaching `d` through that node, resolves `m` with authentication to
   the root node keyed by x ≠ y, and its crossing of a mount point in `d`
-  fails with `AnchorMismatch`: nothing is crossed or kept inside the
-  volume keyed by y. The same holds when the forged entry names another
+  fails with `AnchorMismatch`: nothing is crossed, and no private entry
+  of the authenticated context (no target, VL entry, binding, grant or
+  data) is kept in the volume keyed by y. The shared identity records
+  of `d` and of the root node keyed by y stay in the node table (5.6.1,
+  point 8) and decide nothing. The same holds when the forged entry names another
   volume z of the cell.
 - **N10 no version kept across anonymous requests.** An anonymous
   context crosses `m` (target `#v1`) (request 1) and the OS keeps a
