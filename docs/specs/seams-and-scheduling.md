@@ -444,22 +444,25 @@ encoding is the simulator's specification's.
        pub doubt: Doubt, pub episodes: u64,
    }
 
-   /// A deadline on one monotonic clock, with that clock's doubt count
-   /// latched when it was built. Its fields are private to `ironafs-time`,
-   /// so outside the crate it is built only by the two constructors below,
-   /// and never by a literal, a destructured copy or an edited count.
+   /// A deadline on one monotonic clock, with a doubt count for that
+   /// clock latched when it was built. Its fields are private to
+   /// `ironafs-time`, so outside the crate it is built only by the two
+   /// constructors below, and never by a literal, a destructured copy or
+   /// an edited count.
    pub struct Deadline { /* private: which clock, the instant, the latch */ }
+   /// `Clock` is a failed sample, which the sampling function of point 2
+   /// reports; the constructors themselves return only `Overflow`.
    pub enum DeadlineError { Clock(ClockError), Overflow }
    impl Deadline {
-       /// Takes a fresh `clock.sample()` first: `Err(Clock)` while samples
-       /// fail, so no deadline is built until a valid sample returns.
+       /// Pure: calls no seam. `now` is the sample the caller has just
+       /// taken (point 2 says who may call this, and how that is checked).
        /// The instant is `from`'s boot instant plus `d` (`Err(Overflow)`
        /// if it overflows, section 6); the latched count is the lower of
-       /// `from`'s and the fresh sample's boot doubt count.
-       pub fn boot_after(clock: &dyn Clock, from: &Stamp, d: Duration)
+       /// `from`'s and `now`'s boot doubt counts.
+       pub fn boot_after(now: &Stamp, from: &Stamp, d: Duration)
            -> Result<Self, DeadlineError>;
        /// The same on the awake clock and its doubt count.
-       pub fn awake_after(clock: &dyn Clock, from: &Stamp, d: Duration)
+       pub fn awake_after(now: &Stamp, from: &Stamp, d: Duration)
            -> Result<Self, DeadlineError>;
        /// Read-only views, for `Clock::wait` implementations and the call
        /// owner's arbitration.
@@ -510,9 +513,9 @@ encoding is the simulator's specification's.
      episode is counted if none is open (an episode of failed reads lasts
      until a valid sample returns, so one event is logged for it, C37,
      point 5); `sample` returns the error, so no new `Stamp` exists, and
-     the `Deadline` constructors, which take a fresh sample themselves,
-     return `Err` and build nothing until a valid sample returns (C37,
-     point 5);
+     the sampling function that builds every deadline (below) returns
+     that error before it reaches a constructor, so nothing is built
+     until a valid sample returns (C37, point 5);
    - **a regression** of either monotonic clock against the last valid
      sample: the boot count moves, and one episode is counted. The awake
      count does not move: C37, point 4, expires boot-clock deadlines on a
@@ -529,25 +532,51 @@ encoding is the simulator's specification's.
      moves, since no deadline is on wall time, and wall time can only
      lower trust (C37, point 4).
 
-   **No new deadline while samples fail, by construction.** `Deadline`'s
-   fields are private and its only constructors take a fresh sample of
-   the clock they are given, so a deadline exists only if a sample
-   succeeded when it was built. The `from` stamp (a request's arrival,
-   C39, point 3) gives only the instant counted from; a stale or copied
-   stamp cannot lower the latch, because the latch is the lower of its
-   count and the fresh sample's, and counts only grow: a stamp from
-   before a failure gives a deadline already failed, and a stamp with a
-   higher count than the fresh one gains nothing. A forged `from`
-   instant only moves the deadline, which the caller chooses anyway
-   through `d`. A compile-fail doc-test in `ironafs-time` shows that a
-   literal, a destructuring and a field write of a `Deadline` do not
-   compile outside the crate [OWN].
+   **No new deadline while samples fail.** `ironafs-time` is pure and
+   calls no seam (5.2, point 5), so its constructors take the fresh
+   sample as `now` rather than taking it themselves. C37, point 5's
+   rule rests on two things, and only these:
+   - **The caller's fresh sample (a call-site check).** Outside
+     `ironafs-time` and test code, the two constructors are named only
+     inside one **sampling function** per crate that builds deadlines
+     (in the core, `ironafs-client`'s `deadline_after`). It calls
+     `clock.sample()`, returns `Err(DeadlineError::Clock)` if the
+     sample fails, and passes the returned `Stamp` straight to the
+     constructor as `now`, in the same function and with no other
+     source for it. Both constructors are on the lint's disallowed-paths
+     list, which the sampling functions alone are allowed past, with a
+     planted self-test (a constructor called with a `now` kept from an
+     earlier sample, and one called outside a sampling function). So,
+     while samples fail, the code has no new `now` and builds no
+     deadline. This rests on the check, not on a type: any crate may
+     implement `Clock` (`ironafs-os`, `ironafs-sim`,
+     `ironafs-test-support`), so a "fresh stamp" type would need a
+     public constructor that any crate could call, and would add
+     nothing the check does not give.
+   - **The latch (by construction).** Even a deadline built from kept
+     stamps, if the check were bypassed, never serves as a good one
+     across a failure. The latch is the lower of `now`'s and `from`'s
+     counts, and a clock's counts only grow, so the latch is never above
+     the clock's count when the deadline was built. A failed read after
+     either stamp was taken has moved the count above the latch, so the
+     deadline is failed at its first evaluation (point 4), and while
+     samples still fail the evaluation finds the clock unreadable
+     anyway. A stale stamp cannot hide a failure; a stamp with a forged
+     higher count cannot raise the latch above the other stamp's count.
+     The `from` stamp (a request's arrival, C39, point 3) otherwise
+     gives only the instant counted from: a forged instant only moves
+     the deadline, which the caller chooses anyway through `d`.
 
-   **Doubt is latched per deadline.** A `Deadline` records its clock's
-   count when it was built (above). Every later evaluation of it
-   (a wait, the call owner's arbitration in 5.4, point 4, a completion
-   claim in 5.7, point 4) finds it failed once that clock's count has
-   moved, even if the sample taken now is good. So a failure that clears
+   A compile-fail doc-test in `ironafs-time` shows that a literal, a
+   destructuring and a field write of a `Deadline` do not compile
+   outside the crate [OWN].
+
+   **Doubt is latched per deadline.** A `Deadline` records a latched
+   count for its clock, never above that clock's count when it was built
+   (above). Every later evaluation of it (a wait, the call owner's
+   arbitration in 5.4, point 4, a completion claim in 5.7, point 4) finds
+   it failed once that clock's count is above the latch, even if the
+   sample taken now is good. So a failure that clears
    before another waiter samples still expires every deadline outstanding
    when it happened, and a regression still expires every boot deadline
    [ADR 0004 C37.5: Working]. **Episodes reach the core** through the
@@ -600,9 +629,9 @@ encoding is the simulator's specification's.
 
 4. **Outcome precedence,** evaluated once per wake, in this order:
    `Cancelled` if the cancel token has fired; else `ClockFailed` if the
-   deadline's clock cannot be read or its doubt count has moved since the
-   deadline was built (point 2); else `DeadlinePassed` if the clock reads
-   at or past the deadline; else `Signalled` if the signal is raised. A
+   deadline's clock cannot be read or its doubt count is above the
+   deadline's latched count (point 2); else `DeadlinePassed` if the clock
+   reads at or past the deadline; else `Signalled` if the signal is raised. A
    value published after the deadline passed therefore never wins a wait
    [OWN: a late answer must never look like a timely one, C46, point 4].
    Whether a result recorded before the deadline wins is decided by the
@@ -850,9 +879,11 @@ encoding is the simulator's specification's.
      no send happens after a deadline, cancel, abandon or fence that was
      ordered before it. Once accepted, the operating system may put the
      packet on the wire later: that is the send accepted before the end,
-     never a new send. An abandon ordered after it finds the call handed,
-     and the caller gets `NoReply`: for a store, C28, point 4's lost
-     reply, never a deferred store sent on its own (C28, point 3).
+     never a new send, and this page claims nothing about when it reaches
+     the wire (the close fence below). An abandon ordered after it finds
+     the call handed, and the caller gets `NoReply`: for a store, C28,
+     point 4's lost reply, never a deferred store sent on its own (C28,
+     point 3).
    - **Acceptance is bracketed against the deadline.** A non-blocking
      send's contract is only that it does not wait, and the owner's
      thread can be preempted between its clock sample and the send for
@@ -917,10 +948,20 @@ encoding is the simulator's specification's.
      before `close` returned; a hand-off hold that begins after it reads
      the fence fired and sends nothing. So the connections a rising
      restriction closes send nothing more once `close` returns ("sends
-     queued on them are fenced", N7, point 2), and N7, point 5's
-     invariant holds for them [ADR 0004 N7.2, N7.5: Firm]. What the
-     operating system does with a datagram it accepted before is the
-     accepted-before-the-end case of the hand-off above.
+     queued on them are fenced", N7, point 2) [ADR 0004 N7.2: Firm].
+     **What this gives N7, point 5, and what it does not.** This page
+     reads point 5's "leaves" as the transport's acceptance of a
+     datagram, the last step the client controls, and that is where the
+     simulator's point 5 check observes it (O45): no datagram of a
+     connection is accepted after the `close` that a rise applies to it
+     has returned. The fence does not control the wire: a datagram
+     accepted before `close` returned may reach the wire after it (the
+     accepted-before-the-end case of the hand-off above), and one
+     accepted between the restriction's rise and `close`'s return is
+     before the fence. The simulator's check therefore counts from the
+     return of each `close` the rise makes, not from the rise itself
+     [OWN: a reading of N7, point 5; a non-blocking send cannot recall a
+     datagram it has handed over].
    - **The caller's side.** The caller's wait ending (deadline passed,
      cancel fired, clock failed) decides nothing by itself. The caller
      sets the abandon flag inside the guard, posts the wake on the
@@ -1977,7 +2018,7 @@ listed with its crate.
 | C3, points 1 and 3 | 5.2 to 5.5 | `xtask`: `seams::core_names_no_real_io` (planted, one per banned item, through a re-export and a wrapper) |
 | C3, points 4 and 5; O45, point 5 | 5.6, point 13; 5.7, point 3 | `xtask`: `seams::core_spawns_no_thread` (planted) |
 | C3, point 6, and its trigger | 5.6, points 4 and 11 | `ironafs-sim`: `replay::sample_read_replays_byte_identically`, `replay::planted_divergence_is_caught_at_its_decision` |
-| C4, points 1, 4 and 7 | 5.2, points 1, 2 and 5 | `xtask`: `check-deps --self-test`, `check-pure --self-test`, `seams::pure_crate_calls_no_seam` (planted) |
+| C4, points 1, 4 and 7 | 5.2, points 1, 2 and 5 | `xtask`: `check-deps --self-test`, `check-pure --self-test`, `seams::pure_crate_calls_no_seam` (planted, `ironafs-time` included: a `Clock` method called inside it fails) |
 | C16, points 2 and 3 | 5.8, points 2 and 3 | `ironafs-client`: `read::break_before_submission_is_fenced` (both binding roles) |
 | C16, points 1 and 6; C31 | 5.4, point 7; 5.8, point 2 | `ironafs-client`: `rpc::callback_overload_recorded_before_drop`, `read::overload_fences_install`, `read::no_ticket_over_pending_overload`; `binding::overload_pushes_epoch_advance` |
 | C24, point 1 | 5.4, point 2 | `ironafs-client`: `errors::unprotected_matching_abort_is_ambiguous`, `errors::abort_before_rxgk_is_never_authoritative` |
@@ -1986,12 +2027,12 @@ listed with its crate.
 | C28, point 6; C29, point 9; N32, point 6 | 5.5, points 4, 6 and 7 | `ironafs-sim`: `disk::durable_replace_crash_at_every_cut`, `disk::one_ack_after_record_and_boundary`, `disk::restart_never_trusts_failed_sync`, `disk::marked_log_keeps_covered_suffix`, `disk::failed_sync_never_marks_covered`, `disk::no_ack_in_a_directory_not_made_this_incarnation`, `disk::root_parent_synced_at_construction` |
 | C32, points 1 and 4 | 5.4, point 1; 5.3, point 2 | `ironafs-sim`: `clock::keepalive_across_suspend_earns_no_trust`, `clock::keepalive_across_wall_jump_earns_no_trust`, `clock::trust_lapses_at_e_after_received` |
 | C32, point 5 | 5.3, point 2; 5.7, point 1; 5.8, point 2 | `ironafs-sim`: `clock::episode_marks_suspect_before_reply` (a suspend, a regression, a failed read and a wall jump) |
-| C37, points 4 and 5 | 5.3, points 1, 2 and 4; 5.6, point 5; 5.7, point 1 | `ironafs-sim`: `clock::failed_read_expires_every_deadline`, `clock::regression_expires_boot_deadlines_only`, `clock::latched_doubt_outlives_the_fault`, `clock::no_deadline_without_a_valid_sample`; `ironafs-time`: `deadline::stale_stamp_cannot_lower_the_latch` and the compile-fail doc-test that a `Deadline` cannot be built, destructured or edited outside the crate; the `Clock` conformance body |
+| C37, points 4 and 5 | 5.3, points 1, 2 and 4; 5.6, point 5; 5.7, point 1 | `ironafs-sim`: `clock::failed_read_expires_every_deadline`, `clock::regression_expires_boot_deadlines_only`, `clock::latched_doubt_outlives_the_fault`, `clock::no_deadline_without_a_valid_sample`; `ironafs-time`: `deadline::stale_stamp_gives_an_already_failed_deadline`, `deadline::forged_higher_count_cannot_raise_the_latch` and the compile-fail doc-test that a `Deadline` cannot be built, destructured or edited outside the crate; `xtask`: `seams::deadline_built_from_a_fresh_sample` (planted: a kept `now`, a constructor outside a sampling function); the `Clock` conformance body |
 | C39, point 3 | 5.3, points 3 and 5; 5.4, points 7 and 8 | `ironafs-sync`: `queue_refuses_over_cap`, `oneshot_cancel_wakes`; `ironafs-os`: `waker_raise_at_check_to_sleep_boundary`; `ironafs-client`: `rpc::admission_lanes`, `rpc::control_lane_never_full_at_shutdown`; `ironafs-sim`: `inbound_queue_full_drops` |
 | C39, point 4 | 5.3, point 6; 5.6, point 9 | `ironafs-sim`: `lock_held_at_yield_fails`, `contended_lock_fails` |
 | C46, point 3 | 5.4, point 2 | `ironafs-client`: `errors::abort_code_needs_rpc_and_server` |
 | C46, point 4 | 5.4, point 4; 5.5, point 1; 7, point 3 | `ironafs-client`: `rpc::verdict_wait_failure_is_no_reply`; the `Disk` conformance body's `part_inside_is_exact`, `part_past_end` and `whole_over_max` |
-| N7, points 2 and 5 | 5.4, points 4 and 5 | `ironafs-client`: `rpc::close_fences_queued_sends` (both orders of `close` and the owner's arbitration; `close` against a hold of the send lock; no datagram of the connection after `close` returns) |
+| N7, point 2; point 5 read as the transport's acceptance (5.4, point 4, the close fence) | 5.4, points 4 and 5 | `ironafs-client`: `rpc::close_fences_queued_sends` (both orders of `close` and the owner's arbitration; `close` against a hold of the send lock; no datagram of the connection accepted by the transport after `close` returns) |
 | Coding standards rule 7 | 5.2, point 5; 5.6, point 9 | `xtask`: the disallowed-methods self-test; `ironafs-sim`: `planted_host_read_breaks_replay` |
 
 ## 10. Tests
@@ -2312,10 +2353,11 @@ Mutations listed with a case are each run and must be caught.
    trust. A scripted clock failure with tasks waiting on boot and on
    awake deadlines: every one is enabled at that decision and ends
    `ClockFailed`, and no deadline is built until a valid sample returns
-   (each `Deadline` constructor returns `Err(Clock)` meanwhile, given a
-   stamp from before the failure too). A deadline built after the
-   failure clears from a stamp taken before it is already failed at its
-   first evaluation.
+   (the core's sampling function returns `Err(Clock)` meanwhile, given a
+   `from` stamp from before the failure too). A deadline built after the
+   failure clears, with a `from` stamp taken before it, is already failed
+   at its first evaluation, and so is one built from a `now` and a `from`
+   both kept from before the failure.
    A failure that clears before a second waiter's next sample: that
    waiter still ends `ClockFailed`, and the call owner treats the latched
    deadline as failed. A fault that clears before a parked waiter is
