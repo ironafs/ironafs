@@ -151,6 +151,33 @@ pub enum Attestation {
 /// (`ironafs-sim`, `ironafs-test-support`) may name it, and none of them
 /// but this crate hands it out publicly, within the limits that check
 /// states.
+///
+/// It implements neither `Default`, `Clone` nor `Copy`: [`Mint::new`] is
+/// its one constructor (the contract specification, 5.11, point 1).
+///
+/// ```
+/// // The one way to get a mint, as the composition does.
+/// let _mint = ironafs_vfs::Mint::new();
+/// ```
+///
+/// ```compile_fail,E0277
+/// // No default mint.
+/// let _ = <ironafs_vfs::Mint as Default>::default();
+/// ```
+///
+/// ```compile_fail,E0277
+/// // No clone of a mint.
+/// fn copy(mint: &ironafs_vfs::Mint) -> ironafs_vfs::Mint {
+///     <ironafs_vfs::Mint as Clone>::clone(mint)
+/// }
+/// ```
+///
+/// ```compile_fail,E0382
+/// // No implicit copy: a mint taken by value is moved.
+/// fn twice(mint: ironafs_vfs::Mint) -> (ironafs_vfs::Mint, ironafs_vfs::Mint) {
+///     (mint, mint)
+/// }
+/// ```
 #[derive(Debug)]
 pub struct Mint(());
 
