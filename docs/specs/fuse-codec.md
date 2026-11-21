@@ -507,19 +507,44 @@ In this order; the first failure is the result.
 
 3. **The session** is one connection's codec state, and the only public
    decoder. It holds the phase and the ids of the requests owed a reply.
-   Decoding a request that takes a reply, or refusing one with a reply,
-   records its id; a request whose id is already recorded is refused with
-   no token and no reply (`Malformed::DuplicateUnique`), since a reply
-   under that id would answer the earlier request [OWN: E73, the reply
-   repeats the request's `unique`]. `Session::finish` is the only way to a
-   reply's bytes: it refuses a reply whose token another session issued,
-   or whose id is not recorded, and otherwise retires the id. Finishing an
-   INIT reply that settled the protocol moves the session to the
-   negotiated minor. A layer that cancels a request still answers it (with
-   `EINTR`, E72) through `finish`; tearing the connection down drops the
-   session and every token with it. The set of recorded ids is bounded by
-   the requests the kernel has outstanding; the layer's request table caps
-   them (vfs-contract 5.8) [OWN].
+   - **One reply per id.** Decoding a request that takes a reply, or
+     refusing one with a reply, records its id. A request whose id is
+     already recorded is refused, whatever its opcode, with no token and
+     no reply (`Malformed::DuplicateUnique`), since a reply under that id
+     would answer the earlier request [OWN: E73, the reply repeats the
+     request's `unique`].
+   - **One INIT at a time.** While an INIT's token is outstanding, another
+     INIT is refused with an error reply (`Malformed::InitPending`,
+     `EIO`), which settles nothing; after the first INIT's reply is
+     finished, a new INIT is decoded as usual (E73's new INIT after a
+     major-only reply) [OWN].
+   - **A cap.** At most `MAX_PENDING`, 4,096, ids are recorded. Past it, a
+     request that takes a reply is refused with no token and no reply
+     (`Malformed::Overloaded`), and the layer ends the connection [OWN:
+     above the contract's 1,024-entry request table (vfs-contract 5.8), so
+     the table's own `Busy` answers, each needing a token, can always be
+     issued; reaching it means replies were lost, a layer fault].
+   - **Finishing.** `Session::finish` is the only way to a reply's bytes.
+     A reply whose token another session issued, or whose id is not
+     recorded, is handed back unwritten (`Unfinished`), and changes
+     nothing. Otherwise the id is retired; finishing an INIT reply that
+     settled the protocol moves the session to the negotiated minor. A
+     reply's `Debug` shows its id and length, never its bytes.
+   - **Dropped tokens and replies.** A token or reply dropped without
+     `finish` leaves its id recorded until the session ends; the kernel's
+     request it answers stays waiting, which is a layer fault either way.
+     The cap bounds what such leaks hold [OWN: releasing on drop would
+     need shared state between each token and the session].
+   - **Cancellation and teardown.** A layer that cancels a request still
+     answers it (with `EINTR`, E72) through `finish`; tearing the
+     connection down drops the session and every token with it.
+   - **Boundary: the session trusts its bytes.** The session cannot tell
+     the kernel's bytes from bytes a caller made: it gives a token to any
+     well-formed frame whose id is not recorded, and once a reply is
+     finished, the same frame decodes again, as the kernel's own reuse of
+     an answered id requires. Authority over what reaches the session is
+     the transport's: the device descriptor, which only the device reader
+     holds (the Linux layer, M2a-30) [OWN].
 
 ### 5.7 Errors mapped to Linux
 
@@ -614,7 +639,9 @@ hostile kernel module is outside the threat model: it owns the machine.
   sized by a READ or READDIR size, and the one copy sized by a decoded
   length is a LOOKUP's name, after its 255-byte cap (5.2).
 - A duplicate, stale or wrong-shape reply: 5.5, point 11, and 5.6,
-  point 3.
+  point 3. Bytes a caller makes are outside what the codec can tell
+  apart; the device descriptor is the authority (5.6, point 3,
+  "Boundary").
 - A cache or privilege flag accepted: 5.5, points 1 to 4; L4 and L5's
   flags are on the never-list or not accepted.
 - A set-id bit or device node shown from a cell: 5.5, point 8.
@@ -633,7 +660,7 @@ hostile kernel module is outside the threat model: it owns the machine.
 | L2, point 4; N47, point 6 | 5.4, point 10 | `request::tests::statx_decodes`, `reply::tests::statx_reply_layout_without_birth_time`, `statx_reply_reports_a_birth_time_it_has` |
 | L2, point 3 (flags checked against their minor) | 5.3, point 2 | `init::tests::decode_init_refuses_flags_before_their_minor`, `decode_init_refuses_bodies_of_other_sizes`, `decode_init_other_major_reads_only_the_major`, `negotiated_flags_are_defined_at_the_negotiated_minor` |
 | L3, L5 and the allowlist reached only through the encoders | 5.5, point 11 | the compile-fail examples of `reply.rs`; `reply::tests::data_over_the_request_size_refused`; `request::tests::refused_requests_reply_only_when_owed` |
-| One reply per pending request, on its own connection | 5.6, point 3 | `session::tests::a_frame_decoded_twice_is_refused_the_second_time`, `a_duplicate_of_a_refused_request_is_refused_too`, `requests_without_a_reply_take_no_id`, `finish_refuses_a_reply_of_another_session`, `the_phase_moves_only_when_a_settled_init_is_finished` |
+| One reply per pending request, on its own connection | 5.6, point 3 | `session::tests::a_frame_decoded_twice_is_refused_the_second_time`, `a_duplicate_of_a_refused_request_is_refused_too`, `a_no_reply_request_with_a_pending_id_is_refused`, `requests_without_a_reply_take_no_id`, `finish_refuses_a_reply_of_another_session`, `a_wrong_session_finish_hands_the_reply_back`, `the_phase_moves_only_when_a_settled_init_is_finished`, `a_second_init_while_one_is_pending_is_refused`, `a_new_init_may_follow_a_finished_major_only_reply`, `decode_refuses_past_the_pending_cap`; `reply::tests::reply_debug_shows_no_bytes` |
 | INIT answered from its own offer, in its major's shape | 5.3, point 1 | `session::tests::init_answers_in_the_shape_its_major_allows`; `reply::tests::init_major_only_reply_for_a_newer_major`, `init_refusal_is_eproto` |
 | N43 for an opcode above the minor | 5.4, point 11 | `session::tests::statx_needs_7_39` |
 | L5, points 1 to 3 | 5.5, point 7 | `reply::tests::entry_and_attr_timeouts_are_zero`, `open_reply_is_direct_io_only`, `opendir_reply_sets_no_cache_flag` |
@@ -676,7 +703,9 @@ size` over `i64::MAX`; a BATCH_FORGET whose count does not match, and one
 whose count is `u32::MAX`; a STATX body one byte short and one long; an
 OPEN or OPENDIR with a bit in its second word at 7.33 (and ignored at
 7.32). In `src/session/tests.rs`: a frame decoded twice, and a refused one
-decoded twice; a reply finished on another session; STATX at 7.38. In `src/init/tests.rs`: a major-7 INIT of 15 or 17 bytes without
+decoded twice; a FORGET and an INTERRUPT with a pending id; a second
+INIT while the first is unanswered; the 4,097th pending request; a reply
+finished on another session; STATX at 7.38. In `src/init/tests.rs`: a major-7 INIT of 15 or 17 bytes without
 `FUSE_INIT_EXT`, of 16, 20, 63 or 65 bytes with it, and of 64 without it;
 `FUSE_INIT_EXT` offered at 7.35 and `FUSE_NO_EXPORT_SUPPORT` at 7.39; a
 newer major's body of 4 bytes, read for its major alone, and of 3 bytes,
