@@ -248,6 +248,7 @@ named, and nothing else happens.
 | Symbolic-link target (symlink) | 1 to 4,095 bytes, no NUL | `OutOfRange` | [OWN] point 6 |
 | Extended-attribute name | 1 to 255 bytes, no NUL | `OutOfRange` | [OWN] point 6 |
 | Extended-attribute read budget | 65,536 bytes | `OutOfRange` | [OWN] point 6 |
+| Extended-attribute name list (reply) | 65,536 bytes, counted as each name's bytes plus one | `Protocol` | [OWN] 5.4, point 5 |
 | An ACL value (set) | 65,536 encoded bytes; entries as N37's specification caps them | `OutOfRange` | [OWN] point 6 |
 | A `control` request | the control endpoint's request cap (local IPC specification, 65,536 bytes) | `OutOfRange` | [OWN] point 6 |
 | Time values (set attributes) | seconds as `i64`, nanoseconds below 1,000,000,000 | `OutOfRange` | [ADR 0004 C38.1, C38.3: Working] |
@@ -259,7 +260,7 @@ named, and nothing else happens.
 | Named-stream selector (`open`) | as a name | the layer's own name error | [OWN] point 2 |
 | `access` mask, `subscribe` filter, `open` flags, share access | only the bits this page defines | `OutOfRange` | [OWN] point 8 |
 | A `control` reply | 1,048,576 bytes (the local IPC specification's reply cap) | `Protocol` | [OWN] point 6 |
-| Subscriptions | one per directory handle; 1,024 per binding | `Busy` | [OWN] point 9 |
+| Subscriptions | one per directory handle; 1,024 per binding | a second on one handle: `Conflict`; past 1,024: `Busy` | [OWN] point 9 |
 | Byte-range locks held | 4,096 per credential context | `Busy` | [OWN] point 9 |
 | `forget` count | the references the binding holds | saturates; a layer fault, counted | [OWN] 5.6, point 4 |
 | Open requests per binding | the request table's size, 1,024 entries | `Busy`, counted | [ADR 0004 C39.2: Working]; [OWN] size, 5.8 |
@@ -344,7 +345,16 @@ named, and nothing else happens.
    request header `[E62: CONFIRMED]` (`fuse_in_header`), the uid in FSKit's
    caller context, or an authenticated SMB session [ADR 0004 C8.1: Firm].
    A handle capability is minted for one binding and one handle the core
-   opened [ADR 0004 C13.1: Firm]. Each carries a fresh nonce.
+   opened [ADR 0004 C13.1: Firm]. Each carries a fresh nonce. An
+   attestation the core does not accept mints nothing, and the request is
+   refused with `Access`: a uid other than a per-user FSKit binding's
+   owner (C45, point 3), or an SMB session id the core did not
+   authenticate for this binding or that has ended. A uid on a shared
+   binding is always accepted: the core finds or creates its context, with
+   or without tokens (C40, point 2), so no attested uid lacks one. An
+   unknown or ended SMB session id is also counted as a layer fault; a uid
+   the owner check refuses is not, since the operating system may send it
+   [OWN: `Access`, because the caller, not the handle, is what failed].
 2. **The core's record.** For every capability it mints, the core records
    `(binding, nonce)` with what the capability stands for: for a caller,
    the context and generation; for a handle, the handle's whole authority
@@ -408,7 +418,7 @@ value (5.7, point 1).
 | `get_acl` | node | `Acl` |
 | `set_acl` | node, `Acl` | nothing |
 | `extended_attribute` | node, name, read budget | the whole value; or, with a budget of 0, only its length |
-| `list_extended_attributes` | node, read budget | every name; or, with a budget of 0, only the list's length |
+| `list_extended_attributes` | node | every name |
 | `set_extended_attribute` (reserved) | node, name, value, disposition (create, replace, either) | nothing |
 | `remove_extended_attribute` (reserved) | node, name | nothing |
 | `control` | the node the layer resolved (or none, for a command on no node), an `fs` command's encoded request | its encoded reply |
@@ -425,11 +435,16 @@ value (5.7, point 1).
    after C7, point 5's checks [ADR 0004 C7.5: Working].
 4. **POSIX ACL attribute names are refused** in `extended_attribute` and
    `list_extended_attributes` never shows them [ADR 0004 N42.7: Firm].
-5. **Extended attributes are never truncated.** A value or a list longer
-   than a non-zero budget fails with `TooSmall` and returns nothing; a
-   budget of 0 asks only for the length; an absent attribute is
+5. **Extended attributes are never truncated.** A value longer than a
+   non-zero budget fails with `TooSmall` and returns nothing; a budget of
+   0 asks only for the value's length; an absent attribute is
    `NoAttribute` [ADR 0004 C46.4: Working; OWN: the getxattr(2) shape the
-   POSIX layers present].
+   POSIX layers present]. `list_extended_attributes` takes no budget and
+   returns every name: each system encodes a list differently, so each
+   layer computes its own list's length, its size-only answer and its
+   too-small error from the names [OWN]. A list whose names, counted as
+   each name's bytes plus one, pass 65,536 bytes fails with `Protocol`
+   (5.2).
 
 ### 5.5 Handle operations
 
@@ -444,8 +459,8 @@ C13.2, C13.3: Firm].
 | `read_directory` | a cookie (`u64`, 0 at the start), budget in bytes | entries (name, node, kind, the next cookie), and whether the listing ended |
 | `commit` | `CommitReason`, durability (data, or data and attributes), boundary (all dirty data up to now) | nothing |
 | `lock_handle` | `LockRequest` | as `lock` |
-| `subscribe` | a change-notification filter, and whether the subtree is watched (a directory handle only) | nothing; events then arrive on the stream (5.10) |
-| `unsubscribe` | none | nothing; it never fails |
+| `subscribe` | a change-notification filter (point 7), and whether the subtree is watched (a directory handle only) | nothing; events then arrive on the stream (5.10) |
+| `unsubscribe` | none | nothing; idempotent when the handle has no subscription |
 | `get_information` | none | `Attributes` |
 | `set_information` | `SetAttributes` | `Attributes` |
 | `set_disposition` | delete on close, or not | nothing |
@@ -481,6 +496,17 @@ C13.2, C13.3: Firm].
    including `seek`, `subscribe` and the reserved ones, whatever its
    parenthetical list names [OWN reading; 13, Q7].
 6. **`commit`** follows 5.12, point 6.
+7. **The change-notification filter** is a set of the effect kinds of
+   5.10: entries (names added, removed or renamed), attributes, data, and
+   rights. These four bits are the only ones defined (5.2, point 8). A
+   layer whose system offers finer filters maps each of its own onto these
+   kinds, and an event reaches the subscription when its effects meet the
+   filter; the SMB front end's mapping of its completion filter is S2's
+   [OWN: the core can only report what its invalidations know].
+8. **`unsubscribe`** is an ordinary handle operation, with the checks and
+   the completion of any other (5.3, point 3; 5.8). Removing a
+   subscription the handle does not have succeeds and changes nothing
+   [OWN].
 
 ### 5.6 Binding operations, and the rules every operation keeps
 
@@ -509,10 +535,14 @@ C13.2, C13.3: Firm].
    `release_directory` end the handle in the core's table at once, and a
    commit they need (L6, point 5) continues on its own under the handle's
    retained authority; its result goes to the side channel [ADR 0004 C9.4:
-   Working; L6.5: Working]. A `HandleCap` that fails 5.3's check on release
-   is counted as a layer fault and the release still answers success: the
-   handle is not live, so nothing is left to release [OWN: release's
-   contract is "the layer holds nothing now", which holds].
+   Working; L6.5: Working]. Releasing a handle the core recorded for this
+   binding that is no longer live (revoked, its generation retired, its
+   node stale) is ordinary: it ends the record and is never a layer fault,
+   since a FUSE kernel sends a release for every open, revoked or not.
+   Only a `HandleCap` with no record for this binding (another binding's,
+   another mint's, or one already released) is counted as a layer fault.
+   Either way the release answers success [OWN: release's contract is "the
+   layer holds nothing now", which holds].
 3. **Binding operations change no data.** `volume_sync` flushes, through
    the commit path, only what the binding's handles already hold dirty,
    and is the one binding operation that waits: it has a request-table
@@ -743,7 +773,9 @@ makes it with the fence epoch of C16, point 6, under S1.
 2. **The submission step.** `Binding::submit(request, Fenced<Reply>)`
    does, in order, with no yield from step 1 to step 5:
    1. **register:** take the binding's next **submission sequence number**
-      by an atomic fetch-and-add, and mark it in flight;
+      by an atomic fetch-and-add. The advance itself puts the number in
+      flight: every number below the counter is in flight until step 7
+      marks it done, with no separate step that could be missed;
    2. take the lock set (point 1);
    3. **check:** compare the clocks (C32, point 5); compare the ticket with
       the current break counters of object, volume and server, the
@@ -829,7 +861,12 @@ report of point 5 [ADR 0004 C17: Working; N47.3: Firm].
    entry names, or a rename paired with any other names, widen to all
    entries; two contexts' rights widen to all contexts [ADR 0004 N47.3:
    Firm]. A delivery carries the slot's pending effects and the revision of
-   its latest merge.
+   its latest merge. **A slot has at most one delivery unanswered:** merges
+   that arrive while one is in flight wait in the slot, and are delivered
+   after the binding acknowledges or reports it; so the latest delivered
+   revision of a node is the only one a valid report can name [OWN]. An
+   overflow likewise is delivered once and stays **open** until
+   `Ack::Overflow` for its revision.
 2. **Order.** The core gates the node when it records the change (5.9,
    point 3). The binding then, for each event: drains or fences earlier
    replies (5.9, point 4); applies the operating system's purge; then
@@ -859,21 +896,36 @@ report of point 5 [ADR 0004 C17: Working; N47.3: Firm].
    the purge again, as a new delivery widened to every effect, and the
    node's stale state ends when that binding acknowledges it or is torn
    down [OWN].
-6. **Reports are untrusted, and one rule covers both kinds.** An
-   acknowledgement or a `PurgeFailed` report is **valid** only if it names
-   a delivery the core made to this binding that is not yet acknowledged
-   or reported: for a node, a revision the core delivered for that node's
-   slot; for an overflow, the overflow's delivered revision and, for
-   `OverflowNode`, a node the binding held when the overflow was
-   delivered. A valid report acts as points 3 and 5 say. An invalid one
-   changes nothing, and:
-   - if its revision is at or below the latest revision the core has
-     delivered to this binding for that node (or that overflow), it is a
-     **repeat**: ignored, never a fault, whatever the slot's state now;
-   - otherwise (a revision never delivered for it, a node the binding
-     does not hold, an overflow never delivered) it is counted as a layer
-     fault; for an out-of-process binding, S1 says whether faults tear the
-     binding down.
+6. **Reports are untrusted, and one rule covers both kinds.** A report is
+   **valid** only if it answers an open delivery to this binding:
+   - `Ack::Node` and `PurgeFailed::Node`: the revision equals the node's
+     unanswered delivery (point 1); the first answer closes it;
+   - `PurgeFailed::OverflowNode { node, revision }`: the revision is the
+     open overflow's, the binding held the node when the overflow was
+     delivered, and no report for that node under that overflow came
+     before; the overflow stays open;
+   - `Ack::Overflow`: the revision is the open overflow's; it closes it.
+
+   A valid report acts as points 3 and 5 say. Every other report changes
+   nothing, and falls in exactly one of two classes:
+   - a **fault**, counted, when its revision is above the latest revision
+     the core delivered to this binding for that node (or above the latest
+     overflow delivered), when the binding never had a delivery for that
+     node or does not hold it, when no overflow was ever delivered, or when
+     an `OverflowNode` names a node the binding did not hold at the
+     delivery of an overflow that is still open; for an out-of-process
+     binding, S1 says whether faults tear the binding down;
+   - otherwise a **repeat**: ignored, never a fault, whatever the slot's
+     state now. That includes a second answer to a delivery, a second
+     `OverflowNode` for one node under one overflow, any report naming an
+     overflow already acknowledged, and a revision at or below the node's
+     latest delivered one that the core delivered to another node.
+
+   So a late `OverflowNode` for a node the binding holds now but did not
+   hold at the overflow's delivery is a repeat once that overflow is
+   acknowledged, and a fault while it is open. An honest layer cannot send
+   the second: while an overflow is open every reply is fenced (5.9,
+   point 2, step 3), so the binding can come to hold no new node [OWN].
 
    An acknowledgement never clears effects above its revision, and a
    failure report never revokes anything for a delivery it does not name
@@ -1122,9 +1174,11 @@ report of point 5 [ADR 0004 C17: Working; N47.3: Firm].
    [ADR 0004 N41.4: Firm].
 2. A capability check that fails never reveals what the capability named
    in another binding (5.3, point 3).
-3. A layer fault (5.2, 5.3, 5.6, 5.10) is counted per binding and logged once
-   per episode; whether repeated faults tear a binding down is S1's for an
-   out-of-process binding and the FUSE layer's for FUSE [OWN].
+3. A layer fault (5.2, 5.3, 5.6, 5.10) is counted **per binding**, one
+   counter for each binding whatever the fault's kind, and logged once per
+   episode; it is never counted against another binding or against a
+   credential context. Whether repeated faults tear a binding down is S1's
+   for an out-of-process binding and the FUSE layer's for FUSE [OWN].
 4. A failed clock sample at ingress completes the request with `TimedOut`
    at once (5.8, point 2); a failed sample at the claim treats the
    deadline as passed [the seams specification, 5.3, point 4].
@@ -1366,9 +1420,10 @@ entry (5.10, point 4) is to be observed with the FUSE codec (issue #92).
   operating system (C39, point 3)" to the boot clock's list; O45, point 3,
   becomes "every OS request completes within its deadline, or, where a
   host suspend crosses the deadline, at the first instant the host runs
-  after it". **Recommendation:** file the amendment issue in the
-  milestone, linked from #53's sweep, before this page is reviewed.
-  Blocks: freezing 5.8, points 2 and 10; nothing else.
+  after it" (the request then completes with the deadline's error of
+  5.8, point 4). **Settled for this page:** both amendments are to be
+  folded into the ADR 0004 Working amendments of issue #53. Blocks:
+  freezing 5.8, points 2 and 10, until #53 lands; nothing else.
 - **Q2. The request deadline's value.** 60 seconds by default, 1 to 3,600
   configurable (5.8, point 3). **Recommendation:** keep it as proposed and
   measure at the M2a acceptance runs against the test cell; the
@@ -1393,9 +1448,9 @@ entry (5.10, point 4) is to be observed with the FUSE codec (issue #92).
   adds `NotADirectory`, `IsADirectory`, `NotEmpty`, `NoAttribute`,
   `TooSmall`, `PastEnd` and `Protocol`. If the review reads the list as
   closed, adding them is a Working amendment of C46, point 1.
-  **Recommendation:** name them in the same amendment issue as Q1, so the
-  ADR's list and the crate's agree, and have the local IPC specification
-  (issue #62) number them.
+  **Recommendation:** name them in issue #53's amendments with Q1's, so
+  the ADR's list and the crate's agree, and have the local IPC
+  specification (issue #62) number them.
 - **Q6. Platform limits to register.** Linux's `NAME_MAX` (255) and its
   extended-attribute value limit, and whether every Windows name of 255
   UTF-16 units fits 255 bytes after L25's mapping, are UNVERIFIED here.
@@ -1407,11 +1462,12 @@ entry (5.10, point 4) is to be observed with the FUSE codec (issue #92).
   file. C13, point 2 (Firm), names in parentheses the handle operations it
   checks, and already omits C7, point 3's subscription; this page applies
   C13, point 2's check to every handle operation (5.5, point 5).
-  **Recommendation:** add "seek to data or hole" and the reserved handle
-  operations to C7, point 3 (Working) in the same amendment as Q1; and ask
-  the owner to change C13, point 2's parenthetical to "every handle
-  operation of C7, point 3", which keeps its rule and changes a Firm
-  decision's words only, so it is the owner's decision.
+  **Settled for this page:** adding "seek to data or hole" and the
+  reserved handle operations to C7, point 3 (Working) is to be folded
+  into issue #53's amendments with Q1's. C13, point 2's parenthetical is
+  Firm text: changing it to "every handle operation of C7, point 3" keeps
+  its rule and changes only its words, and is the owner's decision,
+  raised with the same issue.
 - **Q8. Mapping rows chosen here.** Every non-ADR row of 5.12, point 2's
   table is [OWN]. **Recommendation:** the FUSE codec's review (issue #92)
   re-checks the Linux column against each operation's documented errors;
@@ -1419,5 +1475,4 @@ entry (5.10, point 4) is to be observed with the FUSE codec (issue #92).
 
 ## 14. Review
 
-No review record yet. It will be in `docs/reviews/` when the specification
-is reviewed.
+The review record is [2026-11-21-m2a-67-contract](../reviews/2026-11-21-m2a-67-contract.md).
