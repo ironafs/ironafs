@@ -925,16 +925,16 @@ gated too.
 - **B1. The result slot when a claimed, outcome-unknown handler returns
   after close, and when expiry and close coincide.** Parts:
   local-ipc-resources.md, 5.6.4, rule 4; local-ipc.md, 5.6.3, rule 3.
-  Quoted as received:
+  Quoted from the review, without its label:
 
-  > Defect: GPT 6 — PARTLY. Completed is absorbing. On a live
-  > connection, a result offered at or after the deadline on a claimed
-  > outcome-unknown row correctly yields outcome unknown regardless of
-  > timer delivery. Once the connection is Closing, the new blanket rule
-  > redirects that handler's result to the close row. That row leaves
-  > completion to the handler, whose result has just been redirected.
-  > The rule also gives no precedence when it observes both expiry and
-  > close.
+  > Defect: Completed is absorbing. On a live connection, a result
+  > offered at or after the deadline on a claimed outcome-unknown
+  > row correctly yields outcome unknown regardless of timer
+  > delivery. Once the connection is Closing, the new blanket rule
+  > redirects that handler's result to the close row. That row
+  > leaves completion to the handler, whose result has just been
+  > redirected. The rule also gives no precedence when it observes
+  > both expiry and close.
   >
   > Consequence: A worker can return with its slot still Claimed.
   > Implementations can also disagree on the selected terminal outcome
@@ -955,17 +955,19 @@ gated too.
 
 - **B3. The client's reservation failures against its one failure
   transition.** Parts: local-ipc-resources.md, 5.4, point 19;
-  local-ipc.md, 5.4, point 15. Quoted as received:
+  local-ipc.md, 5.4, point 15.
+  Quoted from the review, without its label:
 
-  > Defect: GPT 12 — PARTLY. Retaining the decoded part and its backing
-  > bytes under the ledger charge removes fallible re-decoding during
-  > presentation. The added standalone reservation path conflicts with
-  > two general rules. A terminal reply reservation failure must discard
-  > the body and finish without CANCEL, but the general request-level
-  > failure transition includes failed staging reservations and always
-  > queues CANCEL. Point 15 calls an already-failed id the sole
-  > undecoded discard case, although point 19 also discards bodies on
-  > reservation and staging-limit failures.
+  > Defect: Retaining the decoded part and its backing bytes under
+  > the ledger charge removes fallible re-decoding during
+  > presentation. The added standalone reservation path conflicts
+  > with two general rules. A terminal reply reservation failure
+  > must discard the body and finish without CANCEL, but the general
+  > request-level failure transition includes failed staging
+  > reservations and always queues CANCEL. Point 15 calls an
+  > already-failed id the sole undecoded discard case, although
+  > point 19 also discards bodies on reservation and staging-limit
+  > failures.
   >
   > Consequence: Under staging pressure, clients can disagree on whether
   > to drain a body, send a spurious CANCEL for a terminal reply, or
@@ -989,16 +991,16 @@ gated too.
 - **B4. The mandatory append when a row is not enabled or its encode
   fails, and what the close-race test asserts.** Parts:
   local-ipc-resources.md, 5.2.1, rule 4 and 10.5; local-ipc.md, 5.5,
-  point 6. Quoted as received:
+  point 6. Quoted from the review, without its label:
 
-  > Defect: C16.6 — PARTLY. M now includes one queue entry per pending
-  > event, prepays encoding, and stays separate from ordinary occupancy.
-  > The append contract still promises Appended whenever the connection
-  > is Open and the row is below its bound, including a secret-bearing
-  > mandatory row whose encoder is disabled by its gate. The close-race
-  > test also says an append is never reported as appended and unsent,
-  > although a write or closing deadline can cut off frames queued
-  > before close.
+  > Defect: M now includes one queue entry per pending event,
+  > prepays encoding, and stays separate from ordinary occupancy.
+  > The append contract still promises Appended whenever the
+  > connection is Open and the row is below its bound, including a
+  > secret-bearing mandatory row whose encoder is disabled by its
+  > gate. The close-race test also says an append is never reported
+  > as appended and unsent, although a write or closing deadline can
+  > cut off frames queued before close.
   >
   > Consequence: An append can satisfy the stated success conditions
   > when it cannot produce a frame. A passing implementation of the
@@ -1020,13 +1022,14 @@ gated too.
   any endpoint with a mandatory event row.
 
 - **M2. The headroom assertion of `caps_per_caller`.** Parts:
-  local-ipc-resources.md, 10.5. Quoted as received:
+  local-ipc-resources.md, 10.5.
+  Quoted from the review, without its label:
 
-  > Defect: GPT 5 — PARTLY. Parking pauses only the frame deadline,
-  > retains the time it had left, and leaves the write deadline in
-  > force. The revised headroom assertion measures the right account,
-  > but its lower bound subtracts only global-only charges. The fixture
-  > does not say that other callers' charged bytes are zero at the
+  > Defect: Parking pauses only the frame deadline, retains the time
+  > it had left, and leaves the write deadline in force. The revised
+  > headroom assertion measures the right account, but its lower
+  > bound subtracts only global-only charges. The fixture does not
+  > say that other callers' charged bytes are zero at the
   > measurement.
   >
   > Consequence: The assertion can fail in the same fixture where a

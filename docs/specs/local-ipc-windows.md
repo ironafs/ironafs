@@ -484,13 +484,13 @@ own terms.
 
 - **M1. The `pipe_pool` fixture for listener replacement.** Parts:
   local-ipc-windows.md, 10.5; local-ipc-resources.md, 5.2.1, rule 1.
-  Quoted as received:
+  Quoted from the review, without its label:
 
-  > Defect: GPT 3 — PARTLY. The standing charge of P connect blocks
-  > removes request-budget competition for listener replacement. The new
-  > test starts with the global account at its budget and expects the
-  > listener to become an admitted connection. Admission itself requires
-  > a new global allowance.
+  > Defect: The standing charge of P connect blocks removes
+  > request-budget competition for listener replacement. The new
+  > test starts with the global account at its budget and expects
+  > the listener to become an admitted connection. Admission itself
+  > requires a new global allowance.
   >
   > Consequence: Saturating the account before admission exercises
   > refusal and rearming of the same handle, so it does not verify that

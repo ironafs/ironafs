@@ -1856,17 +1856,17 @@ of 10.5.
     advance applied by the front end, and the advance acknowledged or
     the binding torn down. A written event is none of these.
 
-  Two review findings stand open against it until then, quoted as
-  received:
+  Two review findings stand open against it until then, quoted from the
+  review, without their labels:
 
-  > C16.6 — PARTLY. The mandatory class and prepaid space are present,
-  > but the generic output and arithmetic rules still reject any `EVENT`
-  > above the ordinary queue budget. A pending limit per key does not
-  > bound the number of live keys. The generator output list omits M,
-  > and there is no explicit requirement that the adapter's epoch
-  > advance use the mandatory class. The saturation test also puts the
-  > event behind existing frames and then expects it to be written
-  > first.
+  > The mandatory class and prepaid space are present, but the
+  > generic output and arithmetic rules still reject any `EVENT`
+  > above the ordinary queue budget. A pending limit per key does
+  > not bound the number of live keys. The generator output list
+  > omits M, and there is no explicit requirement that the adapter's
+  > epoch advance use the mandatory class. The saturation test also
+  > puts the event behind existing frames and then expects it to be
+  > written first.
 
   > New mandatory-event teardown contradiction. Exceeding the declared
   > bound supposedly closes the connection at once and tears down the
@@ -1896,15 +1896,16 @@ where they name a place in this part, that place is gated too.
 
 - **B2. The binding step when both deadlines have passed, and a binding
   handler that must claim.** Parts: local-ipc.md, 5.4, point 6 and
-  5.6.2; local-ipc-resources.md, 5.6.4, rule 4. Quoted as received:
+  5.6.2; local-ipc-resources.md, 5.6.4, rule 4.
+  Quoted from the review, without its label:
 
-  > Defect: GPT 9 — PARTLY. The ordered checks correctly handle an
-  > expired request with a live handshake and a Pending slot. The state
-  > table still says to answer DeadlineExceeded for a passed request
-  > deadline even when the handshake deadline has also passed and the
-  > ordered check suppresses the result. The opening step also requires
-  > Pending, while a binding handler that changes state must claim under
-  > the general mutation rule.
+  > Defect: The ordered checks correctly handle an expired request
+  > with a live handshake and a Pending slot. The state table still
+  > says to answer DeadlineExceeded for a passed request deadline
+  > even when the handshake deadline has also passed and the ordered
+  > check suppresses the result. The opening step also requires
+  > Pending, while a binding handler that changes state must claim
+  > under the general mutation rule.
   >
   > Consequence: The prose and table give different wire outcomes when
   > both deadlines have passed. A binding handler that follows the
@@ -1927,17 +1928,17 @@ where they name a place in this part, that place is gated too.
 - **B5. The secret gate in the ordered frame checks, and one predicate
   for the Windows prefix rule.** Parts: local-ipc.md, 5.4, points 9 and
   15 and 5.5, point 6; local-ipc-resources.md, 5.2.1, rule 1 and 5.4,
-  point 2. Quoted as received:
+  point 2. Quoted from the review, without its label:
 
-  > Defect: Sheet 20 — PARTLY. The gate now prohibits daemon admission
-  > of secret-bearing input, and the caller-first rule scopes prefix
+  > Defect: The gate now prohibits daemon admission of
+  > secret-bearing input, and the caller-first rule scopes prefix
   > capture to the control pipe and explicit adopters. The actual
-  > catalogue step omits the gate-off branch for notices, and the client
-  > envelope step checks whether the connection is checked without
-  > checking whether its gate is enabled. Resource admission includes
-  > adopters in its first step but omits them from the capture timing in
-  > its second, while capture scratch is still specified for Windows
-  > generally.
+  > catalogue step omits the gate-off branch for notices, and the
+  > client envelope step checks whether the connection is checked
+  > without checking whether its gate is enabled. Resource admission
+  > includes adopters in its first step but omits them from the
+  > capture timing in its second, while capture scratch is still
+  > specified for Windows generally.
   >
   > Consequence: Following the ordered frame checks can reach a body
   > read that the gate is meant to prevent. A Windows endpoint can also
