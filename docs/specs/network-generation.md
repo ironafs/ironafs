@@ -185,8 +185,9 @@ Not covered, and where it is:
    point 7). They must not block on the network or on a lock the
    source's readers hold `[OWN]`. A hook on one of the driver's threads
    may drop the handle: that thread holds the lock, so the drop only
-   asks it to stop, and it stops the source once the hook returns (5.7,
-   point 7).
+   asks the source to stop. The stop happens once the move being told has
+   reached every consumer: that move is not published, and no further
+   record is applied (5.7, point 7).
 4. The causes are: a change (5.1), a snapshot completed (5.7, point 4),
    and each loss of section 7, named.
 5. Until the first snapshot completes, no hook is told of anything
@@ -321,14 +322,19 @@ any byte it covers is read, and every sum uses checked arithmetic.
    `NLM_F_REQUEST | NLM_F_ACK` and a sequence of its own, which the kernel
    acknowledges on that socket, after every notification queued before
    it (EXECUTED on the guest's kernel: the acknowledgement is an
-   `NLMSG_ERROR` of error 0 and that sequence). Only an `NLMSG_ERROR` of
-   error 0 that echoes an `NLMSG_NOOP` is that acknowledgement; any other
-   `NLMSG_ERROR` of the barrier's sequence fails the snapshot (refused).
-   The acknowledgement counts only in a datagram whose every message
-   decodes and holds no `NLMSG_OVERRUN`; otherwise the bad message is a
-   loss (point 6), which abandons the snapshot. When the notify side reads
-   that acknowledgement, with the snapshot not dirty, the fresh tables
-   replace the live ones and the generation moves (cause: snapshot). So
+   `NLMSG_ERROR` of error 0 and that sequence). The barrier outstanding
+   when a datagram arrives is the one that datagram is checked against,
+   whole, before any of it is applied. It is accepted only when the
+   datagram decodes whole, holds no `NLMSG_OVERRUN` (otherwise the bad
+   message is a loss, point 6, which abandons the snapshot), and holds
+   exactly one `NLMSG_ERROR` of the barrier's sequence: error 0, echoing
+   an `NLMSG_NOOP`. Any other `NLMSG_ERROR` of that sequence in the
+   datagram, before or after an acknowledgement, fails the snapshot
+   (refused). Every record of the datagram is applied in order; at the
+   acknowledgement, with the snapshot not dirty, the fresh tables replace
+   the live ones, so later records of the datagram apply to them, and
+   their moves are told unpublished; after the datagram's last record the
+   generation moves (cause: snapshot) and is published. So
    the publication follows everything the notify socket received before
    the dump ended, an overflow among them, on the one thread that reads
    that socket. This move is required: a change between the subscription
@@ -375,9 +381,10 @@ any byte it covers is read, and every sum uses checked arithmetic.
    whose acknowledgement is lost leaves the generation unavailable until
    the next loss: closing these needs a deadline (section 13, Q6).
    Dropping the handle stops the source and joins both threads; a hook on
-   one of the threads that drops it only records the stop, and that
-   thread, once the hook returns, stops the source and ends, without
-   joining. This needs no call
+   one of the threads that drops it only asks for the stop (5.3,
+   point 3), which the monitor honours before publishing or applying
+   anything more, and both threads check for it each time they take the
+   lock after a receive; that thread then ends, without joining. This needs no call
    beyond `linux-rtnetlink`'s; a `poll` with a wake descriptor or a
    receive timeout would each need a new site of ADR 0005. A dump that does not end in order
    (links, then addresses, then the barrier) may still be running in the
@@ -422,11 +429,11 @@ any byte it covers is read, and every sum uses checked arithmetic.
 | any other failed receive on the notify socket | move (failed); the notify socket is made again (joined before use), then a fresh snapshot; if it cannot be made, stopped |
 | a link or address notification while a snapshot runs | the snapshot is dirty: taken again when its barrier comes back, never published; not a failed snapshot, and no move beyond the change's own |
 | dump truncated, malformed, interrupted (`NLM_F_DUMP_INTR`), answered with `NLMSG_ERROR` of its sequence or `NLMSG_DONE` of a negative status, holding `NLMSG_OVERRUN` of any sequence, or holding anything of its sequence after its terminator | move (the cause); the snapshot restarts; 8 in a row: stopped. A dump datagram is checked whole before any of it is applied, so `NLMSG_DONE` never completes a snapshot ahead of bad bytes, and nothing after the link dump's terminator is applied to the address dump, whose request is not yet sent |
-| the barrier answered with an `NLMSG_ERROR` other than error 0 echoing `NLMSG_NOOP` | move (refused); the snapshot restarts; counted as a failed snapshot |
+| the barrier answered, in one datagram, with an `NLMSG_ERROR` other than error 0 echoing `NLMSG_NOOP`, or more than once | move (refused), after the datagram's records are applied; the snapshot restarts; counted as a failed snapshot |
 | request socket send or receive failure | as a failed dump |
 | resume | move (resumed); fresh snapshot |
 | counter exhausted, the handle dropped, or a monitor thread ended | stopped: reads fail, every hook told |
-| the handle dropped by a hook on one of the monitor's threads | that thread stops the source once the hook returns, and ends |
+| the handle dropped by a hook on one of the monitor's threads | stopped once that move is told to every consumer, before it is published or another record is applied; that thread ends |
 | a hook panicked | halted: reads fail, no hook called again |
 | any loss, until the fresh snapshot completes | reads fail (5.2, point 1) |
 
