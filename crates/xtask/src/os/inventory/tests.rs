@@ -67,6 +67,33 @@ fn parse_reads_statuses_and_the_code_of_implemented_rows() {
 }
 
 #[test]
+fn parse_reads_a_row_s_feature_macros_and_refuses_any_but_gnu_source() {
+    let text = inventory_text();
+    let with = |defines: &str| {
+        text.replacen(
+            "\"module\": \"linux_clock\",",
+            &format!("\"module\": \"linux_clock\",\n      \"defines\": {defines},"),
+            1,
+        )
+    };
+    let clock = |inventory: &super::Inventory| {
+        inventory
+            .rows
+            .iter()
+            .find(|row| row.id == "linux-clock")
+            .and_then(|row| row.code.clone())
+            .unwrap()
+    };
+    assert_eq!(clock(&parse(&text).unwrap()).defines, Vec::<String>::new());
+    assert_eq!(
+        clock(&parse(&with("[\"_GNU_SOURCE\"]")).unwrap()).defines,
+        ["_GNU_SOURCE"]
+    );
+    let refused = parse(&with("[\"_POSIX_C_SOURCE 1\\n#include <x.h>\"]")).unwrap_err();
+    assert!(refused.contains("is not a feature macro"), "{refused}");
+}
+
+#[test]
 fn problems_name_each_planted_departure() {
     let text = inventory_text();
     let cases: [(&str, String, &str); 9] = [

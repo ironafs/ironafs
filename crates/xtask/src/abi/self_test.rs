@@ -244,7 +244,7 @@ fn stage(source: &str, file: &Path) -> Result<Stage, Error> {
         return Ok(Stage::Reader(error));
     }
     let headers: Vec<String> = HEADERS.iter().map(|header| (*header).to_owned()).collect();
-    let c = match c_source("self-test", &headers, &found, DataModel::Lp64) {
+    let c = match c_source("self-test", &[], &headers, &found, DataModel::Lp64) {
         Ok(c) => c,
         Err(error) => return Ok(Stage::Generator(error)),
     };

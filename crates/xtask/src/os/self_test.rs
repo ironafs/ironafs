@@ -525,10 +525,10 @@ fn check_edited(
             case: "reading a planted file",
             found: vec![error.to_string()],
         })?;
-        let root = path == Path::new("src/lib.rs");
+        let place = scan::place_of(&path);
         files.push(CrateFile {
             path,
-            scan: scan::scan(&tokens, root),
+            scan: scan::scan(&tokens, place),
         });
     }
     Ok(compare(inventory, &files, &compiled))

@@ -130,6 +130,7 @@ fn declarations_refuse_what_c_cannot_be_compared_with() {
 fn c_source_asserts_layout_member_types_constants_and_function_types() {
     let source = c_source(
         "linux-clock",
+        &[],
         &["time.h".into()],
         &read(CLOCK),
         DataModel::Lp64,
@@ -161,7 +162,7 @@ fn c_source_lays_out_padding_as_repr_c_does() {
         "use core::ffi::{c_char, c_int, c_void};\n\
          #[repr(C)]\nstruct padded { a: c_char, b: c_int, c: c_char, d: *mut c_void }\n",
     );
-    let source = c_source("row", &[], &found, DataModel::Lp64).unwrap();
+    let source = c_source("row", &[], &[], &found, DataModel::Lp64).unwrap();
     for line in [
         "_Static_assert(offsetof(struct padded, b) == 4, \"row: offsetof(struct padded, b)\");",
         "_Static_assert(offsetof(struct padded, c) == 8, \"row: offsetof(struct padded, c)\");",
@@ -179,6 +180,7 @@ fn c_source_lays_out_padding_as_repr_c_does() {
 fn c_source_takes_long_as_four_bytes_on_windows() {
     let source = c_source(
         "row",
+        &[],
         &[],
         &read("use core::ffi::c_long;\n#[repr(C)]\nstruct pair { a: c_long, b: c_long }\n"),
         DataModel::Llp64,
@@ -210,14 +212,14 @@ fn c_source_resolves_type_names_by_identity_not_spelling() {
         ),
     ] {
         assert_eq!(
-            c_source("row", &[], &read(source), DataModel::Lp64),
+            c_source("row", &[], &[], &read(source), DataModel::Lp64),
             Err(error.to_owned()),
             "{source}"
         );
     }
     let written_out = read("#[repr(C)]\nstruct ok { a: core::ffi::c_long }\n");
     assert!(
-        c_source("row", &[], &written_out, DataModel::Lp64)
+        c_source("row", &[], &[], &written_out, DataModel::Lp64)
             .unwrap()
             .contains("_Generic(((struct ok *)0)->a, long: 1)")
     );
@@ -270,6 +272,7 @@ fn c_source_reads_an_alias_of_a_core_ffi_type_by_its_identity() {
     let unsigned = c_source(
         "row",
         &[],
+        &[],
         &read("type rlim_t = core::ffi::c_ulong;"),
         DataModel::Lp64,
     )
@@ -280,7 +283,13 @@ fn c_source_reads_an_alias_of_a_core_ffi_type_by_its_identity() {
             .any(|line| line == "_Static_assert((rlim_t)-1 > 0, \"row: rlim_t is unsigned\");"),
         "{unsigned}"
     );
-    let not_imported = c_source("row", &[], &read("type rlim_t = c_ulong;"), DataModel::Lp64);
+    let not_imported = c_source(
+        "row",
+        &[],
+        &[],
+        &read("type rlim_t = c_ulong;"),
+        DataModel::Lp64,
+    );
     assert_eq!(
         not_imported.unwrap_err(),
         "`c_ulong` is neither imported from core::ffi, a primitive integer, nor a struct or type \
@@ -292,6 +301,7 @@ fn c_source_reads_an_alias_of_a_core_ffi_type_by_its_identity() {
 fn c_source_names_an_alias_by_its_c_typedef_and_asserts_its_size_alignment_and_sign() {
     let source = c_source(
         "unix-nodump",
+        &[],
         &["sys/resource.h".into()],
         &read(RLIMIT),
         DataModel::Lp64,
@@ -314,7 +324,14 @@ fn c_source_names_an_alias_by_its_c_typedef_and_asserts_its_size_alignment_and_s
 
 #[test]
 fn c_source_asserts_a_signed_alias_is_signed() {
-    let source = c_source("row", &[], &read("type ssize_t = isize;"), DataModel::Lp64).unwrap();
+    let source = c_source(
+        "row",
+        &[],
+        &[],
+        &read("type ssize_t = isize;"),
+        DataModel::Lp64,
+    )
+    .unwrap();
     assert!(
         source
             .lines()
@@ -327,7 +344,22 @@ fn c_source_asserts_a_signed_alias_is_signed() {
 fn c_source_asks_for_the_posix_prototypes_not_the_gnu_ones() {
     // Under _GNU_SOURCE glibc declares setrlimit's resource as an enum,
     // whose compatible type is not `int`; POSIX and musl declare `int`.
-    let source = c_source("row", &[], &Declarations::default(), DataModel::Lp64).unwrap();
+    let source = c_source("row", &[], &[], &Declarations::default(), DataModel::Lp64).unwrap();
     assert!(source.contains("#define _DEFAULT_SOURCE 1\n"), "{source}");
     assert!(!source.contains("_GNU_SOURCE"), "{source}");
+}
+
+#[test]
+fn c_source_defines_a_row_s_feature_macros_before_any_include() {
+    // glibc and musl declare `struct ucred` only under _GNU_SOURCE.
+    let source = c_source(
+        "linux-peercred",
+        &["_GNU_SOURCE".to_owned()],
+        &["sys/socket.h".to_owned()],
+        &Declarations::default(),
+        DataModel::Lp64,
+    )
+    .unwrap();
+    let define = source.find("#define _GNU_SOURCE 1\n").expect(&source);
+    assert!(define < source.find("#include").unwrap(), "{source}");
 }

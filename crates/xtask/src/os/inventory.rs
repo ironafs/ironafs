@@ -91,6 +91,8 @@ pub(crate) struct Code {
     /// The C headers the row's declarations are written from, for the ABI
     /// check (ADR 0005, point 5.6).
     pub(crate) headers: Vec<String>,
+    /// The feature macros the ABI check defines before the headers.
+    pub(crate) defines: Vec<String>,
     pub(crate) extern_blocks: Vec<ExternBlock>,
     pub(crate) blocks: Vec<Block>,
     pub(crate) impls: usize,
@@ -284,11 +286,36 @@ fn parse_code(code: &Value) -> Result<Code, String> {
     Ok(Code {
         module: text(code, "module")?.to_owned(),
         headers: strings("headers")?,
+        defines: defines(code)?,
         extern_blocks,
         blocks,
         impls,
     })
 }
+
+/// The feature macros a row's ABI check defines (`defines`, optional):
+/// only those of `FEATURE_MACROS`, since each is written into the C file.
+fn defines(code: &Value) -> Result<Vec<String>, String> {
+    let Some(defines) = code.get("defines") else {
+        return Ok(Vec::new());
+    };
+    defines
+        .as_array()
+        .ok_or("`defines` is not an array")?
+        .iter()
+        .map(|value| match value.as_str() {
+            Some(name) if FEATURE_MACROS.contains(&name) => Ok(name.to_owned()),
+            _ => Err(format!(
+                "`defines` holds {value:?}, which is not a feature macro the ABI check accepts \
+                 ({})",
+                FEATURE_MACROS.join(", ")
+            )),
+        })
+        .collect()
+}
+
+/// The feature macros a row may ask the ABI check to define.
+const FEATURE_MACROS: &[&str] = &["_GNU_SOURCE"];
 
 /// The rows of the ADR's table: the lines starting `| <number> |` in the
 /// section that holds it, split at each `|` not escaped as `\|`, with the
