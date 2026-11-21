@@ -552,10 +552,12 @@ Everything in 5.2.1, plus:
    row by its id, and then fails listing every failing id.
 2. **Generated per-message tests.** The `xtask` generator that emits the
    codecs of `ironafs-proto`, `ironafs-ipc` and `ironafs-events` also
-   emits, for every message it generates a decoder for: D3 both ways; D4
-   for every variable-length field at its cap and the cap plus one; D5
-   over its prefixes; D6 over every padding and reserved byte and every
-   discriminant; the memory budget check; and D10. For a message it
+   emits, for every message it generates a decoder for: D3 both ways
+   when it also generates that message's encoder (a decode-only message
+   has no round trip); D4 for every variable-length field at its cap and
+   the cap plus one; D5 over its prefixes; D6 over every padding and reserved
+   byte and every discriminant; the memory budget check; and D10. For a
+   message it
    generates only an encoder for (an event carried to a log sink, for
    example), it emits D4 on the encoder (a field at its cap encodes, the
    cap plus one is refused) and, for a secret-bearing message, D8. The generated files are checked in, and CI
@@ -981,11 +983,13 @@ by nature.
    secret the runner does not hold. An ordinary failure files or updates
    a public issue holding the job, the target or scenario, the revision,
    the test's name and its failure kind from a fixed list (assertion
-   failed, timed out, simulator error, could not run), and the statement
-   that replay details are not published. A separate reporter job, the
-   only one with issue write access, receives the allowlisted fields from
-   the test jobs through a handoff that creates no artefact, reads them as
-   untrusted data and runs no code from the test jobs.
+   failed, invariant violated), and the statement that replay details
+   are not published. A listed test that timed out or could not run
+   wrote no failure record, so it is restricted under the rule above. A
+   separate reporter job, the only one with issue write access, receives
+   the allowlisted fields from the test jobs through a handoff that
+   creates no artefact, reads them as untrusted data and runs no code
+   from the test jobs.
 10. **Phase-gate evidence.** Each phase gate attaches to its record the
     inventory of every tier and venue it ran (5.4, point 5), the latest
     coverage report and the latest nightly mutation results, and a census
@@ -1304,4 +1308,4 @@ None.
 
 ## 14. Review
 
-Not yet reviewed. The record will be in `docs/reviews/`.
+[2026-11-21-m2a-63-testing](../reviews/2026-11-21-m2a-63-testing.md).
