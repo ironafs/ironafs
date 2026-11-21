@@ -14,7 +14,7 @@ fn reader_reads_little_endian() {
     assert_eq!(reader.u16(), Some(0x0201));
     assert_eq!(reader.u32(), Some(0x0605_0403));
     assert_eq!(reader.u64(), Some(0x0e0d_0c0b_0a09_0807));
-    assert_eq!(reader.rest(), b"");
+    assert_eq!(reader.u16(), None);
 }
 
 #[test]

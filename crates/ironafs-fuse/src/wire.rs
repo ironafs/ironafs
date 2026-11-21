@@ -46,11 +46,6 @@ impl<'a> Reader<'a> {
         self.bytes = self.bytes.get(count..)?;
         Some(())
     }
-
-    /// The bytes not yet read.
-    pub(crate) fn rest(self) -> &'a [u8] {
-        self.bytes
-    }
 }
 
 pub(crate) fn put_u16(out: &mut Vec<u8>, value: u16) {

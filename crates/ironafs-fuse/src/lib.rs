@@ -10,6 +10,7 @@ pub mod init;
 mod wire;
 
 pub mod opcode;
+pub mod reply;
 pub mod request;
 
 pub use errno::Errno;

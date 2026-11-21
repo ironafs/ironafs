@@ -49,21 +49,17 @@ impl InitFlags {
     }
 
     /// The low 32 bits, the INIT `flags` field.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the low half of the set is the point"
+    )]
     pub(crate) const fn low(self) -> u32 {
-        // Truncation keeps exactly the low half, which is the point.
-        #[expect(clippy::cast_possible_truncation, reason = "the low half of the set")]
-        let low = self.0 as u32;
-        low
+        self.0 as u32
     }
 
     /// The high 32 bits, the INIT `flags2` field.
     pub(crate) const fn high(self) -> u32 {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the high half, shifted down"
-        )]
-        let high = (self.0 >> 32) as u32;
-        high
+        (self.0 >> 32) as u32
     }
 }
 

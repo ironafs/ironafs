@@ -414,18 +414,7 @@ fn decode_body(opcode: Opcode, body: &[u8]) -> Result<Request<'_>, Malformed> {
             }
         }
         Opcode::BatchForget => Request::BatchForget(decode_batch_forget(body)?),
-        Opcode::Getattr => {
-            let mut reader = exact(body, 16)?;
-            let flags = field(reader.u32(), body, 16)?;
-            field(reader.skip(4), body, 16)?;
-            let fh = field(reader.u64(), body, 16)?;
-            if flags & !GETATTR_FH != 0 {
-                return Err(Malformed::UnknownFlags);
-            }
-            Request::Getattr {
-                fh: (flags & GETATTR_FH != 0).then_some(fh),
-            }
-        }
+        Opcode::Getattr => decode_getattr(body)?,
         Opcode::Open => Request::Open(decode_open(body)?),
         Opcode::Opendir => Request::Opendir(decode_open(body)?),
         Opcode::Read => {
@@ -442,15 +431,7 @@ fn decode_body(opcode: Opcode, body: &[u8]) -> Result<Request<'_>, Malformed> {
         Opcode::Readdir => Request::Readdir(decode_read(body)?),
         Opcode::Release => Request::Release(decode_release(body)?),
         Opcode::Releasedir => Request::Releasedir(decode_release(body)?),
-        Opcode::Flush => {
-            let mut reader = exact(body, 24)?;
-            let fh = field(reader.u64(), body, 24)?;
-            field(reader.skip(8), body, 24)?;
-            Request::Flush {
-                fh,
-                lock_owner: field(reader.u64(), body, 24)?,
-            }
-        }
+        Opcode::Flush => decode_flush(body)?,
         Opcode::Access => {
             let mut reader = exact(body, 8)?;
             Request::Access {
@@ -497,6 +478,29 @@ fn decode_body(opcode: Opcode, body: &[u8]) -> Result<Request<'_>, Malformed> {
         | Opcode::Tmpfile
         | Opcode::Statx
         | Opcode::CopyFileRange64 => Request::NotDecoded(opcode),
+    })
+}
+
+fn decode_getattr(body: &[u8]) -> Result<Request<'_>, Malformed> {
+    let mut reader = exact(body, 16)?;
+    let flags = field(reader.u32(), body, 16)?;
+    field(reader.skip(4), body, 16)?;
+    let fh = field(reader.u64(), body, 16)?;
+    if flags & !GETATTR_FH != 0 {
+        return Err(Malformed::UnknownFlags);
+    }
+    Ok(Request::Getattr {
+        fh: (flags & GETATTR_FH != 0).then_some(fh),
+    })
+}
+
+fn decode_flush(body: &[u8]) -> Result<Request<'_>, Malformed> {
+    let mut reader = exact(body, 24)?;
+    let fh = field(reader.u64(), body, 24)?;
+    field(reader.skip(8), body, 24)?;
+    Ok(Request::Flush {
+        fh,
+        lock_owner: field(reader.u64(), body, 24)?,
     })
 }
 
