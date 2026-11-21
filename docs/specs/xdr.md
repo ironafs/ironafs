@@ -129,8 +129,10 @@ Section 9 shows where each is kept and which test fails if it is broken.
    decoder would reject.
 6. The codec is pure, has no dependencies, never panics, and its errors
    carry offsets, names and the specification's own constants, never a
-   value read from the input; an error an entry point returns from a
-   message with a secret field carries not even an offset.
+   value read from the input; an error a decode entry point returns
+   from a message with a secret field carries not even an offset. The
+   encoder builds its errors with no offset, and returns an error from a
+   handwritten encoder as that encoder made it (7, point 2).
 
 ## 4. Terms
 
@@ -277,8 +279,9 @@ the message, because every item is a whole number of units
      buffer the caller supplies and wipes; the entry point that returns
      a buffer of the encoder's own does not build for such a message.
      The caller's buffer either has no allocation, and the encoder
-     requests its whole size once before writing and leaves that
-     allocation with the caller, or already has room for the whole
+     makes one fallible reservation call for its whole size before
+     writing, which acquires at most one allocation and leaves any it
+     acquires with the caller, or already has room for the whole
      message and is written in place; an allocated buffer that is too
      small is refused with `AllocationFailed`. The encoder never grows,
      moves or frees an allocation the caller's buffer holds, so no byte
@@ -325,9 +328,9 @@ the message, because every item is a whole number of units
      a `Debug` that prints the type and field names only, never a value,
      a length or a count, and no `Display`. The raw value is reached only
      through an explicitly named method of the wrapper, so printing it
-     takes a deliberate call that review sees. An error that an entry
-     point returns from a secret-bearing message carries no offset or
-     length (section 7, point 2);
+     takes a deliberate call that review sees. An error that a decode
+     entry point returns from a secret-bearing message carries no offset
+     or length (section 7, point 2);
    - **limits, written down as rule 8 requires.** The crate cannot zero
      memory without `unsafe` (rule 5). So these are not zeroed: the words
      the decoder reads into registers and stack temporaries during a
@@ -354,7 +357,10 @@ the message, because every item is a whole number of units
      generator's to carry and test; and a handwritten decoder that
      starts a separate decode of bytes it holds (5.2, point 9.2, "One
      decode, one ledger") decodes them under that other type's secrecy,
-     which may copy them, and nothing stops it. Review sees all four.
+     which may copy them, and nothing stops it; and a handwritten
+     encoder that runs a decode and passes on its positioned error,
+     which the encode entry points return as it is (section 7, point 2).
+     Review sees all five.
 
 ### 5.2 Caps
 
@@ -392,8 +398,8 @@ the message, because every item is a whole number of units
 
    | Column | Content |
    |---|---|
-   | Cap name | stable, lower case, dotted: `<interface>.<message>.<field path>`, for example `vl.get_entry.reply.name`; the message cap is `<interface>.<message>` |
-   | Field | the field the cap applies to, or "message" |
+   | Cap name | stable, lower case, dotted: `<interface>.<message>.<field path>`, for example `vl.get_entry.reply.name`; the message cap is `<interface>.<message>`; the row of a named type (below, "An item that is no field") is `<interface>.<type>` |
+   | Field | the field the cap applies to, "message", or, for a named type's row, the values of that type it covers |
    | Kind | opaque, string, array or message; for a secret field with no cap (below), its type: integer, unsigned integer, hyper, unsigned hyper, enumeration, boolean, fixed-length opaque, fixed-length array, structure or union |
    | Declared bound | m, its unit (bytes or elements) and its source, or "none" |
    | Cap | the value, in bytes, or "none" for a secret field with no cap |
@@ -409,8 +415,9 @@ the message, because every item is a whole number of units
    unless it is secret: an integer, unsigned integer, hyper, unsigned
    hyper, enumeration or boolean, a union's discriminant, a fixed-length
    opaque, a fixed-length array (whose encoded size may vary, as
-   `pair`'s does in 10.1, but whose variable-length items each have
-   their own rows), and a field whose type is a structure or a union.
+   `pair`'s does in 10.1, but whose variable-length elements each have
+   a row, their named type's, below), and a field whose type is a
+   structure or a union.
    A secret one has a row of its own: its cap name names the field as
    above, its Kind is its type, its Cap and Declared bound are "none",
    and its Secret is yes. Such a row sets no cap constant; it records
@@ -418,12 +425,34 @@ the message, because every item is a whole number of units
    held as the declared value it names (5.1, point 8, first item and
    limits).
 
+   **An item that is no field.** A variable-length item that is an
+   array's element, fixed-length or variable-length, or that is the
+   whole value of a type decoded on its own, has no field path. A
+   definition gives such an element a named type, as RFC 4506's
+   language requires, since there a declaration of variable-length
+   opaque data, a string or a variable-length array takes no further
+   array suffix `[X1 §6.3: CONFIRMED]`, whatever notation the
+   definitions use (Q4). Its cap is that
+   named type's, in one row with the cap name `<interface>.<type>`: one
+   row per named type, written once in the specification that declares
+   the type, which applies wherever such a value of the type is decoded
+   or encoded, in every array of it and in every message. A component or
+   arm whose type is that named type is a field, and keeps a row of its
+   own by its path, with a cap of its own: in 10.1, `test.label` caps
+   each `label` in `pair`, `names` and `tags`, while `test.note.owner`
+   and `test.sealed.tag` cap the `label` fields. A Secret mark on a
+   named type's row sets that named type's own flag, so every array,
+   structure and message that holds the type is secret through its
+   components (below).
+
    The generated codec carries each cap as a named constant derived from
    the cap name, and the tests that check it cite the name. A cap name is
    never reused for another field. A message row's cap name, cap and
    memory budget are carried as the descriptor of the message's type.
 
-   **Which type's flag a marked row sets.** A row names a field by its
+   **Which type's flag a marked row sets.** A named type's row is
+   declared by that named type itself, and a mark on it sets that type's
+   own flag. Every other row names a field by its
    path from the message, and the path's last step is the field. That
    field is declared by exactly one structure or union, whatever the
    path through which the message reaches it:
@@ -847,14 +876,16 @@ not control").
       size, made fallibly (`try_reserve_exact`; `AllocationFailed` if the
       call fails). The call and an allocator request are not the same:
       the call does nothing when the capacity already covers the size,
-      a size of 0 on an empty buffer included `[R1: CONFIRMED]`. So a
-      buffer whose allocation already holds that size is written in
-      place, with no allocator request, and a buffer with no allocation
-      gets one allocator request, unless the size is 0. A call that
-      fails leaves the buffer as it was, with no new allocation.
+      a size of 0 on an empty buffer included `[R1: CONFIRMED]`, and it
+      may fail its own capacity check before it reaches the allocator.
+      So a buffer whose allocation already holds that size is written
+      in place, with no allocator request, and a buffer with no
+      allocation gets at most one allocator request: none if the size is
+      0 or the call fails before it reaches the allocator. A call that
+      fails leaves the buffer as it was, with no allocation acquired.
    4. The encoder never grows, shrinks, moves or frees an allocation the
-      caller's buffer already holds, nor the one step 3 requested for a
-      buffer that had none, which stays with the caller's buffer. Rust
+      caller's buffer already holds, nor the one step 3's call acquired
+      for a buffer that had none, which stays with the caller's buffer. Rust
       guarantees a capacity of at least the request, not exactly it
       `[R1: CONFIRMED]`, which is enough: the encoder writes exactly the
       computed size, only with `push` (5.2, point 9.4), so the buffer
@@ -946,8 +977,9 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    `AllocationFailed`, the length or count word whose reservation
    failed, or the start of an item without one (a fixed-length array or
    opaque, or a value held out of line) whose reservation or boxing
-   failed. An error an entry point returns from a secret-bearing message
-   carries no offset (point 2).
+   failed. An error a decode entry point returns from a secret-bearing
+   message carries no offset (point 2). The encoder builds its own errors
+   with no offset.
 
    | Kind | When | Also carries | Decode | Encode |
    |---|---|---|---|---|
@@ -988,7 +1020,7 @@ and fallible conversions (coding standards rule 2); none of it saturates.
      decode, one ledger") is built without them: it carries its kind,
      the field or cap name, and the specification's constants only, and
      the position is absent;
-   - **where it is returned:** the entry points remove the position from
+   - **where it is returned:** the decode entry points remove the position from
      every error a secret-bearing message's decode returns, whatever
      built it. That covers an error that a handwritten decoder passes
      on from a separate decode it started: such an error was built under
@@ -1008,16 +1040,24 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    message, then sees only what the returned error holds, and no caller
    needs a redaction rule of its own. The encoder's errors carry no
    value from its input either: a length it refuses is named by its
-   field, never printed.
+   field, never printed. The encoder builds its own errors with no
+   position. The encode entry points return an error from a value's
+   `encode` or `encoded_len` as that code made it, except that a
+   `MessageTooLarge` from `encoded_len` is replaced by the message's
+   own; they remove no position. A handwritten encoder that runs a
+   decode and passes on its error passes on that decode's position, so
+   a handwritten encoder of a secret-bearing message does not return
+   such an error. The codec cannot check that; it rests on review
+   (5.1, point 8, limits).
 3. **No panic is reachable** from any input (coding standards rule 1). The
    codec uses no indexing, `unwrap` or `expect` on input-derived values.
 4. **Fail closed.** A decode error means the message is not used. What the
    caller does next (abort the call, count the event, report it) is the
    caller's specification. The codec only reports. An encode error leaves
    the caller's output buffer empty, keeping an allocation it came with
-   and any the encoder requested for it, or, from the entry point that
-   returns the encoder's own buffer, no buffer at all (5.5, point 6), so
-   nothing of a refused message can be sent from it.
+   and any the encoder's reservation call acquired for it, or, from the
+   entry point that returns the encoder's own buffer, no buffer at all
+   (5.5, point 6), so nothing of a refused message can be sent from it.
 
 ## 8. Security
 
@@ -1033,7 +1073,7 @@ integrity, anyone on the network path (ADR 0004, A13). They can try:
 | Exhausting the stack with deep nesting, a long array or a large inline value | no optional data and no recursive types (5.1, points 3 and 4) `[X1 §8: CONFIRMED]`; array elements decoded by a loop (5.1, point 4); limits on inline size and nesting depth, large values held out of line, and `decode_fits_small_stack` (5.2, point 10) |
 | Crashing the daemon | no panics, checked arithmetic (section 6; 7, point 3); the fuzz target (10.4) |
 | Two encodings of one value, used to slip a change past a check or a cache key | strict padding, booleans and enumerations (5.4, points 8 and 9); integrity over the bytes received (5.4, point 12); round-trip property P2 |
-| Leaking a secret through an error, a log or a stray copy | no value read from the input in errors; no offset or length in an error that an entry point returns from a secret-bearing message: the decoder builds its own errors without one, and the entry points remove one from any error a handwritten decoder passes on from a separate decode, which holds its position only inside that decoder, where it must not be reported (7, point 2); in a secret-bearing message no input byte copied into the decoded value through the decoder it is given, whatever field misframing puts it in, and no value, length or count of any field of a secret-bearing message shown by `Debug` or `Display`; a secret-bearing message encoded only into the caller's buffer, whose allocation, whether it came with the buffer or the encoder requested it, the encoder never grows, moves or frees, even when a value's encoding unwinds, so the caller's wipe reaches every byte written into it; and secrecy carried by one flag per type, set from the fields its cap table marks, capped or not, which the encoder and the decoder both read, so a type that can hold a secret does not build into a buffer the encoder returns, and each decode is made under its own type's caps, budget and secrecy (5.1, point 8, with its stated limits, among them a separate decode started inside a decoder and the encoder's temporaries; 5.2, points 5 and 9.2; 5.5, points 3 and 6) |
+| Leaking a secret through an error, a log or a stray copy | no value read from the input in errors; no offset or length in an error that a decode entry point returns from a secret-bearing message: the decoder builds its own errors without one, and the decode entry points remove one from any error a handwritten decoder passes on from a separate decode, which holds its position only inside that decoder, where it must not be reported (7, point 2); the encoder builds its own errors without one, and review keeps a handwritten encoder of a secret-bearing message from passing on a positioned error, which the encode entry points return as it is (7, point 2); in a secret-bearing message no input byte copied into the decoded value through the decoder it is given, whatever field misframing puts it in, and no value, length or count of any field of a secret-bearing message shown by `Debug` or `Display`; a secret-bearing message encoded only into the caller's buffer, whose allocation, whether it came with the buffer or the encoder's one reservation call acquired it, the encoder never grows, moves or frees, even when a value's encoding unwinds, so the caller's wipe reaches every byte written into it; and secrecy carried by one flag per type, set from the fields its cap table marks, capped or not, which the encoder and the decoder both read, so a type that can hold a secret does not build into a buffer the encoder returns, and each decode is made under its own type's caps, budget and secrecy (5.1, point 8, with its stated limits, among them a separate decode started inside a decoder, a handwritten encoder's forwarded error and the encoder's temporaries; 5.2, points 5 and 9.2; 5.5, points 3 and 6) |
 | Slipping an invalid discriminant past a default arm | the discriminant is validated as its own type before dispatch (5.4, point 7) |
 | A name with NUL or `/` reaching the operating system | out of this codec's scope by design (5.1, point 6); the consumer checks it `[X1 §8: CONFIRMED]` |
 | An integer used as a size without a check | integers are not converted here (5.1, point 7); the consumer applies rule 2 |
@@ -1096,6 +1136,7 @@ struct sealed {                                   /* secret-bearing */
 | `test.note.title` | `title` | string | 32 bytes | 32 | both | | | equal to its bound, so R1 and P4 pin the bound's check before the cap's |
 | `test.note.what.target` | `what.target` | string | 16 bytes | 16 | both | | | equal to its bound |
 | `test.note.owner` | `owner` | string | 8 bytes | 8 | both | | | equal to its bound (`label`) |
+| `test.label` | each `label` that is no field: the elements of `pair`, `names` and `tags`, and a `label` decoded on its own | string | 8 bytes | 8 | both | | | equal to its bound; the named type's row (5.2, point 5, "An item that is no field") |
 | `test.note.body` | `body` | opaque | 64 bytes | 16, below its bound | both | | | below its bound, so R2 and P4 test `CapExceeded` apart from the bound |
 | `test.names` | the array | array | none | 16 | both | | | small, so two or three labels cross its limit (R5, R5b, P4) |
 | `test.tags` | the array | array | 3 elements | 16, below the 36 bytes its bound allows | both | | | below what its bound allows, so R1a and P4 isolate `LengthOverBound` |
@@ -1107,9 +1148,12 @@ struct sealed {                                   /* secret-bearing */
 | `test.sealed.key` | `key` | opaque | 16 bytes | 16 | both | | yes | equal to its bound; the secret field of 5.1, point 8 |
 | `test.sealed.tag` | `tag` | string | 8 bytes | 8 | both | | | equal to its bound (`label`) |
 
-Each `label` in `pair`, `names` and `tags` has the cap 8. Each test type
+Each `label` in `pair`, `names` and `tags` has the cap 8, from the
+named type's row `test.label`. Each test type
 decoded on its own, without a message row above, is a message with the
-cap 128 and the memory budget 1024; the largest worst case among them,
+cap 128 and the memory budget 1024, named by the type, so `label`,
+`names`, `tags` and `solos` each have a message cap and a cap of their
+own under one name, told apart by their kind; the largest worst case among them,
 the cap-based bound the static proof checks (5.2, point 9.3), is that of
 `names`, `tags` and `pair`, ⌈24 ÷ 4⌉ + 1 = 7 per byte on a 64-bit
 target, so 896 bytes.
