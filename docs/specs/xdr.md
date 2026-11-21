@@ -788,7 +788,7 @@ integrity, anyone on the network path (ADR 0004, A13). They can try:
 
 | Invariant (section 1) | Kept by | Test that fails if it is broken |
 |---|---|---|
-| Constraint 4: no panics, checked arithmetic, byte limits | 5.2; 5.4; section 6; 7, point 3 | fuzz target `ironafs-xdr_decode` (10.4); reject corpus (10.3), cases R2 to R4; the workspace lints (coding standards rule 1) |
+| Constraint 4: no panics, checked arithmetic, byte limits | 5.2; 5.4; section 6; 7, point 3 | fuzz target `ironafs-xdr_decode` (10.4); reject corpus (10.3), cases R2 to R4, R5, R5b and R12; the workspace lints (coding standards rule 1) |
 | C3, point 1: pure, no socket, clock or randomness | the crate has no dependencies and no I/O (section 3, point 6) | PROPOSED: a dependency-graph check in `cargo xtask check` that `ironafs-xdr` has no dependencies and imports no `std::net`, `std::time` or `std::fs` (gap, #46) |
 | C4, point 1: no I/O, no `unsafe`, fuzzed, size caps | as C3; `unsafe_code = "forbid"`; 5.2 | the compiler (workspace lint); fuzz target (10.4); reject corpus (10.3), cases R2 to R4 |
 | C4, point 4: no pure crate depends on a driver or the client | no dependencies at all | the same dependency-graph check (gap, #46) |
@@ -845,11 +845,11 @@ struct sealed {                                   /* secret-bearing */
 | `test.note.body` | `body` | opaque | 64 bytes | 16, below its bound | both | | | below its bound, so R2 and P4 test `CapExceeded` apart from the bound |
 | `test.names` | the array | array | none | 16 | both | | | small, so two or three labels cross its limit (R5, R5b, P4) |
 | `test.tags` | the array | array | 3 elements | 16, below the 36 bytes its bound allows | both | | | below what its bound allows, so R1a and P4 isolate `LengthOverBound` |
-| `test.solos` | the array | array | none | 16 | both | | | a zero-sized element type, so the ledger, not a capacity, is what the budget reads (5.2, point 9) |
+| `test.solos` | the array | array | none | 16 | both | | | small like `test.names`, so a short count crosses it; a zero-sized element type, so the ledger, not a capacity, is what the budget reads (5.2, point 9) |
 | `test.deep` | message | message | none | 192 | both | 1024 | | exactly one value of the 16-level chain; the budget is the test types' default |
 | `test.wide` | message | message | none | 244 | both | 1024 | | exactly the TRUE arm and its discriminant; the budget is the test types' default |
 | `test.every` | message | message | none | 256 | both | 4096 | | room for one value of each profile type; the budget covers its out-of-line field and arrays |
-| `test.sealed` | message | message | none | 64 | both | 64 | | room for a full `sealed` value; nothing is copied from the input (5.1, point 8) |
+| `test.sealed` | message | message | none | 64 | both | 64 | | room for a full `sealed` value; the decoded value holds no copy of the secret field beyond what 5.1, point 8 allows |
 | `test.sealed.key` | `key` | opaque | 16 bytes | 16 | both | | yes | equal to its bound; the secret field of 5.1, point 8 |
 | `test.sealed.tag` | `tag` | string | 8 bytes | 8 | both | | | equal to its bound (`label`) |
 
