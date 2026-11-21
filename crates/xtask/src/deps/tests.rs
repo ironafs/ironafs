@@ -103,6 +103,7 @@ fn crate_table_names_every_crate_of_the_architecture_once() {
         "ironafs-events",
         "ironafs-crypto",
         "ironafs-time",
+        "ironafs-netgen",
         "ironafs-client",
         "ironafs-net",
         "ironafs-fuse",
@@ -121,6 +122,7 @@ fn crate_table_names_every_crate_of_the_architecture_once() {
     assert_eq!(kind_of("ironafs-client"), Some(Kind::Composition));
     assert_eq!(kind_of("ironafs-smb"), Some(Kind::Layer));
     assert_eq!(kind_of("ironafs-os"), Some(Kind::Driver));
+    assert_eq!(kind_of("ironafs-netgen"), Some(Kind::Pure));
     assert_eq!(kind_of("ironafs-sim"), Some(Kind::TestOnly));
     assert_eq!(kind_of("xtask"), Some(Kind::Automation));
     assert_eq!(kind_of("ironafs-unknown"), None);
