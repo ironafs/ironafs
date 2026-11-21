@@ -130,9 +130,11 @@ Section 9 shows where each is kept and which test fails if it is broken.
 6. The codec is pure, has no dependencies, never panics, and its errors
    carry offsets, names and the specification's own constants, never a
    value read from the input; an error a decode entry point returns
-   from a message with a secret field carries not even an offset. The
+   from a secret-bearing message carries not even an offset. The
    encoder builds its errors with no offset, and returns an error from a
-   handwritten encoder as that encoder made it (7, point 2).
+   handwritten encoder as that encoder made it, except a
+   `MessageTooLarge` from its size computation, which the encoder
+   replaces with the message's own (7, point 2).
 
 ## 4. Terms
 
@@ -183,8 +185,11 @@ Section 9 shows where each is kept and which test fails if it is broken.
   inside its parent (5.2, point 10).
 - **Secret field:** a field that a protocol specification marks as holding
   a ticket, a key or other secret material (5.1, point 8). A
-  **secret-bearing message** is one that holds a secret field at any
-  depth.
+  **secret-bearing message** is one whose type's secrecy flag is set: the
+  type's own marks, on the rows of its fields or, for a named type, on
+  its own row, combined with the flags of its components, elements and
+  arms (5.1, point 8; 5.2, point 5). So it holds, at any depth, a secret
+  field or a value of a named type marked secret.
 
 ## 5. Specification
 
@@ -260,8 +265,9 @@ the message, because every item is a whole number of units
    64-bit value. Any widening, narrowing or meaning (a time, an
    identifier) is the protocol specification's `[OWN]`; the codec does no
    arithmetic on them.
-8. **Secret fields.** A protocol specification marks each secret field in
-   its cap table (5.2, point 5). `[OWN]`, from coding standards rule 8,
+8. **Secret fields.** A protocol specification marks each secret field,
+   and each named type whose values are secret, in its cap table (5.2,
+   point 5). `[OWN]`, from coding standards rule 8,
    and keeping the crate free of dependencies (section 3, point 6):
    - in a secret-bearing message the decoder copies no input bytes into
      the decoded value, whatever the field: a misframed input can put a
@@ -291,7 +297,8 @@ the message, because every item is a whole number of units
      is safe to pass for any other;
    - **secrecy is one flag per type, and on encode it is structural.**
      Every encodable type and every message type declares, in one
-     place, whether a value of it can hold a secret field at any depth.
+     place, whether a value of it can hold a secret field, or a value of
+     a named type marked secret, at any depth.
      A type has that one declaration, so the flag is the same wherever
      it is read. A type's flag is at least that of each of its
      components, elements and arms: a component is written only through
@@ -305,8 +312,9 @@ the message, because every item is a whole number of units
      encoder's own buffer, and the decoder's redaction of errors
      (section 7, point 2) all read the type's one flag, so they cannot
      disagree. The generator sets each type's own flag from the rows of
-     its cap table marked in the Secret column, capped or not, and
-     combines it with its components' flags (5.2, point 5, "Which type's
+     its cap table marked in the Secret column, field rows capped or not
+     and a named type's own row, and combines it with the flags of its
+     components, elements and arms (5.2, point 5, "Which type's
      flag a marked row sets"). So every message that can
      hold a secret, directly, through a generic caller or as a
      component of another message, is refused at build time by the
@@ -359,7 +367,8 @@ the message, because every item is a whole number of units
      decode, one ledger") decodes them under that other type's secrecy,
      which may copy them, and nothing stops it; and a handwritten
      encoder that runs a decode and passes on its positioned error,
-     which the encode entry points return as it is (section 7, point 2).
+     which the encode entry points return as it is, a `MessageTooLarge`
+     from `encoded_len` excepted (section 7, point 2).
      Review sees all five.
 
 ### 5.2 Caps
@@ -405,7 +414,7 @@ the message, because every item is a whole number of units
    | Cap | the value, in bytes, or "none" for a secret field with no cap |
    | Direction | in (decoded by IronAFS), out (encoded by IronAFS), or both |
    | Memory budget | message rows only: the memory budget in bytes (point 9) |
-   | Secret | yes for a secret field (5.1, point 8); otherwise empty |
+   | Secret | yes for a secret field (5.1, point 8), or, on a named type's row (below, "An item that is no field"), for a named type whose values are secret; otherwise empty |
    | Why | the reason for the value |
 
    **A secret field with no cap.** Whether a field has a row depends
@@ -479,9 +488,10 @@ the message, because every item is a whole number of units
    type is secret by its own rows or components makes its parent secret whether or
    not the parent's row marks the field. A type's one flag is its own
    flag or the flag of any of its components, elements and arms. So
-   whether a message is secret-bearing, that is whether any field below
-   it is marked in the Secret column of any table, is carried as its
-   type's flag, not in the descriptor.
+   whether a message is secret-bearing, that is whether its type's own
+   marks or the flags of its components, elements and arms set its
+   flag, which covers every marked field and every marked named type
+   below it, is carried as its type's flag, not in the descriptor.
 6. **A claimed count must be backed by input.** Before it reserves memory
    for an array of n elements, or enters the loop over them, the decoder
    checks that n × `s_min` of the element type is no more than the bytes
@@ -979,7 +989,10 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    opaque, or a value held out of line) whose reservation or boxing
    failed. An error a decode entry point returns from a secret-bearing
    message carries no offset (point 2). The encoder builds its own errors
-   with no offset.
+   with no offset. The table's Decode and Encode columns cover the
+   errors the codec builds itself; an encode entry point also returns
+   whatever error a handwritten encoder passes on, of any kind (point
+   2).
 
    | Kind | When | Also carries | Decode | Encode |
    |---|---|---|---|---|
@@ -1073,7 +1086,7 @@ integrity, anyone on the network path (ADR 0004, A13). They can try:
 | Exhausting the stack with deep nesting, a long array or a large inline value | no optional data and no recursive types (5.1, points 3 and 4) `[X1 §8: CONFIRMED]`; array elements decoded by a loop (5.1, point 4); limits on inline size and nesting depth, large values held out of line, and `decode_fits_small_stack` (5.2, point 10) |
 | Crashing the daemon | no panics, checked arithmetic (section 6; 7, point 3); the fuzz target (10.4) |
 | Two encodings of one value, used to slip a change past a check or a cache key | strict padding, booleans and enumerations (5.4, points 8 and 9); integrity over the bytes received (5.4, point 12); round-trip property P2 |
-| Leaking a secret through an error, a log or a stray copy | no value read from the input in errors; no offset or length in an error that a decode entry point returns from a secret-bearing message: the decoder builds its own errors without one, and the decode entry points remove one from any error a handwritten decoder passes on from a separate decode, which holds its position only inside that decoder, where it must not be reported (7, point 2); the encoder builds its own errors without one, and review keeps a handwritten encoder of a secret-bearing message from passing on a positioned error, which the encode entry points return as it is (7, point 2); in a secret-bearing message no input byte copied into the decoded value through the decoder it is given, whatever field misframing puts it in, and no value, length or count of any field of a secret-bearing message shown by `Debug` or `Display`; a secret-bearing message encoded only into the caller's buffer, whose allocation, whether it came with the buffer or the encoder's one reservation call acquired it, the encoder never grows, moves or frees, even when a value's encoding unwinds, so the caller's wipe reaches every byte written into it; and secrecy carried by one flag per type, set from the fields its cap table marks, capped or not, which the encoder and the decoder both read, so a type that can hold a secret does not build into a buffer the encoder returns, and each decode is made under its own type's caps, budget and secrecy (5.1, point 8, with its stated limits, among them a separate decode started inside a decoder, a handwritten encoder's forwarded error and the encoder's temporaries; 5.2, points 5 and 9.2; 5.5, points 3 and 6) |
+| Leaking a secret through an error, a log or a stray copy | no value read from the input in errors; no offset or length in an error that a decode entry point returns from a secret-bearing message: the decoder builds its own errors without one, and the decode entry points remove one from any error a handwritten decoder passes on from a separate decode, which holds its position only inside that decoder, where it must not be reported (7, point 2); the encoder builds its own errors without one, and review keeps a handwritten encoder of a secret-bearing message from passing on a positioned error, which the encode entry points return as it is, except a `MessageTooLarge` from `encoded_len`, replaced by the message's own (7, point 2); in a secret-bearing message no input byte copied into the decoded value through the decoder it is given, whatever field misframing puts it in, and no value, length or count of any field of a secret-bearing message shown by `Debug` or `Display`; a secret-bearing message encoded only into the caller's buffer, whose allocation, whether it came with the buffer or the encoder's one reservation call acquired it, the encoder never grows, moves or frees, even when a value's encoding unwinds, so the caller's wipe reaches every byte written into it; and secrecy carried by one flag per type, set from the rows its cap table marks, fields capped or not and named types, and combined with the flags of its components, elements and arms, which the encoder and the decoder both read, so a type that can hold a secret does not build into a buffer the encoder returns, and each decode is made under its own type's caps, budget and secrecy (5.1, point 8, with its stated limits, among them a separate decode started inside a decoder, a handwritten encoder's forwarded error and the encoder's temporaries; 5.2, points 5 and 9.2; 5.5, points 3 and 6) |
 | Slipping an invalid discriminant past a default arm | the discriminant is validated as its own type before dispatch (5.4, point 7) |
 | A name with NUL or `/` reaching the operating system | out of this codec's scope by design (5.1, point 6); the consumer checks it `[X1 §8: CONFIRMED]` |
 | An integer used as a size without a check | integers are not converted here (5.1, point 7); the consumer applies rule 2 |
@@ -1141,6 +1154,8 @@ struct sealed {                                   /* secret-bearing */
 | `test.note.title` | `title` | string | 32 bytes | 32 | both | | | equal to its bound, so R1 and P4 pin the bound's check before the cap's |
 | `test.note.what.target` | `what.target` | string | 16 bytes | 16 | both | | | equal to its bound |
 | `test.note.owner` | `owner` | string | 8 bytes | 8 | both | | | equal to its bound (`label`) |
+| `test.blob` | a `blob` value (`opaque x<>`; G7, R3), on its own | opaque | none | 16 | both | | | small, so R3's length word is far above it; the named type's row |
+| `test.ints` | an `ints` value (`unsigned int x<>`; G9, R4), on its own | array | none | 64 | both | | | room for G9; the named type's row |
 | `test.label` | each `label` that is no field: the elements of `pair`, `names` and `tags`, and a `label` decoded on its own | string | 8 bytes | 8 | both | | | equal to its bound; the named type's row (5.2, point 5, "An item that is no field") |
 | `test.note.body` | `body` | opaque | 64 bytes | 16, below its bound | both | | | below its bound, so R2 and P4 test `CapExceeded` apart from the bound |
 | `test.names` | the array | array | none | 16 | both | | | small, so two or three labels cross its limit (R5, R5b, P4) |
@@ -1157,8 +1172,9 @@ Each `label` in `pair`, `names` and `tags` has the cap 8, from the
 named type's row `test.label`. Each test type
 decoded on its own, without a message row above, is a message with the
 cap 128 and the memory budget 1024, named by the type, so `label`,
-`names`, `tags` and `solos` each have a message cap and a cap of their
-own under one name, told apart by their kind; the largest worst case among them,
+`blob`, `names`, `tags`, `solos` and `ints` each have a message cap and
+a cap of their own under one name, told apart by their kind; the
+largest worst case among them,
 the cap-based bound the static proof checks (5.2, point 9.3), is that of
 `names`, `tags` and `pair`, ⌈24 ÷ 4⌉ + 1 = 7 per byte on a 64-bit
 target, so 896 bytes.
