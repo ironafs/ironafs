@@ -1002,7 +1002,8 @@ fn canary_state(workspace: &Workspace) -> Result<(Vec<Violation>, Option<String>
 /// root, after `adjust` (which only the self-test uses, to plant an
 /// evasion), and returns what is wrong: the canary's state
 /// (`canary_state`), each canary line that drew no diagnostic and every
-/// other warning (`canary::verdict`), each variable a build script sets
+/// other warning (`canary::verdict`), each warning cargo itself prints
+/// (`cargo_warnings`), each variable a build script sets
 /// that clippy reads (`build_overrides`), and a run that failed.
 ///
 /// # Errors
@@ -1017,10 +1018,13 @@ pub(crate) fn lint(
     // Cargo reads its configuration from the directory it runs in up, so
     // it runs in the root, whose configuration check-bans reads.
     command.current_dir(&workspace.root);
+    // Plain text, so cargo's own warnings on standard error read as such.
+    command.env("CARGO_TERM_COLOR", "never");
     adjust(&mut command);
     let output = command.output().map_err(Error::io("cargo clippy"))?;
     let messages = String::from_utf8_lossy(&output.stdout);
     violations.extend(build_overrides(&messages));
+    violations.extend(cargo_warnings(&String::from_utf8_lossy(&output.stderr)));
     let member_ids: Vec<String> = workspace
         .members
         .iter()
@@ -1041,6 +1045,24 @@ pub(crate) fn lint(
             violation,
         })
         .collect())
+}
+
+/// Each warning or error cargo printed on its standard error, `stderr`,
+/// in the workspace's lint: an unused manifest key, a build script's
+/// `cargo::warning`, or any other. The compiler's diagnostics, the
+/// canary's among them, arrive as JSON on standard output instead.
+pub(crate) fn cargo_warnings(stderr: &str) -> Vec<Violation> {
+    stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            ["warning", "error"].iter().any(|word| {
+                line.strip_prefix(word)
+                    .is_some_and(|rest| rest.starts_with(':') || rest.starts_with('['))
+            })
+        })
+        .map(|line| Violation::Lint(line.to_owned()))
+        .collect()
 }
 
 /// The member directories of `workspace`.

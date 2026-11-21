@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::ffi::OsStr;
 
 use super::{
-    BANS, Ban, CONF_DIR, Found, Lint, Snapshot, Violation, build_overrides, changed, config_files,
-    fired_violations, listed, overridden, planted_source, root_config, uncovered, unreadable,
+    BANS, Ban, CONF_DIR, Found, Lint, Snapshot, Violation, build_overrides, cargo_warnings,
+    changed, config_files, fired_violations, listed, overridden, planted_source, root_config,
+    uncovered, unreadable,
 };
 
 /// Clippy's short-format warning for `ban` fired on line `line`, spelt
@@ -777,4 +778,30 @@ fn uncovered_reads_past_a_byte_order_mark() {
             path: "std::thread::sleep".to_owned()
         }]
     );
+}
+
+#[test]
+fn cargo_warnings_refuses_each_warning_cargo_prints() {
+    for line in [
+        "warning: unused manifest key: package.bogus",
+        "warning: planted@0.0.0: planted",
+        "error: something cargo said",
+        "warning[E0001]: a coded warning",
+    ] {
+        let stderr = format!(
+            "    Checking planted v0.0.0 (/w/planted)\n{line}\n    Finished `dev` profile in 0.2s\n"
+        );
+        assert_eq!(
+            cargo_warnings(&stderr),
+            [Violation::Lint(line.to_owned())],
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn cargo_warnings_accepts_cargo_progress() {
+    let stderr = "   Compiling planted v0.0.0 (/w/warning)\n    Checking x v0.0.0\n    \
+                  Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.26s\n";
+    assert_eq!(cargo_warnings(stderr), []);
 }

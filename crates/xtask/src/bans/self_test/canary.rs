@@ -30,10 +30,47 @@ fn tampered(violation: &Violation) -> bool {
     matches!(violation, Violation::Canary(_))
 }
 
+fn unused_key(violation: &Violation) -> bool {
+    matches!(violation, Violation::Lint(line) if line.contains("unused manifest key"))
+}
+
+fn script_warning(violation: &Violation) -> bool {
+    matches!(violation, Violation::Lint(line) if line.contains("planted-warning"))
+}
+
+/// A second member's manifest, and the same with a key cargo does not use.
+const PLANTED_MANIFEST: &str =
+    "[package]\nname = \"planted\"\nversion = \"0.0.0\"\nedition = \"2024\"\n";
+const PLANTED_UNUSED_KEY: &str =
+    "[package]\nname = \"planted\"\nversion = \"0.0.0\"\nedition = \"2024\"\nbogus = 1\n";
+
 /// A compiler wrapper that drops clippy and runs the compiler alone.
 const WRAPPER: &str = "#!/bin/sh\nfor arg; do shift; case \"$arg\" in *clippy-driver*) ;; *) set -- \"$@\" \"$arg\";; esac; done\nexec \"$@\"\n";
 
 const CASES: &[Case] = &[
+    Case {
+        // Cargo prints its own warnings on standard error, not as JSON.
+        name: "a member's manifest with a key cargo does not use",
+        files: &[
+            ("crates/planted/Cargo.toml", PLANTED_UNUSED_KEY),
+            ("crates/planted/src/lib.rs", ""),
+        ],
+        env: &[],
+        needs: unused_key,
+    },
+    Case {
+        name: "a member's build script that prints a warning",
+        files: &[
+            ("crates/planted/Cargo.toml", PLANTED_MANIFEST),
+            (
+                "crates/planted/build.rs",
+                "fn main() {\n    println!(\"cargo::warning=planted-warning\");\n}\n",
+            ),
+            ("crates/planted/src/lib.rs", ""),
+        ],
+        env: &[],
+        needs: script_warning,
+    },
     Case {
         name: "a cargo alias that makes clippy a plain check",
         files: &[(".cargo/config.toml", "[alias]\nclippy = \"check\"\n")],
@@ -96,6 +133,22 @@ const CASES: &[Case] = &[
     },
 ];
 
+/// `manifest` without its `[workspace.dependencies]` table, whose crates
+/// the canary's workspace does not hold: cargo would warn of each.
+fn without_dependencies(manifest: &str) -> String {
+    let mut inside = false;
+    manifest
+        .lines()
+        .filter(|line| {
+            if line.starts_with('[') {
+                inside = *line == "[workspace.dependencies]";
+            }
+            !inside
+        })
+        .flat_map(|line| [line, "\n"])
+        .collect()
+}
+
 /// Writes a workspace under `dir` holding only the canary, with the
 /// repository's `root_manifest`, `clippy_toml` and `toolchain_toml`, then
 /// `files`, and lints it as the real workspace is, with `env` set.
@@ -108,7 +161,7 @@ fn lint_planted(
     let (root_manifest, clippy_toml, toolchain_toml) = texts;
     let root = dir.to_string_lossy().into_owned();
     let canary_files = [
-        ("Cargo.toml", root_manifest.to_owned()),
+        ("Cargo.toml", without_dependencies(root_manifest)),
         ("clippy.toml", clippy_toml.to_owned()),
         ("rust-toolchain.toml", toolchain_toml.to_owned()),
         ("crates/ironafs-bans-canary/Cargo.toml", canary::manifest()),
