@@ -192,7 +192,7 @@ Locks remain an open question for the spike.
   Authorisation through deferred I/O is a design question for the
   architecture ADR, and writeback stays off until it is answered.
 
-## 4. Why FUSE never caught on for OpenAFS
+## 4. Earlier FUSE work for AFS
 
 - `afsd.fuse` arrived in OpenAFS 1.5.74, released on 2010-04-22 (INSPECTED,
   [afsd](https://docs.openafs.org/Reference/8/afsd.html)). It runs over

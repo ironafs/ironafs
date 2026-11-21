@@ -26,6 +26,10 @@ the evidence that refutes it.
 | [2026-11-20-windows-smb-first-docs](2026-11-20-windows-smb-first-docs.md) | Issue #21: the public description of Windows as SMB first |
 | [2026-11-20-review-authorship](2026-11-20-review-authorship.md) | Issue #26: who counts as an author for review seats |
 | [2026-11-20-adr-amendments](2026-11-20-adr-amendments.md) | Issue #28: firm and working ADR decisions, and amendments |
+| [2026-11-20-kernel-code-research](2026-11-20-kernel-code-research.md) | The research note on kernel code against user space, and README corrections |
+| [2026-11-20-readme-adr-0004](2026-11-20-readme-adr-0004.md) | The README follows ADR 0004: goals, sources for the Why section, planned platforms and order of work |
+| [2026-11-20-workflow-milestones](2026-11-20-workflow-milestones.md) | Milestones follow ADR 0004, O50 |
+| [2026-11-20-workflow-implementer](2026-11-20-workflow-implementer.md) | Issue #40: Claude implements from M2a; label rules and triage |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).

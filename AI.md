@@ -63,11 +63,12 @@ the defaults above change, this table changes in the same commit.
 | Role | Family | Agent id |
 |---|---|---|
 | Controller: plans, briefs, routes, verifies findings, drafts commits | Anthropic | `claude-code` |
-| Implementer | OpenAI | `codex` |
+| Implementer | Anthropic | `claude-code` (subagents the controller dispatches) |
+| Implementer for extra capacity | OpenAI | `codex` |
 | Implementer when codex is out of quota | Google | `agy` |
 | Design, research, rulings (read-only) | OpenAI | `codex` |
-| First reviewer of codex-written code | Zhipu | `glm` |
-| Second review family where the class needs two | Google or DeepSeek | `gemini`, `deepseek` |
+| First reviewer of implemented code | Zhipu | `glm` |
+| Second review family where the class needs two | OpenAI, Google, DeepSeek or Anthropic, whichever wrote none of the change and is not already the first reviewer | `codex` (read-only), `gemini`, `deepseek`, `claude-code` |
 | Claude review seats (never the only reviewer of Claude's work) | Anthropic | `claude-code` |
 
 The accounts are flat-rate subscriptions or usage-billed, and not all of them
@@ -98,9 +99,9 @@ not make a family an author (`docs/workflow.md` §2).
 | Class | Usually written by | Required reviews before merge | Other checks |
 |---|---|---|---|
 | **E** | Claude or the owner | none; the owner re-reads it | links resolve |
-| **I** | codex | one other family: GLM for codex's or agy's work; GPT or GLM for Claude's or the owner's own | tests and lints pass |
-| **P** | codex | as I, and the written contract (what users will see) is reviewed before any code | contract first |
-| **S** | codex, from a design | the design is reviewed before code; the code by the first reviewer for its author (GLM for codex's work), plus a second family (Gemini, DeepSeek, GPT or Claude, whichever did not write it) when tokens, the wire or cache coherency are involved; a security review by GPT, Claude or GLM, whichever wrote neither the design nor the code | a test that reproduces the failure |
+| **I** | Claude | one other family: GLM or GPT for Claude's or the owner's own work; GLM for codex's or agy's | tests and lints pass |
+| **P** | Claude | as I, and the written contract (what users will see) is reviewed before any code | contract first |
+| **S** | Claude, from a design | the design is reviewed before code; the code by the first reviewer for its author (GLM, or GPT for Claude's work), plus a second family (Gemini, DeepSeek, GPT or Claude, whichever did not write it) when tokens, the wire or cache coherency are involved; a security review by GPT, Claude or GLM, whichever wrote neither the design nor the code | a test that reproduces the failure |
 | **R** | as S | as S | the owner's decision |
 
 If too few independent families are available, a change waits; the bar is
@@ -111,12 +112,12 @@ its exact commit message, and nothing lands without their approval.
 
 | Model (family) | Controller | Writes code | Design and research | Reviews others' code | Security review |
 |---|---|---|---|---|---|
-| Claude Opus 5.5 (Anthropic) | yes | only work only it can run | yes | yes (default Claude seat) | no: Mythos takes Claude's security seats |
-| Claude Mythos 5.2 (Anthropic) | | promoted implementation only, for work only the controller can run | the strongest seats: judgements, class R designs, architecture ADRs, load-bearing research synthesis | judgements | yes, every Claude security review |
-| GPT-6.2 Sol (OpenAI, via codex) | | yes (main implementer) | yes, read-only | yes, read-only, never codex's own work | no: Astra takes GPT's security seats |
+| Claude Opus 5.5 (Anthropic) | yes | yes (main implementer, as subagents) | yes | yes (default Claude seat) | no: Mythos takes Claude's security seats |
+| Claude Mythos 5.2 (Anthropic) | | promoted implementation only | the strongest seats: judgements, class R designs, architecture ADRs, load-bearing research synthesis | judgements | yes, every Claude security review |
+| GPT-6.2 Sol (OpenAI, via codex) | | yes (extra capacity, separate tasks) | yes, read-only | yes, read-only, never codex's own work | no: Astra takes GPT's security seats |
 | GPT-6.2 Astra (OpenAI, via codex) | | after two recorded failures on the same defect | the strongest seats: judgements, class R designs, architecture ADRs, load-bearing research synthesis | judgements | yes, the default GPT security seat |
 | Gemini 4 Carbon (Google, via agy) | | when codex is out of quota | | yes, second family | no: it declined security-framed briefs in our runs |
-| GLM 5.3 (Zhipu) | | | second view | yes, first reviewer of codex's work | yes, when it wrote neither the design nor the code |
+| GLM 5.3 (Zhipu) | | | second view | yes, first reviewer | yes, when it wrote neither the design nor the code |
 | DeepSeek V4.1 Flash (DeepSeek) | | | research | yes, second family, off-peak (paid) | |
 
 When two seats disagree and the evidence does not settle it, a third
