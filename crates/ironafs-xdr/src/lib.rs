@@ -15,15 +15,19 @@
 //! bytes are each rejected. It is pure: bytes in, values or errors out.
 //!
 //! A protocol's generated code implements [`Decode`] and [`Encode`] for
-//! each of its types, from the decoder's and encoder's primitives:
+//! each of its types, from the decoder's and encoder's primitives. Each
+//! type says once whether it can hold a secret ([`Classified`]), and each
+//! message's type carries its descriptor ([`MessageType`]), which the
+//! entry points take from the type:
 //!
 //! ```
 //! use ironafs_xdr::{
-//!     Cap, Decode, Decoder, Encode, Encoder, Error, Message, decode, encode, opaque_len, sum,
+//!     Cap, Classified, Decode, Decoder, Encode, Encoder, Error, Message, MessageType, decode,
+//!     encode, opaque_len, sum,
 //! };
 //!
 //! const NAME: Cap = Cap { name: "demo.greeting.name", bound: Some(16), bytes: 16 };
-//! const GREETING: Message = Message { name: "demo.greeting", cap: 64, budget: 64, secret: false };
+//! const GREETING: Message = Message { name: "demo.greeting", cap: 64, budget: 64 };
 //!
 //! #[derive(Debug, PartialEq)]
 //! struct Greeting {
@@ -42,13 +46,15 @@
 //!     }
 //! }
 //!
-//! impl ironafs_xdr::MessageType for Greeting {
+//! impl Classified for Greeting {
+//!     const SECRET: bool = false;
+//! }
+//!
+//! impl MessageType for Greeting {
 //!     const MESSAGE: Message = GREETING;
 //! }
 //!
 //! impl Encode for Greeting {
-//!     const SECRET: bool = false;
-//!
 //!     fn encoded_len(&self) -> Result<u64, Error> {
 //!         sum(4, opaque_len(&NAME, self.name.len())?)
 //!     }
@@ -62,7 +68,7 @@
 //! let greeting = Greeting { count: 2, name: b"hi".to_vec() };
 //! let bytes = encode(&greeting).unwrap();
 //! assert_eq!(bytes, [0, 0, 0, 2, 0, 0, 0, 2, b'h', b'i', 0, 0]);
-//! assert_eq!(decode::<Greeting>(&GREETING, &bytes).unwrap(), greeting);
+//! assert_eq!(decode::<Greeting>(&bytes).unwrap(), greeting);
 //! ```
 //!
 //! A message nested deeper than [`limits::DEPTH_MAX`] does not build: the
@@ -71,8 +77,14 @@
 //! levels build:
 //!
 //! ```
-//! # use ironafs_xdr::{Decode, Decoder, Error, Message, decode};
+//! # use ironafs_xdr::{Classified, Decode, Decoder, Error, Message, MessageType, decode};
 //! # struct Level<T>(T);
+//! # impl<T> Classified for Level<T> {
+//! #     const SECRET: bool = false;
+//! # }
+//! # impl<T> MessageType for Level<T> {
+//! #     const MESSAGE: Message = Message { name: "demo.deep", cap: 4, budget: 0 };
+//! # }
 //! # impl<'a, T: Decode<'a>> Decode<'a> for Level<T> {
 //! #     const S_MIN: u64 = T::S_MIN;
 //! #     const DEPTH: u32 = T::DEPTH + 1;
@@ -83,16 +95,21 @@
 //! #     }
 //! # }
 //! # type Four<T> = Level<Level<Level<Level<T>>>>;
-//! # const M: Message = Message { name: "demo.deep", cap: 4, budget: 0, secret: false };
 //! type Sixteen = Four<Four<Four<Four<u32>>>>;
-//! assert!(decode::<Sixteen>(&M, &[0, 0, 0, 7]).is_ok());
+//! assert!(decode::<Sixteen>(&[0, 0, 0, 7]).is_ok());
 //! ```
 //!
 //! and seventeen do not:
 //!
 //! ```compile_fail
-//! # use ironafs_xdr::{Decode, Decoder, Error, Message, decode};
+//! # use ironafs_xdr::{Classified, Decode, Decoder, Error, Message, MessageType, decode};
 //! # struct Level<T>(T);
+//! # impl<T> Classified for Level<T> {
+//! #     const SECRET: bool = false;
+//! # }
+//! # impl<T> MessageType for Level<T> {
+//! #     const MESSAGE: Message = Message { name: "demo.deep", cap: 4, budget: 0 };
+//! # }
 //! # impl<'a, T: Decode<'a>> Decode<'a> for Level<T> {
 //! #     const S_MIN: u64 = T::S_MIN;
 //! #     const DEPTH: u32 = T::DEPTH + 1;
@@ -103,9 +120,8 @@
 //! #     }
 //! # }
 //! # type Four<T> = Level<Level<Level<Level<T>>>>;
-//! # const M: Message = Message { name: "demo.deep", cap: 4, budget: 0, secret: false };
 //! type Seventeen = Level<Four<Four<Four<Four<u32>>>>>;
-//! let _ = decode::<Seventeen>(&M, &[0, 0, 0, 7]);
+//! let _ = decode::<Seventeen>(&[0, 0, 0, 7]);
 //! ```
 
 extern crate alloc;
@@ -128,4 +144,4 @@ pub use encode::{
     sum,
 };
 pub use error::{Error, ErrorKind};
-pub use spec::{Cap, Message, MessageType};
+pub use spec::{Cap, Classified, Message, MessageType};

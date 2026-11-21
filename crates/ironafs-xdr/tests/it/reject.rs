@@ -20,20 +20,18 @@ use std::fs;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 
-use ironafs_xdr::{Decode, Error, ErrorKind, Message, Reservation};
+use ironafs_xdr::{
+    Classified, Decode, Decoder, Error, ErrorKind, Message, MessageType, Reservation,
+};
 
 use crate::support::{hex, traced_with_budget};
-use crate::types::{
-    BLOB, Blob, ENTRY, EVERY, Entry, Every, FLAG, Flag, INTS, Ints, LABEL, Label, NAMES, NOTE,
-    Names, Note, PAIR, Pair, SEALED, SHADE, Sealed, Shade, TAGS, Tags,
-};
+use crate::types::{Blob, Entry, Every, Flag, Ints, Label, Names, Note, Pair, Sealed, Shade, Tags};
 
 /// The message an `int` decoded on its own belongs to.
 const INT: Message = Message {
     name: "test.int",
     cap: 128,
     budget: 1024,
-    secret: false,
 };
 
 /// One case of the corpus.
@@ -105,13 +103,34 @@ fn parse(file: &Path) -> Case {
     case
 }
 
+/// An `int` decoded on its own, as a message.
+struct Int;
+
+impl Classified for Int {
+    const SECRET: bool = false;
+}
+
+impl MessageType for Int {
+    const MESSAGE: Message = INT;
+}
+
+impl<'a> Decode<'a> for Int {
+    const S_MIN: u64 = i32::S_MIN;
+    const DEPTH: u32 = i32::DEPTH;
+    const HEAP_RATIO: Option<u64> = i32::HEAP_RATIO;
+    const RESERVATIONS: Option<u64> = i32::RESERVATIONS;
+
+    fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
+        decoder.read_i32().map(|_| Self)
+    }
+}
+
 /// Decodes `input` as `T` and returns the error, or panics on success.
-fn reject<'a, T: Decode<'a>>(
-    message: &Message,
+fn reject<'a, T: Decode<'a> + MessageType>(
     input: &'a [u8],
     budget: Option<u64>,
 ) -> (Error, Vec<Reservation>) {
-    let (result, seen) = traced_with_budget::<T>(message, input, budget.unwrap_or(message.budget));
+    let (result, seen) = traced_with_budget::<T>(input, budget.unwrap_or(T::MESSAGE.budget));
     match result {
         Ok(_) => panic!("accepted"),
         Err(error) => (error, seen),
@@ -124,25 +143,19 @@ fn run(case: &Case) -> (Error, Vec<Reservation>, Option<usize>) {
     let input = &case.input;
     let budget = case.budget;
     let ((error, seen), element) = match case.type_name.as_str() {
-        "int" => (reject::<i32>(&INT, input, budget), None),
-        "flag" => (reject::<Flag>(&FLAG, input, budget), None),
-        "shade" => (reject::<Shade>(&SHADE, input, budget), None),
-        "entry" => (reject::<Entry>(&ENTRY, input, budget), None),
-        "label" => (reject::<Label>(&LABEL, input, budget), None),
-        "blob" => (reject::<Blob>(&BLOB, input, budget), None),
-        "note" => (reject::<Note>(&NOTE, input, budget), None),
-        "pair" => (reject::<Pair>(&PAIR, input, budget), None),
-        "names" => (
-            reject::<Names>(&NAMES, input, budget),
-            Some(size_of::<Label>()),
-        ),
-        "tags" => (
-            reject::<Tags>(&TAGS, input, budget),
-            Some(size_of::<Label>()),
-        ),
-        "ints" => (reject::<Ints>(&INTS, input, budget), Some(size_of::<u32>())),
-        "sealed" => (reject::<Sealed<'_>>(&SEALED, input, budget), None),
-        "every" => (reject::<Every>(&EVERY, input, budget), None),
+        "int" => (reject::<Int>(input, budget), None),
+        "flag" => (reject::<Flag>(input, budget), None),
+        "shade" => (reject::<Shade>(input, budget), None),
+        "entry" => (reject::<Entry>(input, budget), None),
+        "label" => (reject::<Label>(input, budget), None),
+        "blob" => (reject::<Blob>(input, budget), None),
+        "note" => (reject::<Note>(input, budget), None),
+        "pair" => (reject::<Pair>(input, budget), None),
+        "names" => (reject::<Names>(input, budget), Some(size_of::<Label>())),
+        "tags" => (reject::<Tags>(input, budget), Some(size_of::<Label>())),
+        "ints" => (reject::<Ints>(input, budget), Some(size_of::<u32>())),
+        "sealed" => (reject::<Sealed<'_>>(input, budget), None),
+        "every" => (reject::<Every>(input, budget), None),
         other => panic!("unknown type {other}"),
     };
     (error, seen, element)
@@ -210,7 +223,7 @@ fn sealed_errors_name_kind_and_field_only() {
     let mut over = hex("00000011");
     over.extend([0x5a; 20]);
     over.extend(hex("00000001 00000000"));
-    let (error, _) = reject::<Sealed<'_>>(&SEALED, &over, None);
+    let (error, _) = reject::<Sealed<'_>>(&over, None);
     assert_eq!(
         error.to_string(),
         "length over declared bound: test.sealed.key, limit 16"
@@ -220,7 +233,7 @@ fn sealed_errors_name_kind_and_field_only() {
         "Error { kind: LengthOverBound, name: Some(\"test.sealed.key\"), limit: Some(16), position: None }"
     );
     let cut = hex("00000000 0000");
-    let (error, _) = reject::<Sealed<'_>>(&SEALED, &cut, None);
+    let (error, _) = reject::<Sealed<'_>>(&cut, None);
     assert_eq!(error.to_string(), "input truncated");
     assert_eq!(
         format!("{error:?}"),

@@ -15,13 +15,12 @@ use super::{
     Encode, Encoder, array_len, encode_message, fixed_opaque_len, opaque_len, word_length,
     zero_to_capacity,
 };
-use crate::{Cap, Error, ErrorKind, Message};
+use crate::{Cap, Classified, Error, ErrorKind, Message, MessageType};
 
 const MESSAGE: Message = Message {
     name: "test.m",
     cap: 32,
     budget: 1024,
-    secret: false,
 };
 
 /// Bound 8 bytes, cap 4: below its bound.
@@ -48,9 +47,11 @@ const SOME: Cap = Cap {
 /// Variable-length opaque under `SHORT`, as a message.
 struct Short<'a>(&'a [u8]);
 
-impl Encode for Short<'_> {
+impl Classified for Short<'_> {
     const SECRET: bool = false;
+}
 
+impl Encode for Short<'_> {
     fn encoded_len(&self) -> Result<u64, Error> {
         opaque_len(&SHORT, self.0.len())
     }
@@ -63,9 +64,11 @@ impl Encode for Short<'_> {
 /// A value whose size understates what it writes.
 struct Liar;
 
-impl Encode for Liar {
+impl Classified for Liar {
     const SECRET: bool = false;
+}
 
+impl Encode for Liar {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(8)
     }
@@ -169,9 +172,11 @@ fn array_len_compares_count_with_bound_and_bytes_with_cap() {
 #[test]
 fn put_array_writes_count_then_elements() {
     struct Pair;
-    impl Encode for Pair {
+    impl Classified for Pair {
         const SECRET: bool = false;
+    }
 
+    impl Encode for Pair {
         fn encoded_len(&self) -> Result<u64, Error> {
             array_len(&SOME, &[7_u32, 8])
         }
@@ -234,9 +239,11 @@ fn value_writing_past_its_size_fails_and_leaves_nothing() {
 #[test]
 fn value_writing_short_of_its_size_fails() {
     struct Short8;
-    impl Encode for Short8 {
+    impl Classified for Short8 {
         const SECRET: bool = false;
+    }
 
+    impl Encode for Short8 {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(8)
         }
@@ -252,9 +259,11 @@ fn value_writing_short_of_its_size_fails() {
 #[test]
 fn bool_encodes_as_zero_or_one() {
     struct Flags;
-    impl Encode for Flags {
+    impl Classified for Flags {
         const SECRET: bool = false;
+    }
 
+    impl Encode for Flags {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(8)
         }
@@ -274,9 +283,11 @@ fn bool_encodes_as_zero_or_one() {
 fn put_opaque_refuses_over_cap_even_after_a_size_pass_that_passed() {
     /// Sizes itself as 12 bytes, then writes 5 bytes under a cap of 4.
     struct Sneaky;
-    impl Encode for Sneaky {
+    impl Classified for Sneaky {
         const SECRET: bool = false;
+    }
 
+    impl Encode for Sneaky {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(12)
         }
@@ -298,9 +309,11 @@ fn put_opaque_refuses_over_cap_even_after_a_size_pass_that_passed() {
 fn encoder_debug_shows_no_output_bytes() {
     /// Writes a key-like word, then formats the encoder.
     struct Peek;
-    impl Encode for Peek {
+    impl Classified for Peek {
         const SECRET: bool = false;
+    }
 
+    impl Encode for Peek {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(4)
         }
@@ -352,18 +365,15 @@ fn encode_into_reuses_a_buffer_holding_old_bytes() {
     assert_eq!(out.as_ptr(), before);
 }
 
-const SECRET: Message = Message {
-    secret: true,
-    ..MESSAGE
-};
-
 #[test]
 fn encoder_debug_shows_the_message_name_only() {
     /// Formats the encoder before and after writing.
     struct Twice;
-    impl Encode for Twice {
+    impl Classified for Twice {
         const SECRET: bool = false;
+    }
 
+    impl Encode for Twice {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(8)
         }
@@ -379,21 +389,45 @@ fn encoder_debug_shows_the_message_name_only() {
         }
     }
     let mut out = Vec::new();
-    encode_message(&SECRET, &Twice, &mut out).unwrap();
+    encode_message(&MESSAGE, &Twice, &mut out).unwrap();
 }
 
 #[test]
 fn encode_into_never_grows_an_allocated_buffer_for_any_message() {
     // Growing would move the bytes and release the old block, which may
     // hold an earlier secret encoding, without the caller's wipe.
-    for message in [ROOMY, ROOMY_SECRET] {
-        let mut out = Vec::with_capacity(4);
-        out.extend_from_slice(&[0xaa; 4]);
-        let before = (out.as_ptr(), out.capacity());
-        let error = encode_message(&message, &Past::new(&out), &mut out).unwrap_err();
-        assert_error(&error, ErrorKind::AllocationFailed, None, None);
-        assert_eq!(out, []);
-        assert_eq!((out.as_ptr(), out.capacity()), before);
+    let mut out = Vec::with_capacity(4);
+    out.extend_from_slice(&[0xaa; 4]);
+    let before = (out.as_ptr(), out.capacity());
+    let error = encode_message(&ROOMY, &Past::new(&out), &mut out).unwrap_err();
+    assert_error(&error, ErrorKind::AllocationFailed, None, None);
+    assert_eq!(out, []);
+    assert_eq!((out.as_ptr(), out.capacity()), before);
+    // The same for a secret-bearing message, through its entry point.
+    let mut out = Vec::with_capacity(4);
+    out.extend_from_slice(&[0xaa; 4]);
+    let before = (out.as_ptr(), out.capacity());
+    let long = Holder(Holder(Long(Past::new(&out))));
+    let error = super::encode_into(&long, &mut out).unwrap_err();
+    assert_error(&error, ErrorKind::AllocationFailed, None, None);
+    assert_eq!(out, []);
+    assert_eq!((out.as_ptr(), out.capacity()), before);
+}
+
+/// A secret leaf of any whole number of words.
+struct Long(Past);
+
+impl Classified for Long {
+    const SECRET: bool = true;
+}
+
+impl Encode for Long {
+    fn encoded_len(&self) -> Result<u64, Error> {
+        self.0.encoded_len()
+    }
+
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+        (0..(self.0).0).try_for_each(|_| encoder.put_u32(1))
     }
 }
 
@@ -401,11 +435,6 @@ fn encode_into_never_grows_an_allocated_buffer_for_any_message() {
 const ROOMY: Message = Message {
     cap: 4096,
     ..MESSAGE
-};
-
-const ROOMY_SECRET: Message = Message {
-    secret: true,
-    ..ROOMY
 };
 
 /// Whole words, one more than fit in the capacity of the buffer it is
@@ -418,9 +447,11 @@ impl Past {
     }
 }
 
-impl Encode for Past {
+impl Classified for Past {
     const SECRET: bool = false;
+}
 
+impl Encode for Past {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4 * u64::try_from(self.0).unwrap())
     }
@@ -482,24 +513,26 @@ fn secret_encode_into_writes_in_place_or_into_a_fresh_buffer() {
     let mut out = Vec::with_capacity(8);
     out.push(0xaa);
     let before = out.as_ptr();
-    encode_message(&SECRET, &Short(b"abc"), &mut out).unwrap();
-    assert_eq!(out, [0, 0, 0, 3, b'a', b'b', b'c', 0]);
+    super::encode_into(&Holder(Key), &mut out).unwrap();
+    assert_eq!(out, [0x5e, 0xc2, 0xe7, 0xed]);
     assert_eq!(out.as_ptr(), before);
     let mut fresh = Vec::new();
-    encode_message(&SECRET, &Short(b"abc"), &mut fresh).unwrap();
-    assert_eq!(fresh, [0, 0, 0, 3, b'a', b'b', b'c', 0]);
+    super::encode_into(&Holder(Key), &mut fresh).unwrap();
+    assert_eq!(fresh, [0x5e, 0xc2, 0xe7, 0xed]);
 }
 
 /// A plain message type with its descriptor.
 struct Greeting;
 
-impl crate::MessageType for Greeting {
+impl MessageType for Greeting {
     const MESSAGE: Message = MESSAGE;
 }
 
-impl Encode for Greeting {
+impl Classified for Greeting {
     const SECRET: bool = false;
+}
 
+impl Encode for Greeting {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
     }
@@ -524,9 +557,11 @@ fn encode_into_uses_the_descriptor_its_type_carries() {
 /// A secret leaf: its own field is secret.
 struct Key;
 
-impl Encode for Key {
+impl Classified for Key {
     const SECRET: bool = true;
+}
 
+impl Encode for Key {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
     }
@@ -540,9 +575,11 @@ impl Encode for Key {
 /// takes its flag from its components.
 struct Holder<C>(C);
 
-impl<C: Encode> Encode for Holder<C> {
+impl<C: Encode> Classified for Holder<C> {
     const SECRET: bool = C::SECRET;
+}
 
+impl<C: Encode> Encode for Holder<C> {
     fn encoded_len(&self) -> Result<u64, Error> {
         self.0.encoded_len()
     }
@@ -552,17 +589,27 @@ impl<C: Encode> Encode for Holder<C> {
     }
 }
 
-impl<C: Encode> crate::MessageType for Holder<C> {
-    const MESSAGE: Message = Message {
-        secret: C::SECRET,
-        ..MESSAGE
-    };
+impl<C: Encode> MessageType for Holder<C> {
+    const MESSAGE: Message = ROOMY;
 }
 
-// Secrecy carries up through any depth of nesting, at compile time.
-const _: () = assert!(Holder::<Holder<Key>>::SECRET);
-const _: () = assert!(<Holder<Holder<Key>> as crate::MessageType>::MESSAGE.secret);
-const _: () = assert!(!Holder::<Holder<u32>>::SECRET);
+// Secrecy carries up through any depth of nesting, at compile time, and
+// a message type has the one flag, whichever of its traits reads it.
+const _: () = assert!(<Holder<Holder<Key>> as Classified>::SECRET);
+const _: () = assert!(!<Holder<Holder<u32>> as Classified>::SECRET);
+
+/// The flag a generic caller reads through a type's `Encode`.
+const fn flag_as_encode<T: Encode>() -> bool {
+    T::SECRET
+}
+
+/// The flag a generic caller reads through a type's `MessageType`.
+const fn flag_as_message<T: MessageType>() -> bool {
+    T::SECRET
+}
+
+const _: () = assert!(flag_as_encode::<Holder<Key>>() && flag_as_message::<Holder<Key>>());
+const _: () = assert!(!flag_as_encode::<Holder<u32>>() && !flag_as_message::<Holder<u32>>());
 
 #[test]
 fn a_holder_of_a_secret_encodes_only_into_the_callers_buffer() {
@@ -576,9 +623,11 @@ fn a_holder_of_a_secret_encodes_only_into_the_callers_buffer() {
 fn put_carries_the_bytes_left_back_to_its_parent() {
     /// Sizes itself as one word, then writes two through its components.
     struct Two;
-    impl Encode for Two {
+    impl Classified for Two {
         const SECRET: bool = false;
+    }
 
+    impl Encode for Two {
         fn encoded_len(&self) -> Result<u64, Error> {
             Ok(4)
         }

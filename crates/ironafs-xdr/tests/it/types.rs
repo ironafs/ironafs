@@ -47,7 +47,7 @@ use core::mem::size_of;
 
 use ironafs_xdr::limits::INLINE_MAX;
 use ironafs_xdr::{
-    BorrowedBytes, BorrowedWord, Cap, Decode, Decoder, Encode, Encoder, Error, Message,
+    BorrowedBytes, BorrowedWord, Cap, Classified, Decode, Decoder, Encode, Encoder, Error, Message,
     MessageType, array_heap_ratio, array_len, array_reservations, fixed_array_heap_ratio,
     fixed_array_len, fixed_array_reservations, fixed_opaque_len, max, opaque_len, proven, sum,
 };
@@ -58,7 +58,6 @@ const fn alone(name: &'static str) -> Message {
         name,
         cap: 128,
         budget: 1024,
-        secret: false,
     }
 }
 
@@ -113,9 +112,11 @@ impl<'a> Decode<'a> for Shade {
     }
 }
 
-impl Encode for Shade {
+impl Classified for Shade {
     const SECRET: bool = false;
+}
 
+impl Encode for Shade {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
     }
@@ -142,9 +143,11 @@ impl<'a> Decode<'a> for Flag {
     }
 }
 
-impl Encode for Flag {
+impl Classified for Flag {
     const SECRET: bool = false;
+}
 
+impl Encode for Flag {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
     }
@@ -193,9 +196,11 @@ impl<'a> Decode<'a> for Solo {
     }
 }
 
-impl Encode for Solo {
+impl Classified for Solo {
     const SECRET: bool = false;
+}
 
+impl Encode for Solo {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4)
     }
@@ -240,9 +245,11 @@ impl<'a> Decode<'a> for Entry {
     }
 }
 
-impl Encode for Entry {
+impl Classified for Entry {
     const SECRET: bool = false;
+}
 
+impl Encode for Entry {
     fn encoded_len(&self) -> Result<u64, Error> {
         match self {
             Self::Plain => Ok(4),
@@ -291,9 +298,11 @@ impl<'a> Decode<'a> for Label {
     }
 }
 
-impl Encode for Label {
+impl Classified for Label {
     const SECRET: bool = false;
+}
 
+impl Encode for Label {
     fn encoded_len(&self) -> Result<u64, Error> {
         opaque_len(&LABEL_CAP, self.0.len())
     }
@@ -335,7 +344,6 @@ pub(crate) const NOTE: Message = Message {
     name: "test.note",
     cap: 128,
     budget: 128,
-    secret: false,
 };
 
 impl<'a> Decode<'a> for Note {
@@ -354,9 +362,11 @@ impl<'a> Decode<'a> for Note {
     }
 }
 
-impl Encode for Note {
+impl Classified for Note {
     const SECRET: bool = false;
+}
 
+impl Encode for Note {
     fn encoded_len(&self) -> Result<u64, Error> {
         let mut total = opaque_len(&TITLE, self.title.len())?;
         total = sum(total, self.what.encoded_len()?)?;
@@ -391,9 +401,11 @@ impl<'a> Decode<'a> for Pair {
     }
 }
 
-impl Encode for Pair {
+impl Classified for Pair {
     const SECRET: bool = false;
+}
 
+impl Encode for Pair {
     fn encoded_len(&self) -> Result<u64, Error> {
         fixed_array_len(&self.0)
     }
@@ -432,9 +444,11 @@ macro_rules! array_type {
             }
         }
 
-        impl Encode for $name {
+        impl Classified for $name {
             const SECRET: bool = false;
+        }
 
+        impl Encode for $name {
             fn encoded_len(&self) -> Result<u64, Error> {
                 array_len(&$cap, &self.0)
             }
@@ -470,9 +484,11 @@ impl<'a> Decode<'a> for Five {
     }
 }
 
-impl Encode for Five {
+impl Classified for Five {
     const SECRET: bool = false;
+}
 
+impl Encode for Five {
     fn encoded_len(&self) -> Result<u64, Error> {
         fixed_opaque_len(5)
     }
@@ -505,9 +521,11 @@ impl<'a> Decode<'a> for Blob {
     }
 }
 
-impl Encode for Blob {
+impl Classified for Blob {
     const SECRET: bool = false;
+}
 
+impl Encode for Blob {
     fn encoded_len(&self) -> Result<u64, Error> {
         opaque_len(&BLOB_CAP, self.0.len())
     }
@@ -544,9 +562,11 @@ impl<'a> Decode<'a> for Quad {
     }
 }
 
-impl Encode for Quad {
+impl Classified for Quad {
     const SECRET: bool = false;
+}
 
+impl Encode for Quad {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(240)
     }
@@ -574,7 +594,6 @@ pub(crate) const WIDE: Message = Message {
     name: "test.wide",
     cap: 244,
     budget: 1024,
-    secret: false,
 };
 
 impl<'a> Decode<'a> for Wide {
@@ -592,9 +611,11 @@ impl<'a> Decode<'a> for Wide {
     }
 }
 
-impl Encode for Wide {
+impl Classified for Wide {
     const SECRET: bool = false;
+}
 
+impl Encode for Wide {
     fn encoded_len(&self) -> Result<u64, Error> {
         match self {
             Self::Small => Ok(4),
@@ -636,9 +657,11 @@ impl<'a> Decode<'a> for Deep16 {
     }
 }
 
-impl Encode for Deep16 {
+impl Classified for Deep16 {
     const SECRET: bool = false;
+}
 
+impl Encode for Deep16 {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(72)
     }
@@ -672,9 +695,11 @@ macro_rules! deep_link {
             }
         }
 
-        impl Encode for $name {
+        impl Classified for $name {
             const SECRET: bool = false;
+        }
 
+        impl Encode for $name {
             fn encoded_len(&self) -> Result<u64, Error> {
                 sum(8, self.next.encoded_len()?)
             }
@@ -701,7 +726,6 @@ pub(crate) const DEEP: Message = Message {
     name: "test.deep",
     cap: 192,
     budget: 1024,
-    secret: false,
 };
 
 // ---- sealed: the secret-bearing type ----
@@ -731,7 +755,6 @@ pub(crate) const SEALED: Message = Message {
     name: "test.sealed",
     cap: 64,
     budget: 64,
-    secret: true,
 };
 
 impl<'a> Decode<'a> for Sealed<'a> {
@@ -749,10 +772,12 @@ impl<'a> Decode<'a> for Sealed<'a> {
     }
 }
 
-impl Encode for Sealed<'_> {
+impl Classified for Sealed<'_> {
     // Its key field is secret, by its cap table.
     const SECRET: bool = true;
+}
 
+impl Encode for Sealed<'_> {
     fn encoded_len(&self) -> Result<u64, Error> {
         let total = sum(opaque_len(&KEY, self.key.reveal().len())?, 4)?;
         sum(total, opaque_len(&TAG, self.tag.reveal().len())?)
@@ -804,7 +829,6 @@ pub(crate) const EVERY: Message = Message {
     name: "test.every",
     cap: 256,
     budget: 4096,
-    secret: false,
 };
 
 impl<'a> Decode<'a> for Every {
@@ -844,9 +868,11 @@ impl<'a> Decode<'a> for Every {
     }
 }
 
-impl Encode for Every {
+impl Classified for Every {
     const SECRET: bool = false;
+}
 
+impl Encode for Every {
     fn encoded_len(&self) -> Result<u64, Error> {
         let mut total = 32;
         total = sum(total, fixed_opaque_len(BIG_LEN)?)?;
@@ -896,22 +922,22 @@ inline_fits!(
 
 // What the generator proves for every message (docs/specs/xdr.md, 5.2,
 // points 9.3 and 10).
-const _: () = assert!(proven::<Shade>(&SHADE));
-const _: () = assert!(proven::<Flag>(&FLAG));
-const _: () = assert!(proven::<Entry>(&ENTRY));
-const _: () = assert!(proven::<Label>(&LABEL));
-const _: () = assert!(proven::<Note>(&NOTE));
-const _: () = assert!(proven::<Pair>(&PAIR));
-const _: () = assert!(proven::<Names>(&NAMES));
-const _: () = assert!(proven::<Tags>(&TAGS));
-const _: () = assert!(proven::<Solos>(&SOLOS));
-const _: () = assert!(proven::<Ints>(&INTS));
-const _: () = assert!(proven::<Five>(&FIVE));
-const _: () = assert!(proven::<Blob>(&BLOB));
-const _: () = assert!(proven::<Wide>(&WIDE));
-const _: () = assert!(proven::<Deep>(&DEEP));
-const _: () = assert!(proven::<Sealed<'static>>(&SEALED));
-const _: () = assert!(proven::<Every>(&EVERY));
+const _: () = assert!(proven::<Shade>());
+const _: () = assert!(proven::<Flag>());
+const _: () = assert!(proven::<Entry>());
+const _: () = assert!(proven::<Label>());
+const _: () = assert!(proven::<Note>());
+const _: () = assert!(proven::<Pair>());
+const _: () = assert!(proven::<Names>());
+const _: () = assert!(proven::<Tags>());
+const _: () = assert!(proven::<Solos>());
+const _: () = assert!(proven::<Ints>());
+const _: () = assert!(proven::<Five>());
+const _: () = assert!(proven::<Blob>());
+const _: () = assert!(proven::<Wide>());
+const _: () = assert!(proven::<Deep>());
+const _: () = assert!(proven::<Sealed<'static>>());
+const _: () = assert!(proven::<Every>());
 
 /// Binds each test type to its message row.
 macro_rules! message_types {

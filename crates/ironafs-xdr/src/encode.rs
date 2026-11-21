@@ -15,158 +15,17 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
 
-use crate::{Cap, Error, ErrorKind, Message, MessageType};
+use crate::{Cap, Classified, Error, ErrorKind, Message, MessageType};
 
 #[cfg(test)]
 mod tests;
 
 /// A type the codec can encode, as a protocol's generated code defines it.
-pub trait Encode {
-    /// Whether a value of the type can hold a secret field at any depth
-    /// (`docs/specs/xdr.md`, 5.1, point 8): true if the type has a secret
-    /// field of its own, by its cap table, or any component, element or
-    /// arm whose type is secret.
-    ///
-    /// The second half is checked, not trusted. A value writes a
-    /// component of another type only through [`Encoder::put`],
-    /// [`Encoder::put_array`] or [`Encoder::put_fixed_array`], since its
-    /// [`Encode::encode`] takes an encoder typed for itself alone; and
-    /// each of those fails the build of a type that declares itself
-    /// plain while writing a secret component. So a wrapper, generic or
-    /// not, is secret whenever what it holds is, whatever it declares.
-    /// What no type can check is a leaf's own flag, set from its cap
-    /// table, or code that encodes a value apart and copies its bytes in
-    /// by hand, which review sees.
-    ///
-    /// ```compile_fail,E0080
-    /// # use ironafs_xdr::{Encode, Encoder, Error, Message, MessageType, encode, encode_into};
-    /// # /// A secret-bearing message: a 4-byte key.
-    /// # struct Key([u8; 4]);
-    /// # impl MessageType for Key {
-    /// #     const MESSAGE: Message = Message { name: "demo.key", cap: 4, budget: 0, secret: true };
-    /// # }
-    /// # impl Encode for Key {
-    /// #     const SECRET: bool = true;
-    /// #     fn encoded_len(&self) -> Result<u64, Error> {
-    /// #         Ok(4)
-    /// #     }
-    /// #     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
-    /// #         encoder.put_fixed_opaque(&self.0)
-    /// #     }
-    /// # }
-    ///
-    /// /// A message that holds one value of `C`.
-    /// struct Wrapper<C>(C);
-    ///
-    /// impl<C: Encode> MessageType for Wrapper<C> {
-    ///     const MESSAGE: Message =
-    ///         Message { name: "demo.wrapper", cap: 4, budget: 0, secret: C::SECRET };
-    /// }
-    ///
-    /// impl<C: Encode> Encode for Wrapper<C> {
-    ///     const SECRET: bool = false;
-    ///
-    ///     fn encoded_len(&self) -> Result<u64, Error> {
-    ///         self.0.encoded_len()
-    ///     }
-    ///
-    ///     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
-    ///         encoder.put(&self.0)
-    ///     }
-    /// }
-    ///
-    /// let mut out = Vec::new();
-    /// let _ = encode_into(&Wrapper(Key([1, 2, 3, 4])), &mut out);
-    /// ```
-    ///
-    /// Nor can it write the component with its parent's encoder:
-    ///
-    /// ```compile_fail,E0308
-    /// # use ironafs_xdr::{Encode, Encoder, Error, Message, MessageType, encode, encode_into};
-    /// # /// A secret-bearing message: a 4-byte key.
-    /// # struct Key([u8; 4]);
-    /// # impl MessageType for Key {
-    /// #     const MESSAGE: Message = Message { name: "demo.key", cap: 4, budget: 0, secret: true };
-    /// # }
-    /// # impl Encode for Key {
-    /// #     const SECRET: bool = true;
-    /// #     fn encoded_len(&self) -> Result<u64, Error> {
-    /// #         Ok(4)
-    /// #     }
-    /// #     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
-    /// #         encoder.put_fixed_opaque(&self.0)
-    /// #     }
-    /// # }
-    ///
-    /// /// A message that holds one value of `C`.
-    /// struct Wrapper<C>(C);
-    ///
-    /// impl<C: Encode> MessageType for Wrapper<C> {
-    ///     const MESSAGE: Message =
-    ///         Message { name: "demo.wrapper", cap: 4, budget: 0, secret: C::SECRET };
-    /// }
-    ///
-    /// impl<C: Encode> Encode for Wrapper<C> {
-    ///     const SECRET: bool = false;
-    ///
-    ///     fn encoded_len(&self) -> Result<u64, Error> {
-    ///         self.0.encoded_len()
-    ///     }
-    ///
-    ///     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
-    ///         self.0.encode(encoder)
-    ///     }
-    /// }
-    ///
-    /// let _ = encode(&Wrapper(Key([1, 2, 3, 4])));
-    /// ```
-    ///
-    /// A wrapper that takes its flag from what it holds builds for either:
-    ///
-    /// ```
-    /// # use ironafs_xdr::{Encode, Encoder, Error, Message, MessageType, encode, encode_into};
-    /// # /// A secret-bearing message: a 4-byte key.
-    /// # struct Key([u8; 4]);
-    /// # impl MessageType for Key {
-    /// #     const MESSAGE: Message = Message { name: "demo.key", cap: 4, budget: 0, secret: true };
-    /// # }
-    /// # impl Encode for Key {
-    /// #     const SECRET: bool = true;
-    /// #     fn encoded_len(&self) -> Result<u64, Error> {
-    /// #         Ok(4)
-    /// #     }
-    /// #     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
-    /// #         encoder.put_fixed_opaque(&self.0)
-    /// #     }
-    /// # }
-    ///
-    /// /// A message that holds one value of `C`.
-    /// struct Wrapper<C>(C);
-    ///
-    /// impl<C: Encode> MessageType for Wrapper<C> {
-    ///     const MESSAGE: Message =
-    ///         Message { name: "demo.wrapper", cap: 4, budget: 0, secret: C::SECRET };
-    /// }
-    ///
-    /// impl<C: Encode> Encode for Wrapper<C> {
-    ///     const SECRET: bool = C::SECRET;
-    ///
-    ///     fn encoded_len(&self) -> Result<u64, Error> {
-    ///         self.0.encoded_len()
-    ///     }
-    ///
-    ///     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
-    ///         encoder.put(&self.0)
-    ///     }
-    /// }
-    ///
-    /// assert_eq!(encode(&Wrapper(7_u32)).unwrap(), [0, 0, 0, 7]);
-    /// let mut out = Vec::new();
-    /// encode_into(&Wrapper(Key([1, 2, 3, 4])), &mut out).unwrap();
-    /// assert_eq!(out, [1, 2, 3, 4]);
-    /// ```
-    const SECRET: bool;
-
+///
+/// Whether a value of it can hold a secret is its one flag
+/// ([`Classified::SECRET`]), which [`Encoder::put`] checks against each
+/// component it writes.
+pub trait Encode: Classified {
     /// The value's encoded size in bytes.
     ///
     /// # Errors
@@ -177,7 +36,97 @@ pub trait Encode {
     fn encoded_len(&self) -> Result<u64, Error>;
 
     /// Writes the value, with an encoder typed for its own type: a
-    /// component of another type is written through [`Encoder::put`].
+    /// component of another type is written through [`Encoder::put`],
+    /// which checks its secrecy. So this builds:
+    ///
+    /// ```
+    /// # use ironafs_xdr::{Classified, Encode, Encoder, Error, Message, MessageType, encode, encode_into};
+    /// # /// A secret-bearing message: a 4-byte key.
+    /// # struct Key([u8; 4]);
+    /// # impl Classified for Key {
+    /// #     const SECRET: bool = true;
+    /// # }
+    /// # impl MessageType for Key {
+    /// #     const MESSAGE: Message = Message { name: "demo.key", cap: 4, budget: 0 };
+    /// # }
+    /// # impl Encode for Key {
+    /// #     fn encoded_len(&self) -> Result<u64, Error> {
+    /// #         Ok(4)
+    /// #     }
+    /// #     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+    /// #         encoder.put_fixed_opaque(&self.0)
+    /// #     }
+    /// # }
+    ///
+    /// /// A message that holds one value of `C`.
+    /// struct Wrapper<C>(C);
+    ///
+    /// impl<C: Encode> Classified for Wrapper<C> {
+    ///     const SECRET: bool = C::SECRET;
+    /// }
+    ///
+    /// impl<C: Encode> MessageType for Wrapper<C> {
+    ///     const MESSAGE: Message = Message { name: "demo.wrapper", cap: 4, budget: 0 };
+    /// }
+    ///
+    /// impl<C: Encode> Encode for Wrapper<C> {
+    ///     fn encoded_len(&self) -> Result<u64, Error> {
+    ///         self.0.encoded_len()
+    ///     }
+    ///
+    ///     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+    ///         encoder.put(&self.0)
+    ///     }
+    /// }
+    ///
+    /// let _ = encode(&Wrapper(7_u32));
+    /// ```
+    ///
+    /// and the same with the one line changed, to write the component with
+    /// its parent's encoder, does not:
+    ///
+    /// ```compile_fail,E0308
+    /// # use ironafs_xdr::{Classified, Encode, Encoder, Error, Message, MessageType, encode, encode_into};
+    /// # /// A secret-bearing message: a 4-byte key.
+    /// # struct Key([u8; 4]);
+    /// # impl Classified for Key {
+    /// #     const SECRET: bool = true;
+    /// # }
+    /// # impl MessageType for Key {
+    /// #     const MESSAGE: Message = Message { name: "demo.key", cap: 4, budget: 0 };
+    /// # }
+    /// # impl Encode for Key {
+    /// #     fn encoded_len(&self) -> Result<u64, Error> {
+    /// #         Ok(4)
+    /// #     }
+    /// #     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+    /// #         encoder.put_fixed_opaque(&self.0)
+    /// #     }
+    /// # }
+    ///
+    /// /// A message that holds one value of `C`.
+    /// struct Wrapper<C>(C);
+    ///
+    /// impl<C: Encode> Classified for Wrapper<C> {
+    ///     const SECRET: bool = C::SECRET;
+    /// }
+    ///
+    /// impl<C: Encode> MessageType for Wrapper<C> {
+    ///     const MESSAGE: Message = Message { name: "demo.wrapper", cap: 4, budget: 0 };
+    /// }
+    ///
+    /// impl<C: Encode> Encode for Wrapper<C> {
+    ///     fn encoded_len(&self) -> Result<u64, Error> {
+    ///         self.0.encoded_len()
+    ///     }
+    ///
+    ///     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+    ///         self.0.encode(encoder)
+    ///     }
+    /// }
+    ///
+    /// let _ = encode(&Wrapper(7_u32));
+    /// ```
     ///
     /// # Errors
     ///
@@ -220,27 +169,89 @@ impl<T: ?Sized> fmt::Debug for Encoder<'_, T> {
 /// descriptor its type carries.
 ///
 /// A buffer this crate returns is never zeroed on drop, so a message whose
-/// descriptor says it holds a secret does not build here: [`encode_into`],
-/// with a buffer the caller wipes, is its only path (`docs/specs/xdr.md`,
-/// 5.1, point 8). A secret type's descriptor must say so ([`encode_into`]),
-/// and a type holding a secret component is secret ([`Encode::SECRET`]),
-/// so this refuses every message that can hold a secret, directly or
-/// through a generic caller:
+/// type says it can hold a secret ([`Classified::SECRET`]) does not build
+/// here: [`encode_into`], with a buffer the caller wipes, is its only path
+/// (`docs/specs/xdr.md`, 5.1, point 8). A type holding a secret component
+/// is secret ([`Encoder::put`]), so this refuses every message that can
+/// hold a secret, directly or through a generic caller. A plain message
+/// builds:
 ///
-/// ```compile_fail,E0080
-/// # use ironafs_xdr::{Encode, Encoder, Error, Message, MessageType, encode, encode_into};
+/// ```
+/// # use ironafs_xdr::{Classified, Encode, Encoder, Error, Message, MessageType, encode, encode_into};
 /// # /// A secret-bearing message: a 4-byte key.
 /// # struct Key([u8; 4]);
+/// # impl Classified for Key {
+/// #     const SECRET: bool = true;
+/// # }
 /// # impl MessageType for Key {
-/// #     const MESSAGE: Message = Message { name: "demo.key", cap: 4, budget: 0, secret: true };
+/// #     const MESSAGE: Message = Message { name: "demo.key", cap: 4, budget: 0 };
 /// # }
 /// # impl Encode for Key {
-/// #     const SECRET: bool = true;
 /// #     fn encoded_len(&self) -> Result<u64, Error> {
 /// #         Ok(4)
 /// #     }
 /// #     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
 /// #         encoder.put_fixed_opaque(&self.0)
+/// #     }
+/// # }
+/// # /// A plain message: one word.
+/// # struct Word(u32);
+/// # impl Classified for Word {
+/// #     const SECRET: bool = false;
+/// # }
+/// # impl MessageType for Word {
+/// #     const MESSAGE: Message = Message { name: "demo.word", cap: 4, budget: 0 };
+/// # }
+/// # impl Encode for Word {
+/// #     fn encoded_len(&self) -> Result<u64, Error> {
+/// #         Ok(4)
+/// #     }
+/// #     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+/// #         encoder.put_u32(self.0)
+/// #     }
+/// # }
+///
+/// fn send<T: Encode + MessageType>(value: &T) -> Result<Vec<u8>, Error> {
+///     encode(value)
+/// }
+///
+/// let _ = send(&Word(7));
+/// ```
+///
+/// and the same with the one line changed, to send the key, does not:
+///
+/// ```compile_fail,E0080
+/// # use ironafs_xdr::{Classified, Encode, Encoder, Error, Message, MessageType, encode, encode_into};
+/// # /// A secret-bearing message: a 4-byte key.
+/// # struct Key([u8; 4]);
+/// # impl Classified for Key {
+/// #     const SECRET: bool = true;
+/// # }
+/// # impl MessageType for Key {
+/// #     const MESSAGE: Message = Message { name: "demo.key", cap: 4, budget: 0 };
+/// # }
+/// # impl Encode for Key {
+/// #     fn encoded_len(&self) -> Result<u64, Error> {
+/// #         Ok(4)
+/// #     }
+/// #     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+/// #         encoder.put_fixed_opaque(&self.0)
+/// #     }
+/// # }
+/// # /// A plain message: one word.
+/// # struct Word(u32);
+/// # impl Classified for Word {
+/// #     const SECRET: bool = false;
+/// # }
+/// # impl MessageType for Word {
+/// #     const MESSAGE: Message = Message { name: "demo.word", cap: 4, budget: 0 };
+/// # }
+/// # impl Encode for Word {
+/// #     fn encoded_len(&self) -> Result<u64, Error> {
+/// #         Ok(4)
+/// #     }
+/// #     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+/// #         encoder.put_u32(self.0)
 /// #     }
 /// # }
 ///
@@ -257,7 +268,7 @@ impl<T: ?Sized> fmt::Debug for Encoder<'_, T> {
 pub fn encode<T: Encode + MessageType + ?Sized>(value: &T) -> Result<Vec<u8>, Error> {
     const {
         assert!(
-            !T::MESSAGE.secret,
+            !T::SECRET,
             "a secret-bearing message goes through encode_into"
         );
     }
@@ -268,36 +279,6 @@ pub fn encode<T: Encode + MessageType + ?Sized>(value: &T) -> Result<Vec<u8>, Er
 
 /// Encodes `value`, one message of type `T`, into `out`, the caller's
 /// buffer, under the descriptor its type carries.
-///
-/// A type that can hold a secret ([`Encode::SECRET`]) must have a
-/// secret-bearing descriptor, which the decoder also reads; one whose
-/// descriptor says otherwise does not build here:
-///
-/// ```compile_fail,E0080
-/// use ironafs_xdr::{Encode, Encoder, Error, Message, MessageType, encode_into};
-///
-/// /// A key whose descriptor does not say it is secret.
-/// struct Key([u8; 4]);
-///
-/// impl MessageType for Key {
-///     const MESSAGE: Message = Message { name: "demo.key", cap: 4, budget: 0, secret: false };
-/// }
-///
-/// impl Encode for Key {
-///     const SECRET: bool = true;
-///
-///     fn encoded_len(&self) -> Result<u64, Error> {
-///         Ok(4)
-///     }
-///
-///     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
-///         encoder.put_fixed_opaque(&self.0)
-///     }
-/// }
-///
-/// let mut out = Vec::new();
-/// let _ = encode_into(&Key([1, 2, 3, 4]), &mut out);
-/// ```
 ///
 /// The contract holds for every message, so that a buffer which once held
 /// a secret-bearing message is safe to pass for any other
@@ -337,12 +318,6 @@ pub fn encode_into<T: Encode + MessageType + ?Sized>(
     value: &T,
     out: &mut Vec<u8>,
 ) -> Result<(), Error> {
-    const {
-        assert!(
-            T::MESSAGE.secret || !T::SECRET,
-            "a type that can hold a secret needs a secret-bearing descriptor"
-        );
-    }
     encode_message(&T::MESSAGE, value, out)
 }
 
@@ -568,7 +543,17 @@ impl<T: Encode + ?Sized> Encoder<'_, T> {
 
     /// Writes a fixed-length opaque of its declared width `N`: its bytes,
     /// then zero padding. The width is in the type, so data of any other
-    /// length does not build:
+    /// length does not build. This builds:
+    ///
+    /// ```
+    /// # use ironafs_xdr::{Encode, Encoder, Error};
+    /// fn write<T: Encode>(encoder: &mut Encoder<'_, T>, short: &[u8; 96]) -> Result<(), Error> {
+    ///     encoder.put_fixed_opaque::<96>(short)
+    /// }
+    /// ```
+    ///
+    /// and the same with the one line changed, to a width of 100, does
+    /// not:
     ///
     /// ```compile_fail,E0308
     /// # use ironafs_xdr::{Encode, Encoder, Error};
@@ -597,9 +582,105 @@ impl<T: Encode + ?Sized> Encoder<'_, T> {
     }
 
     /// Writes a component, element or arm of type `C` (its value's
-    /// [`Encode::encode`], with an encoder typed for `C`). A type that
-    /// declares itself plain and writes a secret component does not build
-    /// ([`Encode::SECRET`]).
+    /// [`Encode::encode`], with an encoder typed for `C`, sharing this
+    /// encoder's count of the bytes left).
+    ///
+    /// A type's flag is at least that of each component it writes
+    /// ([`Classified::SECRET`]): this is checked here, when the build
+    /// reaches a type that writes a `C`, not trusted. So a wrapper, generic
+    /// or not, is secret whenever what it holds is, whatever it declares.
+    /// One that takes its flag from what it holds builds:
+    ///
+    /// ```
+    /// # use ironafs_xdr::{Classified, Encode, Encoder, Error, Message, MessageType, encode, encode_into};
+    /// # /// A secret-bearing message: a 4-byte key.
+    /// # struct Key([u8; 4]);
+    /// # impl Classified for Key {
+    /// #     const SECRET: bool = true;
+    /// # }
+    /// # impl MessageType for Key {
+    /// #     const MESSAGE: Message = Message { name: "demo.key", cap: 4, budget: 0 };
+    /// # }
+    /// # impl Encode for Key {
+    /// #     fn encoded_len(&self) -> Result<u64, Error> {
+    /// #         Ok(4)
+    /// #     }
+    /// #     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+    /// #         encoder.put_fixed_opaque(&self.0)
+    /// #     }
+    /// # }
+    ///
+    /// /// A message that holds one value of `C`.
+    /// struct Wrapper<C>(C);
+    ///
+    /// impl<C: Encode> Classified for Wrapper<C> {
+    ///     const SECRET: bool = C::SECRET;
+    /// }
+    ///
+    /// impl<C: Encode> MessageType for Wrapper<C> {
+    ///     const MESSAGE: Message = Message { name: "demo.wrapper", cap: 4, budget: 0 };
+    /// }
+    ///
+    /// impl<C: Encode> Encode for Wrapper<C> {
+    ///     fn encoded_len(&self) -> Result<u64, Error> {
+    ///         self.0.encoded_len()
+    ///     }
+    ///
+    ///     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+    ///         encoder.put(&self.0)
+    ///     }
+    /// }
+    ///
+    /// let mut out = Vec::new();
+    /// let _ = encode_into(&Wrapper(Key([1, 2, 3, 4])), &mut out);
+    /// ```
+    ///
+    /// and the same with the one line changed, to declare itself plain,
+    /// does not:
+    ///
+    /// ```compile_fail,E0080
+    /// # use ironafs_xdr::{Classified, Encode, Encoder, Error, Message, MessageType, encode, encode_into};
+    /// # /// A secret-bearing message: a 4-byte key.
+    /// # struct Key([u8; 4]);
+    /// # impl Classified for Key {
+    /// #     const SECRET: bool = true;
+    /// # }
+    /// # impl MessageType for Key {
+    /// #     const MESSAGE: Message = Message { name: "demo.key", cap: 4, budget: 0 };
+    /// # }
+    /// # impl Encode for Key {
+    /// #     fn encoded_len(&self) -> Result<u64, Error> {
+    /// #         Ok(4)
+    /// #     }
+    /// #     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+    /// #         encoder.put_fixed_opaque(&self.0)
+    /// #     }
+    /// # }
+    ///
+    /// /// A message that holds one value of `C`.
+    /// struct Wrapper<C>(C);
+    ///
+    /// impl<C: Encode> Classified for Wrapper<C> {
+    ///     const SECRET: bool = false;
+    /// }
+    ///
+    /// impl<C: Encode> MessageType for Wrapper<C> {
+    ///     const MESSAGE: Message = Message { name: "demo.wrapper", cap: 4, budget: 0 };
+    /// }
+    ///
+    /// impl<C: Encode> Encode for Wrapper<C> {
+    ///     fn encoded_len(&self) -> Result<u64, Error> {
+    ///         self.0.encoded_len()
+    ///     }
+    ///
+    ///     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+    ///         encoder.put(&self.0)
+    ///     }
+    /// }
+    ///
+    /// let mut out = Vec::new();
+    /// let _ = encode_into(&Wrapper(Key([1, 2, 3, 4])), &mut out);
+    /// ```
     ///
     /// # Errors
     ///
@@ -716,8 +797,6 @@ fn sum_overflow() -> Error {
 macro_rules! encode_number {
     ($type:ty, $size:expr, $put:ident) => {
         impl Encode for $type {
-            const SECRET: bool = false;
-
             fn encoded_len(&self) -> Result<u64, Error> {
                 Ok($size)
             }
@@ -736,8 +815,6 @@ encode_number!(u64, 8, put_u64);
 
 /// Void: nothing on the wire.
 impl Encode for () {
-    const SECRET: bool = false;
-
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(0)
     }

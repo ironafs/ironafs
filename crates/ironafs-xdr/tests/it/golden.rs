@@ -9,7 +9,9 @@
 
 use std::fmt::Debug;
 
-use ironafs_xdr::{Decode, Decoder, Encode, Encoder, Error, Message, MessageType, decode};
+use ironafs_xdr::{
+    Classified, Decode, Decoder, Encode, Encoder, Error, Message, MessageType, decode,
+};
 
 use crate::support::{encoded, hex};
 use crate::types::{
@@ -21,20 +23,21 @@ const PRIMITIVE: Message = Message {
     name: "test.primitive",
     cap: 128,
     budget: 1024,
-    secret: false,
 };
 
 /// A primitive value as a whole message under `PRIMITIVE`.
 #[derive(Debug, PartialEq)]
 struct Primitive<T>(T);
 
-impl<T> MessageType for Primitive<T> {
+impl<T: Encode> MessageType for Primitive<T> {
     const MESSAGE: Message = PRIMITIVE;
 }
 
-impl<T: Encode> Encode for Primitive<T> {
+impl<T: Encode> Classified for Primitive<T> {
     const SECRET: bool = T::SECRET;
+}
 
+impl<T: Encode> Encode for Primitive<T> {
     fn encoded_len(&self) -> Result<u64, Error> {
         self.0.encoded_len()
     }
@@ -64,11 +67,7 @@ where
     assert_eq!(*message, T::MESSAGE);
     let bytes = hex(expected);
     assert_eq!(encoded(value).unwrap(), bytes, "encoding {value:?}");
-    assert_eq!(
-        &decode::<T>(message, &bytes).unwrap(),
-        value,
-        "decoding {expected}"
-    );
+    assert_eq!(&decode::<T>(&bytes).unwrap(), value, "decoding {expected}");
 }
 
 /// G1, §4.1: two's complement, most significant byte first.

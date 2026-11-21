@@ -15,8 +15,8 @@ use ironafs_xdr::{
 use crate::support::{self, hex, sealed_bytes, size, traced};
 use crate::types::{
     BLOB, Blob, DEEP, Deep, ENTRY, EVERY, Entry, Every, FIVE, Five, INTS, Ints, LABEL, Label,
-    NAMES, NOTE, Names, Note, PAIR, Pair, SEALED, SHADE, SOLOS, Sealed, Shade, Solos, TAGS, Tags,
-    WIDE, Wide,
+    NAMES, NOTE, Names, Note, PAIR, Pair, SHADE, SOLOS, Sealed, Shade, Solos, TAGS, Tags, WIDE,
+    Wide,
 };
 
 /// A type the properties run over.
@@ -75,6 +75,7 @@ fn mutate(mut bytes: Vec<u8>, mutation: &Mutation) -> Vec<u8> {
 /// P6's checks on one traced decode of `length` bytes.
 #[track_caller]
 fn check_ledger<T: Tested>(message: &Message, length: usize, accepted: bool, seen: &[Reservation]) {
+    assert_eq!(*message, T::MESSAGE, "the row is the type's own");
     let (heap_ratio, reservations) = ratios::<T>();
     let length = u64::try_from(length).unwrap();
     let total: u64 = seen.iter().map(|reservation| reservation.bytes).sum();
@@ -105,7 +106,7 @@ fn encodes_and_decodes_back<T: Tested>(
         let bytes = encode(value).unwrap();
         assert_eq!(bytes.len() % 4, 0, "not whole units");
         assert_eq!(bytes.len(), size(value), "not the profile's size");
-        let (decoded, seen) = traced::<T>(message, &bytes);
+        let (decoded, seen) = traced::<T>(&bytes);
         assert_eq!(&decoded.unwrap(), value);
         check_ledger::<T>(message, bytes.len(), true, &seen);
     });
@@ -127,7 +128,7 @@ fn accepted_inputs_are_canonical<T: Tested>(
             },
             |(value, mutation)| {
                 let input = mutate(encode(value).unwrap(), mutation);
-                let (decoded, seen) = traced::<T>(message, &input);
+                let (decoded, seen) = traced::<T>(&input);
                 check_ledger::<T>(message, input.len(), decoded.is_ok(), &seen);
                 match decoded {
                     Ok(decoded) => assert_eq!(encode(&decoded).unwrap(), input),
@@ -153,7 +154,7 @@ fn prefixes_are_truncated<T: Tested>(
         .check(generate, |value| {
             let bytes = encode(value).unwrap();
             for length in 0..bytes.len() {
-                let (decoded, seen) = traced::<T>(message, &bytes[..length]);
+                let (decoded, seen) = traced::<T>(&bytes[..length]);
                 let error = decoded.unwrap_err();
                 assert_eq!(
                     error.kind(),
@@ -265,7 +266,7 @@ fn encoder_refuses_what_decoder_rejects() {
     let refused = encode(&over_cap).unwrap_err();
     let bytes =
         hex("00000000 00000000 00000000 00000011 00000000 00000000 00000000 00000000 00000000");
-    let rejected = decode::<Note>(&NOTE, &bytes).unwrap_err();
+    let rejected = decode::<Note>(&bytes).unwrap_err();
     assert_eq!(
         named(&refused),
         (ErrorKind::CapExceeded, Some("test.note.body"))
@@ -281,7 +282,7 @@ fn encoder_refuses_what_decoder_rejects() {
     let refused = encode(&over_bound).unwrap_err();
     let mut bytes = hex("00000021");
     bytes.extend([0; 36]);
-    let rejected = decode::<Note>(&NOTE, &bytes).unwrap_err();
+    let rejected = decode::<Note>(&bytes).unwrap_err();
     assert_eq!(
         named(&refused),
         (ErrorKind::LengthOverBound, Some("test.note.title"))
@@ -292,7 +293,7 @@ fn encoder_refuses_what_decoder_rejects() {
     let four = Tags(vec![Label(vec![]); 4]);
     let refused = encode(&four).unwrap_err();
     let bytes = hex("00000004 00000000 00000000 00000000 00000000");
-    let rejected = decode::<Tags>(&TAGS, &bytes).unwrap_err();
+    let rejected = decode::<Tags>(&bytes).unwrap_err();
     assert_eq!(
         named(&refused),
         (ErrorKind::LengthOverBound, Some("test.tags"))
@@ -303,7 +304,7 @@ fn encoder_refuses_what_decoder_rejects() {
     let over = Names(vec![Label(b"abcd".to_vec()), Label(b"abcdefgh".to_vec())]);
     let refused = encode(&over).unwrap_err();
     let bytes = hex("00000002 00000004 61626364 00000008 61626364 65666768");
-    let rejected = decode::<Names>(&NAMES, &bytes).unwrap_err();
+    let rejected = decode::<Names>(&bytes).unwrap_err();
     assert_eq!(
         named(&refused),
         (ErrorKind::CapExceeded, Some("test.names"))
@@ -315,12 +316,13 @@ fn encoder_refuses_what_decoder_rejects() {
 /// `NonZeroPadding` at that byte's offset.
 #[track_caller]
 fn padding_is_checked<T: Tested>(message: &Message, valid: &[u8], padding: &[usize]) {
-    assert!(decode::<T>(message, valid).is_ok());
+    assert_eq!(*message, T::MESSAGE, "the row is the type's own");
+    assert!(decode::<T>(valid).is_ok());
     for &index in padding {
         let mut input = valid.to_vec();
         assert_eq!(input[index], 0);
         input[index] = 1;
-        let error = decode::<T>(message, &input).unwrap_err();
+        let error = decode::<T>(&input).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::NonZeroPadding, "byte {index}");
         assert_eq!(error.offset(), Some(index));
     }
@@ -411,7 +413,7 @@ fn sealed_borrows_everything_and_shows_nothing() {
             tag: vec![],
         };
         let bytes = sealed_bytes(&parts.sealed());
-        format!("{:?}", decode::<Sealed<'_>>(&SEALED, &bytes).unwrap())
+        format!("{:?}", decode::<Sealed<'_>>(&bytes).unwrap())
     };
     assert_eq!(
         reference,
@@ -419,7 +421,7 @@ fn sealed_borrows_everything_and_shows_nothing() {
     );
     Property::new("sealed: borrowed, silent and round-trips").check(sealed_parts, |parts| {
         let bytes = sealed_bytes(&parts.sealed());
-        let (decoded, seen) = traced::<Sealed<'_>>(&SEALED, &bytes);
+        let (decoded, seen) = traced::<Sealed<'_>>(&bytes);
         let decoded = decoded.unwrap();
         assert_eq!(seen, []);
         assert!(within(&bytes, decoded.key.reveal()));

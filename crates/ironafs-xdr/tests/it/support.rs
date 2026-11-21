@@ -5,9 +5,7 @@
 //! decode, and seeded generators for the test types.
 
 use ironafs_test_support::Source;
-use ironafs_xdr::{
-    Decode, Encode, Error, Message, MessageType, Reservation, decode_traced, encode_into,
-};
+use ironafs_xdr::{Decode, Encode, Error, MessageType, Reservation, decode_traced, encode_into};
 
 use crate::types::{
     Blob, Deep, Deep16, Entry, Every, Five, Ints, Label, Names, Note, Pair, Quad, Sealed, Shade,
@@ -40,23 +38,21 @@ pub(crate) fn hex(text: &str) -> Vec<u8> {
         .collect()
 }
 
-/// Decodes `input` as one `message` of type `T` under the message's own
+/// Decodes `input` as one message of type `T` under the message's own
 /// budget, and returns the result with every reservation recorded.
-pub(crate) fn traced<'a, T: Decode<'a>>(
-    message: &Message,
+pub(crate) fn traced<'a, T: Decode<'a> + MessageType>(
     input: &'a [u8],
 ) -> (Result<T, Error>, Vec<Reservation>) {
-    traced_with_budget(message, input, message.budget)
+    traced_with_budget(input, T::MESSAGE.budget)
 }
 
 /// As [`traced`], with the budget lowered to `budget`.
-pub(crate) fn traced_with_budget<'a, T: Decode<'a>>(
-    message: &Message,
+pub(crate) fn traced_with_budget<'a, T: Decode<'a> + MessageType>(
     input: &'a [u8],
     budget: u64,
 ) -> (Result<T, Error>, Vec<Reservation>) {
     let mut seen = Vec::new();
-    let result = decode_traced(message, input, budget, &mut |reservation| {
+    let result = decode_traced(input, budget, &mut |reservation| {
         seen.push(reservation);
     });
     (result, seen)

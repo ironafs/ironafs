@@ -18,12 +18,6 @@ const MESSAGE: Message = Message {
     name: "test.m",
     cap: 128,
     budget: 1024,
-    secret: false,
-};
-
-const SECRET: Message = Message {
-    secret: true,
-    ..MESSAGE
 };
 
 /// A string with a declared bound of 32 bytes and a cap of 16.
@@ -77,15 +71,22 @@ impl<'a> super::Decode<'a> for Label {
 
 /// Decodes `input` as one message with a decoding closure, recording
 /// every reservation: `(result, reservations)`. A macro, so that the
-/// closure's lifetimes are inferred at each call.
+/// closure's lifetimes are inferred at each call. With `secret` first,
+/// the message is secret-bearing.
 macro_rules! decode_with {
-    ($message:expr, $input:expr, $decode_value:expr) => {{
+    (secret, $message:expr, $input:expr, $decode_value:expr) => {
+        decode_with!(true, $message, $input, $decode_value)
+    };
+    ($message:expr, $input:expr, $decode_value:expr) => {
+        decode_with!(false, $message, $input, $decode_value)
+    };
+    ($secret:literal, $message:expr, $input:expr, $decode_value:expr) => {{
         let message: &Message = $message;
         let mut seen: Vec<Reservation> = Vec::new();
         let result = {
             let mut hook = |reservation| seen.push(reservation);
             let ledger = Ledger::new(message.name, message.budget, Some(&mut hook));
-            run(message, $input, ledger, $decode_value)
+            run(message, $secret, $input, ledger, $decode_value)
         };
         (result, seen)
     }};
@@ -610,19 +611,19 @@ fn fixed_array_stops_at_its_first_element_error() {
 
 #[test]
 fn secret_message_errors_carry_no_position() {
-    let (result, _) = decode_with!(&SECRET, &[0, 0, 0, 9, 0, 0], |decoder| {
+    let (result, _) = decode_with!(secret, &MESSAGE, &[0, 0, 0, 9, 0, 0], |decoder| {
         decoder.opaque(&NAME).map(<[u8]>::len)
     });
     let error = result.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Truncated);
     assert_eq!(error.offset(), None);
     assert_eq!(error.extent(), None);
-    let (result, _) = decode_with!(&SECRET, &[0; 8], Decoder::read_u32);
+    let (result, _) = decode_with!(secret, &MESSAGE, &[0; 8], Decoder::read_u32);
     let error = result.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::TrailingBytes);
     assert_eq!((error.offset(), error.extent()), (None, None));
     let input = vec![0; 129];
-    let (result, _) = decode_with!(&SECRET, &input, Decoder::read_u32);
+    let (result, _) = decode_with!(secret, &MESSAGE, &input, Decoder::read_u32);
     let error = result.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::MessageTooLarge);
     assert_eq!((error.offset(), error.extent()), (None, None));
@@ -674,16 +675,15 @@ fn proven_refuses_a_worst_case_that_overflows() {
         name: "test.m",
         cap: 1,
         budget: u64::MAX,
-        secret: false,
     };
     // u64::MAX × 1 is exactly the budget: proven.
-    assert!(super::proven::<Greedy>(&everything));
+    assert!(super::worst_case_fits::<Greedy>(&everything));
     // u64::MAX × 2 overflows: not proven, however large the budget.
     let twice = Message {
         cap: 2,
         ..everything
     };
-    assert!(!super::proven::<Greedy>(&twice));
+    assert!(!super::worst_case_fits::<Greedy>(&twice));
 }
 
 /// A label whose `Default` would panic, as one that allocates or fails
@@ -787,9 +787,8 @@ fn slot_ratios_are_checked_not_saturated() {
         name: "test.m",
         cap: 2,
         budget: u64::MAX,
-        secret: false,
     };
-    assert!(!super::proven::<GreedyWord>(&message));
+    assert!(!super::worst_case_fits::<GreedyWord>(&message));
 }
 
 #[test]
@@ -1011,9 +1010,8 @@ fn fixed_array_of_no_elements_has_no_ratio_and_reserves_nothing() {
         name: "test.m",
         cap: 4,
         budget: 0,
-        secret: false,
     };
-    assert!(super::proven::<EmptyThenWord>(&message));
+    assert!(super::worst_case_fits::<EmptyThenWord>(&message));
     let (result, seen) = decode_with!(
         &message,
         &[0, 0, 0, 7],

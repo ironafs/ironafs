@@ -19,7 +19,7 @@ use core::mem::size_of;
 use core::ops::Deref;
 
 use crate::limits::{DEPTH_MAX, INLINE_MAX, INLINE_OPAQUE_MAX};
-use crate::{Cap, Error, ErrorKind, Message};
+use crate::{Cap, Classified, Error, ErrorKind, Message, MessageType};
 
 mod ledger;
 
@@ -119,7 +119,10 @@ impl fmt::Debug for Decoder<'_, '_> {
     }
 }
 
-/// Decodes `input` as one `message` of type `T`.
+/// Decodes `input` as one message of type `T`, under the descriptor and
+/// the secrecy its type carries ([`MessageType`]): the cap, the memory
+/// budget and whether errors carry a position all come from `T`, so a
+/// type is never decoded under another message's.
 ///
 /// A type nested deeper than [`DEPTH_MAX`], or larger inline than
 /// [`INLINE_MAX`], does not build here.
@@ -129,20 +132,24 @@ impl fmt::Debug for Decoder<'_, '_> {
 /// `MessageTooLarge` if the input is longer than the message's cap, before
 /// anything is read; `TrailingBytes` if bytes remain after the value; and
 /// any error of [`Decode::decode`]. No value, not even part of one, is
-/// returned with an error.
-pub fn decode<'a, T: Decode<'a>>(message: &Message, input: &'a [u8]) -> Result<T, Error> {
+/// returned with an error. From a secret-bearing message no error carries
+/// an offset or a length (`docs/specs/xdr.md`, section 7, point 2).
+pub fn decode<'a, T: Decode<'a> + MessageType>(input: &'a [u8]) -> Result<T, Error> {
     within_limits::<T>();
+    let message = T::MESSAGE;
+    let ledger = Ledger::new(message.name, message.budget, None);
     run(
-        message,
+        &message,
+        <T as Classified>::SECRET,
         input,
-        Ledger::new(message.name, message.budget, None),
+        ledger,
         T::decode,
     )
 }
 
 /// Decodes as [`decode`] does, with the memory budget lowered to `budget`
-/// if that is below the message's, and calling `hook` with every
-/// reservation the ledger lets through, before it is made.
+/// if that is below the message's, never raised, and calling `hook` with
+/// every reservation the ledger lets through, before it is made.
 ///
 /// This is the test and fuzzing entry point (`docs/specs/xdr.md`, 5.2,
 /// point 9.2).
@@ -150,15 +157,21 @@ pub fn decode<'a, T: Decode<'a>>(message: &Message, input: &'a [u8]) -> Result<T
 /// # Errors
 ///
 /// As [`decode`].
-pub fn decode_traced<'a, T: Decode<'a>>(
-    message: &Message,
+pub fn decode_traced<'a, T: Decode<'a> + MessageType>(
     input: &'a [u8],
     budget: u64,
     hook: &mut dyn FnMut(Reservation),
 ) -> Result<T, Error> {
     within_limits::<T>();
+    let message = T::MESSAGE;
     let ledger = Ledger::new(message.name, budget.min(message.budget), Some(hook));
-    run(message, input, ledger, T::decode)
+    run(
+        &message,
+        <T as Classified>::SECRET,
+        input,
+        ledger,
+        T::decode,
+    )
 }
 
 /// Fails the build of an entry point for a type nested deeper than
@@ -174,15 +187,22 @@ const fn within_limits<'a, T: Decode<'a>>() {
     }
 }
 
-/// Whether `T`'s worst case fits `message`: its nesting depth and inline
-/// size are within the profile's limits, its heap ratio times the message
-/// cap is within the memory budget, and its reservation count over the
-/// message cap is computable (5.2, points 9.3, 9.5 and 10). The generated
-/// code asserts it in a constant for each message, so a message that does
-/// not fit does not build on that target. A ratio whose computation
-/// overflowed, or a product that overflows, is not proven (section 6, A8).
+/// Whether `T`'s worst case fits its message's descriptor: its nesting
+/// depth and inline size are within the profile's limits, its heap ratio
+/// times the message cap is within the memory budget, and its reservation
+/// count over the message cap is computable (5.2, points 9.3, 9.5 and 10).
+/// The generated code asserts it in a constant for each message, so a
+/// message that does not fit does not build on that target. A ratio whose
+/// computation overflowed, or a product that overflows, is not proven
+/// (section 6, A8). The descriptor is the type's own, the one [`decode`]
+/// uses, so what is proven is what is decoded.
 #[must_use]
-pub const fn proven<'a, T: Decode<'a>>(message: &Message) -> bool {
+pub const fn proven<'a, T: Decode<'a> + MessageType>() -> bool {
+    worst_case_fits::<T>(&T::MESSAGE)
+}
+
+/// Whether `T`'s worst case fits `message` ([`proven`]).
+const fn worst_case_fits<'a, T: Decode<'a>>(message: &Message) -> bool {
     let cap = message.cap as u64;
     let Some(heap_ratio) = T::HEAP_RATIO else {
         return false;
@@ -279,9 +299,12 @@ pub const fn max(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     }
 }
 
-/// Runs `decode_value` over `input` as one message.
-pub(crate) fn run<'a, 'h, T>(
+/// Runs `decode_value` over `input` as one `message`, secret-bearing if
+/// `secret`. The entry points pass both from the decoded type; the
+/// closure is for this crate's own tests of the decoder's primitives.
+fn run<'a, 'h, T>(
     message: &Message,
+    secret: bool,
     input: &'a [u8],
     ledger: Ledger<'h>,
     decode_value: impl FnOnce(&mut Decoder<'a, 'h>) -> Result<T, Error>,
@@ -291,7 +314,7 @@ pub(crate) fn run<'a, 'h, T>(
         offset: 0,
         limit: None,
         ledger,
-        secret: message.secret,
+        secret,
     };
     if u64::try_from(input.len()).map_or(true, |length| length > u64::from(message.cap)) {
         let error = Error::new(ErrorKind::MessageTooLarge)

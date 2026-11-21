@@ -11,6 +11,7 @@
 //! Integration tests for `ironafs-xdr`, through its public API
 //! (`docs/specs/xdr.md`, section 10).
 
+mod entry;
 mod golden;
 mod reject;
 mod roundtrip;

@@ -14,8 +14,8 @@ use ironafs_xdr::{BorrowedBytes, BorrowedWord, Decode, Encode, Message, MessageT
 use crate::support::{deep_from, encoded, sealed_bytes};
 use crate::types::{
     BLOB, Blob, DEEP, Deep16, ENTRY, EVERY, Entry, Every, FIVE, FLAG, Five, Flag, INTS, Ints,
-    LABEL, Label, NAMES, NOTE, Names, Note, PAIR, Pair, Quad, SEALED, SHADE, SOLOS, Sealed, Shade,
-    Solo, Solos, TAGS, Tags, WIDE, Wide,
+    LABEL, Label, NAMES, NOTE, Names, Note, PAIR, Pair, Quad, SHADE, SOLOS, Sealed, Shade, Solo,
+    Solos, TAGS, Tags, WIDE, Wide,
 };
 
 /// Encodes `value`, checks the encoding is as long as `size`, and decodes
@@ -30,7 +30,7 @@ where
     assert_eq!(bytes.len(), size, "{value:?}");
     let decoded = thread::Builder::new()
         .stack_size(SMALL_STACK)
-        .spawn(move || decode::<T>(message, &bytes))
+        .spawn(move || decode::<T>(&bytes))
         .unwrap()
         .join()
         .unwrap();
@@ -116,7 +116,7 @@ fn sealed_decode_fits_small_stack() {
     let decoded = thread::Builder::new()
         .stack_size(SMALL_STACK)
         .spawn(move || {
-            let decoded = decode::<Sealed<'_>>(&SEALED, &bytes).unwrap();
+            let decoded = decode::<Sealed<'_>>(&bytes).unwrap();
             (
                 decoded.key.reveal().to_vec(),
                 decoded.serial.reveal_u32(),

@@ -9,14 +9,15 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
-use ironafs_xdr::{Encode, Encoder, Error, ErrorKind, Message, MessageType, encode_into};
+use ironafs_xdr::{
+    Classified, Encode, Encoder, Error, ErrorKind, Message, MessageType, encode_into,
+};
 
 /// Room for any test buffer's capacity and more.
 const ROOMY: Message = Message {
     name: "test.unwind",
     cap: 4096,
     budget: 0,
-    secret: false,
 };
 
 /// Unwinds without a panic message, so the test's output stays clean.
@@ -27,9 +28,11 @@ fn unwind() -> ! {
 /// Writes its words, then unwinds.
 struct Bomb(usize);
 
-impl Encode for Bomb {
+impl Classified for Bomb {
     const SECRET: bool = false;
+}
 
+impl Encode for Bomb {
     fn encoded_len(&self) -> Result<u64, Error> {
         Ok(4 * u64::try_from(self.0).unwrap())
     }
@@ -48,9 +51,11 @@ impl MessageType for Catcher {
     const MESSAGE: Message = ROOMY;
 }
 
-impl Encode for Catcher {
+impl Classified for Catcher {
     const SECRET: bool = false;
+}
 
+impl Encode for Catcher {
     fn encoded_len(&self) -> Result<u64, Error> {
         self.0.encoded_len()
     }
@@ -69,9 +74,11 @@ impl MessageType for Lone {
     const MESSAGE: Message = ROOMY;
 }
 
-impl Encode for Lone {
+impl Classified for Lone {
     const SECRET: bool = false;
+}
 
+impl Encode for Lone {
     fn encoded_len(&self) -> Result<u64, Error> {
         self.0.encoded_len()
     }
