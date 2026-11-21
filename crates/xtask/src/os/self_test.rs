@@ -98,6 +98,16 @@ const STRAY_WIPE: &str = "fn zero(byte: *mut u8) {\n\
 
 const CASES: &[Case] = &[
     Case {
+        name: "a second block in a Miri stand-in",
+        edits: &[replace(
+            "src/linux_clock/abi/stand_in.rs",
+            "    0\n}",
+            "    #[expect(unsafe_code, reason = \"linux-clock: Miri stand-in\")]\n    \
+             // SAFETY: planted.\n    let () = unsafe { core::ptr::write(tp, reading) };\n    0\n}",
+        )],
+        expect: &[|found| mismatch(found, "linux-clock: Miri stand-in")],
+    },
+    Case {
         name: "a variadic call with fewer arguments than recorded (three after the number)",
         edits: &[replace(
             "src/linux_random.rs",
@@ -147,6 +157,7 @@ const CASES: &[Case] = &[
         )],
         expect: &[
             |found| matches!(found, Violation::OutsideModule { id, .. } if id == "linux-clock: Miri stand-in"),
+            |found| mismatch(found, "linux-clock: Miri stand-in"),
         ],
     },
     Case {
@@ -360,6 +371,8 @@ pub(super) fn run(
         "caught: a build that read only the crate root".to_owned(),
     )?;
 
+    boundary_cases(root, &originals, inventory, compiled, output)?;
+
     allowlist_case(root, crate_dir)?;
     report(
         output,
@@ -372,9 +385,85 @@ pub(super) fn run(
         format!(
             "check-os --self-test: the crate's own files passed and {} planted cases failed as \
              planted",
-            CASES.len() + 3 + cases
+            CASES.len() + 3 + BOUNDARY_CASES + cases
         ),
     )
+}
+
+/// How many cases `boundary_cases` plants.
+const BOUNDARY_CASES: usize = 3;
+
+/// The cases at the check's boundaries: a file the compiler read that was
+/// not scanned, a cfg key that tells musl from glibc, and a build matrix
+/// that names a target the guard cannot refuse.
+fn boundary_cases(
+    root: &Path,
+    originals: &BTreeMap<PathBuf, String>,
+    inventory: &Inventory,
+    compiled: &BTreeMap<String, BTreeSet<PathBuf>>,
+    output: &mut impl Write,
+) -> Result<(), Error> {
+    let report = |output: &mut dyn Write, line: String| {
+        writeln!(output, "{line}").map_err(Error::io("report check-os self-test"))
+    };
+    let mut unscanned = compiled.clone();
+    for files in unscanned.values_mut() {
+        files.insert(PathBuf::from("src/unscanned.rs"));
+    }
+    let found = check_edited(originals, &[], inventory, &unscanned)?;
+    let as_planted = !found.is_empty()
+        && found.iter().all(|found| {
+            matches!(found, Violation::NotScanned { file, .. } if file == Path::new("src/unscanned.rs"))
+        });
+    if !as_planted {
+        return Err(failure("a compiled file this check did not scan", &found));
+    }
+    report(
+        output,
+        "caught: a compiled file this check did not scan".to_owned(),
+    )?;
+
+    let keys = super::allowlist::musl_keys(root)?;
+    let lib = originals
+        .get(Path::new("src/lib.rs"))
+        .cloned()
+        .unwrap_or_default();
+    let planted = format!("{lib}\n#[cfg(target_feature = \"crt-static\")]\nmod musl_only;\n");
+    let found = super::musl_key_uses(Path::new("src/lib.rs"), &planted, &keys);
+    if found.len() != 1
+        || !matches!(found.first(), Some(Violation::Rule { what, .. }) if *what == super::MUSL_KEY)
+    {
+        return Err(failure(
+            "a module gated on crt-static, which only musl targets set",
+            &found,
+        ));
+    }
+    if !super::musl_key_uses(Path::new("src/lib.rs"), &lib, &keys).is_empty() {
+        return Err(failure("the crate root, unplanted, naming a musl key", &[]));
+    }
+    report(
+        output,
+        "caught: a module gated on crt-static, which only musl targets set".to_owned(),
+    )?;
+
+    let found = super::matrix_uses(
+        Path::new("rust-toolchain.toml"),
+        "targets = [\"x86_64-unknown-linux-gnu\", \"x86_64-unknown-linux-gnuasan\"]\n",
+        &["x86_64-unknown-linux-gnuasan".to_owned()],
+    );
+    if !matches!(found.as_slice(), [Violation::Target { target, .. }] if target == "x86_64-unknown-linux-gnuasan")
+    {
+        return Err(failure(
+            "a build matrix naming a target the guard cannot refuse",
+            &found,
+        ));
+    }
+    report(
+        output,
+        "caught: a build matrix naming a target the guard cannot refuse".to_owned(),
+    )?;
+
+    Ok(())
 }
 
 /// A change made to the code and to `sites.json` alike, so the two agree:

@@ -42,7 +42,28 @@
             ]
           }
         ],
-        "impls": 0
+        "impls": 0,
+        "c_facts": {
+          "structs": [
+            "timespec"
+          ],
+          "constants": [
+            "CLOCK_MONOTONIC",
+            "CLOCK_BOOTTIME"
+          ]
+        },
+        "stand_in": {
+          "functions": 1,
+          "blocks": [
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "tp",
+                "reading"
+              ]
+            }
+          ]
+        }
       }
     },
     {
@@ -174,7 +195,29 @@
             ]
           }
         ],
-        "impls": 0
+        "impls": 0,
+        "c_facts": {
+          "structs": [],
+          "constants": [
+            "EINTR",
+            "EPERM",
+            "ENOSYS",
+            "SYS_getrandom"
+          ]
+        },
+        "stand_in": {
+          "functions": 1,
+          "blocks": [
+            {
+              "operation": "core::ptr::write_bytes",
+              "arguments": [
+                "pointer",
+                "value",
+                "count"
+              ]
+            }
+          ]
+        }
       }
     },
     {
@@ -273,7 +316,28 @@
             ]
           }
         ],
-        "impls": 0
+        "impls": 0,
+        "c_facts": {
+          "structs": [
+            "rlimit"
+          ],
+          "constants": [
+            "RLIMIT_CORE",
+            "PR_GET_DUMPABLE",
+            "PR_SET_DUMPABLE"
+          ]
+        },
+        "stand_in": {
+          "functions": 2,
+          "blocks": [
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "rlim"
+              ]
+            }
+          ]
+        }
       }
     },
     {
@@ -318,7 +382,25 @@
             ]
           }
         ],
-        "impls": 0
+        "impls": 0,
+        "c_facts": {
+          "structs": [],
+          "constants": [
+            "MADV_DONTDUMP"
+          ]
+        },
+        "stand_in": {
+          "functions": 1,
+          "blocks": [
+            {
+              "operation": "core::slice::from_raw_parts",
+              "arguments": [
+                "bytes",
+                "length"
+              ]
+            }
+          ]
+        }
       }
     },
     {
@@ -368,7 +450,41 @@
             ]
           }
         ],
-        "impls": 0
+        "impls": 0,
+        "c_facts": {
+          "structs": [
+            "ucred"
+          ],
+          "constants": [
+            "SOL_SOCKET",
+            "SO_PEERCRED"
+          ]
+        },
+        "stand_in": {
+          "functions": 1,
+          "blocks": [
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "optlen"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "value",
+                "credentials"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "optlen",
+                "length"
+              ]
+            }
+          ]
+        }
       }
     },
     {
@@ -439,7 +555,92 @@
             ]
           }
         ],
-        "impls": 0
+        "impls": 0,
+        "c_facts": {
+          "structs": [
+            "iovec",
+            "msghdr",
+            "cmsghdr"
+          ],
+          "constants": [
+            "SOL_SOCKET",
+            "SCM_RIGHTS",
+            "MSG_NOSIGNAL",
+            "MSG_CMSG_CLOEXEC",
+            "MSG_CTRUNC",
+            "CMSG_LEN_ONE",
+            "CMSG_LEN_TWO",
+            "CMSG_SPACE_ONE"
+          ]
+        },
+        "stand_in": {
+          "functions": 2,
+          "blocks": [
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "msg"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "buffers"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "data"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "control"
+              ]
+            },
+            {
+              "operation": "BorrowedFd::borrow_raw",
+              "arguments": [
+                "descriptor"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "msg"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "buffers"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "data",
+                "byte"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "control",
+                "written"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "msg",
+                "message"
+              ]
+            }
+          ]
+        }
       }
     },
     {
@@ -607,7 +808,12 @@
             ]
           }
         ],
-        "impls": 0
+        "impls": 0,
+        "c_facts": {
+          "structs": [],
+          "constants": []
+        },
+        "stand_in": null
       }
     }
   ]

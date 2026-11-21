@@ -50,3 +50,19 @@ fn parse_cfg_reads_names_and_key_value_pairs() {
     assert!(found.contains(&("target_feature".to_owned(), Some("sse2".to_owned()))));
     assert_eq!(found.len(), 4);
 }
+
+#[test]
+fn guard_refuses_a_guard_another_attribute_could_switch_off() {
+    for source in [
+        format!("#[cfg(any())]\n{ROOT}"),
+        format!("mod inner {{\n{ROOT}}}\n"),
+        format!("fn f() {{}}\nconst A: u8 = 1 + {ROOT}"),
+    ] {
+        assert!(
+            guard(&tokens_with_strings(&source).unwrap()).is_err(),
+            "{source}"
+        );
+    }
+    let with_inner = format!("#![no_std]\n//! Docs.\n{ROOT}");
+    assert!(guard(&tokens_with_strings(&with_inner).unwrap()).is_ok());
+}
