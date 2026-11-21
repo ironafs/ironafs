@@ -17,6 +17,9 @@ extern crate alloc;
 
 mod consumer;
 mod generation;
+mod monitor;
+mod netlink;
 
 pub use consumer::{Cause, Consumer, Consumers, Loss, Move};
-pub use generation::{NetworkGeneration, Reader, Unavailable};
+pub use generation::{NetworkGeneration, Reader, Stopped, Unavailable};
+pub use monitor::{Monitor, Request};

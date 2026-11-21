@@ -1,0 +1,485 @@
+// SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! The monitor's states and its answer to each event and each failure
+//! (docs/specs/network-generation.md, 5.7 and section 7), on scripted
+//! datagrams, with a probe standing in for each consumer.
+
+use alloc::format;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
+use super::{Monitor, Request, SNAPSHOT_ATTEMPTS};
+use crate::consumer::probe::{Seen, loss_code, probes};
+use crate::generation::Stopped;
+use crate::netlink::Dump;
+use crate::netlink::build::{self, AF_INET, AF_INET6};
+use crate::{Loss, Reader, Unavailable};
+
+/// `NLM_F_MULTI`, `NLM_F_MULTI | NLM_F_DUMP_INTR`.
+const MULTI: u16 = 0x2;
+const INTERRUPTED: u16 = 0x12;
+
+fn done(sequence: u32, flags: u16) -> Vec<u8> {
+    build::message(3, flags, sequence, &[0; 4])
+}
+
+fn up_link(sequence: u32, index: i32) -> Vec<u8> {
+    build::link_with(16, sequence, index, 0x0001_0041, |body| {
+        build::attribute(body, 16, &[6]);
+    })
+}
+
+fn v4_address(sequence: u32, kind: u16, flags: u8) -> Vec<u8> {
+    build::address_with(kind, sequence, AF_INET, 2, 24, flags, |body| {
+        build::attribute(body, 2, &[192, 0, 2, 1]);
+    })
+}
+
+fn v6_address(sequence: u32, kind: u16, flags: u8) -> Vec<u8> {
+    build::address_with(kind, sequence, AF_INET6, 2, 64, flags, |body| {
+        build::attribute(
+            body,
+            1,
+            &[0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+        );
+    })
+}
+
+/// Answers the monitor's outstanding link and address dumps with one link
+/// and two addresses.
+fn answer_snapshot(monitor: &mut Monitor) {
+    let Some(links) = monitor.request() else {
+        panic!("no snapshot outstanding");
+    };
+    assert_eq!(links.dump, Dump::Links);
+    let mut datagram = up_link(links.sequence, 2);
+    datagram.extend(done(links.sequence, MULTI));
+    monitor.reply(&datagram).unwrap();
+    let Some(addresses) = monitor.request() else {
+        panic!("no address dump after the link dump");
+    };
+    assert_eq!(addresses.dump, Dump::Addresses);
+    assert_ne!(addresses.sequence, links.sequence);
+    let mut datagram = v4_address(addresses.sequence, 20, 0x80);
+    datagram.extend(v6_address(addresses.sequence, 20, 0x80));
+    datagram.extend(done(addresses.sequence, MULTI));
+    monitor.reply(&datagram).unwrap();
+    assert_eq!(monitor.request(), None);
+}
+
+/// A monitor with its first snapshot done, its reader and its probes.
+fn started() -> (Monitor, Reader, [Arc<Seen>; 7]) {
+    let (make, seen) = probes();
+    let (mut monitor, reader) = Monitor::new(make);
+    answer_snapshot(&mut monitor);
+    (monitor, reader, seen)
+}
+
+fn current(reader: &Reader) -> u64 {
+    reader.current().unwrap().get()
+}
+
+/// The acceptance check (issue #97): after `drive`, which makes `changes`
+/// changes, the generation moved at least once per change, every probe
+/// was told of every move, and no probe ever read the generation it was
+/// being told.
+fn every_hook_follows_every_move(
+    changes: u64,
+    drive: impl FnOnce(&mut Monitor),
+) -> Result<(), String> {
+    let (mut monitor, reader, seen) = started();
+    let before = current(&reader);
+    drive(&mut monitor);
+    let after = current(&reader);
+    if after < before + changes {
+        return Err(format!(
+            "{changes} changes moved the generation from {before} to {after}"
+        ));
+    }
+    for (index, each) in seen.iter().enumerate() {
+        if each.moves() != after || each.last() != after {
+            return Err(format!(
+                "consumer {index} told {} moves, last {}, of {after}",
+                each.moves(),
+                each.last()
+            ));
+        }
+        if each.late() != 0 {
+            return Err(format!(
+                "consumer {index} read a generation before being told"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_new_monitor_asks_for_links_first_and_publishes_nothing() {
+    let (make, _) = probes();
+    let (monitor, reader) = Monitor::new(make);
+    assert!(matches!(
+        monitor.request(),
+        Some(Request {
+            dump: Dump::Links,
+            ..
+        })
+    ));
+    assert_eq!(reader.current(), Err(Unavailable));
+}
+
+#[test]
+fn the_first_snapshot_publishes_generation_one_to_every_consumer() {
+    let (_monitor, reader, seen) = started();
+    assert_eq!(current(&reader), 1);
+    for each in &seen {
+        assert_eq!((each.moves(), each.snapshots(), each.late()), (1, 1, 0));
+    }
+}
+
+#[test]
+fn a_request_s_bytes_are_its_dump_with_its_sequence() {
+    let (make, _) = probes();
+    let (monitor, _reader) = Monitor::new(make);
+    let request = monitor.request().unwrap();
+    assert_eq!(
+        request.bytes(),
+        crate::netlink::dump_request(Dump::Links, request.sequence)
+    );
+}
+
+#[test]
+fn every_hook_is_told_of_each_route_rule_nexthop_address_and_link_change() {
+    let result = every_hook_follows_every_move(7, |monitor| {
+        for kind in [24, 33, 104] {
+            monitor
+                .notification(&build::message(kind, 0, 0, &[0; 12]))
+                .unwrap();
+        }
+        monitor.notification(&v4_address(0, 21, 0x80)).unwrap();
+        monitor.notification(&v4_address(0, 20, 0x80)).unwrap();
+        monitor
+            .notification(&build::link(16, 2, 0x0001_0040, |_| {}))
+            .unwrap();
+        monitor
+            .notification(&build::link(17, 2, 0, |_| {}))
+            .unwrap();
+    });
+    assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn a_source_that_never_fires_fails_the_acceptance_check() {
+    // Planted: the change happens, but nothing reaches the monitor.
+    let result = every_hook_follows_every_move(1, |_monitor| {});
+    assert_eq!(
+        result,
+        Err(String::from("1 changes moved the generation from 1 to 1"))
+    );
+}
+
+#[test]
+fn several_changes_in_one_datagram_move_once_each() {
+    let (mut monitor, reader, _) = started();
+    let mut datagram = build::message(24, 0, 0, &[0; 12]);
+    datagram.extend(build::message(32, 0, 0, &[0; 12]));
+    datagram.extend(build::message(25, 0, 0, &[0; 12]));
+    monitor.notification(&datagram).unwrap();
+    assert_eq!(current(&reader), 4);
+}
+
+#[test]
+fn an_address_lifetime_refresh_moves_nothing_and_deprecation_moves() {
+    let (mut monitor, reader, _) = started();
+    let refresh = build::address(20, AF_INET6, 2, 64, 0x80, |body| {
+        build::attribute(
+            body,
+            1,
+            &[0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+        );
+        build::attribute(body, 6, &[0xff; 16]);
+    });
+    monitor.notification(&refresh).unwrap();
+    assert_eq!(current(&reader), 1);
+    monitor
+        .notification(&v6_address(0, 20, 0x80 | 0x20))
+        .unwrap();
+    assert_eq!(current(&reader), 2);
+    monitor
+        .notification(&v6_address(0, 20, 0x80 | 0x20))
+        .unwrap();
+    assert_eq!(current(&reader), 2);
+}
+
+#[test]
+fn a_new_address_and_a_removed_one_each_move() {
+    let (mut monitor, reader, _) = started();
+    let other = build::address(20, AF_INET, 2, 24, 0x80, |body| {
+        build::attribute(body, 2, &[192, 0, 2, 9]);
+    });
+    monitor.notification(&other).unwrap();
+    assert_eq!(current(&reader), 2);
+    monitor.notification(&v4_address(0, 21, 0x80)).unwrap();
+    assert_eq!(current(&reader), 3);
+    // Removed and back with the same attributes: a change, not a refresh.
+    monitor.notification(&v4_address(0, 20, 0x80)).unwrap();
+    assert_eq!(current(&reader), 4);
+}
+
+#[test]
+fn a_link_message_with_the_same_usability_moves_nothing() {
+    let (mut monitor, reader, _) = started();
+    // The MTU or name changed: same flags, same operational state.
+    let same = build::link(16, 2, 0x0001_0041 | 0x1002, |body| {
+        build::attribute(body, 16, &[6]);
+        build::attribute(body, 4, &1400_u32.to_ne_bytes());
+    });
+    monitor.notification(&same).unwrap();
+    assert_eq!(current(&reader), 1);
+    let dormant = build::link(16, 2, 0x0001_0041, |body| {
+        build::attribute(body, 16, &[5]);
+    });
+    monitor.notification(&dormant).unwrap();
+    assert_eq!(current(&reader), 2);
+}
+
+#[test]
+fn a_removed_link_takes_its_addresses_out_of_the_table() {
+    let (mut monitor, reader, _) = started();
+    monitor
+        .notification(&build::link(17, 2, 0, |_| {}))
+        .unwrap();
+    assert_eq!(current(&reader), 2);
+    // The same address back on a new link of the same index is new.
+    monitor.notification(&v4_address(0, 20, 0x80)).unwrap();
+    assert_eq!(current(&reader), 3);
+}
+
+#[test]
+fn control_and_unknown_messages_on_the_notify_socket_move_nothing() {
+    let (mut monitor, reader, _) = started();
+    let mut datagram = build::message(1, 0, 0, &[]);
+    datagram.extend(build::message(3, 0, 0, &[0; 4]));
+    datagram.extend(build::message(2, 0, 0, &[0; 4]));
+    datagram.extend(build::message(68, 0, 0, &[0; 8]));
+    monitor.notification(&datagram).unwrap();
+    assert_eq!(current(&reader), 1);
+}
+
+/// The answer to one loss: every hook told of it at once, then a fresh
+/// snapshot asked for, whose completion moves again.
+#[track_caller]
+fn loss_invalidates_then_resnapshots(loss: Loss, cause: impl FnOnce(&mut Monitor)) {
+    let (mut monitor, reader, seen) = started();
+    cause(&mut monitor);
+    assert_eq!(current(&reader), 2);
+    for each in &seen {
+        assert_eq!(each.losses(), 1);
+        assert_eq!(each.last_loss(), loss_code(loss));
+        assert_eq!(each.late(), 0);
+    }
+    assert!(matches!(
+        monitor.request(),
+        Some(Request {
+            dump: Dump::Links,
+            ..
+        })
+    ));
+    answer_snapshot(&mut monitor);
+    assert_eq!(current(&reader), 3);
+    for each in &seen {
+        assert_eq!(each.snapshots(), 2);
+    }
+}
+
+#[test]
+fn a_planted_overflow_invalidates_every_consumer_then_takes_a_fresh_snapshot() {
+    loss_invalidates_then_resnapshots(Loss::Overflow, |monitor| {
+        monitor.lost(Loss::Overflow).unwrap();
+    });
+}
+
+#[test]
+fn a_planted_truncation_invalidates_every_consumer_then_takes_a_fresh_snapshot() {
+    loss_invalidates_then_resnapshots(Loss::Truncated, |monitor| {
+        monitor.lost(Loss::Truncated).unwrap();
+    });
+}
+
+#[test]
+fn a_resume_invalidates_every_consumer_then_takes_a_fresh_snapshot() {
+    loss_invalidates_then_resnapshots(Loss::Resumed, |monitor| {
+        monitor.lost(Loss::Resumed).unwrap();
+    });
+}
+
+#[test]
+fn a_malformed_notification_is_a_loss() {
+    loss_invalidates_then_resnapshots(Loss::Malformed, |monitor| {
+        monitor
+            .notification(&build::message(20, 0, 0, &[0; 3]))
+            .unwrap();
+    });
+}
+
+#[test]
+fn an_overrun_message_is_a_loss() {
+    loss_invalidates_then_resnapshots(Loss::Malformed, |monitor| {
+        monitor.notification(&build::message(4, 0, 0, &[])).unwrap();
+    });
+}
+
+#[test]
+fn messages_after_a_malformed_one_are_not_applied() {
+    let (mut monitor, reader, _) = started();
+    let mut datagram = build::message(24, 0, 0, &[0; 12]);
+    datagram.extend(build::pad(build::message(16, 0, 0, &[0; 3])));
+    datagram.extend(build::message(24, 0, 0, &[0; 12]));
+    monitor.notification(&datagram).unwrap();
+    // The first route moved it, the bad link is a loss; the last route is
+    // not read.
+    assert_eq!(current(&reader), 3);
+}
+
+#[test]
+fn a_dump_reply_with_another_sequence_is_ignored() {
+    let (make, _) = probes();
+    let (mut monitor, reader) = Monitor::new(make);
+    let links = monitor.request().unwrap();
+    let stale = links.sequence.wrapping_sub(1);
+    let mut datagram = up_link(stale, 9);
+    datagram.extend(done(stale, MULTI));
+    monitor.reply(&datagram).unwrap();
+    assert_eq!(monitor.request(), Some(links));
+    assert_eq!(reader.current(), Err(Unavailable));
+}
+
+#[test]
+fn an_interrupted_dump_is_a_loss_and_starts_again() {
+    let (mut monitor, reader, seen) = started();
+    monitor.lost(Loss::Overflow).unwrap();
+    let links = monitor.request().unwrap();
+    monitor.reply(&done(links.sequence, INTERRUPTED)).unwrap();
+    assert_eq!(current(&reader), 3);
+    assert_eq!(seen[0].last_loss(), loss_code(Loss::Interrupted));
+    let again = monitor.request().unwrap();
+    assert_eq!(again.dump, Dump::Links);
+    assert_ne!(again.sequence, links.sequence);
+}
+
+#[test]
+fn a_dump_answered_with_an_error_is_refused_and_starts_again() {
+    let (mut monitor, reader, seen) = started();
+    monitor.lost(Loss::Overflow).unwrap();
+    let links = monitor.request().unwrap();
+    monitor
+        .reply(&build::message(
+            2,
+            0,
+            links.sequence,
+            &(-16_i32).to_ne_bytes(),
+        ))
+        .unwrap();
+    assert_eq!(current(&reader), 3);
+    assert_eq!(seen[0].last_loss(), loss_code(Loss::Refused));
+}
+
+#[test]
+fn a_malformed_or_truncated_dump_starts_again() {
+    let (mut monitor, reader, seen) = started();
+    monitor.lost(Loss::Overflow).unwrap();
+    let links = monitor.request().unwrap();
+    monitor
+        .reply(&build::message(16, 0, links.sequence, &[0; 3]))
+        .unwrap();
+    assert_eq!(seen[0].last_loss(), loss_code(Loss::Malformed));
+    monitor.dump_failed(Loss::Truncated).unwrap();
+    assert_eq!(seen[0].last_loss(), loss_code(Loss::Truncated));
+    assert_eq!(current(&reader), 4);
+}
+
+#[test]
+fn eight_failed_snapshots_in_a_row_stop_the_source() {
+    let (make, seen) = probes();
+    let (mut monitor, reader) = Monitor::new(make);
+    for _ in 1..SNAPSHOT_ATTEMPTS {
+        monitor.dump_failed(Loss::Failed).unwrap();
+    }
+    assert_eq!(monitor.dump_failed(Loss::Failed), Err(Stopped));
+    assert_eq!(reader.current(), Err(Unavailable));
+    assert_eq!(monitor.request(), None);
+    assert_eq!(monitor.lost(Loss::Overflow), Err(Stopped));
+    for each in &seen {
+        assert_eq!(each.stops(), 1);
+    }
+}
+
+#[test]
+fn a_completed_snapshot_resets_the_count_of_failures() {
+    let (make, _) = probes();
+    let (mut monitor, reader) = Monitor::new(make);
+    for _ in 1..SNAPSHOT_ATTEMPTS {
+        monitor.dump_failed(Loss::Failed).unwrap();
+    }
+    answer_snapshot(&mut monitor);
+    for _ in 1..SNAPSHOT_ATTEMPTS {
+        monitor.dump_failed(Loss::Failed).unwrap();
+    }
+    assert!(reader.current().is_ok());
+}
+
+#[test]
+fn changes_before_the_first_snapshot_publish_nothing_until_it_completes() {
+    let (make, seen) = probes();
+    let (mut monitor, reader) = Monitor::new(make);
+    monitor
+        .notification(&build::message(24, 0, 0, &[0; 12]))
+        .unwrap();
+    monitor.lost(Loss::Overflow).unwrap();
+    assert_eq!(reader.current(), Err(Unavailable));
+    answer_snapshot(&mut monitor);
+    assert_eq!(current(&reader), 1);
+    assert_eq!(seen[0].moves(), 1);
+}
+
+#[test]
+fn completion_moves_even_when_the_tables_are_unchanged() {
+    // A change after the subscription that the dump already shows is then
+    // read as a refresh: only the completion's move covers it.
+    let (mut monitor, reader, _) = started();
+    monitor.lost(Loss::Resumed).unwrap();
+    answer_snapshot(&mut monitor);
+    monitor.notification(&v4_address(0, 20, 0x80)).unwrap();
+    assert_eq!(current(&reader), 3);
+}
+
+#[test]
+fn notifications_during_a_snapshot_still_move_the_generation() {
+    let (mut monitor, reader, _) = started();
+    monitor.lost(Loss::Overflow).unwrap();
+    monitor
+        .notification(&build::message(24, 0, 0, &[0; 12]))
+        .unwrap();
+    assert_eq!(current(&reader), 3);
+    answer_snapshot(&mut monitor);
+    assert_eq!(current(&reader), 4);
+}
+
+#[test]
+fn a_table_over_its_cap_treats_every_message_of_its_kind_as_a_change() {
+    let (mut monitor, reader, _) = started();
+    monitor.lost(Loss::Overflow).unwrap();
+    let links = monitor.request().unwrap();
+    let mut datagram = Vec::new();
+    for index in 0..=i32::try_from(super::LINKS_MAX).unwrap() {
+        datagram.extend(up_link(links.sequence, index + 10));
+    }
+    datagram.extend(done(links.sequence, MULTI));
+    monitor.reply(&datagram).unwrap();
+    let addresses = monitor.request().unwrap();
+    monitor.reply(&done(addresses.sequence, MULTI)).unwrap();
+    let before = current(&reader);
+    monitor.notification(&up_link(0, 10)).unwrap();
+    assert_eq!(current(&reader), before + 1);
+}

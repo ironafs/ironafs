@@ -43,6 +43,19 @@ fn advance_tells_every_consumer_the_new_generation() {
 }
 
 #[test]
+fn every_hook_reads_the_old_generation_during_its_call() {
+    let (consumers, seen) = probes();
+    let (mut publisher, _reader) = Publisher::new(consumers);
+    for _ in 0..3 {
+        publisher.advance(Cause::Changed).unwrap();
+    }
+    for each in &seen {
+        assert_eq!(each.moves(), 3);
+        assert_eq!(each.late(), 0);
+    }
+}
+
+#[test]
 fn advance_at_the_last_value_stops_instead_of_publishing_the_marker() {
     let (consumers, seen) = probes();
     let (mut publisher, reader) = Publisher::new(consumers);

@@ -82,12 +82,14 @@ pub(crate) struct Publisher {
 }
 
 impl Publisher {
-    /// A publisher with nothing published yet, and its reader.
-    pub(crate) fn new(consumers: Consumers) -> (Self, Reader) {
+    /// A publisher with nothing published yet, and its reader. `make`
+    /// builds the consumers' hooks, and may give each a reader of its own.
+    pub(crate) fn new(make: impl FnOnce(&Reader) -> Consumers) -> (Self, Reader) {
         let cell = Arc::new(AtomicU64::new(UNAVAILABLE));
         let reader = Reader {
             cell: Arc::clone(&cell),
         };
+        let consumers = make(&reader);
         let publisher = Self {
             cell,
             value: 0,
