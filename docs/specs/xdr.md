@@ -188,8 +188,11 @@ Section 9 shows where each is kept and which test fails if it is broken.
   **secret-bearing message** is one whose type's secrecy flag is set: the
   type's own marks, on the rows of its fields or, for a named type, on
   its own row, combined with the flags of its components, elements and
-  arms (5.1, point 8; 5.2, point 5). So it holds, at any depth, a secret
-  field or a value of a named type marked secret.
+  arms (5.1, point 8; 5.2, point 5). So its type can hold, at any
+  depth, a secret field or a value of a named type marked secret. The
+  flag belongs to the type and applies to every value of it, including
+  one that holds no secret, such as an empty array of a secret named
+  type or a union whose selected arm is plain.
 
 ## 5. Specification
 
@@ -407,14 +410,14 @@ the message, because every item is a whole number of units
 
    | Column | Content |
    |---|---|
-   | Cap name | stable, lower case, dotted: `<interface>.<message>.<field path>`, for example `vl.get_entry.reply.name`; the message cap is `<interface>.<message>`; the row of a named type (below, "An item that is no field") is `<interface>.<type>` |
+   | Cap name | stable, lower case, dotted: `<interface>.<message>.<field path>`, for example `vl.get_entry.reply.name`; the message cap is `<interface>.<message>`; the row of a named type (below, "An item that is no field" and "A secret named type with no cap") is `<interface>.<type>` |
    | Field | the field the cap applies to, "message", or, for a named type's row, the values of that type it covers |
-   | Kind | opaque, string, array or message; for a secret field with no cap (below), its type: integer, unsigned integer, hyper, unsigned hyper, enumeration, boolean, fixed-length opaque, fixed-length array, structure or union |
+   | Kind | opaque, string, array or message; for a secret field or a secret named type with no cap (below), its type: integer, unsigned integer, hyper, unsigned hyper, enumeration, boolean, fixed-length opaque, fixed-length array, structure or union |
    | Declared bound | m, its unit (bytes or elements) and its source, or "none" |
-   | Cap | the value, in bytes, or "none" for a secret field with no cap |
+   | Cap | the value, in bytes, or "none" for a secret field or a secret named type with no cap; the Declared bound is then "none" too |
    | Direction | in (decoded by IronAFS), out (encoded by IronAFS), or both |
    | Memory budget | message rows only: the memory budget in bytes (point 9) |
-   | Secret | yes for a secret field (5.1, point 8), or, on a named type's row (below, "An item that is no field"), for a named type whose values are secret; otherwise empty |
+   | Secret | yes for a secret field (5.1, point 8), or, on a named type's row (below, "An item that is no field" and "A secret named type with no cap"), for a named type whose values are secret; otherwise empty |
    | Why | the reason for the value |
 
    **A secret field with no cap.** Whether a field has a row depends
@@ -450,9 +453,20 @@ the message, because every item is a whole number of units
    own by its path, with a cap of its own: in 10.1, `test.label` caps
    each `label` in `pair`, `names` and `tags`, while `test.note.owner`
    and `test.sealed.tag` cap the `label` fields. A Secret mark on a
-   named type's row sets that named type's own flag, so every array,
-   structure and message that holds the type is secret through its
-   components (below).
+   named type's row, this one or the cap-free row below, sets that named
+   type's own flag, so every array, structure and message that holds
+   the type is secret through its components (below).
+
+   **A secret named type with no cap.** A named type whose values are
+   not a variable-length item (an integer, enumeration or boolean type,
+   a fixed-length opaque or array, a structure or a union) needs no cap,
+   and so has no row of its own, unless its values are secret, as a
+   named fixed-length opaque key's are. A secret one has a row of its
+   own: its cap name is `<interface>.<type>`, its Field names the type,
+   its Kind is the type's own kind, its Cap and Declared bound are
+   "none", and its Secret is yes. Such a row sets that named type's own
+   flag and emits no cap constant; like a secret field's row with no
+   cap, it records only the flag.
 
    The generated codec carries each cap as a named constant derived from
    the cap name, and the tests that check it cite the name. A cap name is
@@ -990,9 +1004,11 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    failed. An error a decode entry point returns from a secret-bearing
    message carries no offset (point 2). The encoder builds its own errors
    with no offset. The table's Decode and Encode columns cover the
-   errors the codec builds itself; an encode entry point also returns
-   whatever error a handwritten encoder passes on, of any kind (point
-   2).
+   errors the codec builds itself. Any error kind can reach an encode
+   caller: an encode entry point returns an error a handwritten encoder
+   passes on, of any kind, as that encoder made it, except a
+   `MessageTooLarge` from `encoded_len`, which it replaces with the
+   message's own (point 2).
 
    | Kind | When | Also carries | Decode | Encode |
    |---|---|---|---|---|
