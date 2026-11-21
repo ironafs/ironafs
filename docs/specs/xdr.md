@@ -432,7 +432,7 @@ the message, because every item is a whole number of units
    language requires, since there a declaration of variable-length
    opaque data, a string or a variable-length array takes no further
    array suffix `[X1 §6.3: CONFIRMED]`, whatever notation the
-   definitions use (Q4). Its cap is that
+   definitions use (section 13, Q4). Its cap is that
    named type's, in one row with the cap name `<interface>.<type>`: one
    row per named type, written once in the specification that declares
    the type, which applies wherever such a value of the type is decoded
@@ -1096,7 +1096,12 @@ integrity, anyone on the network path (ADR 0004, A13). They can try:
 All paths are in the `ironafs-xdr` crate, laid out as coding standards
 rules 15 and 20 set out. The tests use small test-only types of IronAFS's
 own, built on the codec, with names, values and caps chosen for these tests
-`[OWN]`:
+`[OWN]`. No codec generator exists yet: these test types are written by
+hand to what the generator must emit (5.1 and 5.2), their caps, flags,
+ratios and compile-time assertions included. The tests this section
+calls the generator's are the generator's own: they belong to the
+generator's specification (section 2; section 13, Q4) and land with
+the generator, and nothing runs them before then (10.6):
 
 ```
 enum shade { PALE = 1, DEEP = 4, VIVID = 9 };     /* closed */
@@ -1161,9 +1166,10 @@ target, so 896 bytes.
 36 bytes its bound allows (5.2, point 4), and a count of 4 empty labels
 is above the bound while 4 × 4 = 16 bytes is within the cap, so only
 `LengthOverBound` applies. `solos` has a zero-sized Rust element type
-on every target, while each element is 4 bytes on the wire: the
-generator holds a closed enumeration with one declared value as a type
-with no stored field, since the value is known, and the test crate
+on every target, while each element is 4 bytes on the wire: a closed
+enumeration with one declared value is held as a type with no stored
+field, since the value is known, as the generator must emit it, and the
+test crate
 asserts at compile time that `size_of` of the element type is 0 on each
 target CI builds, so a target where it is not does not build. `solos`
 checks that the ledger, not a capacity, is what the budget reads (5.2,
@@ -1179,9 +1185,10 @@ next, the innermost also `opaque pad[64]`, so every value of it is 16 ×
 8 + 64 = 192 bytes on the wire, its message cap; and the union `wide`,
 whose TRUE arm holds 240 bytes of fixed-length opaque inline, 244 bytes
 on the wire with the discriminant, its message cap. The generator's
-own tests check that it refuses a chain of 17, and that it emits the
-inline-size and memory-budget assertions (5.2, points 9.3 and 10) for
-every type and message. Every test type has the same cap in both
+own tests, when it lands, are to check that it refuses a chain of 17,
+and that it emits the inline-size and memory-budget assertions (5.2,
+points 9.3 and 10) for every type and message; here the test types
+carry those assertions by hand. Every test type has the same cap in both
 directions, so P1, P2 and P4 compare like with like; a type whose caps
 differ by direction is tested by its own cases. Protocol messages are
 tested in their own crates, from their own specifications.
@@ -1266,9 +1273,9 @@ over the test types above.
   requests recorded is at most q(T) × L ÷ 4 (5.2, point 9.5), which
   `every`'s out-of-line field and the arrays of labels exercise; every
   proper prefix of a valid `every` checks it on truncated input, and
-  R17 (10.3) pins the out-of-line field's entry check. Generator tests
-  check that a definition whose worst case is above its memory budget
-  gets the failing assertion, that a definition holding a zero-width
+  R17 (10.3) pins the out-of-line field's entry check. The generator's
+  tests, when it lands, are to check that a definition whose worst case
+  is above its memory budget gets the failing assertion, that a definition holding a zero-width
   type out of line is refused (5.2, point 10.2), and that two nested
   out-of-line values give q = 2 over one unit. Three cases of 5.2,
   point 9 are unit tests of the decoder's private helpers in
@@ -1295,8 +1302,8 @@ over the test types above.
   two accepted inputs of `sealed`, the `Debug` text of the decoded value,
   and of the wrapper each field accessor returns, is the same, so no
   field's value, length or count reaches it, whichever field misframing
-  put a key's bytes in. A generator test checks that it emits no
-  `Display` for these types.
+  put a key's bytes in. A generator test, when the generator lands, is
+  to check that it emits no `Display` for these types.
 - **The encoder's buffer** (5.5, points 3 and 6). The contract holds
   for every message and every error; the suite checks these cases of
   it directly. Unit tests in `src/encode/tests.rs`, most through the
@@ -1367,9 +1374,9 @@ over the test types above.
   through the owned-output entry point is the generic-caller doctest's,
   which passes `Key` itself, not a holder of it. `Key` is a type whose
   own field, a word, is secret, and which declares the flag itself, as
-  5.2, point 5 has it; a generator test checks that a cap-table row
-  marking a field with no cap secret sets the flag of the type that
-  declares the field.
+  5.2, point 5 has it; a generator test, when the generator lands, is
+  to check that a cap-table row marking a field with no cap secret sets
+  the flag of the type that declares the field.
 - **The decode entry points** (5.1, point 8; 5.2, point 9.2) take the
   message's type only; integration tests in `tests/it/entry.rs`. The
   cap is the type's: an input one word over it gets `MessageTooLarge`
@@ -1472,6 +1479,11 @@ are its tests.
 ### 10.6 Gaps
 
 - The dependency-graph check of section 9 (PROPOSED, #46).
+- The codec generator and its own tests (section 10's opening; the
+  generator's specification, section 13, Q4). Until it lands, the test
+  types are written by hand, and what 5.1 and 5.2 require of the generator
+  (reading cap tables, refusing tables that disagree, emitting the
+  assertions) is not run by any test here.
 
 ## 11. Revisit if
 
