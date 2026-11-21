@@ -47,9 +47,8 @@ for the papers, that meant their full text. This was not a review seat.
 | 2, fix verification | `addb23a..9864326` | the fixes to both | GPT read-only, same session | gpt-6.2-sol | high | FAIL: 5 majors (partial fixes), 6 minors |
 | 3, fix verification | `9864326..f54c6e6` | the fixes to both | GPT read-only, same session | gpt-6.2-sol | high | PASS: 2 minors |
 | 4, final-state check | `1f44f21..b67430f` | the whole change: README, indexes, heading, the note, this record | GPT read-only, same session | gpt-6.2-sol | high | FAIL: 3 majors, 4 minors |
-
-Round 4's fixes were made in one batch after it; their verification is
-recorded below when it runs.
+| 5, fix verification | `b67430f..4abac36` | the fixes to round 4 | GPT read-only, same session | gpt-6.2-sol | high | FAIL: 2 majors (1 refuted), 1 minor |
+| 6, fix verification | `4abac36..3718686` | the fixes to round 5, and the current website answers | GPT read-only, same session | gpt-6.2-sol | high | PASS: no findings |
 
 ## Findings
 
@@ -115,4 +114,15 @@ recorded below when it runs.
   - Whether Microsoft's automatic driver recovery started in September
     2026 is marked NOT VERIFIED in the note.
 
-Not yet complete: round 4's fixes await verification.
+- **Round 5:**
+  - **Major, fixed:** this record said every quote was checked at its
+    source by the reviewer. It now says the reviewer read Apple's indexed
+    copies when the canonical pages rate-limited it.
+  - **Major, refuted:** that round 3's minors were still open in the
+    website answers. The reviewer had been given a copy of the answers
+    from before those fixes. In round 6 it read the current file and
+    marked the finding refuted.
+  - **Minor, fixed:** the note's preface now says where it states
+    IronAFS's own rules, at the end of sections 2 and 3.
+
+The review stopped there: no blocker or major finding remains.
