@@ -459,14 +459,15 @@ the message, because every item is a whole number of units
 
    **A secret named type with no cap.** A named type whose values are
    not a variable-length item (an integer, enumeration or boolean type,
-   a fixed-length opaque or array, a structure or a union) needs no cap,
-   and so has no row of its own, unless its values are secret, as a
-   named fixed-length opaque key's are. A secret one has a row of its
-   own: its cap name is `<interface>.<type>`, its Field names the type,
-   its Kind is the type's own kind, its Cap and Declared bound are
-   "none", and its Secret is yes. Such a row sets that named type's own
-   flag and emits no cap constant; like a secret field's row with no
-   cap, it records only the flag.
+   a fixed-length opaque or array, a structure or a union) needs no item
+   cap, and so has no item row of its own, unless its values are secret,
+   as a named fixed-length opaque key's are. Used as a whole message, it
+   still has a message row with its message cap (point 3). A secret one
+   has an item row of its own: its cap name is `<interface>.<type>`, its
+   Field names the type, its Kind is the type's own kind, its Cap and
+   Declared bound are "none", and its Secret is yes. Such a row sets
+   that named type's own flag and emits no cap constant; like a secret
+   field's row with no cap, it records only the flag.
 
    The generated codec carries each cap as a named constant derived from
    the cap name, and the tests that check it cite the name. A cap name is
