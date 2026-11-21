@@ -252,3 +252,14 @@ pub(crate) fn require_success(step: &Step, ran: &Ran) -> Result<(), Failure> {
         detail,
     })
 }
+
+/// Runs `step` and requires it to succeed; returns its standard output.
+///
+/// # Errors
+///
+/// Returns the failure to start the step, or [`Failure::Step`].
+pub(crate) fn run_step(run: &mut impl Run, step: &Step) -> Result<String, Failure> {
+    let ran = run.run(step)?;
+    require_success(step, &ran)?;
+    Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
+}

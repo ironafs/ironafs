@@ -25,6 +25,10 @@ pub(crate) struct RunDir {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Object {
     Container(String),
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "TODO(#47): bring-up makes the cell's network")
+    )]
     Network(String),
     Image(String),
 }
@@ -102,6 +106,10 @@ impl RunDir {
     ///
     /// Returns [`Failure::Io`] if the latest-run marker cannot be read or
     /// names no valid id.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "TODO(#47): `cell down` tears down the latest run")
+    )]
     pub(crate) fn latest(target_dir: &Path) -> Result<Option<Self>, Failure> {
         let runs = target_dir.join(RUNS);
         let marker = runs.join(LATEST);
@@ -192,6 +200,10 @@ impl State {
     ///
     /// Returns [`Failure::Io`] if the file cannot be read or holds a line
     /// that names no object.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "TODO(#47): `cell down` tears down the latest run")
+    )]
     pub(crate) fn load(dir: &RunDir) -> Result<Self, Failure> {
         let path = dir.state_file();
         let text = match fs::read_to_string(&path) {
@@ -273,6 +285,10 @@ pub(crate) fn teardown(run: &mut impl Run, dir: &RunDir, state: &State) -> Resul
 /// # Errors
 ///
 /// Returns a failure if the run cannot be found, read or torn down.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "TODO(#47): `cell down` tears down the latest run")
+)]
 pub(crate) fn down(run: &mut impl Run, target_dir: &Path) -> Result<Option<String>, Failure> {
     let Some(dir) = RunDir::latest(target_dir)? else {
         return Ok(None);

@@ -174,6 +174,10 @@ impl Arch {
 
     /// The architecture this xtask was built for, if the cell has pins
     /// for it.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "TODO(#47): `cell up` installs for the host")
+    )]
     pub(crate) fn host() -> Option<Self> {
         match std::env::consts::ARCH {
             "x86_64" => Some(Self::Amd64),
@@ -645,15 +649,17 @@ fn pins_path() -> PathBuf {
         .join("pins.txt")
 }
 
-/// Reads and parses the committed pin file.
+/// Reads the committed pin file and parses it; returns the text and the
+/// definition.
 ///
 /// # Errors
 ///
 /// Returns [`Failure::Io`] if the file cannot be read, and
 /// [`Failure::Definition`] if it does not parse.
-pub(crate) fn load() -> Result<Definition, Failure> {
+pub(crate) fn load() -> Result<(String, Definition), Failure> {
     let path = pins_path();
     let text =
         std::fs::read_to_string(&path).map_err(Failure::io("read the cell pin file", &path))?;
-    parse(&text).map_err(Failure::Definition)
+    let definition = parse(&text).map_err(Failure::Definition)?;
+    Ok((text, definition))
 }

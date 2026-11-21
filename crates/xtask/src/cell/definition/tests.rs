@@ -341,3 +341,10 @@ fn arch_host_matches_the_build_target() {
 
     assert_eq!(Arch::host(), expected);
 }
+
+#[test]
+fn load_returns_the_committed_text_and_its_definition() {
+    let text = include_str!("../../../cell/pins.txt");
+
+    assert_eq!(super::load(), Ok((text.to_owned(), parse(text).unwrap())));
+}
