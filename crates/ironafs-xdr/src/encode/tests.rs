@@ -219,7 +219,7 @@ fn encode_into_requests_once_and_never_grows() {
 
 #[test]
 fn value_writing_past_its_size_fails_and_leaves_nothing() {
-    let mut out = vec![1, 2, 3];
+    let mut out = Vec::new();
     let error = encode_into(&MESSAGE, &Liar, &mut out).unwrap_err();
     assert_error(&error, ErrorKind::MessageTooLarge, Some("test.m"), Some(32));
     assert_eq!(out, []);
@@ -364,14 +364,80 @@ fn encoder_debug_shows_the_message_name_only() {
 }
 
 #[test]
-fn secret_encode_into_short_of_capacity_refuses_and_leaves_buffer_as_it_was() {
-    let mut out = Vec::with_capacity(4);
-    out.extend_from_slice(&[0xaa; 4]);
-    let before = (out.as_ptr(), out.capacity());
-    let error = encode_into(&SECRET, &Short(b"abc"), &mut out).unwrap_err();
-    assert_error(&error, ErrorKind::AllocationFailed, None, None);
-    assert_eq!(out, [0xaa; 4]);
-    assert_eq!((out.as_ptr(), out.capacity()), before);
+fn encode_into_never_grows_an_allocated_buffer_for_any_message() {
+    // Growing would move the bytes and release the old block, which may
+    // hold an earlier secret encoding, without the caller's wipe.
+    for message in [MESSAGE, SECRET] {
+        let mut out = Vec::with_capacity(4);
+        out.extend_from_slice(&[0xaa; 4]);
+        let before = (out.as_ptr(), out.capacity());
+        let error = encode_into(&message, &Short(b"abc"), &mut out).unwrap_err();
+        assert_error(&error, ErrorKind::AllocationFailed, None, None);
+        assert_eq!(out, []);
+        assert_eq!((out.as_ptr(), out.capacity()), before);
+    }
+}
+
+/// Three words: 12 bytes.
+struct Twelve;
+
+impl Encode for Twelve {
+    fn encoded_len(&self) -> Result<u64, Error> {
+        Ok(12)
+    }
+
+    fn encode(&self, encoder: &mut Encoder<'_>) -> Result<(), Error> {
+        encoder.put_u32(1)?;
+        encoder.put_u32(2)?;
+        encoder.put_u32(3)
+    }
+}
+
+/// A message, a way to encode into a buffer under it, and the error kind it
+/// must raise.
+type Case<'c> = (
+    &'c Message,
+    &'c dyn Fn(&Message, &mut Vec<u8>) -> Result<(), Error>,
+    ErrorKind,
+);
+
+#[test]
+fn encode_into_empties_the_buffer_on_every_error() {
+    let small = Message { cap: 7, ..MESSAGE };
+    let cases: [Case<'_>; 4] = [
+        // The value's own size check refuses it.
+        (
+            &MESSAGE,
+            &|m, out| encode_into(m, &Short(b"abcdefghi"), out),
+            ErrorKind::LengthOverBound,
+        ),
+        // Above the message cap, before anything is reserved.
+        (
+            &small,
+            &|m, out| encode_into(m, &Short(b"abcd"), out),
+            ErrorKind::MessageTooLarge,
+        ),
+        // An allocated buffer too small for the message.
+        (
+            &MESSAGE,
+            &|m, out| encode_into(m, &Twelve, out),
+            ErrorKind::AllocationFailed,
+        ),
+        // A value that writes past its size.
+        (
+            &MESSAGE,
+            &|m, out| encode_into(m, &Liar, out),
+            ErrorKind::MessageTooLarge,
+        ),
+    ];
+    for (message, run, kind) in cases {
+        let mut out = vec![0xaa; 8];
+        let before = (out.as_ptr(), out.capacity());
+        let error = run(message, &mut out).unwrap_err();
+        assert_eq!(error.kind(), kind, "{error}");
+        assert_eq!(out, [], "{error}");
+        assert_eq!((out.as_ptr(), out.capacity()), before, "{error}");
+    }
 }
 
 #[test]

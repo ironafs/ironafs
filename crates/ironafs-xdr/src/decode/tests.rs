@@ -906,8 +906,7 @@ fn boxed_keeps_the_reserved_block() {
 
 #[test]
 fn boxed_takes_a_zero_sized_type_whatever_its_capacity() {
-    let mut buffer: Vec<()> = Vec::new();
-    buffer.push(());
+    let buffer: Vec<()> = vec![()];
     let input = [0; 4];
     let (result, _) = decode_with!(&MESSAGE, &input, |decoder| {
         let held = decoder.boxed::<(), 1>(buffer, 0)?;

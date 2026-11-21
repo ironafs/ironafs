@@ -108,45 +108,41 @@ pub fn encode<T: Encode + MessageType>(value: &T) -> Result<Vec<u8>, Error> {
 
 /// Encodes `value` as one `message` into `out`, the caller's buffer.
 ///
-/// For a secret-bearing message (`docs/specs/xdr.md`, 5.1, point 8, and
-/// 5.5, point 3) the secret bytes never move:
+/// The contract holds for every message, so that a buffer which once held
+/// a secret-bearing message is safe to pass for any other
+/// (`docs/specs/xdr.md`, 5.1, point 8, and 5.5, point 3):
 ///
-/// - **No reallocation.** The whole size is requested once, before
-///   anything is written, and only where that moves nothing: `out` has no
-///   allocation yet, or already has room for the whole message. A buffer
-///   that has an allocation too small for the message is refused with
-///   `AllocationFailed` and left as it was, since growing it would move its
-///   bytes and release the old block unwiped. The output is written by
-///   `push` alone, so the buffer never grows.
-/// - **Wiping is the caller's.** Before writing, and on any error, the
-///   encoder overwrites the buffer and its spare capacity with zeros and
-///   leaves it empty. That is best effort only: ordinary writes to memory
-///   that is about to be cleared may be removed by the compiler, and a
-///   pure crate cannot write any other way. The caller wipes `out` with
-///   the project's approved wiper (ADR 0005, `mem-wipe`) after use, on
-///   error and on drop.
-///
-/// For any other message the buffer may also grow, once, when it is too
-/// small.
+/// - **The allocation never moves.** The encoder never grows, shrinks,
+///   moves or frees the allocation `out` holds. Its one heap request is
+///   the whole size, made once before anything is written, and only when
+///   `out` has no allocation yet; an allocated `out` too small for the
+///   message is refused with `AllocationFailed`. The output is written by
+///   `push` alone, within that size. So every byte the encoder writes
+///   stays in the one allocation the caller holds.
+/// - **Every call starts and every error ends with a wipe.** Before
+///   anything else, the encoder overwrites `out` and its spare capacity
+///   with zeros and leaves it empty; on any error, whatever it raises,
+///   it does so again. On success `out` holds exactly the message.
+/// - **The wipe that holds is the caller's.** The encoder's zeroing is
+///   best effort: ordinary writes to memory that is about to be cleared
+///   may be removed by the compiler, and a pure crate cannot write any
+///   other way. Since the allocation never moves, the caller's wipe of
+///   it with the project's approved wiper (ADR 0005, `mem-wipe`), after
+///   use, on error, before reuse and on drop, reaches every copy.
 ///
 /// # Errors
 ///
 /// Any error of [`Encode::encoded_len`]; `MessageTooLarge` naming the
 /// message if the size is above its cap, before any output is reserved;
-/// `AllocationFailed` if the reservation fails, or for a secret-bearing
-/// message would move the buffer.
+/// `AllocationFailed` if the reservation fails, or `out` has an
+/// allocation too small for the message.
 pub fn encode_into<T: Encode + ?Sized>(
     message: &Message,
     value: &T,
     out: &mut Vec<u8>,
 ) -> Result<(), Error> {
-    let size = size_within_cap(message, value)?;
-    let length = usize::try_from(size).map_err(|_| too_large(message))?;
-    if message.secret && out.capacity() != 0 && out.capacity() < length {
-        return Err(Error::new(ErrorKind::AllocationFailed));
-    }
     wipe(out);
-    let written = write(message, value, out, size, length);
+    let written = write(message, value, out);
     if written.is_err() {
         wipe(out);
     }
@@ -175,18 +171,17 @@ fn size_within_cap<T: Encode + ?Sized>(message: &Message, value: &T) -> Result<u
     Ok(size)
 }
 
-/// Requests the output once and writes `value`, of `size` bytes, into
+/// Sizes `value`, requests the output once, and writes `value` into
 /// `out`, which is empty.
-fn write<T: Encode + ?Sized>(
-    message: &Message,
-    value: &T,
-    out: &mut Vec<u8>,
-    size: u64,
-    length: usize,
-) -> Result<(), Error> {
+fn write<T: Encode + ?Sized>(message: &Message, value: &T, out: &mut Vec<u8>) -> Result<(), Error> {
+    let size = size_within_cap(message, value)?;
+    let length = usize::try_from(size).map_err(|_| too_large(message))?;
+    if out.capacity() != 0 && out.capacity() < length {
+        return Err(Error::new(ErrorKind::AllocationFailed));
+    }
     #[expect(
         clippy::disallowed_methods,
-        reason = "rule 3: the encoder requests its output once, after the size check (docs/specs/xdr.md, 5.5, point 3)"
+        reason = "rule 3: the encoder requests its output once, after the size check, into a buffer with no allocation or with room already (docs/specs/xdr.md, 5.5, point 3)"
     )]
     out.try_reserve_exact(length)
         .map_err(|_| Error::new(ErrorKind::AllocationFailed))?;
