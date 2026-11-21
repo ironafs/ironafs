@@ -134,8 +134,16 @@ fn decode_takes_the_secrecy_from_the_type() {
     let sealed = decode::<Sealed>(&trailing).unwrap_err();
     assert_eq!(sealed.kind(), ErrorKind::TrailingBytes);
     assert_eq!((sealed.offset(), sealed.extent()), (None, None));
-    let traced = decode_traced::<Sealed>(cut, u64::MAX, &mut |_| {}).unwrap_err();
-    assert_eq!((traced.offset(), traced.extent()), (None, None));
+    // And the same three through the traced entry point.
+    for (input, kind) in [
+        (cut, ErrorKind::Truncated),
+        (&THREE[..], ErrorKind::MessageTooLarge),
+        (&trailing[..], ErrorKind::TrailingBytes),
+    ] {
+        let traced = decode_traced::<Sealed>(input, u64::MAX, &mut |_| {}).unwrap_err();
+        assert_eq!(traced.kind(), kind);
+        assert_eq!((traced.offset(), traced.extent()), (None, None), "{kind:?}");
+    }
 }
 
 /// A handwritten secret-bearing message whose decoder decodes a plain
