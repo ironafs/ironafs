@@ -80,8 +80,38 @@ find_in_package() { # find_in_package <package> <basename>
   dpkg -L "$1" 2>/dev/null | grep -E "/$2\$" | head -n 1
 }
 
+# apt_update <base URI> <CA file or "">: point apt at the snapshot and update.
+# Sets APT_OPTS for later apt calls. Returns 1 on a transport failure; a
+# signature problem is fatal and never retried over another transport.
+APT_OPTS=()
+APT_KEY=""
+apt_update() {
+  local base=$1 ca=$2
+  cat >/etc/apt/sources.list.d/cell.sources <<EOF
+Types: deb
+URIs: $base
+Suites: $SNAPSHOT_SUITE
+Components: $SNAPSHOT_COMPONENT
+Signed-By: $APT_KEY
+EOF
+  APT_OPTS=(-o Acquire::Retries=5)
+  [[ -n $ca ]] && APT_OPTS+=(-o "Acquire::https::CaInfo=$ca")
+  rm -rf /var/lib/apt/lists/*
+  if apt-get "${APT_OPTS[@]}" update >/tmp/apt-update.log 2>&1 &&
+    ! grep -Eq "$APT_BAD" /tmp/apt-update.log; then
+    say "apt-get update: signed InRelease accepted from $base${ca:+ (CA file $ca)}"
+    return 0
+  fi
+  tail -n 20 /tmp/apt-update.log
+  if grep -Eq "$APT_SIG_BAD" /tmp/apt-update.log; then
+    die "apt-get update: signature problem (never retried over another transport)"
+  fi
+  say "apt-get update: transport failure over $base${ca:+ (CA file $ca)}"
+  return 1
+}
+
 cmd_install() {
-  local arch=$1 key base ok=0 line name pin file got pkg want have
+  local arch=$1 key ok=0 transport="" line name pin file got pkg want have
   export DEBIAN_FRONTEND=noninteractive
   printf '#!/bin/sh\nexit 101\n' >/usr/sbin/policy-rc.d
   chmod 0755 /usr/sbin/policy-rc.d
@@ -95,31 +125,39 @@ cmd_install() {
   [[ -f $key ]] || die "no Debian archive keyring in the image"
   say "archive keyring: $key"
   rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*
+  APT_KEY=$key
 
-  for base in "$SNAPSHOT_HTTPS" "$SNAPSHOT_HTTP"; do
-    cat >/etc/apt/sources.list.d/cell.sources <<EOF
-Types: deb
-URIs: $base
-Suites: $SNAPSHOT_SUITE
-Components: $SNAPSHOT_COMPONENT
-Signed-By: $key
-EOF
-    rm -rf /var/lib/apt/lists/*
-    if apt-get -o Acquire::Retries=5 update >/tmp/apt-update.log 2>&1 &&
-      ! grep -Eq "$APT_BAD" /tmp/apt-update.log; then
+  # 1. HTTPS with the runner's CA bundle, named explicitly to apt.
+  if [[ -s $HOST_CA ]]; then
+    say "runner CA bundle: $(grep -c 'BEGIN CERTIFICATE' "$HOST_CA") certificates"
+    apt_update "$SNAPSHOT_HTTPS" "$HOST_CA" && { ok=1; transport="https (runner CA bundle)"; }
+  else
+    say "runner CA bundle: not mounted"
+  fi
+  # 2. ca-certificates from the same signed snapshot over HTTP, then HTTPS
+  #    with that bundle for everything else.
+  if ((!ok)) && apt_update "$SNAPSHOT_HTTP" ""; then
+    if apt-get "${APT_OPTS[@]}" install -y --no-install-recommends ca-certificates \
+      >/tmp/apt-ca.log 2>&1 && [[ -s /etc/ssl/certs/ca-certificates.crt ]]; then
+      say "ca-certificates $(dpkg-query -W -f '${Version}' ca-certificates) installed from the signed snapshot"
+      if apt_update "$SNAPSHOT_HTTPS" /etc/ssl/certs/ca-certificates.crt; then
+        ok=1
+        transport="https (ca-certificates from the snapshot)"
+      fi
+    else
+      tail -n 20 /tmp/apt-ca.log
+      say "ca-certificates bootstrap failed"
+    fi
+    # 3. Plain HTTP, reached only after HTTPS failed in transport.
+    if ((!ok)) && apt_update "$SNAPSHOT_HTTP" ""; then
       ok=1
-      say "apt-get update: signed InRelease accepted from $base"
-      break
+      transport="http (fallback after HTTPS transport failures)"
     fi
-    tail -n 20 /tmp/apt-update.log
-    if grep -Eq "$APT_SIG_BAD" /tmp/apt-update.log; then
-      die "apt-get update: signature problem (never retried over another transport)"
-    fi
-    say "apt-get update: failed over $base"
-  done
+  fi
   ((ok)) || die "apt-get update failed over every transport"
+  say "transport: $transport"
 
-  apt-get -o Acquire::Retries=5 install -y --no-install-recommends --download-only \
+  apt-get "${APT_OPTS[@]}" install -y --no-install-recommends --download-only \
     "${PACKAGES[@]}" >/tmp/apt-download.log 2>&1 ||
     { tail -n 20 /tmp/apt-download.log; die "apt-get download"; }
 
@@ -140,7 +178,7 @@ EOF
     fi
   done <<<"$HASH_PINS"
 
-  apt-get install -y --no-install-recommends "${PACKAGES[@]}" >/tmp/apt-install.log 2>&1 ||
+  apt-get "${APT_OPTS[@]}" install -y --no-install-recommends "${PACKAGES[@]}" >/tmp/apt-install.log 2>&1 ||
     { tail -n 20 /tmp/apt-install.log; die "apt-get install"; }
 
   for pkg in "${PACKAGES[@]}"; do
@@ -323,21 +361,76 @@ cmd_rxdebug() { # <ip>
   rxdebug "$1" 7000 -version | grep 'AFS version'
 }
 
-# Seeding route (i): afsio. Its help text is printed for the record.
-cmd_afsio_seed() {
-  local auth=() back path
-  command -v afsio >/dev/null || die "afsio is not installed"
+# --- Seeding (round 2) ------------------------------------------------------
+#
+# Three routes, each writing its own file in root.cell's root directory:
+#   afsio        kinit with the admin keytab, aklog, afsio write;
+#   fuse-token   afsd.fuse mount, kinit, aklog, write through the mount,
+#                fs setacl system:anyuser rl;
+#   noauth-fuse  bos setauth off on both fileservers (-localauth, from the db
+#                container), an unauthenticated afsd.fuse writes and sets the
+#                ACL, bos setauth on again.
+# run.sh releases root.cell after each route, then reads every file from
+# containers that hold no keytab, no ticket and no token.
+
+seed_file() { printf '/afs/%s/hello-%s.txt' "$1" "$2"; } # <cell or .cell> <route>
+
+# The admin keytab arrives on stdin (piped from the KDC container) and stays
+# in this container's /run/cell, mode 0600. Never printed.
+cmd_recv_admin_keytab() {
+  write_krb5_conf
+  mkdir -p /run/cell
+  (umask 077 && cat >/run/cell/admin.keytab)
+  [[ -s /run/cell/admin.keytab ]] || die "no admin keytab received"
+  say "admin keytab received"
+}
+
+cmd_cat_admin_keytab() { cat /run/cell/admin.keytab; }
+
+# kinit from the keytab; print only the principal names (klist without -K/-e).
+cmd_kinit_admin() {
+  timeout 60 kinit -k -t /run/cell/admin.keytab "admin@$REALM" || return 1
+  klist 2>&1 | grep -E 'Default principal|afs/|krbtgt/' | head -n 5
+}
+
+# aklog for the synthetic cell, then tokens (cell and expiry only). Passes if
+# tokens lists one for this cell.
+cmd_aklog_token() {
+  local rc out
+  timeout 60 aklog -c "$CELL" -k "$REALM"
+  rc=$?
+  say "aklog exit $rc"
+  out=$(timeout 30 tokens 2>&1)
+  say "tokens exit $?:"
+  printf '%s\n' "$out" | grep -v '^$' | head -n 10
+  ((rc == 0)) && grep -q "afs@$CELL" <<<"$out"
+}
+
+cmd_afsio_help() {
+  local page
   afsio help 2>&1 | head -n 40
-  afsio write -help 2>&1 | head -n 40
-  if afsio write -help 2>&1 | grep -q -- '-localauth'; then auth=(-localauth); fi
-  say "afsio auth flags: ${auth[*]:-(none)}"
-  # The plain path first; the dotted read-write path if that is refused.
-  for path in "/afs/$CELL/hello.txt" "/afs/.$CELL/hello.txt"; do
-    if printf '%s\n' "$SEED_TEXT" | timeout 120 afsio write -file "$path" "${auth[@]}"; then
-      back=$(timeout 60 afsio read -file "$path" "${auth[@]}") || return 1
+  afsio write -help 2>&1 | head -n 20
+  afsio read -help 2>&1 | head -n 20
+  # The packaged manual page, as text (package documentation).
+  page=$(find /usr/share/man -name 'afsio.1*' 2>/dev/null | head -n 1)
+  if [[ -n $page ]]; then
+    say "--- $page (roff stripped) ---"
+    zcat -f "$page" | sed -e '/^\.\\"/d' -e 's/^\.[A-Za-z]* *//' -e 's/\\f[BIRP]//g' -e 's/\\-/-/g' |
+      grep -v '^$' | head -n 120
+  else
+    say "no afsio manual page in the image"
+  fi
+}
+
+# afsio write <route>: needs a Kerberos ticket (kinit-admin first). The
+# dotted (read-write) path first, then the plain one; read back what landed.
+cmd_afsio_write() {
+  local route=$1 path back
+  for path in "$(seed_file ".$CELL" "$route")" "$(seed_file "$CELL" "$route")"; do
+    if printf '%s\n' "$SEED_TEXT" | timeout 120 afsio write -file "$path" -cell "$CELL" -realm "$REALM"; then
+      back=$(timeout 60 afsio read -file "$path" -cell "$CELL" -realm "$REALM") || return 1
       [[ $back == "$SEED_TEXT" ]] || die "afsio read-back differs"
-      vos release root.cell -localauth || return 1
-      say "afsio: wrote $path, read it back and released root.cell"
+      say "afsio: wrote $path and read it back"
       return 0
     fi
     say "afsio: write to $path failed"
@@ -345,17 +438,28 @@ cmd_afsio_seed() {
   return 1
 }
 
-# Anonymous read through afsio, in a container that holds no key.
-cmd_afsio_read_anon() {
-  local back
-  back=$(timeout 60 afsio read -file "/afs/$CELL/hello.txt") || return 1
-  [[ $back == "$SEED_TEXT" ]] || die "anonymous afsio read returned other bytes"
-  say "anonymous afsio read: ${#back} bytes, as written"
+# No keytab, no ticket cache, no token in this container.
+assert_no_credentials() {
+  kdestroy -A >/dev/null 2>&1
+  unset KRB5CCNAME
+  [[ ! -e /run/cell/admin.keytab ]] || die "this container holds the admin keytab"
+  if klist >/dev/null 2>&1; then die "this container holds a ticket"; fi
+  say "no keytab, no ticket cache"
 }
 
-# Route (ii): afsd.fuse, a user-space cache manager over /dev/fuse.
+# Anonymous read through afsio of one route's file, from the plain (RO) path.
+cmd_afsio_read_anon() {
+  local route=$1 back
+  assert_no_credentials
+  back=$(timeout 60 afsio read -file "$(seed_file "$CELL" "$route")" -cell "$CELL") || return 1
+  [[ $back == "$SEED_TEXT" ]] || die "anonymous afsio read returned other bytes"
+  say "anonymous afsio read of $route: ${#back} bytes, as written"
+}
+
+# Route (ii) and (iii): afsd.fuse, a user-space cache manager over /dev/fuse.
 cmd_fuse_prepare() {
   cmd_client_setup
+  write_krb5_conf
   mkdir -p /afs /var/cache/openafs
   printf '/afs:/var/cache/openafs:50000\n' >/etc/openafs/cacheinfo
   command -v afsd.fuse || die "afsd.fuse is not installed"
@@ -370,33 +474,74 @@ cmd_fuse_run() { # [with-mountpoint]
 
 fuse_mounted() { grep -Eq '^[^ ]+ /afs fuse' /proc/mounts; }
 
+fuse_log_tail() {
+  say "--- afsd.fuse: $(pgrep -x afsd.fuse >/dev/null && echo running || echo NOT running); log tail ---"
+  tail -n 20 /var/log/afsd.fuse.log 2>/dev/null
+}
+
 cmd_fuse_wait() {
   if poll 60 fuse_mounted; then
     grep -E ' /afs fuse' /proc/mounts
     return 0
   fi
-  tail -n 20 /var/log/afsd.fuse.log 2>/dev/null
+  fuse_log_tail
   return 1
 }
 
-cmd_fuse_read_anon() {
-  local back
-  ls -la "/afs/$CELL" || return 1
-  back=$(timeout 60 cat "/afs/$CELL/hello.txt") || return 1
-  [[ $back == "$SEED_TEXT" ]] || die "anonymous fuse read returned other bytes"
-  say "anonymous fuse read: ${#back} bytes, as written"
+# Can the mount be walked at all? The dynroot, then the cell (RO path).
+cmd_fuse_probe() {
+  local rc=0
+  timeout 30 ls -la /afs || rc=1
+  timeout 30 ls -la "/afs/$CELL" || rc=1
+  timeout 30 ls -la "/afs/.$CELL" || rc=1
+  ((rc)) && fuse_log_tail
+  return "$rc"
 }
 
-# Does the fs command reach afsd.fuse at all (a harmless query)?
-cmd_fuse_fs_reach() { timeout 30 fs whereis "/afs/$CELL"; }
+# Write one route's file through the mount (RW path) and read it back.
+cmd_fuse_write() {
+  local route=$1 back
+  printf '%s\n' "$SEED_TEXT" >"$(seed_file ".$CELL" "$route")" || { fuse_log_tail; return 1; }
+  back=$(timeout 30 cat "$(seed_file ".$CELL" "$route")") || { fuse_log_tail; return 1; }
+  [[ $back == "$SEED_TEXT" ]] || die "fuse read-back differs"
+  say "fuse: wrote $(seed_file ".$CELL" "$route") and read it back"
+}
 
-# Seeding through the fuse mount: write a file and grant anonymous read. No
-# token is held here, so this records what an unauthenticated mount allows.
-cmd_fuse_seed() {
-  # The dotted name is the read-write path under -dynroot.
-  printf '%s\n' "$SEED_TEXT" >"/afs/.$CELL/hello.txt" || return 1
-  timeout 30 fs setacl -dir "/afs/.$CELL" -acl system:anyuser rl || return 1
-  say "fuse: wrote a file and set an ACL"
+# fs setacl on root.cell's root (RW path), then fs listacl to check it.
+cmd_fuse_setacl() {
+  local out
+  timeout 30 fs setacl -dir "/afs/.$CELL" -acl system:anyuser rl || { fuse_log_tail; return 1; }
+  out=$(timeout 30 fs listacl -path "/afs/.$CELL") || { fuse_log_tail; return 1; }
+  printf '%s\n' "$out"
+  grep -Eq '^[[:space:]]*system:anyuser[[:space:]]+rl$' <<<"$out" || die "system:anyuser rl not on the ACL"
+}
+
+cmd_fuse_read_anon() {
+  local route=$1 back
+  assert_no_credentials
+  back=$(timeout 60 cat "$(seed_file "$CELL" "$route")") || { fuse_log_tail; return 1; }
+  [[ $back == "$SEED_TEXT" ]] || die "anonymous fuse read returned other bytes"
+  say "anonymous fuse read of $route: ${#back} bytes, as written"
+}
+
+# setauth <ip> on|off (db container, -localauth).
+cmd_setauth() {
+  timeout 60 bos setauth "$1" "$2" -localauth || return 1
+  say "bos setauth $1 $2: done"
+}
+
+# noauth-file: does this server hold a NoAuth file? Prints yes or no.
+cmd_noauth_file() {
+  if compgen -G '/var/lib/openafs/local/NoAuth' >/dev/null || [[ -e /usr/afs/local/NoAuth ]]; then
+    say yes
+  else
+    say no
+  fi
+}
+
+cmd_release() {
+  timeout 120 vos release root.cell -localauth || return 1
+  vos examine root.cell -localauth 2>&1 | grep -E 'RO Site|Last Update' | head -n 6
 }
 
 sub=${1:-}
@@ -415,13 +560,22 @@ case $sub in
   pts-setup) cmd_pts_setup ;;
   volumes) cmd_volumes ;;
   rxdebug) cmd_rxdebug "$@" ;;
-  afsio-seed) cmd_afsio_seed ;;
-  afsio-read-anon) cmd_afsio_read_anon ;;
+  recv-admin-keytab) cmd_recv_admin_keytab ;;
+  cat-admin-keytab) cmd_cat_admin_keytab ;;
+  kinit-admin) cmd_kinit_admin ;;
+  aklog-token) cmd_aklog_token ;;
+  afsio-help) cmd_afsio_help ;;
+  afsio-write) cmd_afsio_write "$@" ;;
+  afsio-read-anon) cmd_afsio_read_anon "$@" ;;
   fuse-prepare) cmd_fuse_prepare ;;
   fuse-run) cmd_fuse_run "$@" ;;
   fuse-wait) cmd_fuse_wait ;;
-  fuse-read-anon) cmd_fuse_read_anon ;;
-  fuse-fs-reach) cmd_fuse_fs_reach ;;
-  fuse-seed) cmd_fuse_seed ;;
+  fuse-probe) cmd_fuse_probe ;;
+  fuse-write) cmd_fuse_write "$@" ;;
+  fuse-setacl) cmd_fuse_setacl ;;
+  fuse-read-anon) cmd_fuse_read_anon "$@" ;;
+  setauth) cmd_setauth "$@" ;;
+  noauth-file) cmd_noauth_file ;;
+  release) cmd_release ;;
   *) die "unknown subcommand '$sub'" ;;
 esac

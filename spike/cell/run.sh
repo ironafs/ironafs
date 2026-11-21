@@ -13,14 +13,18 @@
 # 3. In a builder container, install the pinned packages from the dated
 #    snapshot (apt checks the signed InRelease; incell.sh checks the recorded
 #    .deb hashes and the installed versions), then commit a local image.
-# 4. For each mode (a: unprivileged; b: minimal added capabilities, first
-#    passing set wins; c: --privileged), fresh containers on a fresh network:
-#    KDC, db server, two fileservers, a client. Per-run keys are made inside
-#    the KDC container and piped to the servers, never printed or stored on
-#    the runner. Record: services up, volumes with RO replicas on both
+# 4. For each mode in SPIKE_MODES (a: unprivileged; b: minimal added
+#    capabilities, first passing set wins; c: --privileged), fresh containers
+#    on a fresh network: KDC, db server, two fileservers, a client. Per-run
+#    keys are made inside the KDC container and piped to the servers (and the
+#    admin keytab to the seeding containers), never printed or stored on the
+#    runner. Record: services up, volumes with RO replicas on both
 #    fileservers, both fileservers answering from another container and from
-#    the host's network namespace, seeding via afsio then afsd.fuse, an
-#    anonymous read of the seeded file, and no AFS kernel module on the host.
+#    the host's network namespace, and no AFS kernel module on the host.
+#    In the modes in SEED_MODES, three seeding routes (afsio with a token;
+#    afsd.fuse with a token and fs setacl; afsd.fuse under bos setauth off),
+#    each with a release and anonymous reads from containers holding no
+#    keytab, ticket or token.
 # 5. Print a summary table (stdout and the job summary). Exit 0 only if the
 #    brief's pass rule holds on this runner.
 
@@ -31,6 +35,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/env.sh"
 
 runner_label=${RUNNER_LABEL:-local}
+# Round 2: mode a (bring-up and seeding) and c (bring-up only, as a control).
+read -r -a spike_modes <<<"${SPIKE_MODES:-a c}"
+read -r -a seed_modes <<<"${SEED_MODES:-a}"
+FUSE_FLAGS=(--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined)
 run_id="$(date -u +%Y%m%d%H%M%S)-$$"
 prefix="spike47-$run_id"
 work=$(mktemp -d)
@@ -127,10 +135,12 @@ log "image: debian@sha256:$platform_digest ($arch; index sha256:$IMAGE_INDEX)"
 builder="$prefix-builder"
 ca_mount=()
 [[ -f /etc/ssl/certs/ca-certificates.crt ]] &&
-  ca_mount=(-v /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro)
+  ca_mount=(-v "/etc/ssl/certs/ca-certificates.crt:$HOST_CA:ro")
 try "builder start" docker run -d --init --name "$builder" -v "$here:/spike:ro" \
   "${ca_mount[@]}" "$image" sleep infinity || exit 1
 show "install pinned packages" docker exec "$builder" bash /spike/incell.sh install "$arch" || exit 1
+transport=$(sed -n 's/^transport: //p' "$work/logs/$(tr -c 'A-Za-z0-9_.-' '_' <<<"install pinned packages").log" | tail -n 1)
+log "apt transport: ${transport:-unknown}"
 try "commit image" docker commit "$builder" "$image_local" || exit 1
 docker rm -f "$builder" >/dev/null
 install_secs=$((SECONDS - t0))
@@ -180,17 +190,160 @@ teardown_mode() {
   docker network rm "$prefix-$mode" >/dev/null 2>&1
 }
 
-fuse_attempt() { # <mode> <variant> <flags...>
-  local mode=$1 variant=$2 how
-  shift 2
+# Pipe the admin keytab from the KDC container to another container. It never
+# touches the runner's disk or the log.
+send_admin_keytab() { # <mode> <role>
+  docker exec "$prefix-$1-kdc" bash /spike/incell.sh cat-admin-keytab |
+    docker exec -i "$prefix-$1-$2" bash /spike/incell.sh recv-admin-keytab
+}
+
+# fuse_container <mode> <role> <ip>: start a container with an afsd.fuse
+# mount at /afs. Round 1 showed the default AppArmor profile refuses the
+# mount on all four runners, so round 2 starts unconfined directly.
+fuse_container() {
+  local mode=$1 role=$2 ip=$3 how
   for how in with-mountpoint from-cacheinfo; do
-    docker rm -f "$prefix-$mode-fuse" >/dev/null 2>&1
-    try "$mode: fuse container ($variant)" start_container "$mode" fuse "$IP_FUSE" "$@" || return 1
-    show "$mode: fuse prepare" ex "$mode" fuse fuse-prepare || return 1
-    docker exec -d "$prefix-$mode-fuse" bash /spike/incell.sh fuse-run "$how"
-    show "$mode: fuse mount ($variant; mount point $how)" ex "$mode" fuse fuse-wait && return 0
+    docker rm -f "$prefix-$mode-$role" >/dev/null 2>&1
+    try "$mode: $role container" start_container "$mode" "$role" "$ip" "${flags[@]}" "${FUSE_FLAGS[@]}" || return 1
+    try "$mode: $role prepare" ex "$mode" "$role" fuse-prepare || return 1
+    docker exec -d "$prefix-$mode-$role" bash /spike/incell.sh fuse-run "$how"
+    show "$mode: $role mount (mount point $how)" ex "$mode" "$role" fuse-wait && return 0
   done
   return 1
+}
+
+# result <mode> <route> <field> <name> <command...>: run, record pass/fail.
+result() {
+  local mode=$1 route=$2 field=$3 name=$4
+  shift 4
+  if show "$mode: $route: $name" "$@"; then
+    rec "$mode" "$route:$field" pass
+    return 0
+  fi
+  rec "$mode" "$route:$field" fail
+  return 1
+}
+
+release_after() { # <mode> <route>
+  result "$1" "$2" release "vos release root.cell" ex "$1" db release
+}
+
+seed_routes() {
+  local mode=$1 ip state
+  rec "$mode" seeding ran
+  rec "$mode" fuse_flags "${FUSE_FLAGS[*]}"
+
+  # Route (i): afsio with a ticket and a token, in a container of its own.
+  try "$mode: start seeder" start_container "$mode" seeder "$IP_SEEDER" "${flags[@]}" &&
+    try "$mode: seeder config" ex "$mode" seeder client-setup &&
+    show "$mode: admin keytab to the seeder" send_admin_keytab "$mode" seeder
+  show "$mode: afsio help and manual" ex "$mode" seeder afsio-help
+  if result "$mode" afsio krb kinit ex "$mode" seeder kinit-admin; then
+    result "$mode" afsio token aklog ex "$mode" seeder aklog-token
+    if result "$mode" afsio write "afsio write" ex "$mode" seeder afsio-write afsio; then
+      release_after "$mode" afsio
+    else
+      rec "$mode" afsio:release -
+    fi
+  else
+    rec "$mode" afsio:token -
+    rec "$mode" afsio:write -
+    rec "$mode" afsio:release -
+  fi
+  rec "$mode" afsio:acl "n/a (afsio sets no ACL)"
+  rec "$mode" afsio:mount "n/a"
+
+  # Route (ii): afsd.fuse with a ticket and a token; write and set the ACL.
+  if fuse_container "$mode" fuse "$IP_FUSE"; then
+    rec "$mode" fuse-token:mount pass
+    show "$mode: admin keytab to the fuse container" send_admin_keytab "$mode" fuse
+    show "$mode: fuse-token: probe the mount" ex "$mode" fuse fuse-probe
+    if result "$mode" fuse-token krb kinit ex "$mode" fuse kinit-admin; then
+      result "$mode" fuse-token token aklog ex "$mode" fuse aklog-token
+    else
+      rec "$mode" fuse-token:token -
+    fi
+    result "$mode" fuse-token write "write through the mount" ex "$mode" fuse fuse-write fuse-token
+    result "$mode" fuse-token acl "fs setacl system:anyuser rl" ex "$mode" fuse fuse-setacl
+    release_after "$mode" fuse-token
+  else
+    rec "$mode" fuse-token:mount fail
+    for state in krb token write acl release; do rec "$mode" "fuse-token:$state" -; done
+  fi
+  docker rm -f "$prefix-$mode-fuse" >/dev/null 2>&1
+
+  # Route (iii): NoAuth on both fileservers (bos setauth, -localauth), an
+  # unauthenticated afsd.fuse writes and sets the ACL, then NoAuth off.
+  rec "$mode" noauth-fuse:krb "- (none held)"
+  local off=1
+  for ip in "$IP_FS1" "$IP_FS2"; do
+    show "$mode: noauth-fuse: setauth $ip off" ex "$mode" db setauth "$ip" off || off=0
+  done
+  sleep 5
+  for state in fs1 fs2; do
+    log "$mode: NoAuth file on $state after setauth off: $(ex "$mode" "$state" noauth-file)"
+  done
+  if ((off)); then
+    rec "$mode" noauth-fuse:token "n/a (bos setauth off)"
+  else
+    rec "$mode" noauth-fuse:token "fail (bos setauth off)"
+  fi
+  if ((off)) && fuse_container "$mode" fuse-noauth "$IP_FUSE_NOAUTH"; then
+    rec "$mode" noauth-fuse:mount pass
+    show "$mode: noauth-fuse: probe the mount" ex "$mode" fuse-noauth fuse-probe
+    result "$mode" noauth-fuse write "write through the mount" ex "$mode" fuse-noauth fuse-write noauth-fuse
+    result "$mode" noauth-fuse acl "fs setacl system:anyuser rl" ex "$mode" fuse-noauth fuse-setacl
+  else
+    rec "$mode" noauth-fuse:mount "$( ((off)) && echo fail || echo -)"
+    rec "$mode" noauth-fuse:write -
+    rec "$mode" noauth-fuse:acl -
+  fi
+  docker rm -f "$prefix-$mode-fuse-noauth" >/dev/null 2>&1
+  # Authorization back on everywhere before any anonymous read; if any
+  # fileserver still holds NoAuth, the anonymous reads below prove nothing.
+  NOAUTH_LEFT=0
+  for ip in "$IP_FS1" "$IP_FS2"; do
+    show "$mode: noauth-fuse: setauth $ip on" ex "$mode" db setauth "$ip" on || NOAUTH_LEFT=1
+  done
+  sleep 5
+  for state in fs1 fs2; do
+    if [[ $(ex "$mode" "$state" noauth-file) != no ]]; then
+      log "$mode: NoAuth file still on $state"
+      NOAUTH_LEFT=1
+    fi
+  done
+  rec "$mode" noauth_cleared "$( ((NOAUTH_LEFT)) && echo FAIL || echo pass)"
+  if [[ $(get "$mode" noauth-fuse:write) == pass || $(get "$mode" noauth-fuse:acl) == pass ]]; then
+    release_after "$mode" noauth-fuse
+  else
+    rec "$mode" noauth-fuse:release -
+  fi
+
+  # Anonymous reads: the client container (never held a keytab) through
+  # afsio, and a fresh afsd.fuse container started after every release.
+  local route anon_fuse=0
+  if ((NOAUTH_LEFT)); then
+    for route in "${SEED_ROUTES[@]}"; do
+      rec "$mode" "$route:anon_afsio" "void (NoAuth left on)"
+      rec "$mode" "$route:anon_fuse" "void (NoAuth left on)"
+    done
+    return
+  fi
+  fuse_container "$mode" fuse-anon "$IP_FUSE_ANON" && anon_fuse=1
+  ((anon_fuse)) && show "$mode: anonymous probe of the mount" ex "$mode" fuse-anon fuse-probe
+  for route in "${SEED_ROUTES[@]}"; do
+    if [[ $(get "$mode" "$route:write") != pass ]]; then
+      rec "$mode" "$route:anon_afsio" -
+      rec "$mode" "$route:anon_fuse" -
+      continue
+    fi
+    result "$mode" "$route" anon_afsio "anonymous afsio read" ex "$mode" client afsio-read-anon "$route"
+    if ((anon_fuse)); then
+      result "$mode" "$route" anon_fuse "anonymous fuse read" ex "$mode" fuse-anon fuse-read-anon "$route"
+    else
+      rec "$mode" "$route:anon_fuse" "fail (no mount)"
+    fi
+  done
 }
 
 run_mode() {
@@ -268,58 +421,15 @@ run_mode() {
     rec "$mode" answer_host -
   fi
 
-  # Seeding route (i): afsio, then an anonymous read from the keyless client.
-  if [[ $(get "$mode" volumes) == pass ]]; then
-    if show "$mode: afsio seed" ex "$mode" db afsio-seed; then
-      rec "$mode" seed_afsio pass
+  # Seeding (round 2): only in SEED_MODES, and only once volumes pass.
+  if [[ " ${seed_modes[*]} " == *" $mode "* ]]; then
+    if [[ $(get "$mode" volumes) == pass ]]; then
+      seed_routes "$mode"
     else
-      rec "$mode" seed_afsio fail
-    fi
-    if show "$mode: anonymous afsio read" ex "$mode" client afsio-read-anon; then
-      rec "$mode" anon_read_afsio pass
-    else
-      rec "$mode" anon_read_afsio fail
-    fi
-
-    # Route (ii): afsd.fuse with /dev/fuse.
-    local fuse=fail
-    if fuse_attempt "$mode" "SYS_ADMIN, /dev/fuse" "${flags[@]}" --device /dev/fuse --cap-add SYS_ADMIN; then
-      fuse="pass"
-    elif fuse_attempt "$mode" "SYS_ADMIN, /dev/fuse, apparmor=unconfined" "${flags[@]}" \
-      --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined; then
-      fuse="pass (apparmor=unconfined)"
-    fi
-    rec "$mode" fuse_mount "$fuse"
-    if [[ $fuse == pass* ]]; then
-      if show "$mode: fs reaches afsd.fuse" ex "$mode" fuse fuse-fs-reach; then
-        rec "$mode" fuse_fs_cmd pass
-      else
-        rec "$mode" fuse_fs_cmd fail
-      fi
-      if show "$mode: fuse seed (no token)" ex "$mode" fuse fuse-seed; then
-        rec "$mode" seed_fuse pass
-        try "$mode: release after fuse seed" \
-          docker exec "$prefix-$mode-db" vos release root.cell -localauth
-      else
-        rec "$mode" seed_fuse fail
-      fi
-      if show "$mode: anonymous fuse read" ex "$mode" fuse fuse-read-anon; then
-        rec "$mode" anon_read_fuse pass
-      else
-        rec "$mode" anon_read_fuse fail
-      fi
-    else
-      rec "$mode" fuse_fs_cmd -
-      rec "$mode" seed_fuse -
-      rec "$mode" anon_read_fuse -
+      rec "$mode" seeding "- (volumes did not pass)"
     fi
   else
-    rec "$mode" seed_afsio -
-    rec "$mode" fuse_mount -
-    rec "$mode" fuse_fs_cmd -
-    rec "$mode" seed_fuse -
-    rec "$mode" anon_read_afsio -
-    rec "$mode" anon_read_fuse -
+    rec "$mode" seeding "- (not in SEED_MODES)"
   fi
 
   teardown_mode "$mode"
@@ -336,29 +446,33 @@ step4_passes() { # <mode>
 }
 
 modes_run=()
-run_mode a
-modes_run+=(a)
-for m in b-sys-resource b-net-admin b-both; do
-  run_mode "$m"
-  modes_run+=("$m")
-  if step4_passes "$m"; then
-    log "first passing capability set: $m; the remaining b sets are skipped"
-    break
+for m in "${spike_modes[@]}"; do
+  if [[ $m == b ]]; then
+    for mb in b-sys-resource b-net-admin b-both; do
+      run_mode "$mb"
+      modes_run+=("$mb")
+      if step4_passes "$mb"; then
+        log "first passing capability set: $mb; the remaining b sets are skipped"
+        break
+      fi
+    done
+  else
+    run_mode "$m"
+    modes_run+=("$m")
   fi
 done
-run_mode c
-modes_run+=(c)
 
 # --- 5. Summary ------------------------------------------------------------
 
-columns=(flags services volumes answer_container answer_host seed_afsio anon_read_afsio fuse_mount fuse_fs_cmd seed_fuse anon_read_fuse no_afs_module ready_secs total_secs)
+columns=(flags services volumes answer_container answer_host seeding no_afs_module ready_secs total_secs)
+route_fields=(mount krb token write acl release anon_afsio anon_fuse)
 summary="$work/summary.md"
 {
   printf '### Cell spike (#47): %s\n\n' "$runner_label"
   printf -- '- kernel %s, %s; docker %s\n' "$(uname -r)" "$arch" \
     "$(docker version --format '{{.Server.Version}}' 2>/dev/null)"
-  printf -- '- image debian@sha256:%s; OpenAFS %s; MIT Kerberos %s; snapshot %s\n' \
-    "$platform_digest" "$OPENAFS_VERSION" "$KRB5_VERSION" "${SNAPSHOT_HTTPS##*/}"
+  printf -- '- image debian@sha256:%s; OpenAFS %s; MIT Kerberos %s; snapshot %s; apt transport: %s\n' \
+    "$platform_digest" "$OPENAFS_VERSION" "$KRB5_VERSION" "${SNAPSHOT_HTTPS##*/}" "${transport:-unknown}"
   printf -- '- install %ss; AFS modules before: %s, after install: %s\n\n' \
     "$install_secs" "${baseline_modules:-none}" "${after_install:-none}"
   printf '| mode |'
@@ -371,16 +485,34 @@ summary="$work/summary.md"
     for c in "${columns[@]}"; do printf ' %s |' "$(get "$m" "$c")"; done
     printf '\n'
   done
+  for m in "${modes_run[@]}"; do
+    [[ $(get "$m" seeding) == ran ]] || continue
+    printf '\n#### Seeding routes, mode %s (fuse containers: %s; NoAuth cleared before the reads: %s)\n\n' \
+      "$m" "$(get "$m" fuse_flags)" "$(get "$m" noauth_cleared)"
+    printf '| route |'
+    printf ' %s |' "${route_fields[@]}"
+    printf '\n|---|'
+    printf -- '---|%.0s' "${route_fields[@]}"
+    printf '\n'
+    for r in "${SEED_ROUTES[@]}"; do
+      printf '| %s |' "$r"
+      for c in "${route_fields[@]}"; do printf ' %s |' "$(get "$m" "$r:$c")"; done
+      printf '\n'
+    done
+  done
+  printf '\nThe anonymous reads depend on the ACL that a fuse route set (afsio sets none).\n'
 } >"$summary"
 
 verdict=fail least=""
 seed_ok=0 lsmod_ok=1
 for m in "${modes_run[@]}"; do
   if [[ -z $least ]] && step4_passes "$m"; then least=$m; fi
-  if [[ $(get "$m" seed_afsio) == pass && $(get "$m" anon_read_afsio) == pass ]] ||
-    [[ $(get "$m" fuse_mount) == pass* && $(get "$m" anon_read_fuse) == pass ]]; then
-    seed_ok=1
-  fi
+  for r in "${SEED_ROUTES[@]}"; do
+    if [[ $(get "$m" "$r:write") == pass && $(get "$m" "$r:release") == pass ]] &&
+      [[ $(get "$m" "$r:anon_afsio") == pass || $(get "$m" "$r:anon_fuse") == pass ]]; then
+      seed_ok=1
+    fi
+  done
   [[ $(get "$m" no_afs_module) == pass ]] || lsmod_ok=0
 done
 [[ -n $least && $seed_ok == 1 && $lsmod_ok == 1 ]] && verdict=pass

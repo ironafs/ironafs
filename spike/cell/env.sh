@@ -16,19 +16,25 @@ IP_FS1=172.30.47.21
 IP_FS2=172.30.47.22
 IP_CLIENT=172.30.47.30
 IP_FUSE=172.30.47.31
+IP_SEEDER=172.30.47.32
+IP_FUSE_NOAUTH=172.30.47.33
+IP_FUSE_ANON=172.30.47.34
 
 # debian:trixie, pinned by digest (plan R4, read 2026-11-21).
 IMAGE_INDEX=9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
 IMAGE_AMD64=bfc36aecdece0387418759dba474aa856c026ca8087da3606b41b90ab0509c99
 IMAGE_ARM64=e529717ccc8118a0b9d38525f2b4e78cf150dbe470ad60d733c7c0023cabc3b0
 
-# The dated snapshot (plan R3). The base image has no CA bundle, so the runner
-# mounts its own for HTTPS; plain HTTP is the fallback for transport failures
-# only. Either way apt checks the signed InRelease and the package hashes.
+# The dated snapshot (plan R3). The base image has no CA bundle. HTTPS is
+# tried first with the runner's bundle (mounted at HOST_CA), then with
+# ca-certificates installed from the same signed snapshot; plain HTTP is the
+# fallback for transport failures only. Either way apt checks the signed
+# InRelease and the package hashes.
 SNAPSHOT_HTTPS=https://snapshot.debian.org/archive/debian/20261120T023438Z
 SNAPSHOT_HTTP=http://snapshot.debian.org/archive/debian/20261120T023438Z
 SNAPSHOT_SUITE=trixie
 SNAPSHOT_COMPONENT=main
+HOST_CA=/run/host-ca/ca-certificates.crt
 
 OPENAFS_VERSION=1.8.13.2-1
 KRB5_VERSION=1.21.3-5+deb13u1
@@ -58,5 +64,7 @@ arm64 openafs-fileserver 9f018f74a63bbf27b803e7915d652e7f737c144fe5c2cdc2903a72d
 arm64 krb5-kdc 43329914d5743bb4a9ebb7e427a05e813c4515a59d18feaa7299e14aa10f2b2c
 '
 
-# The synthetic file the seeding routes write and the anonymous read checks.
+# The synthetic file the seeding routes write and the anonymous reads check.
+# Each route writes its own file in root.cell's root directory.
 SEED_TEXT='ironafs test cell'
+SEED_ROUTES=(afsio fuse-token noauth-fuse)
