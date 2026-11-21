@@ -1014,13 +1014,19 @@ pub(crate) fn lint(
     adjust: impl FnOnce(&mut Command),
 ) -> Result<Vec<Found>, Error> {
     let (mut violations, canary_id) = canary_state(workspace)?;
+    let paths: Vec<&Path> = [workspace.root.as_path()]
+        .into_iter()
+        .chain(workspace.members.iter().map(|member| member.dir.as_path()))
+        .collect();
+    violations.extend(line_breaks(&paths));
     let mut command = workspace_clippy();
     // Cargo reads its configuration from the directory it runs in up, so
     // it runs in the root, whose configuration check-bans reads.
     command.current_dir(&workspace.root);
-    // Plain text, so cargo's own warnings on standard error read as such.
-    command.env("CARGO_TERM_COLOR", "never");
     adjust(&mut command);
+    // Over anything the caller set, so cargo's own warnings on standard
+    // error are printed, each on its own line, in plain text.
+    plain_terminal(&mut command);
     let output = command.output().map_err(Error::io("cargo clippy"))?;
     let messages = String::from_utf8_lossy(&output.stdout);
     violations.extend(build_overrides(&messages));
@@ -1052,8 +1058,9 @@ pub(crate) fn lint(
 /// `cargo::warning`, or any other. The compiler's diagnostics, the
 /// canary's among them, arrive as JSON on standard output instead.
 pub(crate) fn cargo_warnings(stderr: &str) -> Vec<Violation> {
+    // A carriage return ends a line on a terminal too.
     stderr
-        .lines()
+        .split(['\n', '\r'])
         .map(str::trim)
         .filter(|line| {
             ["warning", "error"].iter().any(|word| {
@@ -1062,6 +1069,44 @@ pub(crate) fn cargo_warnings(stderr: &str) -> Vec<Violation> {
             })
         })
         .map(|line| Violation::Lint(line.to_owned()))
+        .collect()
+}
+
+/// The terminal settings the workspace's lint gives cargo, over any the
+/// caller inherited.
+/// Cargo takes these variables over its configuration files (only a
+/// `--config` argument, which the lint never passes, comes first), so a
+/// caller's `term.quiet` cannot hide a build script's warning, a progress
+/// bar cannot share a line with one, and no colour code or extra line
+/// changes how they read.
+pub(crate) const TERMINAL: &[(&str, &str)] = &[
+    ("CARGO_TERM_QUIET", "false"),
+    ("CARGO_TERM_VERBOSE", "false"),
+    ("CARGO_TERM_PROGRESS_WHEN", "never"),
+    ("CARGO_TERM_COLOR", "never"),
+];
+
+/// Sets `TERMINAL` on `command`.
+pub(crate) fn plain_terminal(command: &mut Command) {
+    for (name, value) in TERMINAL {
+        command.env(name, value);
+    }
+}
+
+/// A refusal for each of `paths` that holds a line break.
+/// Cargo prints package paths in its text output, where a line break
+/// would let a path read as a warning of its own, or hide one.
+pub(crate) fn line_breaks(paths: &[&Path]) -> Vec<Violation> {
+    paths
+        .iter()
+        .filter(|path| path.to_string_lossy().contains(['\n', '\r']))
+        .map(|path| {
+            Violation::Unbuilt(format!(
+                "the path \"{}\" holds a line break, which cargo's text output cannot carry \
+                 unambiguously: move the workspace",
+                path.to_string_lossy().escape_debug()
+            ))
+        })
         .collect()
 }
 

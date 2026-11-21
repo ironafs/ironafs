@@ -10,8 +10,8 @@ use std::ffi::OsStr;
 
 use super::{
     BANS, Ban, CONF_DIR, Found, Lint, Snapshot, Violation, build_overrides, cargo_warnings,
-    changed, config_files, fired_violations, listed, overridden, planted_source, root_config,
-    uncovered, unreadable,
+    changed, config_files, fired_violations, line_breaks, listed, overridden, plain_terminal,
+    planted_source, root_config, uncovered, unreadable,
 };
 
 /// Clippy's short-format warning for `ban` fired on line `line`, spelt
@@ -804,4 +804,54 @@ fn cargo_warnings_accepts_cargo_progress() {
     let stderr = "   Compiling planted v0.0.0 (/w/warning)\n    Checking x v0.0.0\n    \
                   Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.26s\n";
     assert_eq!(cargo_warnings(stderr), []);
+}
+
+#[test]
+fn cargo_warnings_reads_a_warning_after_a_progress_bar() {
+    let stderr = "    Building [=====>   ] 3/9: planted\rwarning: planted@0.0.0: x\n";
+    assert_eq!(
+        cargo_warnings(stderr),
+        [Violation::Lint("warning: planted@0.0.0: x".to_owned())]
+    );
+}
+
+#[test]
+fn plain_terminal_sets_every_terminal_setting_over_the_caller() {
+    let mut command = crate::Command::new("cargo");
+    command
+        .env("CARGO_TERM_QUIET", "true")
+        .env("CARGO_TERM_PROGRESS_WHEN", "always");
+    plain_terminal(&mut command);
+    let set = |name: &str| {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+    };
+    for (name, value) in [
+        ("CARGO_TERM_QUIET", "false"),
+        ("CARGO_TERM_VERBOSE", "false"),
+        ("CARGO_TERM_PROGRESS_WHEN", "never"),
+        ("CARGO_TERM_COLOR", "never"),
+    ] {
+        assert_eq!(set(name).as_deref(), Some(value), "{name}");
+    }
+}
+
+#[test]
+fn line_breaks_refuses_a_path_holding_one() {
+    let paths = [
+        Path::new("/w/ok"),
+        Path::new("/w/a\nwarning: x"),
+        Path::new("/w/b\rc"),
+    ];
+    let found = line_breaks(&paths);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+        found
+            .iter()
+            .all(|violation| matches!(violation, Violation::Unbuilt(_))),
+        "{found:?}"
+    );
 }

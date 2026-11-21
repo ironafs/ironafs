@@ -7,10 +7,13 @@
 
 use std::path::Path;
 
-use super::super::{Found, Violation, canary, lint};
+use super::super::{Found, Violation, canary, line_keys, lint};
 use super::failure;
 use crate::fixture::write_file;
 use crate::{Command, Error, metadata};
+
+#[cfg(test)]
+mod tests;
 
 /// One planted evasion: its name, the files it writes under the
 /// workspace (`{root}` in a text stands for the workspace's directory),
@@ -39,10 +42,29 @@ fn script_warning(violation: &Violation) -> bool {
 }
 
 /// A second member's manifest, and the same with a key cargo does not use.
-const PLANTED_MANIFEST: &str =
-    "[package]\nname = \"planted\"\nversion = \"0.0.0\"\nedition = \"2024\"\n";
-const PLANTED_UNUSED_KEY: &str =
-    "[package]\nname = \"planted\"\nversion = \"0.0.0\"\nedition = \"2024\"\nbogus = 1\n";
+const PLANTED_MANIFEST: &str = "[package]\nname = \"planted\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[lints]\nworkspace = true\n";
+const PLANTED_UNUSED_KEY: &str = "[package]\nname = \"planted\"\nversion = \"0.0.0\"\nedition = \"2024\"\nbogus = 1\n\n[lints]\nworkspace = true\n";
+
+/// A second member whose build script prints a warning.
+const WARNING_SCRIPT: &[(&str, &str)] = &[
+    ("crates/planted/Cargo.toml", PLANTED_MANIFEST),
+    (
+        "crates/planted/build.rs",
+        "fn main() {\n    println!(\"cargo::warning=planted-warning\");\n}\n",
+    ),
+    ("crates/planted/src/lib.rs", ""),
+];
+
+/// `WARNING_SCRIPT` with a cargo configuration that asks for quiet.
+const WARNING_SCRIPT_QUIET: &[(&str, &str)] = &[
+    ("crates/planted/Cargo.toml", PLANTED_MANIFEST),
+    (
+        "crates/planted/build.rs",
+        "fn main() {\n    println!(\"cargo::warning=planted-warning\");\n}\n",
+    ),
+    ("crates/planted/src/lib.rs", ""),
+    (".cargo/config.toml", "[term]\nquiet = true\n"),
+];
 
 /// A compiler wrapper that drops clippy and runs the compiler alone.
 const WRAPPER: &str = "#!/bin/sh\nfor arg; do shift; case \"$arg\" in *clippy-driver*) ;; *) set -- \"$@\" \"$arg\";; esac; done\nexec \"$@\"\n";
@@ -60,15 +82,31 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "a member's build script that prints a warning",
-        files: &[
-            ("crates/planted/Cargo.toml", PLANTED_MANIFEST),
-            (
-                "crates/planted/build.rs",
-                "fn main() {\n    println!(\"cargo::warning=planted-warning\");\n}\n",
-            ),
-            ("crates/planted/src/lib.rs", ""),
-        ],
+        files: WARNING_SCRIPT,
         env: &[],
+        needs: script_warning,
+    },
+    Case {
+        // Quiet mode drops a build script's warnings, not the JSON.
+        name: "a build script's warning under the caller's CARGO_TERM_QUIET",
+        files: WARNING_SCRIPT,
+        env: &[("CARGO_TERM_QUIET", "true")],
+        needs: script_warning,
+    },
+    Case {
+        name: "a build script's warning under a cargo configuration's term.quiet",
+        files: WARNING_SCRIPT_QUIET,
+        env: &[],
+        needs: script_warning,
+    },
+    Case {
+        // A progress bar ends its line with a carriage return.
+        name: "a build script's warning under the caller's forced progress bar",
+        files: WARNING_SCRIPT,
+        env: &[
+            ("CARGO_TERM_PROGRESS_WHEN", "always"),
+            ("CARGO_TERM_PROGRESS_WIDTH", "80"),
+        ],
         needs: script_warning,
     },
     Case {
@@ -140,8 +178,10 @@ fn without_dependencies(manifest: &str) -> String {
     manifest
         .lines()
         .filter(|line| {
-            if line.starts_with('[') {
-                inside = *line == "[workspace.dependencies]";
+            // A table header, read as TOML reads it.
+            if line.trim_start().starts_with('[') {
+                inside = line_keys(line.trim())
+                    .is_some_and(|keys| keys == ["workspace", "dependencies"]);
             }
             !inside
         })
