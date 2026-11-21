@@ -57,8 +57,10 @@
 //!   the volume's counter (its 5.6, point 3, step 2). A refused adoption
 //!   fails the fence, and the fetch is retried within C16, point 2's bound;
 //!   the retry records the epoch this reply's observation wrote. The cost,
-//!   once the latch is set, is one refetch for the first fetch of each
-//!   volume a context had no copy for.
+//!   once the latch is set, is a refetch whenever a fetch is sent while
+//!   its context holds no copy for the volume: on its first fetch of the
+//!   volume, and again each time its copy is evicted, even between an
+//!   attempt and its retry, within C16, point 2's bound on retries.
 //! - **Memory, fixed by construction** (coding standards, rule 3). The
 //!   table reserves, once, in [`FenceTable::new`], one slab of records and
 //!   two sorted indexes, each with room for [`FenceTable::capacity`]
@@ -72,9 +74,11 @@
 //!   makes the tuples recorded under the evicted record fail their fence
 //!   (a revalidation, never a stale serve). The indexes are sorted arrays:
 //!   a lookup is a binary search, and making or evicting a record moves at
-//!   most the index's entries, a few megabytes at [`MAX_FENCE_BYTES`];
-//!   a lookup needs no hash, so no key read from the network can steer
-//!   the table's cost.
+//!   most the index's entries, a few megabytes at [`MAX_FENCE_BYTES`].
+//!   A key's place in the sorted order decides how many entries that
+//!   move shifts, so a key read from the network can move the cost within
+//!   that bound but never past it; no hash is used, so no key can make a
+//!   lookup worse than a binary search.
 //! - **Exhaustion.** When the sequence cannot give the values an operation
 //!   needs, or the resume generation passes `u64::MAX`, the table is
 //!   exhausted: every check fails on both counters (or on the resume

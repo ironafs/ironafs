@@ -13,7 +13,10 @@
 //! when the volume record is evicted. It decides evictions itself: it
 //! mirrors the table's sequence of counter values and its rule (when full,
 //! the smallest value goes, never a record the operation uses), predicts
-//! every value a tuple records, and after every operation asserts that the
+//! the object and volume counter values and the local volume epoch every
+//! recording takes (the suspect epoch, pause and resume generations it
+//! takes are checked by the later checks that pick the tuple), and after
+//! every operation asserts that the
 //! table holds exactly the records it expects, no more and no fewer. Every
 //! check must report exactly what the model expects: a reply
 //! recorded before any change of its object, volume, server, socket,
