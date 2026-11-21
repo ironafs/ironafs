@@ -25,7 +25,8 @@ macro_rules! table {
 }
 
 // The surfaces are ADR 0004, C46, point 1's, written out without the
-// crate's code.
+// crate's code; the last seven values are the contract specification's
+// (5.12, point 9), which all reach applications as themselves.
 table! {
     NotFound = 0 => Itself,
     Exists = 1 => Itself,
@@ -49,6 +50,13 @@ table! {
     Unreachable = 19 => Itself,
     Conflict = 20 => Itself,
     OutOfRange = 21 => InvalidArgument,
+    NotADirectory = 22 => Itself,
+    IsADirectory = 23 => Itself,
+    NotEmpty = 24 => Itself,
+    NoAttribute = 25 => Itself,
+    TooSmall = 26 => Itself,
+    PastEnd = 27 => Itself,
+    Protocol = 28 => Itself,
 }
 
 #[test]
@@ -58,7 +66,7 @@ fn table_pins_each_error_at_its_literal_position() {
         assert_eq!(position, index, "{error:?} is out of the table's order");
         assert_eq!(error as usize, position, "{error:?} is declared elsewhere");
     }
-    assert_eq!(ALL.len(), 22);
+    assert_eq!(ALL.len(), 29);
 }
 
 #[test]
@@ -102,6 +110,26 @@ fn error_messages_are_distinct() {
             assert_ne!(error.to_string(), other.to_string(), "{error:?} {other:?}");
         }
     }
+}
+
+#[test]
+fn added_errors_name_their_condition() {
+    assert_eq!(VfsError::NotADirectory.to_string(), "not a directory");
+    assert_eq!(VfsError::IsADirectory.to_string(), "is a directory");
+    assert_eq!(VfsError::NotEmpty.to_string(), "the directory is not empty");
+    assert_eq!(
+        VfsError::NoAttribute.to_string(),
+        "no such extended attribute"
+    );
+    assert_eq!(
+        VfsError::TooSmall.to_string(),
+        "the caller's buffer is too small"
+    );
+    assert_eq!(VfsError::PastEnd.to_string(), "past the end of the file");
+    assert_eq!(
+        VfsError::Protocol.to_string(),
+        "the server's reply cannot be carried"
+    );
 }
 
 #[test]

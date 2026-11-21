@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The contract's one semantic error type (ADR 0004, C46).
+//! The contract's one semantic error type (ADR 0004, C46; the contract
+//! specification, 5.12).
 //!
 //! Each layer maps it to its system's errors (C46, point 2). The enum is
 //! deliberately exhaustive: a layer's mapping names every value, with no
@@ -25,9 +26,11 @@ use core::fmt;
 #[cfg(test)]
 mod tests;
 
-/// Why an operation of the contract failed (C46, point 1). No value means
-/// success, and no value is a partial result: a failed listing or read is
-/// an error, never an empty or short answer (C46, point 4).
+/// Why an operation of the contract failed: C46, point 1's values and the
+/// seven the contract specification adds (5.12, point 9), from
+/// `NotADirectory` on. No value means success, and no value is a partial
+/// result: a failed listing or read is an error, never an empty or short
+/// answer (C46, point 4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VfsError {
     /// No such entry.
@@ -77,8 +80,27 @@ pub enum VfsError {
     Unreachable,
     /// A conflicting lock, share access or change.
     Conflict,
-    /// A value outside what the protocol can carry (C38, point 3).
+    /// A value the caller supplied is outside what the protocol can carry
+    /// (C38, point 3).
     OutOfRange,
+    /// A path component is not a directory.
+    NotADirectory,
+    /// The operation needs a file and found a directory.
+    IsADirectory,
+    /// The directory to remove or replace still holds entries.
+    NotEmpty,
+    /// The named extended attribute does not exist.
+    NoAttribute,
+    /// The caller's buffer cannot hold the result; nothing is returned.
+    TooSmall,
+    /// The offset is at or past the end of the file, for a seek to data or
+    /// a hole (N46, point 2).
+    PastEnd,
+    /// The server sent a value the contract cannot carry: a name that is
+    /// not a [`Name`](crate::Name), a link target or reply over its cap, or
+    /// a time out of range. The operation fails whole; a listing is never
+    /// shortened to leave the value out (C46, point 4).
+    Protocol,
 }
 
 /// How a contract error reaches applications (C46, point 1). The cause of
@@ -122,7 +144,14 @@ impl VfsError {
             | Self::NotSupported
             | Self::WouldBlock
             | Self::Unreachable
-            | Self::Conflict => Surface::Itself,
+            | Self::Conflict
+            | Self::NotADirectory
+            | Self::IsADirectory
+            | Self::NotEmpty
+            | Self::NoAttribute
+            | Self::TooSmall
+            | Self::PastEnd
+            | Self::Protocol => Surface::Itself,
         }
     }
 }
@@ -152,6 +181,13 @@ impl fmt::Display for VfsError {
             Self::Unreachable => "no server for the volume could be reached",
             Self::Conflict => "conflicting lock, share access or change",
             Self::OutOfRange => "a value is out of the protocol's range",
+            Self::NotADirectory => "not a directory",
+            Self::IsADirectory => "is a directory",
+            Self::NotEmpty => "the directory is not empty",
+            Self::NoAttribute => "no such extended attribute",
+            Self::TooSmall => "the caller's buffer is too small",
+            Self::PastEnd => "past the end of the file",
+            Self::Protocol => "the server's reply cannot be carried",
         })
     }
 }
