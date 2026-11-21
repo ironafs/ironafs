@@ -19,7 +19,9 @@
 //! `#![no_std]`, and no file of the library names `std`, another `no_std`,
 //! `unsafe`, assembly, an `extern` other than `extern crate alloc;` with no
 //! attribute, or a way to read source from elsewhere (`include!`,
-//! `#[path]`, a symbolic link).
+//! `#[path]`, a symbolic link). The names of the macros that read files or
+//! write assembly are refused anywhere, and so is a `#` that does not open
+//! an attribute, since a macro can join either to the rest from a fragment.
 
 mod self_test;
 
@@ -73,9 +75,13 @@ const ELSEWHERE: &str = "a pure library's source is its own `.rs` files: nothing
                          source or data from elsewhere, where these rules do not look";
 const FRAGMENT: &str = "an attribute or macro call built from a macro fragment can hide \
                         `#[path]` or `include!` from this check";
+const HASH: &str = "a `#` not directly followed by `[` or `![` can open an attribute whose \
+                    brackets come from a macro fragment, such as `#[path]`, out of this \
+                    check's sight";
 
-/// Built-in macros a pure library may not call or import: they read files
-/// or write machine code.
+/// Built-in macros a pure library may not name anywhere, called or not: they
+/// read files or write machine code, and a macro can join a name to its `!`
+/// from a fragment, out of this check's sight.
 const FORBIDDEN_MACROS: &[(&str, &str)] = &[
     ("include", ELSEWHERE),
     ("include_str", ELSEWHERE),
@@ -474,11 +480,13 @@ pub(crate) fn root_no_std(tokens: &[Token]) -> Option<usize> {
 }
 
 /// What a pure library's source names that it may not, under any cfg:
-/// `std`; `no_std` other than at the token `allowed_no_std`; `unsafe`;
-/// assembly and the macros that read files, called or imported; a macro
-/// called through a fragment; `#[path]` or a fragment in an attribute; and
-/// `extern` other than an `extern crate alloc;` with no outer attribute. A
-/// raw identifier such as `r#unsafe` is a name, not the keyword.
+/// `std`; `no_std` other than at the token `allowed_no_std`; `unsafe`; the
+/// names of assembly and of the macros that read files, anywhere; a macro
+/// called through a fragment; `#[path]` or a fragment in an attribute; a
+/// `#` not directly followed by `[` or `![`; and `extern` other than an
+/// `extern crate alloc;` with no outer attribute. A raw identifier such as
+/// `r#unsafe` is a name, not the keyword, but `r#include` still names the
+/// macro.
 pub(crate) fn library_names(
     tokens: &[Token],
     allowed_no_std: Option<usize>,
@@ -510,10 +518,12 @@ pub(crate) fn library_names(
         }
         let in_attribute = attribute.is_some();
         match &token.kind {
-            TokenKind::Punct('#') if !in_attribute => {
+            TokenKind::Punct('#') => {
                 let inner = punct(after) == Some('!');
                 let bracket = if inner { tokens.get(index + 2) } else { after };
-                if punct(bracket) == Some('[') {
+                if punct(bracket) != Some('[') {
+                    found.push((line, "#".to_owned(), HASH));
+                } else if !in_attribute {
                     // The bracket itself is counted when it is reached.
                     attribute = Some((0, !inner));
                     fragment_reported = false;
@@ -547,22 +557,16 @@ pub(crate) fn library_names(
                     if !alloc || gated {
                         found.push((line, word.clone(), EXTERN));
                     }
-                } else if let Some((_, reason)) = FORBIDDEN_MACROS
-                    .iter()
-                    .find(|(name, _)| is_macro && name == word)
+                } else if let Some((_, reason)) =
+                    FORBIDDEN_MACROS.iter().find(|(name, _)| name == word)
                 {
-                    found.push((line, format!("{word}!"), reason));
+                    let called = if is_macro { "!" } else { "" };
+                    found.push((line, format!("{word}{called}"), reason));
                 } else if in_attribute && word == "path" && punct(after) == Some('=') {
                     found.push((line, "#[path]".to_owned(), ELSEWHERE));
                 }
             }
             _ => {}
-        }
-    }
-    for used in rust_source::use_paths(tokens) {
-        let last = used.path.rsplit("::").next().unwrap_or_default();
-        if let Some((_, reason)) = FORBIDDEN_MACROS.iter().find(|(name, _)| *name == last) {
-            found.push((used.line, used.path, reason));
         }
     }
     found.sort_by_key(|(line, _, _)| *line);

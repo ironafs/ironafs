@@ -12,7 +12,9 @@
 //! The scan reads tokens, not a compiled crate, so it also refuses what
 //! would hide a path from it: renames and globs of the standard library,
 //! imported or renamed built-in macros, macro path fragments, macros called
-//! and attributes built through a fragment, `#[path]` and `include!`. It refuses `unsafe` and `extern` too, which reach the
+//! and attributes built through a fragment, a `#` that does not open an
+//! attribute, `#[path]`, and the names `include` and `global_asm`
+//! anywhere. It refuses `unsafe` and `extern` too, which reach the
 //! operating system with no path at all.
 
 use std::path::{Path, PathBuf};
@@ -42,6 +44,11 @@ const UNSAFE: &str = "unsafe code and foreign functions belong in ironafs-os, un
 const MACRO_PATH: &str = "an imported built-in macro can be renamed out of this check's sight; \
                           call it by its own name";
 const FILES: &str = "files belong in a driver";
+const INCLUDE: &str = "include! reads source from where this check does not look, and its name \
+                       is refused anywhere, since a macro can join it to its `!`";
+const PATH: &str = "a path attribute loads a module from where this check does not look";
+const HASH: &str = "a # not directly followed by [ or ![ can open an attribute whose brackets \
+                    come from a macro fragment, such as #[path], out of sight";
 const STREAMS: &str = "the standard streams belong in a binary; events go through ironafs-events";
 
 /// Paths forbidden with everything below them.
@@ -145,6 +152,12 @@ const LOCAL_ROOTS: &[&str] = &["crate", "self", "super"];
 /// Macros that write machine code, which reaches the operating system
 /// without a path or an `unsafe` block in the case of `global_asm!`.
 const ASSEMBLY: &[&str] = &["asm", "global_asm", "naked_asm"];
+
+/// Built-in macros refused wherever their name appears, called or not: a
+/// macro can join a name to its `!` from a fragment, out of this check's
+/// sight, and these two need no `unsafe` to do harm. The other assembly
+/// macros need an `unsafe` block or attribute, which is refused anyway.
+const NAMED_ANYWHERE: &[&str] = &["include", "global_asm"];
 
 /// Target kinds a scanned crate may have: its library and targets that are
 /// never shipped. A build script would run I/O at build time.
@@ -315,8 +328,10 @@ fn check_file(file: &Path, shown: &Path, violations: &mut Vec<Violation>) -> Res
 /// the scan could see: `unsafe`, `extern` and assembly, hidden clocks, the
 /// standard hash collections and their random state, printing macros,
 /// macro path fragments, macros called and attributes built through a
-/// fragment, `#[path]` and `include!`. A raw identifier such
-/// as `r#unsafe` is a name, not the keyword.
+/// fragment, a `#` not directly followed by `[` or `![`, `#[path]`, and the
+/// names `include` and `global_asm` anywhere. A raw identifier such as
+/// `r#unsafe` is a name, not the keyword, but `r#include` still names the
+/// macro.
 pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str)> {
     let mut found = Vec::new();
     let mut attribute_depth: Option<usize> = None;
@@ -343,7 +358,9 @@ pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str
                 } else {
                     after
                 };
-                if attribute_depth.is_none() && punct(bracket) == Some('[') {
+                if punct(bracket) != Some('[') {
+                    found.push((line, "#".to_owned(), HASH));
+                } else if attribute_depth.is_none() {
                     // The bracket itself is counted when it is reached.
                     attribute_depth = Some(0);
                     fragment_reported = false;
@@ -383,8 +400,11 @@ pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str
                 let extern_crate = word == "extern" && ident(after) == Some("crate");
                 if !token.raw && (word == "unsafe" || (word == "extern" && !extern_crate)) {
                     found.push((line, word.clone(), UNSAFE));
-                } else if is_macro && ASSEMBLY.contains(&word.as_str()) {
-                    found.push((line, format!("{word}!"), UNSAFE));
+                } else if (is_macro || NAMED_ANYWHERE.contains(&word.as_str()))
+                    && ASSEMBLY.contains(&word.as_str())
+                {
+                    let called = if is_macro { "!" } else { "" };
+                    found.push((line, format!("{word}{called}"), UNSAFE));
                 } else if HIDDEN_CLOCKS.contains(&word.as_str()) {
                     found.push((line, word.clone(), WAIT));
                 } else if word == "RandomState" {
@@ -393,18 +413,11 @@ pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str
                     found.push((line, word.clone(), HASH_COLLECTION));
                 } else if is_macro && PRINTING.contains(&word.as_str()) {
                     found.push((line, format!("{word}!"), STREAMS));
-                } else if is_macro && word == "include" {
-                    found.push((
-                        line,
-                        "include!".to_owned(),
-                        "include! reads source from where this check does not look",
-                    ));
+                } else if word == "include" {
+                    let called = if is_macro { "!" } else { "" };
+                    found.push((line, format!("include{called}"), INCLUDE));
                 } else if attribute_depth.is_some() && word == "path" && punct(after) == Some('=') {
-                    found.push((
-                        line,
-                        "#[path]".to_owned(),
-                        "a path attribute loads a module from where this check does not look",
-                    ));
+                    found.push((line, "#[path]".to_owned(), PATH));
                 }
             }
             _ => {}

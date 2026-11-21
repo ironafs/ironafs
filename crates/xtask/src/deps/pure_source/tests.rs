@@ -105,6 +105,40 @@ fn hidden_names_find_what_reaches_the_system_without_a_std_path() {
 }
 
 #[test]
+fn hidden_names_find_include_and_global_asm_anywhere() {
+    let source = "macro_rules! pull { ($bang:tt $name:ident) => { $name $bang(\"x\"); }; }\n\
+                  pull!(! include);\n\
+                  pull!(! global_asm);\n\
+                  fn f(include: u8) {}\n\
+                  const R: u8 = r#include;\n\
+                  fn ok(included: u8, asm: u8, naked_asm: u8) {}\n";
+    assert_eq!(
+        names(source),
+        [
+            (2, "include".into()),
+            (3, "global_asm".into()),
+            (4, "include".into()),
+            (5, "include".into()),
+        ]
+    );
+}
+
+#[test]
+fn hidden_names_refuse_a_hash_that_does_not_open_an_attribute() {
+    let source = "macro_rules! load { ($group:tt) => { # $group mod hidden; }; }\n\
+                  load!([path = \"x\"]);\n\
+                  macro_rules! inner { ($group:tt) => { # ! $group }; }\n\
+                  pass!(#);\n\
+                  # [inline] fn spaced() {}\n\
+                  # ! [allow(dead_code)]\n\
+                  const S: &str = r#\"#\"#;\n";
+    assert_eq!(
+        names(source),
+        [(1, "#".into()), (3, "#".into()), (4, "#".into())]
+    );
+}
+
+#[test]
 fn hidden_names_leave_ordinary_code_alone() {
     let source = "let a = entry.metadata;\n\
                   if node.exists() { node.metadata() }\n\

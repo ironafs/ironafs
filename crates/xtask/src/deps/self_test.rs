@@ -707,7 +707,10 @@ const CASES: &[Case] = &[
     Case {
         name: "include! renamed by an import",
         plant: |fixture| plant_source(fixture, "use std::include as pull;\npull!(\"x.rs\");\n"),
-        expect: &[|found| is_planted(found, "std::include")],
+        expect: &[
+            |found| is_planted(found, "std::include"),
+            |found| is_planted(found, "include"),
+        ],
     },
     Case {
         name: "println! renamed by an import",
@@ -727,7 +730,10 @@ const CASES: &[Case] = &[
                 "extern crate core as c;\nuse c::include as pull;\npull!(\"x.rs\");\n",
             );
         },
-        expect: &[|found| is_planted(found, "c::include")],
+        expect: &[
+            |found| is_planted(found, "c::include"),
+            |found| is_planted(found, "include"),
+        ],
     },
     Case {
         name: "assembly renamed by an import",
@@ -737,7 +743,10 @@ const CASES: &[Case] = &[
                 "use core::arch::global_asm as go;\ngo!(\"nop\");\n",
             );
         },
-        expect: &[|found| is_planted(found, "core::arch::global_asm")],
+        expect: &[
+            |found| is_planted(found, "core::arch::global_asm"),
+            |found| is_planted(found, "global_asm"),
+        ],
     },
     Case {
         name: "unsafe foreign functions",
@@ -796,7 +805,43 @@ const CASES: &[Case] = &[
                  call!(include);\n",
             );
         },
-        expect: &[|found| is_planted(found, "$m!")],
+        expect: &[
+            |found| is_planted(found, "$m!"),
+            |found| is_planted(found, "include"),
+        ],
+    },
+    Case {
+        name: "include! joined to its bang by a macro",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "macro_rules! pull { ($bang:tt $name:ident) => { $name $bang(\"../../ironafs-net/src/lib.rs\"); }; }\n\
+                 pull!(! include);\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "include")],
+    },
+    Case {
+        name: "global_asm! joined to its bang by a macro",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "macro_rules! pull { ($bang:tt $name:ident) => { $name $bang(\"nop\"); }; }\n\
+                 pull!(! global_asm);\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "global_asm")],
+    },
+    Case {
+        name: "a path attribute whose brackets are a macro fragment",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "macro_rules! load { ($group:tt) => { # $group mod net; }; }\n\
+                 load!([path = \"../../ironafs-net/src/lib.rs\"]);\n",
+            );
+        },
+        expect: &[|found| is_planted(found, "#")],
     },
     Case {
         name: "a path attribute built from a macro fragment",

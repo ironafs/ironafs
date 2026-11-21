@@ -361,6 +361,61 @@ const CASES: &[Case] = &[
         expect: &[|found| is_source(found, 2, "#[$")],
     },
     Case {
+        name: "the standard library through include! joined to its bang by a macro",
+        plant: |fixture| {
+            plant_head(
+                fixture,
+                "#![no_std]\n\
+                 macro_rules! pull { ($bang:tt $name:ident) => { $name $bang(\"../ext.rs\"); }; }\n\
+                 pull!(! include);",
+            );
+            fixture.file(TOP, "ext.rs", Some(HIDDEN_STD));
+        },
+        expect: &[
+            |found| is_source(found, 3, "include"),
+            |found| is_extern_in(found, "crates/ironafs-xdr/ext.rs", 2),
+        ],
+    },
+    Case {
+        name: "the standard library through a module path whose brackets are a macro fragment",
+        plant: |fixture| {
+            plant_head(
+                fixture,
+                "#![no_std]\n\
+                 macro_rules! load { ($group:tt) => { # $group mod hidden; }; }\n\
+                 load!([path = \"../outside.rs\"]);",
+            );
+            fixture.file(TOP, "outside.rs", Some(HIDDEN_STD));
+        },
+        expect: &[
+            |found| is_source(found, 2, "#"),
+            |found| is_extern_in(found, "crates/ironafs-xdr/outside.rs", 2),
+        ],
+    },
+    Case {
+        name: "the names of the macros that read files or write assembly, not called",
+        plant: |fixture| {
+            plant_head(
+                fixture,
+                "#![no_std]\n\
+                 pub fn a(include: u8) {}\n\
+                 pub fn b(include_str: u8) {}\n\
+                 pub fn c(include_bytes: u8) {}\n\
+                 pub mod asm {}\n\
+                 pub mod global_asm {}\n\
+                 pub mod naked_asm {}",
+            );
+        },
+        expect: &[
+            |found| is_source(found, 2, "include"),
+            |found| is_source(found, 3, "include_str"),
+            |found| is_source(found, 4, "include_bytes"),
+            |found| is_source(found, 5, "asm"),
+            |found| is_source(found, 6, "global_asm"),
+            |found| is_source(found, 7, "naked_asm"),
+        ],
+    },
+    Case {
         name: "a root cargo configuration that caps the lints",
         plant: |fixture| {
             plant_unsafe(

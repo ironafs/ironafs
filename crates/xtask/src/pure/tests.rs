@@ -134,7 +134,7 @@ fn library_names_hold_for_every_cfg() {
                   extern crate alloc as a;\n\
                   // std, no_std, include!, unsafe and extern in a comment\n\
                   const S: &str = \"std no_std include!(x) unsafe extern\";\n\
-                  fn ok(path: &str, include: u8, r#unsafe: u8, r#extern: u8) { let path = 1; }\n\
+                  fn ok(path: &str, r#unsafe: u8, r#extern: u8) { let path = 1; }\n\
                   struct S2 { std_like: u8 }\n";
     assert_eq!(
         names(source, Some(3)),
@@ -147,7 +147,7 @@ fn library_names_hold_for_every_cfg() {
             (8, "include!".into()),
             (9, "include_str!".into()),
             (10, "include_bytes!".into()),
-            (11, "core::include".into()),
+            (11, "include".into()),
             (12, "#[path]".into()),
             (13, "#[path]".into()),
             (14, "#[$".into()),
@@ -161,6 +161,48 @@ fn library_names_hold_for_every_cfg() {
         ]
     );
     assert_eq!(names("#![no_std]\n", None), [(1, "no_std".into())]);
+}
+
+#[test]
+fn library_names_refuse_macro_names_anywhere() {
+    let source = "#![no_std]\n\
+                  macro_rules! pull { ($bang:tt $name:ident) => { $name $bang(\"x\"); }; }\n\
+                  pull!(! include);\n\
+                  fn f(include_str: u8, include_bytes: u8) {}\n\
+                  mod asm {}\n\
+                  use core::arch::{global_asm as g, naked_asm};\n\
+                  const R: u8 = r#include;\n\
+                  fn ok(included: u8, asm_like: u8, my_include: u8) {}\n";
+    assert_eq!(
+        names(source, Some(3)),
+        [
+            (3, "include".into()),
+            (4, "include_str".into()),
+            (4, "include_bytes".into()),
+            (5, "asm".into()),
+            (6, "global_asm".into()),
+            (6, "naked_asm".into()),
+            (7, "include".into()),
+        ]
+    );
+}
+
+#[test]
+fn library_names_refuse_a_hash_that_does_not_open_an_attribute() {
+    let source = "#![no_std]\n\
+                  macro_rules! load { ($group:tt) => { # $group mod hidden; }; }\n\
+                  load!([path = \"x\"]);\n\
+                  macro_rules! inner { ($group:tt) => { # ! $group }; }\n\
+                  macro_rules! pass { ($($t:tt)*) => { $($t)* }; }\n\
+                  pass!(#);\n\
+                  # [inline] fn spaced() {}\n\
+                  # ! [allow(dead_code)]\n\
+                  const S: &str = r#\"#\"#;\n\
+                  // # in a comment\n";
+    assert_eq!(
+        names(source, Some(3)),
+        [(2, "#".into()), (4, "#".into()), (6, "#".into())]
+    );
 }
 
 #[cfg(unix)]
