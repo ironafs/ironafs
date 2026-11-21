@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# The fuzz crate alone builds on nightly Rust, which libFuzzer's
+# instrumentation needs (ADR 0004, O47, point 4). Exact date pin: a bump is
+# a deliberate change. Rustup reads this file only when cargo runs in fuzz/,
+# so the workspace keeps its stable pin.
+[toolchain]
+channel = "nightly-2026-11-01"
+components = ["rustfmt", "clippy"]
