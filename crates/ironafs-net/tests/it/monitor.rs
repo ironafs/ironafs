@@ -6,7 +6,8 @@
 //! the first snapshot publishes a generation, and a resume moves it and is
 //! followed by a snapshot. In a network namespace of their own, with
 //! `CAP_NET_ADMIN` there (ignored tests, run so, one at a time): an
-//! address, a route and a policy rule each move the generation; an
+//! address, a route and a policy rule, each added and removed, move the
+//! generation; an
 //! overflow moves it and is followed by a snapshot.
 //!
 //! Each consumer's hook sends what it is told, and the generation it reads
@@ -161,19 +162,41 @@ fn a_resume_moves_the_generation_then_a_snapshot_moves_it_again() {
 fn an_address_a_route_and_a_policy_rule_each_move_the_generation() {
     ip("link set lo up");
     let (_handle, reader, moves, _pause) = started();
-    for change in [
-        "address add 192.0.2.1/24 dev lo",
-        "route add 198.51.100.0/24 dev lo",
-        "rule add from 203.0.113.0/24 table 100",
-        "-6 address add 2001:db8:1::1/64 dev lo nodad",
-        "-6 route add 2001:db8:2::/64 dev lo",
-        "-6 rule add from 2001:db8:3::/64 table 100",
+    for (add, delete) in [
+        (
+            "address add 192.0.2.1/24 dev lo",
+            "address del 192.0.2.1/24 dev lo",
+        ),
+        (
+            "route add 198.51.100.0/24 dev lo",
+            "route del 198.51.100.0/24 dev lo",
+        ),
+        (
+            "rule add from 203.0.113.0/24 table 100",
+            "rule del from 203.0.113.0/24 table 100",
+        ),
+        (
+            "-6 address add 2001:db8:1::1/64 dev lo nodad",
+            "-6 address del 2001:db8:1::1/64 dev lo",
+        ),
+        (
+            "-6 route add 2001:db8:2::/64 dev lo",
+            "-6 route del 2001:db8:2::/64 dev lo",
+        ),
+        (
+            "-6 rule add from 2001:db8:3::/64 table 100",
+            "-6 rule del from 2001:db8:3::/64 table 100",
+        ),
     ] {
-        drain(&moves);
-        let before = reader.current().unwrap();
-        ip(change);
-        let after = wait_for(&moves, &reader, Cause::Changed);
-        assert!(after > before, "{change}");
+        // Added, then removed: each moves it, and the namespace is left
+        // as it was.
+        for change in [add, delete] {
+            drain(&moves);
+            let before = reader.current().unwrap();
+            ip(change);
+            let after = wait_for(&moves, &reader, Cause::Changed);
+            assert!(after > before, "{change}");
+        }
     }
 }
 
