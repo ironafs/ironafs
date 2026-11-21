@@ -13,7 +13,6 @@
 //! client crate reads and which shares no code with any client codec.
 
 pub mod cell;
-pub mod client;
 pub mod codes;
 pub mod envelope;
 pub mod fs;
