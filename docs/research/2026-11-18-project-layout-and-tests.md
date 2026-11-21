@@ -170,6 +170,9 @@ crate body is gated with a crate-level `cfg`. Non-Rust code (the Swift FSKit
 extension, Windows packaging) has no primary-source convention; the
 recommendation is a top-level `platform/<os>/`, outside `crates/`. The
 architecture ADR decides this.
+(Update, 2026-11-21: answered by ADR 0004, C4, points 3 and 5: the layer
+crates are `ironafs-fuse`, `ironafs-smb` and, if built, `ironafs-cloudfiles`;
+the macOS extension is Swift, with no crate.)
 
 **G9. Snapshot files. Later.** insta stores snapshots "in the `snapshots` folder
 right next to the test file". Golden wire vectors stay in

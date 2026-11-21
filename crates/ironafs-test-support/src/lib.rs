@@ -25,14 +25,33 @@
 //! possible choices, and reads zero past the end of the input.
 //! [`Source::choice_bytes`] writes a run's choices in that layout.
 //!
+//! For a domain small enough to enumerate, an [`Exhaustive`] sweep runs a
+//! test on every input the same generators can give, up to a bound it
+//! prints, and refuses a larger domain rather than sampling it. The
+//! [`wire`] module gives variants of a known wire message for decoder
+//! tests: single-bit flips, integers near a known one, and fields at all
+//! zeros and all ones.
+//!
+//! [`SeededClock`] and [`SeededRng`] implement the `Clock` and `Rng`
+//! interfaces of `ironafs-time` for tests and the simulator: virtual clocks
+//! that move only when the test moves them, and random bytes from a seed.
+//! Neither is ever a production source (coding standards rule 7).
+//!
 //! This crate is a dev-dependency only: no shipped crate depends on it.
 
 mod capture;
+mod clock;
 mod property;
+mod rng;
 mod shrink;
 mod source;
 mod splitmix64;
+mod sweep;
+pub mod wire;
 
+pub use clock::{SeededClock, TimeOverflow};
 pub use property::{Counterexample, Property, Verdict};
+pub use rng::SeededRng;
 pub use source::Source;
 pub use splitmix64::SplitMix64;
+pub use sweep::{Exhaustive, FailedInput, SweepFailure};
