@@ -9,9 +9,13 @@
 extern crate alloc;
 
 mod capability;
+mod commit;
 mod error;
+mod reserved;
 
 pub use capability::{
     Attestation, BindingId, CallerCap, ContextId, CredentialGeneration, HandleCap, HandleId, Mint,
 };
+pub use commit::CommitReason;
 pub use error::{Surface, VfsError};
+pub use reserved::Reserved;
