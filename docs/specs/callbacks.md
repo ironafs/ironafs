@@ -1696,4 +1696,5 @@ evidence label EXECUTED.
 
 ## 14. Review
 
-No review yet. The review record will be linked here.
+Reviewed by DeepSeek and GLM in three rounds on 2026-11-21; the record
+is [2026-11-21-m2a-66-callbacks](../reviews/2026-11-21-m2a-66-callbacks.md).
