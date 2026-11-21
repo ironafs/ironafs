@@ -3,7 +3,7 @@
 
 # Errata: commit messages on `main`
 
-The messages of the squash merges on `main` were audited on 2026-11-21, from the root commit to the merge of #89. History is not rewritten to correct them: the commits are cited by their ids in review records, issues and pull requests, each message carries the owner's sign-off for that exact text, and ADR 0002 and ADR 0003 forbid rewriting pushed commits. This record states what is missing instead.
+The messages of the squash merges on `main` were audited on 2026-11-21, from the root commit to the merge of #89; two later merges are added below. History is not rewritten to correct them: the commits are cited by their ids in review records, issues and pull requests, each message carries the owner's sign-off for that exact text, and ADR 0002 and ADR 0003 forbid rewriting pushed commits. This record states what is missing instead.
 
 ## The disclosure line
 
@@ -20,6 +20,17 @@ ADR 0003, point 6, asks every pull request description written by a model to car
 In each, the message was written for the maintainer by a model its `Assisted-by` trailers name, so the trailers already disclose the model writing. The line itself is what is missing. The root commit (`ce1cb25`) and `41c3ab1` (#6) also have no such line; both were made before ADR 0003 was accepted.
 
 Every squash merge on `main` up to #89 carries its `Class:`, `Assisted-by:` and the owner's `Signed-off-by:` trailers; no other omission was found.
+
+## The sign-off outside the trailer block
+
+Two squash merges made on 2026-11-21 carry the owner's `Signed-off-by:` trailer after a blank line, so it stands apart from the trailer block that holds `Class:`, `Assisted-by:` and `AI-Reviewed-by:`:
+
+| Commit | Pull request | Subject |
+|---|---|---|
+| `98d0f24` | #109 | ironafs-crypto: the random source interface and the production rng |
+| `86c78e4` | #105 | xtask: cell pinned definition, engine runner, teardown and verified install |
+
+Each message file was built from the pull request description, which ended in a newline, and the sign-off was appended after it; the read-back compared each commit with that same file. The words are the text the owner approved, plus the sign-off; the blank line is the only difference from the message shown for approval. `cargo xtask trailers main` reads the newest commit on `main` and failed on the push of each. The sign-off is now appended by a step that strips trailing blank lines and refuses a message whose final paragraph does not hold `Class:`, `Assisted-by:` and the sign-off together. Each pull request carries a comment that corrects its approval log.
 
 ## Wrapping
 
