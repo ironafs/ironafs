@@ -5,6 +5,8 @@
 
 use std::io;
 
+use std::ffi::OsStr;
+
 use super::{check_reuse_result, lists_deny, report_skipped};
 use crate::Error;
 
@@ -49,4 +51,18 @@ fn check_detects_deny_as_an_exact_cargo_command() {
         lists_deny(b"Installed Commands:\n"),
         Err(Error::UnexpectedOutput("cargo --list"))
     ));
+}
+
+#[test]
+fn check_lints_without_a_clippy_configuration_override() {
+    // The variable would replace the configuration check-bans proves.
+    let command = crate::bans::workspace_clippy();
+    let removed = command
+        .get_envs()
+        .any(|(name, value)| name == OsStr::new(crate::bans::CONF_DIR) && value.is_none());
+    assert!(
+        removed,
+        "{CONF_DIR} is not removed",
+        CONF_DIR = crate::bans::CONF_DIR
+    );
 }

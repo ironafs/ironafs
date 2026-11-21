@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Written by `cargo xtask check-bans`, which refuses any other text: no
+# crate may depend on this one.
+[package]
+name = "ironafs-bans-canary"
+description = "Planted calls to every item coding standards rule 7 bans, linted with the workspace to prove the bans fire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+planted = []
+
+[lints]
+workspace = true
