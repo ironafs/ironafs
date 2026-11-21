@@ -23,6 +23,9 @@ enum Origin {
     Fresh(SplitMix64),
     /// Choices given by the shrinker; zero once they run out.
     Replay { choices: Vec<u64>, position: usize },
+    /// Choices read from bytes, as [`Source::from_bytes`] describes; zero
+    /// once they run out.
+    Bytes { bytes: Vec<u8>, position: usize },
 }
 
 /// Draws test inputs for a property and records each choice it made.
@@ -47,6 +50,9 @@ enum Origin {
 pub struct Source {
     origin: Origin,
     record: Vec<u64>,
+    /// How many bytes each recorded choice takes in the layout that
+    /// [`Source::from_bytes`] reads.
+    widths: Vec<u8>,
     spans: Vec<Range<usize>>,
 }
 
@@ -91,6 +97,7 @@ impl Source {
         Self {
             origin: Origin::Fresh(SplitMix64::new(seed)),
             record: Vec::new(),
+            widths: Vec::new(),
             spans: Vec::new(),
         }
     }
@@ -105,8 +112,68 @@ impl Source {
                 position: 0,
             },
             record: Vec::new(),
+            widths: Vec::new(),
             spans: Vec::new(),
         }
+    }
+
+    /// A source that reads its choices from `bytes`, such as a fuzzer's
+    /// input, so that a fuzz target drives the same generators as a
+    /// property. Any byte string gives valid values.
+    ///
+    /// Each draw reads its choice as a big-endian integer of as many bytes
+    /// as its largest choice needs (none for a draw with one possible
+    /// value), and reduces a choice past that largest one modulo the
+    /// number of possible choices. Near the end it reads only the bytes
+    /// left, and past the end it reads zero. [`Source::choice_bytes`]
+    /// writes a run's choices in this layout, so the bytes it returns
+    /// replay that run.
+    ///
+    /// ```
+    /// use ironafs_test_support::Source;
+    ///
+    /// let mut source = Source::from_bytes(&[0x01, 0x02, 0x03]);
+    /// assert_eq!(source.u16(), 0x0102);
+    /// assert_eq!(source.u8(), 0x03);
+    /// assert_eq!(source.u8(), 0);
+    /// ```
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self {
+            origin: Origin::Bytes {
+                bytes: bytes.to_vec(),
+                position: 0,
+            },
+            record: Vec::new(),
+            widths: Vec::new(),
+            spans: Vec::new(),
+        }
+    }
+
+    /// The choices drawn so far in the byte layout that
+    /// [`Source::from_bytes`] reads, for seeding a fuzzer's corpus with
+    /// the inputs of a property.
+    ///
+    /// ```
+    /// use ironafs_test_support::Source;
+    ///
+    /// let mut seeded = Source::from_seed(9);
+    /// let value = (seeded.u32(), seeded.string(8));
+    /// let mut driven = Source::from_bytes(&seeded.choice_bytes());
+    /// assert_eq!((driven.u32(), driven.string(8)), value);
+    /// ```
+    #[must_use]
+    pub fn choice_bytes(&self) -> Vec<u8> {
+        self.record
+            .iter()
+            .zip(&self.widths)
+            .flat_map(|(choice, width)| {
+                choice
+                    .to_be_bytes()
+                    .into_iter()
+                    .skip(8 - usize::from(*width))
+            })
+            .collect()
     }
 
     /// The choices drawn so far, in order.
@@ -166,6 +233,7 @@ impl Source {
     /// `fresh` decides only how often each choice is drawn, never what the
     /// choice means.
     fn draw_with(&mut self, max: u64, fresh: impl FnOnce(&mut SplitMix64) -> u64) -> u64 {
+        let width = byte_width(max);
         let choice = match &mut self.origin {
             Origin::Fresh(generator) => fresh(generator).min(max),
             Origin::Replay { choices, position } => {
@@ -173,14 +241,17 @@ impl Source {
                 *position = position.saturating_add(1);
                 // A shrunk sequence can put a choice where a smaller bound
                 // is drawn; reduce it rather than reject the sequence.
-                if choice <= max {
-                    choice
-                } else {
-                    choice % (max + 1)
-                }
+                reduce(choice, max)
+            }
+            Origin::Bytes { bytes, position } => {
+                let read = bytes.iter().skip(*position).take(usize::from(width));
+                let choice = read.fold(0, |choice, byte| (choice << 8) | u64::from(*byte));
+                *position = position.saturating_add(usize::from(width));
+                reduce(choice, max)
             }
         };
         self.record.push(choice);
+        self.widths.push(width);
         choice
     }
 
@@ -367,7 +438,7 @@ impl Source {
                 let span = u64::try_from(max - min).unwrap_or(u64::MAX);
                 min.saturating_add(usize::try_from(fresh_choice(generator, span)).unwrap_or(0))
             }
-            Origin::Replay { .. } => max,
+            Origin::Replay { .. } | Origin::Bytes { .. } => max,
         };
         let mut values: Vec<T> = (0..min).map(|_| element(self)).collect();
         loop {
@@ -409,7 +480,7 @@ impl Source {
                 let span = u64::try_from(max_bytes).unwrap_or(u64::MAX);
                 usize::try_from(fresh_choice(generator, span)).unwrap_or(0)
             }
-            Origin::Replay { .. } => max_bytes,
+            Origin::Replay { .. } | Origin::Bytes { .. } => max_bytes,
         };
         let mut text = String::new();
         loop {
@@ -529,6 +600,22 @@ fn scalar_at(index: u64) -> char {
         code
     };
     char::from_u32(code).unwrap_or('\0')
+}
+
+/// Reduces a replayed `choice` into `0..=max`.
+fn reduce(choice: u64, max: u64) -> u64 {
+    if choice <= max {
+        choice
+    } else {
+        choice % (max + 1)
+    }
+}
+
+/// How many bytes a choice in `0..=max` takes, big-endian: none when `max`
+/// is zero.
+fn byte_width(max: u64) -> u8 {
+    // At most 64 bits, so at most 8 bytes.
+    u8::try_from(max.bit_width().div_ceil(8)).unwrap_or(8)
 }
 
 /// One fresh draw in this many is a boundary value.

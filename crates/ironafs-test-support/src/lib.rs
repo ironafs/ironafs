@@ -12,6 +12,15 @@
 //! shrinking always stops within its run budget and time limit. The seed is
 //! printed when the first case fails, before shrinking starts.
 //!
+//! A [`Source`] can also read its choices from a byte string
+//! ([`Source::from_bytes`]), so a fuzz target drives the same generators
+//! from the fuzzer's input. That byte layout is a contract the fuzz
+//! targets and their corpora depend on: each draw reads its choice as a
+//! big-endian integer of as many bytes as its largest choice needs (none
+//! when it has one possible value), reduces it modulo the number of
+//! possible choices, and reads zero past the end of the input.
+//! [`Source::choice_bytes`] writes a run's choices in that layout.
+//!
 //! This crate is a dev-dependency only: no shipped crate depends on it.
 
 mod capture;

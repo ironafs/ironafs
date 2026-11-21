@@ -432,3 +432,74 @@ fn bulk_bytes_empty_length_range_panics_with_message() {
         Some(&"bulk_bytes needs a non-empty length range")
     );
 }
+
+#[test]
+fn from_bytes_reads_each_choice_big_endian_in_its_width() {
+    let mut source = Source::from_bytes(&[0x12, 0x34, 0x56, 0x01, 0x07]);
+    assert_eq!(source.u16(), 0x1234);
+    assert_eq!(source.u8(), 0x56);
+    assert!(source.bool());
+    assert_eq!(source.u64_in(0..=9), 7);
+    assert_eq!(source.choices(), [0x1234, 0x56, 1, 7]);
+}
+
+#[test]
+fn from_bytes_reduces_into_range_and_reads_zero_past_end() {
+    let mut source = Source::from_bytes(&[0xff, 0x01, 0x02]);
+    assert_eq!(source.u64_in(0..=9), 5);
+    assert_eq!(source.u32(), 0x0102);
+    assert_eq!(source.u64(), 0);
+    assert_eq!(source.u64_in(7..=7), 7);
+    assert_eq!(source.choices(), [5, 0x0102, 0, 0]);
+}
+
+#[test]
+fn from_bytes_same_bytes_give_same_values() {
+    let bytes: Vec<u8> = (0..=255).collect();
+    let mut first = Source::from_bytes(&bytes);
+    let mut second = Source::from_bytes(&bytes);
+    assert_eq!(draw_mixture(&mut first), draw_mixture(&mut second));
+    assert_eq!(first.choices(), second.choices());
+}
+
+#[test]
+fn choice_bytes_drive_from_bytes_to_the_seeded_values() {
+    for seed in 0..64 {
+        let mut fresh = Source::from_seed(seed);
+        let original = (
+            draw_mixture(&mut fresh),
+            fresh.string(12),
+            fresh.bulk_bytes(0..=64),
+        );
+        let bytes = fresh.choice_bytes();
+        let mut driven = Source::from_bytes(&bytes);
+        let replayed = (
+            draw_mixture(&mut driven),
+            driven.string(12),
+            driven.bulk_bytes(0..=64),
+        );
+        assert_eq!(replayed, original, "seed {seed}");
+        assert_eq!(driven.choices(), fresh.choices(), "seed {seed}");
+    }
+}
+
+#[test]
+fn from_bytes_any_input_gives_valid_values() {
+    crate::Property::new("any byte string drives the draws")
+        .cases(2000)
+        .check(
+            |source| source.bytes(0..=96),
+            |bytes| {
+                let mut source = Source::from_bytes(bytes);
+                let (number, _, _, _, small, words) = draw_mixture(&mut source);
+                assert!((10..=20).contains(&number));
+                assert!(small.len() <= 8 && (1..=4).contains(&words.len()));
+                assert!(source.string(10).len() <= 10);
+                assert!(source.ascii_string(10).is_ascii());
+                assert!((3..=40).contains(&source.bulk_bytes(3..=40).len()));
+                assert!(source.weighted(&[1, 2, 3]) < 3);
+                assert!((-5..=5).contains(&source.i64_in(-5..=5)));
+                assert!(*source.pick(&[1, 2, 3]) > 0);
+            },
+        );
+}
