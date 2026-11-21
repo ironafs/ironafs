@@ -6,6 +6,7 @@
 use std::ffi::OsString;
 
 use super::{Task, TrailerMode, UsageError, parse};
+use crate::mutants::Shard;
 
 #[test]
 fn parse_rejects_unknown_command() {
@@ -157,5 +158,50 @@ fn parse_accepts_freshness_with_and_without_self_test() {
     assert_eq!(
         parse(["freshness", "nightly"].into_iter().map(OsString::from)),
         Err(UsageError::UnexpectedArgument("nightly".into()))
+    );
+}
+
+#[test]
+fn parse_accepts_mutants_with_a_shard_or_the_self_test() {
+    let parse_words = |words: &[&str]| parse(words.iter().map(OsString::from));
+    assert_eq!(
+        parse_words(&["mutants", "--self-test"]),
+        Ok(Task::Mutants {
+            self_test: true,
+            shard: None
+        })
+    );
+    assert_eq!(
+        parse_words(&["mutants", "--shard", "1/4"]),
+        Ok(Task::Mutants {
+            self_test: false,
+            shard: Some(Shard { index: 1, count: 4 })
+        })
+    );
+    assert_eq!(parse_words(&["mutants"]), Err(UsageError::MissingShard));
+    assert_eq!(
+        parse_words(&["mutants", "--shard", "4/4"]),
+        Err(UsageError::UnexpectedArgument("4/4".into()))
+    );
+    assert_eq!(
+        parse_words(&["mutants", "--shard"]),
+        Err(UsageError::MissingShard)
+    );
+    assert_eq!(
+        parse_words(&["mutants", "--self-test", "extra"]),
+        Err(UsageError::UnexpectedArgument("extra".into()))
+    );
+}
+
+#[test]
+fn parse_accepts_plant_with_and_without_self_test() {
+    let parse_words = |words: &[&str]| parse(words.iter().map(OsString::from));
+    assert_eq!(
+        parse_words(&["plant"]),
+        Ok(Task::Plant { self_test: false })
+    );
+    assert_eq!(
+        parse_words(&["plant", "--self-test"]),
+        Ok(Task::Plant { self_test: true })
     );
 }

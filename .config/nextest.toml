@@ -20,3 +20,13 @@ fail-fast = true
 retries = 0
 slow-timeout = { period = "30s", terminate-after = 2 }
 fail-fast = false
+
+# Mutation testing and the planted-defect probe (docs/specs/testing.md,
+# 5.4, point 4, and 5.2.8, N2). A slow test is reported but not
+# terminated: nextest reports a terminated test as failed, which would
+# count a mutant that only hangs as caught. cargo-mutants stops a hanging
+# mutant with its own timeout and classes it apart.
+[profile.mutants]
+retries = 0
+slow-timeout = { period = "30s" }
+fail-fast = true

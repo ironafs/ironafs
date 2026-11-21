@@ -71,6 +71,10 @@ jobs:
         run: cargo --locked xtask check-pure --self-test
       - name: Prove the freshness check catches planted stale and incomplete runs
         run: cargo --locked xtask freshness --self-test
+      - name: Prove the mutation report refuses planted untrustworthy results
+        run: cargo --locked xtask mutants --self-test
+      - name: Prove the planted-defect probe never counts a failed probe as caught
+        run: cargo --locked xtask plant --self-test
 
   test:
     name: test

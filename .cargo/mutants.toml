@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# cargo-mutants configuration (docs/specs/testing.md, 5.4, point 4). The
+# tool and its pinned version are recorded in
+# docs/reviews/2026-11-21-m2a-79-mutation.md; it runs only behind
+# `cargo xtask mutants`, which passes the shard, the packages, nextest and
+# its arguments on the command line.
+#
+# Exclusions live here and only here, as name patterns (`exclude_re`) or
+# file globs (`exclude_globs`), each with a comment giving its reason;
+# never as attributes in source, which `cargo xtask mutants` refuses.
+
+exclude_globs = []
+exclude_re = []

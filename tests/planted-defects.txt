@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Hand-planted defects for the guards of class S and R code
+# (docs/specs/testing.md, 5.2.8, N2). `cargo xtask plant` applies each in
+# turn: it runs the test unplanted (it must pass), replaces every
+# occurrence of the anchor with the change (the anchor must occur exactly
+# `count` times), runs the test (it must fail), and restores the file. A
+# guard added or changed later adds its entry in its own pull request.
+#
+# Each entry: guard, file, anchor, count, change, package, test (the test's
+# full name in its binary), one per line; entries are separated by a blank
+# line or a comment.
+
+# ironafs-time (#58, class S): checked time arithmetic never wraps (ADR
+# 0004, C38) and a deadline passes at its instant.
+
+guard: a boot or awake instant refuses to pass the last nanosecond
+file: crates/ironafs-time/src/instant.rs
+anchor: self.nanos.checked_add(delta).map(Self::from_nanos)
+count: 1
+change: Some(Self::from_nanos(self.nanos.wrapping_add(delta)))
+package: ironafs-time
+test: instant::tests::checked_add_past_the_last_nanosecond_is_none
+
+guard: an instant refuses a duration over 64 bits of nanoseconds
+file: crates/ironafs-time/src/instant.rs
+anchor: let delta = u64::try_from(duration.as_nanos()).ok()?;
+count: 1
+change: let delta = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
+package: ironafs-time
+test: instant::tests::checked_add_of_a_duration_over_64_bits_is_none
+
+guard: the time since a later instant is refused, not zero
+file: crates/ironafs-time/src/instant.rs
+anchor: .checked_sub(earlier.nanos)
+count: 1
+change: .checked_sub(earlier.nanos).or(Some(0))
+package: ironafs-time
+test: instant::tests::checked_duration_since_a_later_instant_is_none
+
+guard: a deadline has passed at its own instant
+file: crates/ironafs-time/src/instant.rs
+anchor: now.nanos >= self.at.nanos
+count: 1
+change: now.nanos > self.at.nanos
+package: ironafs-time
+test: instant::tests::boot_deadline_passes_at_its_instant
+
+guard: wall time refuses a whole second of nanoseconds
+file: crates/ironafs-time/src/wall.rs
+anchor: if nanos < NANOS_PER_SECOND {
+count: 1
+change: if nanos <= NANOS_PER_SECOND {
+package: ironafs-time
+test: wall::tests::from_unix_rejects_a_whole_second_of_nanos
+
+guard: wall time refuses to pass the last representable second
+file: crates/ironafs-time/src/wall.rs
+anchor: let seconds = i64::try_from(total.checked_div_euclid(NANOS_I128)?).ok()?;
+count: 1
+change: let seconds = i64::try_from(total.checked_div_euclid(NANOS_I128)?).unwrap_or(i64::MAX);
+package: ironafs-time
+test: wall::tests::checked_add_past_the_last_second_is_none
+
+guard: the time since a later wall time is refused, not made positive
+file: crates/ironafs-time/src/wall.rs
+anchor: let span = self.total_nanos().checked_sub(earlier.total_nanos())?;
+count: 1
+change: let span = self.total_nanos().checked_sub(earlier.total_nanos())?.abs();
+package: ironafs-time
+test: wall::tests::checked_duration_since_a_later_time_is_none

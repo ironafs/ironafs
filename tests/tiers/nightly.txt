@@ -6,3 +6,8 @@
 # "run <id>". The freshness check counts a run as complete only when its
 # first attempt ran every id here.
 build
+mutants-0
+mutants-1
+mutants-2
+mutants-3
+planted-defects

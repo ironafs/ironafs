@@ -20,9 +20,17 @@
 # - TODO(#45): each fuzz target for 10 minutes, one job per target, so a
 #   crash never skips the rest;
 # - TODO(#74): the coverage report;
-# - TODO(#73): mutation testing, sharded.
-# Until then the tier runs `build`, which proves the schedule fires and the
-# default branch builds on the current runner image.
+# `build` proves the schedule fires and the default branch builds on the
+# current runner image.
+#
+# Mutation testing (#73): one job per shard, `mutants-<k>`, so a missing
+# shard is a missing manifest id; `cargo xtask mutants` also checks the
+# manifest holds every shard. cargo-mutants 27.1.0 is installed only here,
+# from its checksummed x86_64 Linux archive (no Arm64 build exists at that
+# version), and runs only behind the xtask command, which refuses to start
+# without IRONAFS_MUTANTS_JOB=1, writes the tool's console output to a file
+# and prints only the report (mutant names and counts). `planted-defects`
+# runs the probe of the hand-planted defects for class S guards.
 
 name: Nightly
 
@@ -64,3 +72,209 @@ jobs:
             fi
             printf 'built: %s\n' "$binary"
           done
+
+  mutants-0:
+    name: mutants-0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Install cargo-nextest
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          archive=cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/$archive"
+          printf '%s  %s\n' 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4 "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: Install cargo-mutants
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          archive=cargo-mutants-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/$archive"
+          printf '%s  %s\n' dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-mutants "$cargo_bin/cargo-mutants"
+      - name: run mutants-0
+        env:
+          IRONAFS_MUTANTS_JOB: "1"
+        run: cargo --locked xtask mutants --shard 0/4 | tee -a "$GITHUB_STEP_SUMMARY"
+
+  mutants-1:
+    name: mutants-1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Install cargo-nextest
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          archive=cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/$archive"
+          printf '%s  %s\n' 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4 "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: Install cargo-mutants
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          archive=cargo-mutants-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/$archive"
+          printf '%s  %s\n' dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-mutants "$cargo_bin/cargo-mutants"
+      - name: run mutants-1
+        env:
+          IRONAFS_MUTANTS_JOB: "1"
+        run: cargo --locked xtask mutants --shard 1/4 | tee -a "$GITHUB_STEP_SUMMARY"
+
+  mutants-2:
+    name: mutants-2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Install cargo-nextest
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          archive=cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/$archive"
+          printf '%s  %s\n' 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4 "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: Install cargo-mutants
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          archive=cargo-mutants-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/$archive"
+          printf '%s  %s\n' dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-mutants "$cargo_bin/cargo-mutants"
+      - name: run mutants-2
+        env:
+          IRONAFS_MUTANTS_JOB: "1"
+        run: cargo --locked xtask mutants --shard 2/4 | tee -a "$GITHUB_STEP_SUMMARY"
+
+  mutants-3:
+    name: mutants-3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Install cargo-nextest
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          archive=cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/$archive"
+          printf '%s  %s\n' 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4 "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: Install cargo-mutants
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          archive=cargo-mutants-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/$archive"
+          printf '%s  %s\n' dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-mutants "$cargo_bin/cargo-mutants"
+      - name: run mutants-3
+        env:
+          IRONAFS_MUTANTS_JOB: "1"
+        run: cargo --locked xtask mutants --shard 3/4 | tee -a "$GITHUB_STEP_SUMMARY"
+
+  planted-defects:
+    name: planted-defects
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Install cargo-nextest
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          archive=cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/$archive"
+          printf '%s  %s\n' 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4 "$archive" | sha256sum -c -
+          tar -xzf "$archive"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: run planted-defects
+        run: cargo --locked xtask plant | tee -a "$GITHUB_STEP_SUMMARY"

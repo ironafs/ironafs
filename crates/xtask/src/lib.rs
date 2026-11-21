@@ -13,6 +13,8 @@ mod grants;
 mod hooks;
 mod json;
 mod metadata;
+mod mutants;
+mod plant;
 mod pure;
 mod rust_source;
 mod trailers;
@@ -173,6 +175,8 @@ fn run_task(
         args::Task::CheckGrants { self_test } => grants::run(self_test, output),
         args::Task::CheckPure { self_test } => pure::run(self_test, output),
         args::Task::Freshness { self_test } => freshness::run(self_test, output),
+        args::Task::Mutants { self_test, shard } => mutants::run(self_test, shard, output),
+        args::Task::Plant { self_test } => plant::run(self_test, output),
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
         args::Task::Trailers(mode) => trailers::run(mode, output),

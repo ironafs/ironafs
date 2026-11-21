@@ -52,6 +52,10 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     // The live freshness check needs the GitHub API and runs in CI; its
     // self-test needs neither.
     crate::freshness::run(true, output)?;
+    // The real mutation run and the planted-defect probe run in the nightly
+    // tier; their self-tests run everywhere.
+    crate::mutants::run(true, None, output)?;
+    crate::plant::run(true, output)?;
 
     check_reuse_result(
         Command::new("reuse").arg("lint").status(),
