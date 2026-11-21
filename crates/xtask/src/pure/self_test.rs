@@ -142,6 +142,13 @@ fn is_unreadable(violation: &Violation) -> bool {
     matches!(violation, Violation::Unreadable { file, .. } if file == Path::new(TOP_LIB))
 }
 
+/// Whether the violation is `word` found in the raw text of the planted
+/// library root at `line`.
+fn is_text(violation: &Violation, line: usize, word: &str) -> bool {
+    matches!(violation, Violation::NamedInText { file, line: at, word: found }
+        if file == Path::new(TOP_LIB) && *at == line && *found == word)
+}
+
 fn is_not_no_std(violation: &Violation) -> bool {
     matches!(violation, Violation::NotNoStd(file) if file == Path::new(TOP_LIB))
 }
@@ -313,6 +320,7 @@ const CASES: &[Case] = &[
             fixture.file(TOP, "ext.rs", Some(HIDDEN_STD));
         },
         expect: &[
+            |found| is_text(found, 2, "include"),
             |found| is_source(found, 2, "include!"),
             |found| is_extern_in(found, "crates/ironafs-xdr/ext.rs", 2),
         ],
@@ -376,6 +384,7 @@ const CASES: &[Case] = &[
             fixture.file(TOP, "ext.rs", Some(HIDDEN_STD));
         },
         expect: &[
+            |found| is_text(found, 3, "include"),
             |found| is_source(found, 3, "include"),
             |found| is_extern_in(found, "crates/ironafs-xdr/ext.rs", 2),
         ],
@@ -392,9 +401,12 @@ const CASES: &[Case] = &[
             );
             fixture.file(TOP, "ext.rs", Some(HIDDEN_STD));
         },
-        expect: &[is_unreadable, is_not_no_std, |found| {
-            is_extern_in(found, "crates/ironafs-xdr/ext.rs", 2)
-        }],
+        expect: &[
+            |found| is_text(found, 4, "include"),
+            is_unreadable,
+            is_not_no_std,
+            |found| is_extern_in(found, "crates/ironafs-xdr/ext.rs", 2),
+        ],
     },
     Case {
         name: "include! after a lifetime spelled like a raw string's prefix",
@@ -409,6 +421,7 @@ const CASES: &[Case] = &[
             fixture.file(TOP, "ext.rs", Some(HIDDEN_STD));
         },
         expect: &[
+            |found| is_text(found, 4, "include"),
             |found| is_source(found, 4, "include!"),
             |found| is_extern_in(found, "crates/ironafs-xdr/ext.rs", 2),
         ],
@@ -449,12 +462,29 @@ const CASES: &[Case] = &[
             );
         },
         expect: &[
+            |found| is_text(found, 2, "include"),
+            |found| is_text(found, 3, "include_str"),
+            |found| is_text(found, 4, "include_bytes"),
             |found| is_source(found, 2, "include"),
             |found| is_source(found, 3, "include_str"),
             |found| is_source(found, 4, "include_bytes"),
             |found| is_source(found, 5, "asm"),
             |found| is_source(found, 6, "global_asm"),
             |found| is_source(found, 7, "naked_asm"),
+        ],
+    },
+    Case {
+        name: "the names of the macros that read files in a comment and a file not compiled",
+        plant: |fixture| {
+            plant_head(fixture, "#![no_std]\n// include_str!(\"key\")");
+            fixture.file(TOP, "notes.md", Some("Reads data with include_bytes!.\n"));
+        },
+        expect: &[
+            |found| is_text(found, 2, "include_str"),
+            |found| {
+                matches!(found, Violation::NamedInText { file, line: 1, word: "include_bytes" }
+                    if file == Path::new("crates/ironafs-xdr/notes.md"))
+            },
         ],
     },
     Case {

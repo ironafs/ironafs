@@ -22,6 +22,9 @@
 //! `#[path]`, a symbolic link). The names of the macros that read files or
 //! write assembly are refused anywhere, and so is a `#` that does not open
 //! an attribute, since a macro can join either to the rest from a fragment.
+//! Like `extern`, the names of the macros that read files are refused in
+//! the raw text of every file of the package too, so a token the reader
+//! misreads cannot hide one.
 
 mod self_test;
 
@@ -73,6 +76,9 @@ const EXTERN: &str = "a pure crate says extern only as `extern crate alloc;`, wi
                       function back";
 const ELSEWHERE: &str = "a pure library's source is its own `.rs` files: nothing may read \
                          source or data from elsewhere, where these rules do not look";
+const IN_TEXT: &str = "no file of a pure package names a macro that reads files, even in a \
+                       comment or a string, so no misread token can hide one (ADR 0004, C4, \
+                       point 1)";
 const FRAGMENT: &str = "an attribute or macro call built from a macro fragment can hide \
                         `#[path]` or `include!` from this check";
 const HASH: &str = "a `#` not directly followed by `[` or `![` can open an attribute whose \
@@ -90,6 +96,12 @@ const FORBIDDEN_MACROS: &[(&str, &str)] = &[
     ("global_asm", UNSAFE),
     ("naked_asm", UNSAFE),
 ];
+
+/// The built-in macros that read files. Their names are refused in the
+/// raw text of every file of a pure package, and of `ironafs-client`, as
+/// words on any line, comments and strings included: a rule on raw text
+/// holds whatever a token reader gets wrong.
+pub(crate) const FILE_MACROS: &[&str] = &["include", "include_str", "include_bytes"];
 
 /// Target kinds a crate in a pure crate's closure may have: its library and
 /// targets that are never shipped.
@@ -148,6 +160,11 @@ pub(crate) enum Violation {
         name: String,
         reason: &'static str,
     },
+    NamedInText {
+        file: PathBuf,
+        line: usize,
+        word: &'static str,
+    },
     Unreadable {
         file: PathBuf,
         error: String,
@@ -178,6 +195,10 @@ pub(crate) enum Violation {
 }
 
 impl fmt::Display for Violation {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "coding standards rule 10: one arm per violation, each its rule's message"
+    )]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CargoConfig {
@@ -217,6 +238,13 @@ impl fmt::Display for Violation {
                 "{}:{line}: names {name}: {reason} (ADR 0004, C4, point 1)",
                 file.display()
             ),
+            Self::NamedInText { file, line, word } => {
+                write!(
+                    formatter,
+                    "{}:{line}: says {word}: {IN_TEXT}",
+                    file.display()
+                )
+            }
             Self::Unreadable { file, error } => write!(
                 formatter,
                 "{}: cannot be read as Rust source ({error}), so the pure-crate rules cannot \
@@ -441,6 +469,20 @@ pub(crate) fn extern_lines(text: &[u8]) -> Vec<usize> {
         .collect()
 }
 
+/// Each name of `FILE_MACROS` that `text` holds as a word, with its line
+/// number, in line order.
+pub(crate) fn file_macro_words(text: &[u8]) -> Vec<(usize, &'static str)> {
+    let mut found = Vec::new();
+    for (index, line) in text.split(|byte| *byte == b'\n').enumerate() {
+        for word in FILE_MACROS {
+            if contains_word(line, word.as_bytes()) {
+                found.push((index + 1, *word));
+            }
+        }
+    }
+    found
+}
+
 /// The leading inner attributes of a file, `#![...]` from its start, each
 /// as the range of the tokens inside its brackets. An attribute that does
 /// not close ends the list.
@@ -661,7 +703,8 @@ pub(crate) fn static_violations(workspace: &Workspace) -> Result<(Vec<Violation>
 }
 
 /// The source rules of a pure crate. Every file of its package is read
-/// for `extern`, whatever its extension, and none may be a symbolic link.
+/// for `extern` and the names of `FILE_MACROS`, whatever its extension, and
+/// none may be a symbolic link.
 /// The `.rs` files below the library's directory, which are all the
 /// library can compile once `#[path]` and `include!` are refused, are read
 /// as tokens for what the library may not name.
@@ -689,6 +732,13 @@ fn source_violations(workspace: &Workspace, member: &Member) -> Result<Vec<Viola
             violations.push(Violation::Extern {
                 file: shown(workspace, &file),
                 line,
+            });
+        }
+        for (line, word) in file_macro_words(&text) {
+            violations.push(Violation::NamedInText {
+                file: shown(workspace, &file),
+                line,
+                word,
             });
         }
         let is_library_source = file.starts_with(lib_dir)

@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::{
-    Violation, closure_violations, config_files, config_words, extern_lines, first_error,
-    library_names, root_no_std, toolchain_targets,
+    Violation, closure_violations, config_files, config_words, extern_lines, file_macro_words,
+    first_error, library_names, root_no_std, toolchain_targets,
 };
 use crate::metadata::{Member, Package, Workspace};
 use crate::rust_source;
@@ -80,6 +80,25 @@ fn extern_lines_allow_only_the_alloc_line() {
                  extern\xe2\x80\xa8crate std;\n\
                  /// External, externally, my_extern, extern_x: none of these\n";
     assert_eq!(extern_lines(text), [3, 4, 5, 6, 7, 8, 9, 10, 11]);
+}
+
+#[test]
+fn file_macro_words_find_each_name_as_a_word_on_any_line() {
+    let text = b"// include! in a comment\n\
+                 const S: &str = \"include_str\";\n\
+                 x!(r#include_bytes, include);\n\
+                 included, my_include, include_strs, include_bytes2: none of these\n\
+                 \xff include\n";
+    assert_eq!(
+        file_macro_words(text),
+        [
+            (1, "include"),
+            (2, "include_str"),
+            (3, "include"),
+            (3, "include_bytes"),
+            (5, "include"),
+        ]
+    );
 }
 
 fn root(source: &str) -> Option<usize> {

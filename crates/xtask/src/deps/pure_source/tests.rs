@@ -124,6 +124,27 @@ fn hidden_names_find_include_and_global_asm_anywhere() {
 }
 
 #[test]
+fn hidden_names_find_the_file_reading_macros_anywhere() {
+    let source = "const K: &str = include_str!(\"key\");\n\
+                  const B: &[u8] = core::include_bytes!(\"b\");\n\
+                  macro_rules! pull { ($bang:tt $name:ident) => { $name $bang(\"x\"); }; }\n\
+                  pull!(! include_bytes);\n\
+                  fn f(include_str: u8) {}\n\
+                  const R: u8 = r#include_bytes;\n\
+                  fn ok(include_string: u8, my_include_str: u8) {}\n";
+    assert_eq!(
+        names(source),
+        [
+            (1, "include_str!".into()),
+            (2, "include_bytes!".into()),
+            (4, "include_bytes".into()),
+            (5, "include_str".into()),
+            (6, "include_bytes".into()),
+        ]
+    );
+}
+
+#[test]
 fn hidden_names_find_printing_macro_names_anywhere() {
     let source = "macro_rules! pull { ($bang:tt $name:ident) => { $name $bang(\"x\"); }; }\n\
                   pull!(! println);\n\
@@ -336,6 +357,90 @@ fn scan_fails_ironafs_client_without_a_library_or_with_unreadable_source() {
         }]
     );
     fs::remove_dir_all(&unreadable.root).unwrap();
+}
+
+#[test]
+fn scan_refuses_the_file_reading_macro_names_in_the_text_of_every_client_file() {
+    let workspace = workspace("client-text", |root| {
+        vec![
+            member(
+                root,
+                "ironafs-client",
+                &[
+                    (
+                        "src/lib.rs",
+                        "#[cfg(test)]\nmod tests;\n// include! in a comment\n",
+                    ),
+                    ("src/tests.rs", "const K: &str = include_str!(\"k\");\n"),
+                    ("tests/it/main.rs", "\n\nlet b = \"include_bytes\";\n"),
+                    (
+                        "notes.txt",
+                        "included, my_include, include_strs: none of these\n",
+                    ),
+                ],
+            ),
+            member(
+                root,
+                "ironafs-xdr",
+                &[("src/lib.rs", "include!(\"elsewhere.rs\");\n")],
+            ),
+        ]
+    });
+
+    let (violations, _) = scan(&workspace).unwrap();
+
+    let in_text = |file: &str, line: usize, word: &'static str| Violation::NamedInText {
+        file: PathBuf::from(file),
+        line,
+        word,
+    };
+    assert_eq!(
+        violations,
+        [
+            in_text("ironafs-client/src/lib.rs", 3, "include"),
+            in_text("ironafs-client/src/tests.rs", 1, "include_str"),
+            in_text("ironafs-client/tests/it/main.rs", 3, "include_bytes"),
+        ]
+    );
+    fs::remove_dir_all(&workspace.root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn scan_reads_the_text_through_a_link_to_a_file_and_refuses_a_link_to_a_directory() {
+    let workspace = workspace("client-links", |root| {
+        vec![member(
+            root,
+            "ironafs-client",
+            &[("src/lib.rs", "\n"), ("data/key.txt", "include_str\n")],
+        )]
+    });
+    let client = workspace.root.join("ironafs-client");
+    std::os::unix::fs::symlink("../data/key.txt", client.join("src/key.txt")).unwrap();
+    std::os::unix::fs::symlink("../data", client.join("src/data")).unwrap();
+
+    let (violations, _) = scan(&workspace).unwrap();
+
+    assert_eq!(
+        violations,
+        [
+            Violation::Unreadable {
+                file: PathBuf::from("ironafs-client/src/data"),
+                error: "a symbolic link to no file, which this check does not follow".into(),
+            },
+            Violation::NamedInText {
+                file: PathBuf::from("ironafs-client/data/key.txt"),
+                line: 1,
+                word: "include_str",
+            },
+            Violation::NamedInText {
+                file: PathBuf::from("ironafs-client/src/key.txt"),
+                line: 1,
+                word: "include_str",
+            },
+        ]
+    );
+    fs::remove_dir_all(&workspace.root).unwrap();
 }
 
 #[test]

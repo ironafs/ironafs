@@ -13,16 +13,22 @@
 //! would hide a path from it: renames and globs of the standard library,
 //! imported or renamed built-in macros, macro path fragments, macros called
 //! and attributes built through a fragment, a `#` that does not open an
-//! attribute, `#[path]`, and the names `include`, `global_asm` and the
-//! printing macros anywhere. It refuses `unsafe` and `extern` too, which reach the
-//! operating system with no path at all.
+//! attribute, `#[path]`, and the names of the macros that read files,
+//! `global_asm` and the printing macros anywhere. It refuses `unsafe` and
+//! `extern` too, which reach the operating system with no path at all.
+//!
+//! Apart from the tokens, every file of the package is read as raw text for
+//! the names of the macros that read files, as `check-pure` reads a pure
+//! package, so a token the reader misreads cannot hide one.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::Kind;
 use super::Violation;
 use crate::Error;
-use crate::metadata::Workspace;
+use crate::metadata::{Member, Workspace};
+use crate::pure::{FILE_MACROS, file_macro_words, package_files};
 use crate::rust_source::{self, Token, TokenKind, ident, punct};
 
 #[cfg(test)]
@@ -44,8 +50,9 @@ const UNSAFE: &str = "unsafe code and foreign functions belong in ironafs-os, un
 const MACRO_PATH: &str = "an imported built-in macro can be renamed out of this check's sight; \
                           call it by its own name";
 const FILES: &str = "files belong in a driver";
-const INCLUDE: &str = "include! reads source from where this check does not look, and its name \
-                       is refused anywhere, since a macro can join it to its `!`";
+const INCLUDE: &str = "include!, include_str! and include_bytes! read files from where this check \
+                       does not look, and their names are refused anywhere, since a macro can \
+                       join a name to its `!`";
 const PATH: &str = "a path attribute loads a module from where this check does not look";
 const HASH: &str = "a # not directly followed by [ or ![ can open an attribute whose brackets \
                     come from a macro fragment, such as #[path], out of sight";
@@ -142,6 +149,8 @@ const NAMED_MACROS: &[&str] = &[
     "eprintln",
     "dbg",
     "include",
+    "include_str",
+    "include_bytes",
     "asm",
     "global_asm",
     "naked_asm",
@@ -155,11 +164,12 @@ const LOCAL_ROOTS: &[&str] = &["crate", "self", "super"];
 /// without a path or an `unsafe` block in the case of `global_asm!`.
 const ASSEMBLY: &[&str] = &["asm", "global_asm", "naked_asm"];
 
-/// Built-in macros refused wherever their name appears, called or not: a
+/// The assembly macro refused wherever its name appears, called or not: a
 /// macro can join a name to its `!` from a fragment, out of this check's
-/// sight, and these two need no `unsafe` to do harm. The other assembly
-/// macros need an `unsafe` block or attribute, which is refused anyway.
-const NAMED_ANYWHERE: &[&str] = &["include", "global_asm"];
+/// sight, and it needs no `unsafe` to do harm. The other assembly macros
+/// need an `unsafe` block or attribute, which is refused anyway. The macros
+/// that read files, `FILE_MACROS`, are refused anywhere too.
+const ASSEMBLY_ANYWHERE: &[&str] = &["global_asm"];
 
 /// Target kinds a scanned crate may have: its library and targets that are
 /// never shipped. A build script would run I/O at build time.
@@ -225,15 +235,55 @@ pub(super) fn scan(workspace: &Workspace) -> Result<(Vec<Violation>, Vec<PathBuf
             violations.push(Violation::NoSource(member.name.clone()));
         }
         for file in files {
-            let shown = file
-                .strip_prefix(&workspace.root)
-                .unwrap_or(&file)
-                .to_path_buf();
+            let shown = shown(workspace, &file);
             check_file(&file, &shown, &mut violations)?;
             scanned.push(shown);
         }
+        violations.extend(text_violations(workspace, member)?);
     }
     Ok((violations, scanned))
+}
+
+/// Reads every file of the member's package as raw text, whatever its
+/// extension and whether or not it is compiled, for the names of the macros
+/// that read files. A symbolic link is read through when it leads to a
+/// file; one that leads anywhere else is reported unread.
+///
+/// # Errors
+///
+/// Returns an error if a directory cannot be listed or a file cannot be
+/// read.
+fn text_violations(workspace: &Workspace, member: &Member) -> Result<Vec<Violation>, Error> {
+    let (mut files, links) = package_files(&member.dir, &workspace.target_dir)?;
+    let mut violations = Vec::new();
+    for link in links {
+        if link.is_file() {
+            files.push(link);
+        } else {
+            violations.push(Violation::Unreadable {
+                file: shown(workspace, &link),
+                error: "a symbolic link to no file, which this check does not follow".into(),
+            });
+        }
+    }
+    files.sort();
+    for file in files {
+        let text = fs::read(&file).map_err(Error::path_io("read file", &file))?;
+        for (line, word) in file_macro_words(&text) {
+            violations.push(Violation::NamedInText {
+                file: shown(workspace, &file),
+                line,
+                word,
+            });
+        }
+    }
+    Ok(violations)
+}
+
+fn shown(workspace: &Workspace, path: &Path) -> PathBuf {
+    path.strip_prefix(&workspace.root)
+        .unwrap_or(path)
+        .to_path_buf()
 }
 
 /// Whether `path` is the file or directory of a module `tests` whose parent
@@ -331,9 +381,9 @@ fn check_file(file: &Path, shown: &Path, violations: &mut Vec<Violation>) -> Res
 /// standard hash collections and their random state, printing macros,
 /// macro path fragments, macros called and attributes built through a
 /// fragment, a `#` not directly followed by `[` or `![`, `#[path]`, and the
-/// names `include`, `global_asm` and the printing macros anywhere. A raw
-/// identifier such as `r#unsafe` is a name, not the keyword, but
-/// `r#include` still names the macro.
+/// names of the macros that read files, `global_asm` and the printing
+/// macros anywhere. A raw identifier such as `r#unsafe` is a name, not the
+/// keyword, but `r#include` still names the macro.
 pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str)> {
     let mut found = Vec::new();
     let mut attribute_depth: Option<usize> = None;
@@ -402,7 +452,7 @@ pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str
                 let extern_crate = word == "extern" && ident(after) == Some("crate");
                 if !token.raw && (word == "unsafe" || (word == "extern" && !extern_crate)) {
                     found.push((line, word.clone(), UNSAFE));
-                } else if (is_macro || NAMED_ANYWHERE.contains(&word.as_str()))
+                } else if (is_macro || ASSEMBLY_ANYWHERE.contains(&word.as_str()))
                     && ASSEMBLY.contains(&word.as_str())
                 {
                     let called = if is_macro { "!" } else { "" };
@@ -416,9 +466,9 @@ pub(super) fn hidden_names(tokens: &[Token]) -> Vec<(usize, String, &'static str
                 } else if PRINTING.contains(&word.as_str()) {
                     let called = if is_macro { "!" } else { "" };
                     found.push((line, format!("{word}{called}"), STREAMS));
-                } else if word == "include" {
+                } else if FILE_MACROS.contains(&word.as_str()) {
                     let called = if is_macro { "!" } else { "" };
-                    found.push((line, format!("include{called}"), INCLUDE));
+                    found.push((line, format!("{word}{called}"), INCLUDE));
                 } else if attribute_depth.is_some() && word == "path" && punct(after) == Some('=') {
                     found.push((line, "#[path]".to_owned(), PATH));
                 }

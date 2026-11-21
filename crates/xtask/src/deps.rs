@@ -280,6 +280,11 @@ pub(crate) enum Violation {
         name: String,
         reason: &'static str,
     },
+    NamedInText {
+        file: PathBuf,
+        line: usize,
+        word: &'static str,
+    },
     NoLibrary(String),
     NoSource(String),
     Unreadable {
@@ -412,6 +417,13 @@ impl fmt::Display for Violation {
             } => write!(
                 formatter,
                 "{}:{line}: names {name}: {reason} (ADR 0004, C4, point 2; coding standards rule 7)",
+                file.display()
+            ),
+            Self::NamedInText { file, line, word } => write!(
+                formatter,
+                "{}:{line}: says {word}: no file of ironafs-client names a macro that reads \
+                 files, even in a comment or a string, so no misread token can hide one \
+                 (ADR 0004, C4, point 2)",
                 file.display()
             ),
             Self::NoLibrary(name) => write!(

@@ -180,6 +180,13 @@ fn is_planted_unreadable(violation: &Violation) -> bool {
     matches!(violation, Violation::Unreadable { file, .. } if file == Path::new(PLANTED))
 }
 
+/// Whether the violation is `word` found in the raw text of the planted
+/// file at `line`.
+fn is_planted_text(violation: &Violation, line: usize, word: &str) -> bool {
+    matches!(violation, Violation::NamedInText { file, line: at, word: found }
+        if file == Path::new(PLANTED) && *at == line && *found == word)
+}
+
 fn is_third_party(violation: &Violation, from: &str, to: &str) -> bool {
     matches!(violation, Violation::ThirdParty { from: found_from, to: found_to }
         if found_from == from && found_to == to)
@@ -712,6 +719,7 @@ const CASES: &[Case] = &[
         name: "include! renamed by an import",
         plant: |fixture| plant_source(fixture, "use std::include as pull;\npull!(\"x.rs\");\n"),
         expect: &[
+            |found| is_planted_text(found, 1, "include"),
             |found| is_planted(found, "std::include"),
             |found| is_planted(found, "include"),
         ],
@@ -738,6 +746,7 @@ const CASES: &[Case] = &[
             );
         },
         expect: &[
+            |found| is_planted_text(found, 2, "include"),
             |found| is_planted(found, "c::include"),
             |found| is_planted(found, "include"),
         ],
@@ -813,6 +822,7 @@ const CASES: &[Case] = &[
             );
         },
         expect: &[
+            |found| is_planted_text(found, 2, "include"),
             |found| is_planted(found, "$m!"),
             |found| is_planted(found, "include"),
         ],
@@ -826,7 +836,10 @@ const CASES: &[Case] = &[
                  pull!(! include);\n",
             );
         },
-        expect: &[|found| is_planted(found, "include")],
+        expect: &[
+            |found| is_planted_text(found, 2, "include"),
+            |found| is_planted(found, "include"),
+        ],
     },
     Case {
         name: "global_asm! joined to its bang by a macro",
@@ -887,7 +900,10 @@ const CASES: &[Case] = &[
         plant: |fixture| {
             plant_source(fixture, "include!(\"../../ironafs-net/src/lib.rs\");\n");
         },
-        expect: &[|found| is_planted(found, "include!")],
+        expect: &[
+            |found| is_planted_text(found, 1, "include"),
+            |found| is_planted(found, "include!"),
+        ],
     },
     Case {
         name: "include! hidden behind a string with a suffix",
@@ -899,7 +915,10 @@ const CASES: &[Case] = &[
                  include!(\"../../ironafs-net/src/lib.rs\"); // \"\n",
             );
         },
-        expect: &[is_planted_unreadable],
+        expect: &[
+            |found| is_planted_text(found, 3, "include"),
+            is_planted_unreadable,
+        ],
     },
     Case {
         name: "include! after a lifetime spelled like a raw string's prefix",
@@ -911,12 +930,56 @@ const CASES: &[Case] = &[
                  include!(\"../../ironafs-net/src/lib.rs\"); // \"\n",
             );
         },
-        expect: &[|found| is_planted(found, "include!")],
+        expect: &[
+            |found| is_planted_text(found, 3, "include"),
+            |found| is_planted(found, "include!"),
+        ],
     },
     Case {
         name: "a shebang line the compiler skips unread",
         plant: |fixture| plant_source(fixture, "#!/usr/bin/env x \"\nfn f() {} // \"\n"),
         expect: &[is_planted_unreadable],
+    },
+    Case {
+        name: "a file read at compile time by include_str!",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "const KEY: &str = include_str!(\"../../../deploy/secret.key\");\n",
+            );
+        },
+        expect: &[
+            |found| is_planted(found, "include_str!"),
+            |found| is_planted_text(found, 1, "include_str"),
+        ],
+    },
+    Case {
+        name: "include_bytes! joined to its bang by a macro",
+        plant: |fixture| {
+            plant_source(
+                fixture,
+                "macro_rules! pull { ($bang:tt $name:ident) => { $name $bang(\"/etc/passwd\"); }; }\n\
+                 pull!(! include_bytes);\n",
+            );
+        },
+        expect: &[
+            |found| is_planted(found, "include_bytes"),
+            |found| is_planted_text(found, 2, "include_bytes"),
+        ],
+    },
+    Case {
+        name: "a file-reading macro named in a file the scan does not compile",
+        plant: |fixture| {
+            fixture.file(
+                PLANTED_CRATE,
+                "tests/it/main.rs",
+                Some("// include_bytes!(\"x\")\n"),
+            );
+        },
+        expect: &[|found| {
+            matches!(found, Violation::NamedInText { file, line: 1, word: "include_bytes" }
+                if file == Path::new("crates/ironafs-client/tests/it/main.rs"))
+        }],
     },
     Case {
         name: "a pure crate with an empty lints table",
