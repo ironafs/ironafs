@@ -42,6 +42,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-71-seams](2026-11-21-m2a-71-seams.md) | Issue #71: the `Rpc` and `Disk` seams and the scheduling model |
 | [2026-11-21-m2a-79-sim](2026-11-21-m2a-79-sim.md) | Issue #79, part (a): the simulator's baton scheduler, trace, replay and interleaving witness |
 | [2026-11-21-m2a-96-simmodels](2026-11-21-m2a-96-simmodels.md) | Issue #96, part 1: the simulator's VL and fileserver models, read side |
+| [2026-11-21-m2a-96-simmodels-part2](2026-11-21-m2a-96-simmodels-part2.md) | Issue #96, part 2: callback calls from the fileserver model, A14 continuity and the model front end |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
