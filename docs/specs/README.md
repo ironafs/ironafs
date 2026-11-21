@@ -74,8 +74,9 @@ higher class and says so.
 - **A large subject is split by subject,** not by size: one file per
   interface or per record, with a short parent that lists them.
 - **Vectors and corpora** live with the tests, under the crate that owns
-  the format (coding standards rule 15), not in `docs/specs/`. The
-  specification names their paths.
+  the format or interface (coding standards rule 15), not in
+  `docs/specs/`. The specification names their paths. A published conformance corpus has a
+  directory of its own ("Published conformance corpora", below).
 
 ## Status
 
@@ -443,25 +444,150 @@ names, with paths:
    (coding standards rule 20), with the invariants it asserts.
 6. **Invariant tests:** one named test per quoted ADR invariant.
 
-**Published conformance corpora.** For mainstream
-cryptography, published test vector sets, such as NIST's CAVP and ACVTS
-files, Wycheproof's vectors and an RFC's test cases, may be run as a
-separate conformance layer, apart from every specification's golden
-vectors. Each set is used under its own licence, checked and recorded
-with its licence text in `LICENSES/`, covered by `reuse lint`, and a
-`docs/provenance.md` row before it is added, and kept in its own
-directory under the owning crate's tests, unmodified, with its source and
-version. A conformance set is never a specification's golden vector,
-never the only check of a requirement, and never cited as the derivation
-of one; point 1's rule against reusing a standard's example values as
-golden vectors stands.
-
 A `behaviour` specification names its acceptance cases instead: the
 start state, the events in order, and the result that must be seen. A
 `procedure` specification names how each step is checked.
 
 A requirement with no test is listed as a gap, with its issue. A frozen
 format has no gaps.
+
+### Published conformance corpora
+
+A published conformance corpus is a set of test vectors that a standards
+body or a conformance project publishes for others to test their code
+against. For mainstream cryptography, and for nothing else, IronAFS runs
+such corpora as a separate conformance layer, apart from every
+specification's golden vectors and reject corpus. A corpus that does not
+meet every rule below stays out of the tree. Widening these rules beyond
+mainstream cryptography is the owner's decision, in a pull request of its
+own.
+
+1. **What qualifies.** A corpus qualifies only if all of these hold:
+   - **Mainstream cryptography.** It tests an algorithm that coding
+     standards rule 21 and ADR 0004, C5, treat as mainstream cryptography
+     (AES, SHA-2, HMAC and the like), which IronAFS implements or puts
+     behind `ironafs-crypto`. rxkad's cipher is not mainstream (ADR 0004,
+     C5) and has no conformance corpus. Vectors for XDR, Rx, the AFS-3
+     RPCs, callbacks, SMB, FUSE or a format IronAFS defines never qualify,
+     whoever published them: those are tested only as the list above sets
+     out.
+   - **Published as conformance material.** A standards body publishes it
+     (NIST's CAVP and ACVP vectors, an RFC's test cases), or a project
+     whose purpose is to publish vector sets for others to test against
+     (Project Wycheproof), at a stable locator.
+   - **Not from an implementation's source.** Vectors taken from an
+     implementation's source tree, its tests or its test data are not a
+     published corpus, whatever their licence. Nothing from OpenAFS,
+     AuriStor, or the Linux kernel's AF_RXRPC or kafs ever qualifies, nor
+     anything generated from them (ADR 0001; Sources, rule 3).
+   - **Its licence is settled** (point 2).
+2. **Licence and provenance, before the files enter the tree.** The pull
+   request that adds a corpus records, in the same commit as the files:
+   - **The terms, read at their source:** the locator and the date read,
+     and a verdict. CONFIRMED: the publisher states terms that cover these
+     files, quoted or linked. UNVERIFIED: no stated terms are found, or
+     they may not cover the files (for example a document licence that
+     may not reach values extracted from it).
+   - **The licence is on ADR 0001's allowlist and compatible with
+     GPL-3.0-or-later.** Anything else, an UNVERIFIED verdict included, is
+     the owner's decision for that corpus, recorded with its date in the
+     provenance row; until then the corpus does not enter (ADR 0001,
+     "Third-party material that is copied in").
+   - **The licence text** in `LICENSES/`, under its SPDX id, or under a
+     `LicenseRef-` id holding the publisher's own statement where SPDX
+     has none. For a corpus the owner admits with an UNVERIFIED verdict,
+     the `LicenseRef-` file holds what was found: the publisher's
+     statement as published, or a line saying that none was found, with
+     the locators read and the date, and the owner's decision with its
+     date.
+   - **A `REUSE.toml` annotation** over the corpus's files and their
+     notices (not `SOURCE.md`, which carries its own header), with the
+     publisher's copyright or public-domain statement, or the publisher's
+     name where it states none, and that licence id, so that the files
+     stay unmodified and `reuse lint` covers them.
+   - **A `docs/provenance.md` row:** the IronAFS path, the source pinned
+     as point 3 sets out, the licence, and what was taken.
+   - **Every notice the licence requires** (an Apache-2.0 `NOTICE` file,
+     an attribution the publisher asks for), kept beside the files and
+     carried into the release notices file (ADR 0001, "Releases").
+   - **A published crate** either leaves the corpus, and the conformance
+     tests that read it, out of its package, or declares the combined
+     licence expression (ADR 0001).
+
+   Missing or unresolved provenance blocks the merge (ADR 0001).
+3. **Pinned.** A corpus is one exact published version, never "the
+   latest".
+   - **Its place:** `crates/<crate>/tests/conformance/<publisher>-<set>/`
+     in the crate whose tests run it, one directory per corpus. It is not
+     under `tests/fixtures/`: coding standards rule 15 keeps fixtures
+     synthetic or reduced, and a corpus is neither.
+   - **Unmodified:** files published as files are copied byte for byte. A
+     whole file may be left out of an archive; no file is edited, trimmed,
+     reformatted or given a header. Test cases published only inside a
+     document, such as an RFC's, are transcribed into one data file whose
+     values are those of the document, with the document, its sections and
+     the errata checked named in the manifest. A second, independent
+     reading of every value against the document is made before the
+     merge: who or what made it and its result are recorded in the
+     manifest and in the change's review record in `docs/reviews/`.
+   - **A manifest,** `SOURCE.md` in the directory (IronAFS's own file,
+     with its own SPDX header), records: the publisher and the set's name;
+     its version, release or commit; the retrieval locator and date; the
+     SHA-256 of what was fetched (the archive, or the document a
+     transcription was read from) and of each file kept or transcribed;
+     each file left out and why; the number of vectors per file that the
+     tests expect to run and to skip; the second reading of a
+     transcription; and the licence verdict and provenance row.
+   - **A new version** is a pull request of its own: the new files,
+     digests, manifest and provenance row together, and the old ones
+     removed. Point 2 is done again for the new version: its terms read
+     again, its notices checked, and any owner's decision taken again for
+     that version. Nothing fetches a corpus at build or test time.
+4. **Cited.** A specification names each corpus in its Tests section,
+   under a heading of its own after the reject corpus (after the
+   acceptance cases, in a specification that has no reject corpus): the
+   directory, the manifest, the provenance row, and the requirements the
+   corpus exercises.
+   - A corpus is never a specification's golden vector, never the
+     derivation of one, and never the only check of a requirement. Point 1
+     of the list above stands: a standard's example values are not reused
+     as golden vectors.
+   - A corpus is not a source of requirements: it is not in the Sources
+     table, and no point is labelled CONFIRMED from it. It is never cited
+     as evidence of interoperability with an AFS peer.
+   - The document that publishes a corpus (an RFC, a NIST publication) is
+     in the register of editions when a specification cites it for facts,
+     as any other edition is.
+5. **How tests use it.**
+   - Conformance tests are integration tests of the owning crate, in
+     `tests/it/<subject>.rs` (coding standards rule 20), named for the
+     corpus. They read the files from their stable path, and run in the
+     normal test run, offline and deterministic (coding standards rule
+     15).
+   - The test checks each vector file's SHA-256 against the manifest
+     before it reads the file, so a file edited in place fails.
+   - Every vector in every vector file kept is run. A vector that the
+     interface under test cannot express (for example a verification
+     case, where the crate has no verification interface) is skipped by a
+     rule written in the test, with its reason. The test counts the
+     vectors it ran and skipped, per file, and fails unless both counts
+     match the manifest, so an empty, truncated or misread file fails
+     instead of passing.
+   - A vector whose expected result the corpus leaves to the
+     implementation's policy (Project Wycheproof's `acceptable`) is run,
+     and the test asserts the one result that IronAFS's specification
+     requires for it, by a rule written in the test that cites the
+     specification's point. It never passes on either result.
+   - A vector file that does not parse fails the test. A corpus file is
+     never edited to make a test pass: a mismatch is a defect in IronAFS,
+     or a question about the corpus raised as an issue.
+   - The code that reads a corpus is test code: in the crate's
+     `tests/it/support.rs`, or in `ironafs-test-support` once a second
+     crate needs it (rule 20).
+   - The specification's own tests (its golden vectors, property tests,
+     acceptance cases and any independent vectors it names) check every
+     requirement a corpus exercises, so the conformance layer can be
+     removed without leaving a requirement untested.
 
 ## Review class per kind
 
