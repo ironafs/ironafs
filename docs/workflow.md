@@ -295,17 +295,18 @@ authoritative.
    leads to an amendment of a working decision or a superseding ADR
    ([docs/adr/README.md](adr/README.md)); it is never worked around.
 
-   **Issue briefs before they are marked ready** (§6): one non-author
-   family reviews the brief, and a second family does one focused pass on
-   the same revision. Each acceptance criterion names the evidence that
-   proves it, its prerequisites, and the issue that supplies each one. Fix
+   **Issue briefs before they are filed or dispatched:** one non-author
+   family reviews the brief, and a second non-author family does one
+   focused pass on the same revision (the draft file, pinned by its sha256
+   prefix). Each acceptance criterion names the evidence that proves it,
+   its prerequisites, and the issue that supplies each prerequisite. Fix
    rounds re-check only the changed text and what depends on it. Step 7's
    closure rules apply, and editorial minors are fixed and recorded. After
    two fix rounds a brief is split, redesigned, or its blocker recorded and
-   the work kept gated; a convergence note does not extend it. The
-   controller counts review runs
-   per brief marked ready, and acceptance defects found at pickup or in
-   code review.
+   the work kept gated; a convergence note does not extend it. The review
+   record in `docs/reviews/` for the batch of briefs filed together holds
+   these reviews and two counts: review runs per brief filed, and
+   acceptance defects found later at pickup or in code review.
 
    **Deferring a design point** is allowed only if the current work is
    correct whichever way the point is decided: its acceptance criteria,

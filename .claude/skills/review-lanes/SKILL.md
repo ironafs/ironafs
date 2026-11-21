@@ -139,10 +139,11 @@ quoted as the seat wrote them, and says: "Fix only what each finding names.
 Add no new mechanism; a needed mechanism becomes a specification item or a
 change of its own, and is reported, not written."
 
-**An issue brief before it is marked ready** gets one non-author review
-and one focused pass by a second family on the same revision, with no
-round past two fix rounds (`docs/workflow.md` §3, step 3). Defer a design
-point only as that step allows.
+**An issue brief before it is filed or dispatched** gets one non-author
+review and one focused pass by a second non-author family on the same
+revision (the draft file and its sha256 prefix), with no round past two
+fix rounds (`docs/workflow.md` §3, step 3). Defer a design point only as
+that step allows.
 
 **Before any round after the second**, write the convergence note
 (`docs/workflow.md` §3, step 7) and check it against the stop rule below
