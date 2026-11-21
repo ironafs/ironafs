@@ -178,11 +178,13 @@ Every specification ends with a Sources section. The rules come from
      The result is still only a lead for a wire fact: rule 14 applies to
      it. Until that is done, the gap is recorded under "Open questions" as
      MISSING.
-   - That procedure is never used for OpenAFS, AuriStor, or the Linux
-     kernel's AF_RXRPC or kafs: their source is not read, by people or by
-     models, and `AGENTS.md`'s stricter wording ("nothing generated from
-     their files") applies. A protocol fact that no other admissible
-     source answers stays MISSING until observation settles it.
+   - That procedure is not used for OpenAFS, AuriStor, or the Linux
+     kernel's AF_RXRPC or kafs while `AGENTS.md` bars their source
+     ("nothing generated from their files"): no person or model reads
+     their source to write a specification or code. ADR 0001's similarity
+     audit, run outside the repository, is separate and follows ADR 0001.
+     A protocol fact that no other admissible source answers stays
+     MISSING until observation settles it.
    - A wire fact is never taken from interface-definition files or
      generated definitions, by any route (ADR 0004, N31, point 2).
 4. **Observed behaviour is recorded,** so that someone else can repeat it:

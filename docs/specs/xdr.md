@@ -86,10 +86,10 @@ Section 9 shows where each is kept and which test fails if it is broken.
 2. **Not covered, and where it is covered:**
    - which AFS message has which fields and types, its caps' values, and
      its tolerance decisions: the protocol specification for each
-     interface (volume location and file service, #65; callbacks, #66);
+     interface (volume location, file service, callbacks);
    - how a reply or a request is delimited in an Rx call, and bulk file
      data that follows an XDR header as raw bytes: the Rx and RPC
-     specifications (#55 and #65);
+     specifications;
    - what the bytes of a string mean (character set, forbidden bytes such
      as NUL or `/` in a name): the specification of the field's consumer,
      for names the name codec (ADR 0004, L24 and L25);
@@ -449,8 +449,7 @@ the message, because every item is a whole number of units
    6. The caller that assembles the input enforces the message cap while
       it buffers: it stops and fails as soon as the bytes received pass
       the cap, and never buffers a whole message to check it afterwards
-      (5.4, point 1). The Rx and RPC specifications (#55 and #65) carry
-      this out.
+      (5.4, point 1). The Rx and RPC specifications carry this out.
 10. **Inline storage and nesting are bounded.** `[OWN]` Heap is not the
     only memory a short input can make the decoder use: a fixed-length
     opaque or a union arm is held inline, and a Rust enum for a union is
@@ -625,8 +624,7 @@ not control").
     security class has already accepted. Any checksum, MAC or signature
     is verified over the bytes received, never over a re-encoding of the
     decoded value (the `wire-format` skill). This codec verifies nothing
-    itself; the Rx and security-class specifications (#55 for Rx and the
-    null class) say what is
+    itself; the Rx and security-class specifications say what is
     checked, and before which decode `[OWN]`. Where the check itself
     needs fields decoded first (for example a challenge, or the header of
     a token that names its key), the security-class specification names
