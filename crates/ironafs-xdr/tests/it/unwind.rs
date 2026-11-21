@@ -97,11 +97,14 @@ fn full_buffer() -> (Vec<u8>, usize) {
 
 #[test]
 fn a_caught_unwind_leaves_the_count_of_what_the_component_wrote() {
-    let (mut out, words) = full_buffer();
+    // The size is one word and the buffer has room for two or more, so
+    // only the count can refuse the parent's word: a count the component
+    // had copied would still hold the word it wrote, and let the parent's
+    // through.
+    let mut out: Vec<u8> = Vec::with_capacity(16);
+    assert!(out.capacity() >= 8, "room for two words");
     let before = (out.as_ptr(), out.capacity());
-    // The component fills the whole size before it unwinds, so the word
-    // its parent writes afterwards is past the size.
-    let error = encode_into(&Catcher(Bomb(words)), &mut out).unwrap_err();
+    let error = encode_into(&Catcher(Bomb(1)), &mut out).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::MessageTooLarge, "{error}");
     assert_eq!(error.name(), Some("test.unwind"));
     assert_eq!(out, []);
