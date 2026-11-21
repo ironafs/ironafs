@@ -20,9 +20,14 @@
 //! completes is wiped only after completion.
 //!
 //! **Evidence.** Miri runs this block over every length from 0 to 257
-//! (the unit tests). The release-assembly check of sheet 24, which shows
-//! the stores survive the shipping profile on each target, is not written
-//! yet: until it has run on a target, the site does not ship there.
+//! (the unit tests). `cargo xtask check-wipe` is sheet 24's release-assembly
+//! gate: it builds this function into a harness under the workspace's
+//! release profile and checks the emitted zero stores, for a live buffer
+//! and for one wiped just before it is freed. Both functions are
+//! `#[inline]` so the optimiser sees the body together with the buffer's
+//! whole lifetime there, as the gate requires; the volatile writes keep
+//! the stores wherever the body lands. Until the gate has run on a target,
+//! the site does not ship there.
 //!
 //! Callers outside this crate reach it only by injection: the pure crates
 //! that hold secrets cannot depend on this crate, so each takes a
@@ -41,6 +46,7 @@ mod tests;
 /// ironafs_os::wipe(&mut key);
 /// assert_eq!(key, [0; 32]);
 /// ```
+#[inline]
 pub fn wipe(buffer: &mut [u8]) {
     for byte in buffer.iter_mut() {
         zero(byte);
@@ -49,6 +55,7 @@ pub fn wipe(buffer: &mut [u8]) {
 }
 
 /// The site's one block: a volatile write of zero to one byte.
+#[inline]
 fn zero(byte: &mut u8) {
     let byte: *mut u8 = byte;
     #[expect(unsafe_code, reason = "mem-wipe")]
