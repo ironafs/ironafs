@@ -17,6 +17,7 @@ publish = false
 # standards rule 20), with its version so cargo-deny does not read the path
 # as a wildcard.
 [workspace.dependencies]
+ironafs-test-support = { path = "crates/ironafs-test-support", version = "=0.0.0" }
 ironafs-time = { path = "crates/ironafs-time", version = "=0.0.0" }
 
 [workspace.lints.rust]

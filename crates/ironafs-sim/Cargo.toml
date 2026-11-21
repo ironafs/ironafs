@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Test-only, never shipped (ADR 0004, C4, point 7): no shipped crate may
+# depend on this one, and it depends on no third-party crate, so no async
+# runtime enters it (`cargo xtask check-deps`).
+[package]
+name = "ironafs-sim"
+description = "IronAFS's deterministic simulator: the baton scheduler, its trace and replay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# The child process that runs one scenario under the supervisor. It only
+# calls the library (coding standards rule 20).
+[[bin]]
+name = "ironafs-sim"
+path = "src/bin/ironafs-sim/main.rs"
+test = false
+
+[dependencies]
+ironafs-test-support.workspace = true
+ironafs-time.workspace = true
+
+[lints]
+workspace = true
