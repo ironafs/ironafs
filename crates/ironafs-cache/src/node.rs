@@ -5,7 +5,8 @@
 //! what each one names, and what keeps it in the table.
 //!
 //! - **Ids.** A [`NodeId`] is 64 bits, allocated in increasing order from
-//!   1 and never reused within one table (C11, point 2). When the counter
+//!   1 and never reused within one table (C11, point 2). The daemon keeps
+//!   one table for its whole life, so ids are unique within its instance. When the counter
 //!   would pass `u64::MAX`, new nodes are refused, never wrapped.
 //! - **Keys.** A node inside a volume is keyed by its [`FileId`] and its
 //!   anchor: the mount-point or dynamic-root entry node the volume was
