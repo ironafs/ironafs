@@ -192,3 +192,25 @@ fn planted_divergence_is_caught_at_its_decision() {
     let edited = format!("{trace}d9999 sched decide [t0] pick=0 drawn draws=1 at=0\n");
     assert_eq!(diverges_at(seed, &edited), Some(all.len() as u64));
 }
+
+#[test]
+fn a_replay_that_differs_only_in_its_terminal_line_diverges() {
+    let seed = lost_update_failures()[0];
+    let original = sample().run(seed, &[Plant::LostUpdate], None, None).trace;
+    let edited = original.replace(
+        "end failed invariant:every-write-applied",
+        "end failed invariant:reply-matches-its-version",
+    );
+    assert_ne!(edited, original);
+    let replayed = sample().run(
+        seed,
+        &[Plant::LostUpdate],
+        None,
+        Some(Replay::from_trace(&edited)),
+    );
+    let last = decisions(&original).last().unwrap().number;
+    assert_eq!(
+        replayed.failure,
+        Some(Failure::Diverged { decision: last + 1 })
+    );
+}

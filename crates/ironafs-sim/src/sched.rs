@@ -404,6 +404,10 @@ struct State {
     cut: bool,
     dropped_lines: u64,
     failure: Option<Failure>,
+    /// The decision of a replay's first differing line, kept even when
+    /// another failure came first, so a replay that differs only in its
+    /// terminal line still diverges.
+    divergence: Option<u64>,
 }
 
 impl State {
@@ -427,6 +431,7 @@ impl State {
             && !replay.matches_next(&line)
         {
             let decision = self.decision;
+            self.divergence.get_or_insert(decision);
             self.fail(Failure::Diverged { decision });
         }
         self.lines.push(line);
@@ -504,6 +509,7 @@ impl Run {
             cut: false,
             dropped_lines: 0,
             failure: None,
+            divergence: None,
         };
         Self {
             shared: Arc::new(Shared {
@@ -906,9 +912,10 @@ impl Run {
         }
         let mut state = self.shared.lock();
         let trace = take_trace(&mut state);
-        let failure = match failure {
-            None if unused => Some(Failure::Diverged { decision }),
-            other => other,
+        let failure = match (state.divergence, failure) {
+            (Some(at), _) => Some(Failure::Diverged { decision: at }),
+            (None, None) if unused => Some(Failure::Diverged { decision }),
+            (None, other) => other,
         };
         Outcome { trace, failure }
     }
