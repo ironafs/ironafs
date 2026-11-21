@@ -142,8 +142,10 @@ impl<C: MonotonicClock> MonotonicDeadline<C> {
     }
 
     /// The deadline `duration` after `now`, or `None` if that instant does
-    /// not fit in 64-bit nanoseconds. A caller that gets `None` sets no
-    /// deadline; it never clamps one.
+    /// not fit in 64-bit nanoseconds. A caller that gets `None` never
+    /// clamps the deadline and never treats the grant as unbounded: a
+    /// server-granted lifetime (a token, a callback promise) is refused or
+    /// treated as already expired.
     ///
     /// `now` must come from a valid sample: after any failed clock read, no
     /// new deadline is set until a valid sample returns (ADR 0004, C37,
