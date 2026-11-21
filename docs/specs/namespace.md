@@ -94,6 +94,13 @@ ADR 0004, C18, point 1 (**Firm**):
 >    snapshots, lookups and negative lookups, the volume and location data
 >    used to reach a file, fetches in flight, and dirty data. […]
 
+ADR 0004, C19, point 1 (**Firm**):
+
+> 1. Bytes, status, lookups, routing and grants obtained without
+>    authentication (Rx's null class) are never used to answer a request
+>    made under a credential, and never enter the cache of a context that
+>    has one.
+
 ADR 0004, C20, point 1 (**Working**):
 
 > 1. Data from an unauthenticated call lives only in that request's buffers:
@@ -250,9 +257,14 @@ Section 9 shows where each is kept and which test fails if it is broken.
   UNVERIFIED]`.
 - **Version:** one of read/write (RW), read-only (RO) or backup (BK) `[G3
   "Volume Information in the VLDB": UNVERIFIED]` `[ADR-008]`.
-- **Replicated:** a volume whose VL entry names a read-only version with
-  at least one usable site after [vl-fs-read.md](vl-fs-read.md), 5.4,
-  point 11's filter `[OWN]`, from G1's rule 2.
+- **Replicated:** a volume whose VL entry names a read-only version, that
+  is, whose read-only id is not 0 `[OWN]`, from G1's rule 2. Its sites
+  play no part: whether a usable site exists decides only whether the
+  read-only version can be reached (5.6.2, point 5).
+- **Mount-point node, root node, entry node:** the node a lookup of a
+  mount point returns; the node of the root directory a crossing entered
+  in one context; the node of a dynamic-root name (5.6.2, point 6; 5.6.3,
+  point 5).
 - **Crossing:** resolving one mount point and entering the volume it
   names, in one context.
 - **Cell root:** the root directory of a cell's root volume, entered
@@ -305,14 +317,14 @@ Section 9 shows where each is kept and which test fails if it is broken.
    that the stored bytes are the same octets, with no other octet before,
    between or after them, is UNVERIFIED, and whether the stored form ends
    with an octet the command does not print is MISSING (Q1). The
-   grammar of 5.4, point 4 is written for the printed form; the capture
+   grammar of 5.4, points 4 to 8 is written for the printed form; the capture
    that settles Q1 amends it by naming the terminator, if any, exactly.
 4. **A volume named by number.** The reference command that makes a
    mount point accepts a volume id number in place of a name `[M1 "-vol":
    UNVERIFIED]`. Whether the stored target then holds the number, and how
    a client tells a number from a name made only of digits, is MISSING
    (Q1). Until it is settled, a target whose base name is all decimal
-   digits is refused (5.4, point 6).
+   digits is refused (5.4, point 7).
 5. **A shortened cell name.** The same command accepts a shortened cell
    name that the local client can disambiguate `[M1 "-cell":
    UNVERIFIED]`. Whether the stored target holds the full name or the
@@ -358,7 +370,9 @@ is fileserver data (C4, point 1's row for that crate). Its inputs are
 the target's octets and nothing else; its output is a **decoded target**
 (type mark, optional cell part as octets, base name, version suffix) or
 one refusal. The checks run in this order; the first failure ends the
-decode and nothing from the target is used `[OWN]`.
+decode and nothing from the target is used `[OWN]`. Point 1 is checked
+by the caller before the decoder runs, on the status record; points 2
+to 8 are the decoder's; point 9 is the caller's again.
 
 1. **The marker.** Only an object the status record marks as a mount
    point (5.1, point 1; MISSING, Q1) is decoded as a target. A symbolic
@@ -370,16 +384,20 @@ decode and nothing from the target is used `[OWN]`.
    and on the reply (5.2). Otherwise `MountTargetInvalid` (too long), with
    no fetch sent when the planning record already shows it. A target of
    0 bytes is `MountTargetInvalid` (empty).
-3. **No zero octet and no control octet anywhere.** An octet below 0x21,
-   or 0x7F, or 0x80 and above, is `MountTargetInvalid` `[OWN]`: no form
-   in 5.1, point 3 holds one, and a target is never text to display
-   unescaped (section 8). If Q1's terminator is such an octet, it is
-   removed by point 4 first, and only there.
-4. **The terminator.** MISSING (Q1). Once Q1 settles it, this point
-   names the exact terminator octet sequence; a target without it, or
-   with any other octet in its place, is `MountTargetInvalid`. Until
-   then, no target is accepted, and this decoder does not merge
-   (README, "Labelling claims", point 4).
+3. **The terminator.** MISSING (Q1). Once Q1 settles it, this point
+   names the exact terminator octet sequence, and removes it from the
+   end of the target before any other check reads an octet. A target
+   that does not end with it is `MountTargetInvalid` (terminator); a
+   target that holds nothing but the terminator is `MountTargetInvalid`
+   (empty). If Q1 shows that no terminator is stored, this point checks
+   nothing. Until Q1 is settled no target is accepted, and this decoder
+   does not merge (README, "Labelling claims", point 4).
+4. **No zero octet and no control octet in what remains.** An octet below
+   0x21, or 0x7F, or 0x80 and above, anywhere after point 3, is
+   `MountTargetInvalid` (control or non-ASCII octet) `[OWN]`: no form in
+   5.1, point 3 holds one, and a target is never text to display
+   unescaped (section 8). A terminator octet that appears anywhere but
+   at the end is caught here.
 5. **Type mark.** The first octet is `#` (regular) or `%` (read/write).
    Any other octet is `MountTargetInvalid` (unknown type) `[M2 "OUTPUT":
    UNVERIFIED]`.
@@ -409,17 +427,27 @@ decode and nothing from the target is used `[OWN]`.
    - a base name that itself ends with `.readonly` or `.backup` (a target
      such as `#v.readonly.readonly`) is `MountTargetInvalid`: the
      suffixes are added by the server to a base name that never carries
-     one `[G3 "About Volume Names": UNVERIFIED]`;
+     one `[G3 "About Volume Names": UNVERIFIED]`. The cost, if a
+     supported server does accept such a base name: a target `#v.readonly`
+     always means the read-only version of `v`, so a volume whose own
+     base name is `v.readonly` cannot be reached through a mount point.
+     Q8 checks whether a server accepts such a name;
    - a base name made only of decimal digits is `MountTargetInvalid`
      (numeric) until Q1 settles 5.1, point 4.
-8. **Cell part.** Passed, as octets, to the one constructor of a cell
-   name in `ironafs-config` (#93). Whatever that constructor refuses is
-   `MountTargetInvalid`. The decoder does not lower-case, trim or expand
-   it beyond what that constructor does `[OWN]`: one rule for every cell
-   name the daemon takes in.
-9. **The result** is the decoded target. It is held only for the
-   crossing that fetched it, and in the location cache of the requesting
-   context where C18 and C20 allow a cache entry at all (5.6.2, point 9).
+8. **Cell part, syntax.** It is 1 to 253 bytes and holds only octets
+   0x21 to 0x7E other than `/`, `#`, `%` and `@` (and `:`, by point 6),
+   else `MountTargetInvalid` (cell name) `[OWN]`, for the reasons of
+   point 7. The decoder returns it as octets: it does not lower-case,
+   trim or expand it.
+9. **Cell part, name rule** (the caller, after the decoder). The caller
+   passes the cell part to the one constructor of a cell name in
+   `ironafs-config` (#93); whatever that constructor refuses is
+   `MountTargetInvalid` (cell name) `[OWN]`: one rule for every cell name
+   the daemon takes in, applied where the cell table is, so the pure
+   decoder does not depend on the configuration crate. Point 8 holds
+   whatever that constructor allows.
+10. **The result** is the decoded target. What may keep it, and for how
+    long, is 5.6.2, point 9.
 
 ### 5.5 Encoding
 
@@ -467,12 +495,15 @@ Tests build targets with a test-only builder written from 5.1 and 5.4.
      repeat; a cycle through them repeats one of them at the latest one
      loop later, and the depth test bounds it in any case.
 4. **What the chain holds** `[OWN]`. The anchor chain is stored with the
-   volume root's node, inline, as at most `ns.mount.depth_max`
-   identities (`ns.mount.chain_bytes_max`): it never depends on another
-   node staying in the table, so evicting a node never shortens or
-   breaks a chain. The chain is fixed when the root is entered and never
-   changes; a node below the root carries its root's chain by reference
-   to its anchor (C11, point 1).
+   root node (5.6.2, point 6), inline, as at most `ns.mount.depth_max`
+   identities (`ns.mount.chain_bytes_max`), so the checks of point 1
+   read one record and never walk the table. The chain is fixed when the
+   root is entered and never changes. A node below the root reaches it
+   through its anchor (C11, point 1), which point 8 keeps in the table.
+   In a mount-point identity the cell is the cell table's index for that
+   cell, which is never reused for another cell within one daemon
+   instance, so a reload of the configuration cannot make two cells
+   compare equal `[OWN]`.
 5. **Refused means refused** `[ADR 0004 C11.8: Working]`. A refused
    crossing returns its error to the request that caused it. It caches
    no negative lookup, marks nothing about the mount point or the volume,
@@ -492,14 +523,29 @@ Tests build targets with a test-only builder written from 5.1 and 5.4.
      single mount point repeats; a mount point that leads back into its
      own volume works for one crossing and is refused at the second.
 7. **The visited set** `[ADR 0004 L32.3: Working]`. On a surface where
-   the core resolves links itself (SMB, L32, point 2), one request's
-   visited set holds the mount-point identities of 5.6.1 and the file
-   ids of the links the core resolved, and the request is refused with
-   the loop error at `ns.link.hops_max` link hops, or at a link already
-   in the set. A link hop does not change a root's depth; a crossing
-   reached through a link counts as point 1 says. On Linux and macOS the
-   kernel follows links, with its own hop limit (L32, point 3), and only
-   points 1 to 6 apply.
+   the core resolves links itself (SMB, L32, point 2), one request keeps
+   one visited set for its whole resolution: the identity of every mount
+   point crossed during the request, and the file id of every link the
+   core resolved. The request is refused with the loop error when it
+   would cross a mount point already in the set, resolve a link already
+   in the set, cross more than `ns.mount.depth_max` mount points in all,
+   or take more than `ns.link.hops_max` link hops in all. A link whose
+   text climbs with `..` to a lower root does not empty the set, so
+   links cannot re-cross mount points to multiply work. Point 1's test
+   on the root's own chain applies to each crossing as well. On Linux
+   and macOS the kernel follows links, with its own hop limit (L32,
+   point 3), and this point does not apply.
+8. **Ancestors stay in the node table** `[OWN]`, from C11, points 3 and
+   4. Every node's record names its parent node (5.6.4, point 2), and a
+   root node names its mount-point node or dynamic-root entry (5.6.2,
+   point 6). A node is not removed from the node table while another node
+   in the table names it as its parent or its anchor; a node's identity
+   record is all that stays, and its status and data may still be evicted
+   (C11, point 4). So `..` and the anchor chain are always answered from
+   the table, never from a server's `..` entry. The records kept this way
+   are at most one per directory level of a live node's path, and each
+   is charged to the budget of the context that pinned the live node
+   (C11, point 10).
 
 #### 5.6.2 Volume selection
 
@@ -511,14 +557,14 @@ the lab shows a reference client following it (Q3); the rule IronAFS
 follows is the table, `[OWN]` where a row says so.
 
 1. **Inputs:** the decoded target (type mark, cell part or none, base
-   name, suffix or none); the containing version; whether the target
-   volume is replicated (section 4), from its VL entry.
+   name, suffix or none); the containing version; and, from the target
+   volume's VL entry, whether it is replicated (section 4).
 2. **The version chosen**, first matching row:
 
    | Row | Suffix | Type mark | Cellular | Containing version | Version chosen | Source |
    |---|---|---|---|---|---|---|
-   | S1 | `.readonly` | any | any | any | RO; if the entry has no RO version, the crossing fails | G1 rule 1; M1 |
-   | S2 | `.backup` | any | any | any | BK; if the entry has no BK version, the crossing fails | G1 rule 1; M1 |
+   | S1 | `.readonly` | any | any | any | RO | G1 rule 1; M1 |
+   | S2 | `.backup` | any | any | any | BK | G1 rule 1; M1 |
    | S3 | none | `%` | any | any | RW | G1, read/write mount points; M1 |
    | S4 | none | `#` | yes | any | RO if replicated, else RW | G1, cellular mount points; M1 |
    | S5 | none | `#` | no | RO | RO if replicated, else RW | G1 rule 2 |
@@ -540,23 +586,51 @@ follows is the table, `[OWN]` where a row says so.
    cell, in the requesting context ([vl-fs-read.md](vl-fs-read.md), 5.1.4,
    point 1), with that specification's checks: the entry names the base
    name asked (its 5.4, point 12), and its sites are filtered (its 5.4,
-   point 11). The version's id is taken from the entry; an id of 0 means
-   the version does not exist (its 5.1.3, point 5).
+   point 11). The chosen version's id is taken from the entry; an id of 0
+   means the version does not exist (its 5.1.3, point 5).
+   **On every row**, S1 to S7, and for both dynamic-root names (5.6.3), a
+   chosen version whose id is 0 fails the crossing with `VersionAbsent`,
+   before any site is chosen and before any node is made: no volume id 0
+   ever reaches a node key or a file-service request `[OWN]`.
 5. **No silent change of version** `[OWN]`. Once a row has chosen RO,
    RW or BK, the crossing reaches that version or fails with that
    version's error (`offline`, `busy`, `not found`, as vl-fs-read.md,
-   5.9, classifies it). In particular, a replicated volume whose read-only
-   sites all fail is not read from its read/write version instead: that
-   would serve other data under the same path, and the reference
-   documentation states the opposite fallback only for a volume that is
-   not replicated `[G1 rule 2: UNVERIFIED]`. "Replicated" is decided once
-   per crossing, from the entry that passed the filter.
-6. **The node.** The root entered is identified by the cell, the chosen
-   version's volume id, the root's vnode and uniquifier (5.1, point 6,
-   MISSING) and the anchor (5.6.1, point 1) `[ADR 0004 C11.1: Working]`.
-   The volume in the key is the one this context resolved, so two
-   contexts that resolve one mount point to different volumes get
-   different nodes `[ADR 0004 C11.9: Working]`.
+   5.4, point 11 and 5.9, classify it). "Replicated" depends only on the
+   entry's read-only id (section 4), never on its sites, so a volume
+   whose read-only sites are all unusable, whether the site filter
+   excluded them or they fail when called, is still replicated, and its
+   read-only version fails with `offline`; it is never read from its
+   read/write version instead. That would serve other data under the
+   same path, and the reference documentation states the read/write
+   fallback only for a volume that is not replicated `[G1 rule 2:
+   UNVERIFIED]`. A VL entry, forged or broken, can therefore make a
+   read-only path fail, never make it serve the read/write volume.
+6. **The two nodes of a mount point** `[ADR 0004 C11.1: Working]`
+   `[ADR 0004 C11.9: Working]`, and `[OWN]` for the split between them:
+   - **The mount-point node** is the node a lookup of the mount point's
+     name returns, in every context, before and after any crossing. Its
+     key is the cell, the mount-point object's own volume id, vnode and
+     uniquifier, and the anchor of the directory that holds it. Its node
+     id is the anchor of everything inside the volume entered through it
+     (C11, point 1), and it is the node a layer is given for that path;
+     a layer presents it as a directory (L32, point 1).
+   - **The root node** is the root directory of the volume a crossing
+     entered, in one context. Its key is the cell, the chosen version's
+     volume id, the root's vnode and uniquifier (5.1, point 6, MISSING),
+     and the mount-point node's id as its anchor; it holds the anchor
+     chain (5.6.1, point 4). The volume in the key is the one this
+     context resolved, so two contexts that resolve one mount point to
+     different volumes get different root nodes, and everything below
+     them gets different nodes too.
+   - **A layer is never given a root node's id.** Every operation a
+     layer addresses to the mount-point node that needs the volume (read
+     the directory, look up a name in it, get its attributes once
+     crossed) is served from the root node this context resolved. A name
+     found in the root directory has the mount-point node as its parent
+     (5.6.4, point 2). So a path's node id never changes when it is
+     crossed, and the same node id leads each context to its own volume,
+     which the layer serves per context as C18, point 4 requires of any
+     node two contexts share.
 7. **An unknown cell.** A cellular target whose cell the cell table does
    not hold is looked up as the dynamic root looks up a name (C12, point
    3; C33), at most `ns.cell_discovery.per_crossing_max` times per
@@ -565,21 +639,44 @@ follows is the table, `[OWN]` where a row says so.
    or a discovery that fails, fails the crossing with `not found`. A
    failed discovery caches nothing here; C12, point 3, says what the
    negative cache keeps `[OWN]`.
-8. **Grants on the way** `[ADR 0004 C22.6: Firm]`. A step through a
-   mount point needs the reader's own current grant on the directory that
-   holds it (lookup, [vl-fs-read.md](vl-fs-read.md), 5.7). Reading the
-   target is reading that object's data: it needs the grant the target's
-   read needs under vl-fs-read.md, 5.7, which treats it as that
-   specification treats a link's target (Q1 settles which rights apply).
-   The root entered is then read under its own status reply, as any
-   directory.
-9. **What is kept, per context** `[ADR 0004 C18.1: Firm]`. The decoded
-   target, the VL entry and the version chosen are private entries of
-   the requesting context (they are "the volume and location data used to
-   reach a file"), charged to its budgets (C27), and bound to the entry's
-   lifetime in the location cache (C33, point 7). Under the null class
-   nothing is kept: each request decodes and resolves again (C20,
-   point 1). No resolution is shared between contexts.
+8. **Grants on the way** `[ADR 0004 C22.6: Firm]`. Every step through a
+   mount point, cached or not, needs the reader's own current grant on
+   the directory that holds it (lookup, [vl-fs-read.md](vl-fs-read.md),
+   5.7). The target is that object's data: it is read, and a kept
+   decoded target is used, only under the reader's current grant for
+   that object, minted from its own status reply at that data version,
+   the grant a link's target needs under vl-fs-read.md, 5.7 (Q1 settles
+   which rights apply). So a revoked right, an ACL change or a callback
+   break on the mount point stops the next step through it. The root
+   entered is then read under its own status reply, as any directory.
+9. **What is kept, and for how long** `[ADR 0004 C18.1: Firm]` `[ADR 0004
+   C19.1: Firm]` `[ADR 0004 C20.1: Working]`. Three things, each a
+   private entry of the requesting context and generation, charged to its
+   budgets (C27), each with its own key and lifetime `[OWN]`:
+   - **the decoded target**, keyed by the mount-point identity and the
+     object's data version: it is cached data of that object, and lives
+     only while the context's grant on it is current (C22, C23), so a
+     callback break or a new data version ends it;
+   - **the VL entry**, keyed by the cell and base name: the location
+     cache, with its lifetime (C33, point 7);
+   - **the binding** from the mount-point node to the root node in this
+     context: recomputed from the decoded target, the containing version
+     (part of the mount-point identity) and the VL entry by 5.6.2's
+     table, and valid only while both entries it was computed from are
+     current. The version chosen is never stored apart from it.
+
+   An entry is kept only when every reply it rests on (the target fetch,
+   the status reply that granted it, the VL lookup) was obtained with
+   authentication in that context; a request made under a credential
+   uses only such entries and such replies (C19, point 1). A context
+   without a credential keeps none of them: each of its requests fetches
+   the target and asks the VL service again (C20, point 1). Whether a VL
+   lookup is made with authentication in an authenticated context is
+   [vl-fs-read.md](vl-fs-read.md)'s and Q10's; until a VL service is shown
+   to answer authenticated lookups, an authenticated crossing on a real
+   cell is not claimed, and the rule is exercised in the simulator's
+   authenticated test profile (O50, point 1). Nothing is shared between
+   contexts.
 
 #### 5.6.3 The dynamic root
 
@@ -605,10 +702,13 @@ follows is the table, `[OWN]` where a row says so.
    attributes and access on a dynamic-root entry are answered without
    contacting the cell; the first VL lookup is made at a read of the
    cell root or a lookup inside it.
-5. **Not a crossing.** Entering a cell root from the dynamic root
-   records an empty anchor chain (5.6.1, point 2), with the anchor "the
-   dynamic root" for the read-only name and "the dynamic root, read/write
-   path" for the dotted name, so the two give different nodes `[ADR 0004
+5. **Not a crossing.** Each dynamic-root name has its own **entry
+   node**, IronAFS's own, keyed by the cell and the path kind (read-only
+   or read/write), the same in every context; it plays the mount-point
+   node's part (5.6.2, point 6): a layer is given it, and it is the
+   anchor of the cell root. Entering the cell root records an empty
+   anchor chain (5.6.1, point 2). The two names have two entry nodes, so
+   the two paths give different nodes even on one volume `[ADR 0004
    C11.1: Working]` `[OWN]`.
 
 #### 5.6.4 `.`, `..` and an unresolved mount point
@@ -617,23 +717,30 @@ follows is the table, `[OWN]` where a row says so.
 2. **`..`** is never taken from a directory object's `..` entry, which
    is not verified ([directory-format.md](directory-format.md), 5.6,
    point 3) `[OWN]`:
-   - for a directory that is not a volume root, it is the node through
-     which this node was reached by lookup, which the node table records
-     (single parent, C11, point 3);
-   - for a volume root entered by a crossing, it is the directory that
-     holds the mount point (the anchor's parent);
-   - for a cell root, it is the dynamic root;
-   - for the dynamic root, it is the dynamic root.
+   - for a node found by lookup in a volume's root directory, it is the
+     mount-point node or dynamic-root entry node through which that
+     volume was entered (5.6.2, point 6), never the root node;
+   - for a node found by lookup in any other directory, it is that
+     directory's node, which the node table records (single parent, C11,
+     point 3);
+   - for a mount-point node, it is the directory that holds the mount
+     point;
+   - for a dynamic-root entry node, and for the dynamic root, it is the
+     dynamic root.
 
-   A lookup of `..` crosses no mount point and changes no depth.
+   The parent recorded is kept in the table as long as the node is
+   (5.6.1, point 8). A lookup of `..` crosses no mount point and changes
+   no depth.
 3. **An unresolved mount point** `[ADR 0004 C12.2: Working]`. A lookup
-   that names a mount point, and get-attributes on it before it has been
-   crossed in this context, answer with synthesised attributes of a
-   directory, without fetching the target, without a VL lookup, and
-   without minting any grant. The values shown, and how a layer marks
-   them, are the contract's (#67). Crossing happens at the first read of
-   the mount point's directory or lookup of a name inside it, as at the
-   dynamic root.
+   that names a mount point returns its mount-point node (5.6.2, point 6)
+   and does not cross it. Get-attributes on that node, while this context
+   has no current binding for it (5.6.2, point 9), answers with
+   synthesised attributes of a directory, without fetching the target,
+   without a VL lookup, and without minting any grant; once crossed, it
+   answers with the root node's attributes in this context. The values
+   shown, and how a layer marks them, are the contract's (#67). Crossing
+   happens at the first read of the mount point's directory or lookup of
+   a name inside it, as at the dynamic root.
 4. **A mount point that fails to resolve** fails each operation that
    needs its root, with the error of section 7. It is never presented as
    an empty directory, a symbolic link or a file (C46, point 4).
@@ -643,7 +750,11 @@ follows is the table, `[OWN]` where a row says so.
 1. **Where substitution applies** `[ADR 0004 L34.4: Working]`. In the
    core's lookup of one name in a directory under `/afs`, the dynamic
    root included, on every surface except the replica. Not in a listing:
-   a listing shows the directory's entries as they are `[OWN]`.
+   a listing shows the directory's entries as they are `[OWN]`. At the
+   dynamic root, which has no directory object, `@sys` is matched only
+   against the names the root already lists, in memory, with no cell
+   discovery, no DNS query and no grant check (the root is IronAFS's
+   own, L32, point 4) `[OWN]`; `@cell` is point 7.
 2. **Which names** `[OWN]`. A component that is exactly the four octets
    `@sys`, or exactly the five octets `@cell`. A component that only
    contains or starts with them (`bin@sys`, `@sys.old`) is an ordinary
@@ -654,8 +765,8 @@ follows is the table, `[OWN]` where a row says so.
    system-name list are tried in list order; the first name that the
    directory holds is the result. If the directory holds none of them,
    the lookup fails with `not found`.
-4. **The cost of one `@sys` lookup** `[OWN]`. All tries are lookups in
-   the one decoded directory object
+4. **The cost of one `@sys` lookup** `[OWN]`. Inside a volume, all
+   tries are lookups in the one decoded directory object
    ([directory-format.md](directory-format.md), 5.6, point 1): one
    fetch, if any, and at most `ns.sysname.count_max` in-memory lookups.
    The grant check of C22, point 6 is made once, on the directory, before
@@ -721,10 +832,13 @@ follows is the table, `[OWN]` where a row says so.
 
 ### 5.7 Lookup results
 
-A lookup's result in the core is one of: an entry (with its node), a
-mount point to cross (5.6.1, 5.6.2), or a failure of section 7. A
-mount point is never reported to a layer as anything but a directory
-`[ADR 0004 L32.1: Working]`.
+A lookup's result in the core is one of: an entry's node; for a mount
+point, its mount-point node, not yet crossed (5.6.2, point 6; 5.6.4,
+point 3); for a dynamic-root name, its entry node (5.6.3, point 5); or a
+failure of section 7. A lookup never crosses a mount point; crossing
+happens when an operation needs the volume behind it. A mount point is
+never reported to a layer as anything but a directory `[ADR 0004
+L32.1: Working]`.
 
 ## 6. Arithmetic
 
@@ -750,7 +864,7 @@ mount point is never reported to a layer as anything but a directory
    | `MountDepthExceeded` | 5.6.1, point 1 | the loop error (Q6) |
    | `MountCycle` | 5.6.1, point 1 | the loop error (Q6) |
    | `LinkHopsExceeded` | 5.6.1, point 7 (SMB only) | the loop error (Q6) |
-   | `VersionAbsent` | 5.6.2, rows S1 and S2: the version asked has id 0 | `not found` |
+   | `VersionAbsent` | 5.6.2, point 4: on any row, or for a dynamic-root name, the version chosen has id 0 | `not found` |
    | the VL lookup's errors | [vl-fs-read.md](vl-fs-read.md), 5.9 and section 7 | as that specification maps them |
    | `CellUnknown` | 5.6.2, point 7 | `not found` |
    | `SysnameNoMatch` | 5.6.5, point 3, or an empty list | `not found` |
@@ -780,13 +894,16 @@ come from the configuration, which only the administrator writes.
 | A user who may create symbolic links making a "mount point" from link text | classification by the server's marker only, never by content (5.4, point 1) |
 | A target that smuggles a path, a second separator, a substitution or an encoded octet | the grammar refuses `/`, a second `:`, `#`, `%` and `@` in a base name, every control and non-ASCII octet, and every form it does not name (5.4) |
 | A target naming any cell, to make the client send DNS queries for chosen names | one discovery per crossing, through the negative cache, only where discovery is enabled (5.6.2, point 7). A residual stays: a fileserver can make a client look up a name once per negative-cache lifetime, as a user typing a path can |
-| Steering a path to the read/write version, or a backup, against the administrator's layout | the selection follows only the target's own marks and the containing version (5.6.2); a forged target or VL entry under the null class is the null class's residual (N5; O23; A13), and nothing from it is cached (C20) or reaches an authenticated path (C19) |
+| Steering a path to the read/write version, or a backup, against the administrator's layout | the selection follows the target's own marks, the containing version and only the VL entry's read-only id (5.6.2); a VL entry that hides every read-only site makes the read-only path fail, never fall back to the read/write version (5.6.2, point 5); a version id of 0 is refused on every row (5.6.2, point 4). A forged target or VL entry under the null class can still choose the volume for that one unauthenticated request: the null class's residual (N5; O23; A13) |
+| Unauthenticated location or target data steering an authenticated path | kept entries rest only on replies obtained with authentication in that context, and a request under a credential uses only those (5.6.2, point 9; C19, point 1); a context without a credential keeps nothing (C20, point 1) |
+| A cached target outliving the mount point's change or the reader's right | the decoded target is that object's cached data, used only under the reader's current grant at that data version; a callback break, a new data version or a revoked right ends it (5.6.2, points 8 and 9) |
+| Links that climb with `..` and re-cross mount points to multiply work (SMB) | one visited set for the whole request, refusing any repeated mount point or link, and capping total crossings and hops (5.6.1, point 7) |
 | Silently serving a read/write volume when the read-only sites fail | no silent change of version (5.6.2, point 5) |
-| One context's resolution used for another | resolution is per context; node keys carry the volume each context resolved (5.6.2, points 6 and 9; C11, point 9) |
+| One context's resolution used for another | resolution is per context; root node keys carry the volume each context resolved, and the binding from a mount-point node to a root node is per context (5.6.2, points 6 and 9; C11, point 9) |
 | A `@sys` list or entry used to multiply work | at most `ns.sysname.count_max` in-memory lookups in one decoded directory, no extra calls (5.6.5, point 4); no recursion (5.6.5, point 6) |
 | A literal `@sys` entry placed to capture lookups | substitution always runs; the literal entry is reached only from a listing (5.6.5, point 5) |
 | A stale `@sys` result after the administrator changes the list | never cached under `@sys`, and the layers do not cache it (5.6.5, point 9) |
-| Terminal escapes in a target shown by a diagnostic | a target is shown only with every octet outside 0x21 to 0x7E escaped, as [vl-fs-read.md](vl-fs-read.md), 5.4, point 14 escapes server text; a decoded target holds none (5.4, point 3) |
+| Terminal escapes in a target shown by a diagnostic | a target is shown only with every octet outside 0x21 to 0x7E escaped, as [vl-fs-read.md](vl-fs-read.md), 5.4, point 14 escapes server text; a decoded target holds none (5.4, point 4) |
 | A target that fails to decode, shown as something else | a failed mount point is never a link, a file or an empty directory (section 7, point 2) |
 | Crashing the daemon | no panics, checked arithmetic (section 6); the fuzz target (10.4) |
 
@@ -796,17 +913,18 @@ come from the configuration, which only the administrator writes.
 |---|---|---|
 | Constraint 4 | 5.2; 5.4; section 6; section 7, point 3 | the fuzz target (10.4); the reject corpus (10.3) |
 | C6, points 1 and 4 | every point labelled; the marker, the terminator, the root file id and the default list MISSING until captures (5.1; 5.4, points 1 and 4; 5.6.5, point 10) | review of this specification (section 14); no decoder for a MISSING layout merges (README, "Labelling claims", point 4) |
-| C11, point 1 | 5.6.1, points 1 and 4; 5.6.2, point 6; 5.6.3, point 5 | N3, R4 (10.5) |
-| C11, point 3 | 5.6.4, point 2 | N5 (10.5) |
+| C11, point 1 | 5.6.1, points 1, 4 and 8; 5.6.2, point 6; 5.6.3, point 5 | N3, N4, N6, R4 (10.5) |
+| C11, point 3 | 5.6.4, point 2; 5.6.1, point 8 | N4, N5 (10.5) |
 | C11, point 5 | 5.6.2, points 2 and 6 | V1, V2 (10.5) |
 | C11, point 8 | 5.6.1 | D1 to D5 (10.5) |
-| C11, point 9 | 5.6.2, points 6 and 9 | N1 (10.5) |
+| C11, point 9 | 5.6.2, points 6 and 9 | N1, N6 (10.5) |
 | C12, points 1 and 2 | 5.6.3; 5.6.4, point 3 | R1, R2 (10.5) |
 | C12, point 3 | 5.6.2, point 7; 5.6.3 | V9 (10.5) |
-| C18, point 1 | 5.6.2, point 9 | N1, N2 (10.5) |
+| C18, point 1 | 5.6.2, point 9 | N1, N2, N7 (10.5) |
+| C19, point 1 | 5.6.2, point 9 | N2, N8 (10.5) |
 | C20, point 1 | 5.6.2, point 9 | N2 (10.5) |
-| C22, point 6 | 5.6.2, point 8; 5.6.5, point 4 | Y5 (10.5) |
-| C46, point 4 | 5.6.4, point 4; section 7, point 2 | T1 to T20 (10.3); F1 (10.5) |
+| C22, point 6 | 5.6.2, point 8; 5.6.5, point 4 | N7, Y5 (10.5) |
+| C46, point 4 | 5.6.4, point 4; section 7, point 2 | T1 to T12 (10.3); F1 (10.5) |
 | L32, point 1 | 5.7; 5.6.4, point 3 | R2 (10.5) |
 | L32, point 3 | 5.6.1, points 1 and 7 | D1 to D5 (10.5); L1 (10.5, SMB, later) |
 | L32, point 4 | 5.6.3, point 4 | R1 (10.5) |
@@ -847,15 +965,15 @@ terminator, each case carries it unless the case is about it.
 |---|---|---|---|
 | T1 | 513 bytes of a valid form padded with a long base name | too long; no fetch when the planning record shows 513 | 5.4, point 2 |
 | T2 | the empty target | empty | 5.4, point 2 |
-| T3 | `#vol` with an octet 0x00, 0x0A, 0x1B, 0x20, 0x7F or 0xC3 inside | control or non-ASCII octet | 5.4, point 3 |
-| T4 | a valid form without the terminator, and with a wrong one | terminator (after Q1) | 5.4, point 4 |
+| T3 | `#vol` with an octet 0x00, 0x0A, 0x1B, 0x20, 0x7F or 0xC3 inside, before the terminator | control or non-ASCII octet | 5.4, point 4 |
+| T4 | a valid form without the terminator, or with a wrong octet in its place (terminator); the terminator alone (empty) | terminator, empty (after Q1) | 5.4, point 3 |
 | T5 | `$vol`, `vol`, `!vol` | unknown type | 5.4, point 5 |
 | T6 | `#:vol`, `#cell:`, `#a:b:c` | separator | 5.4, point 6 |
 | T7 | `#a/b`, `#a#b`, `#a%b`, `#@sys` | volume name | 5.4, point 7 |
 | T8 | `#` followed by a 65-byte base name; `#.readonly` (empty base) | volume name | 5.4, point 7 |
 | T9 | `#v.readonly.readonly`, `#v.backup.readonly` | volume name (suffix in base) | 5.4, point 7 |
 | T10 | `#536870913`, `%12` | numeric (until Q1) | 5.4, point 7 |
-| T11 | `#Bad..Cell:vol`, `#-cell:vol` (any name #93's constructor refuses) | cell name | 5.4, point 8 |
+| T11 | `#a/b:vol`, `#a@b:vol`, `#a%b:vol`, a 254-byte cell part (decoder); `#Bad..Cell:vol`, `#-cell:vol`, any name #93's constructor refuses (caller) | cell name | 5.4, points 8 and 9 |
 | T12 | a symbolic link whose text is `#cell:vol` | not a mount point: stays a link, never crossed | 5.4, point 1 |
 
 Accepted forms, each decoded to the stated parts (A-cases): `#vol`
@@ -926,6 +1044,15 @@ one context does the lookups.
 - **V8 the base name is asked.** `#v1.readonly` sends
   `vl.get_entry_by_name` for `v1`; an entry for `v2` is
   `VlEntryMismatch`, and nothing is entered.
+- **V10 version id 0 on every row.** A VL entry whose read/write id is
+  0: `%v1` (S3), `#v1` in an RW containing version (S6), `#v1` in an RO
+  containing version with read-only id 0 (S5, which chooses RW), and
+  `/afs/.<cell>` on such a `root.cell` each fail with `VersionAbsent`;
+  no file-service request names volume 0, and no node is made.
+- **V11 hidden read-only sites.** `v1` with a read-only id and every
+  read-only site excluded by the site filter (unknown flag bit, not
+  released): `#v1` in an RO containing version fails with `offline`; no
+  read/write fetch is sent.
 - **V9 unknown cell.** `#unknown.example:v1`, with discovery off: fails
   with `not found`, no DNS query; with discovery on and a negative
   answer: one query, then the negative cache answers a repeat.
@@ -935,20 +1062,44 @@ one context does the lookups.
 - **N1 per context.** Two contexts whose VL answers for `v1` differ (one
   sees a replicated `v1`, the other not): one mount point gives two
   nodes with different volume ids in their keys.
-- **N2 nothing kept under the null class.** An anonymous context crosses
+- **N2 nothing kept without a credential.** An anonymous context crosses
   `m1` twice: two target fetches and two VL lookups; an authenticated
   test context crosses it twice: one of each, while the entry lives.
-- **N3 two paths, two nodes, one identity.** `v1` mounted by `m1` in
-  `root.cell` and by `m2` in `v2`: its root has two node ids with
-  different anchors; a repeat test on either path sees the same `m1`
-  identity.
-- **N4 eviction keeps the chain.** At depth 20, every mount-point node
-  above is evicted (unpinned): the chain of the depth-20 root is
-  unchanged, and D2's refusal still fires at the right depth.
-- **N5 `..`.** From `v1`'s root reached through `m1` in `root.cell`, `..`
-  is `root.cell`'s root directory; from the cell root, `..` is `/afs`;
-  a directory object whose `..` entry names another vnode does not
-  change either answer.
+- **N3 two paths, two nodes, two identities.** `v1` mounted by `m1` in
+  `root.cell` and by `m2` in `v2`: its root has two root nodes with
+  different anchors; the chain through `m1` holds `m1`, the chain
+  through `m2` holds `m2`, and neither is a repeat (5.6.1, point 3). One
+  mount point reached by two paths (`m1` reached again below `v2`
+  through another mount point to `root.cell`) has one identity, and
+  crossing it a second time in one chain is `MountCycle` (D3).
+- **N4 ancestors stay.** At depth 20, the status and data of every
+  directory and mount point above are evicted, and the OS has forgotten
+  them: their identity records stay in the table while the depth-20
+  node is pinned (5.6.1, point 8); the chain is unchanged, D2's refusal
+  still fires at the right depth, and `..` from the depth-20 root's
+  children walks back to `/afs` without a server's `..` entry. Once the
+  deep node is unpinned and forgotten, the ancestors may be removed.
+- **N5 `..`.** From a file in `v1`'s root directory, reached through
+  `m1` in `root.cell`, `..` is `m1`'s mount-point node, never the root
+  node; from `m1`, `..` is the directory holding `m1`; from `/afs/<cell>`,
+  `..` is `/afs`; a directory object whose `..` entry names another
+  vnode changes none of these answers.
+- **N6 one node id per path.** A lookup of `m1` returns the same node id
+  before the crossing, after it, and in a second context whose crossing
+  reached another volume; the two contexts list different contents
+  under it, and their root nodes differ (C11, point 9).
+- **N7 cached target lifetime.** An authenticated test context crosses
+  `m1`, then: a callback break on `m1`'s object makes the next step fetch
+  the target again; an ACL change that removes the right the target read
+  needs makes the next step fail with `access`; a lookup grant lost on
+  the directory holding `m1` makes the step fail before the target is
+  used; `#v1` and `%v1` mount points in one directory each keep their
+  own binding.
+- **N8 no unauthenticated input on an authenticated path.** In the
+  simulator, an authenticated context's crossing whose VL lookup could
+  be answered only without authentication: nothing is kept for that
+  context, and the request is not answered from the unauthenticated
+  entry (C19, point 1).
 
 **The dynamic root (C12, L32, L34):**
 
@@ -989,6 +1140,9 @@ one context does the lookups.
 - **Y8 empty default.** With no administrator's list and the default
   still MISSING (5.6.5, point 10), `@sys` fails with `not found`.
 - **Y9 not in targets.** A target `#@sys` is `MountTargetInvalid` (T7).
+- **Y10 at the dynamic root.** List `[a, b]` with `b` a listed cell:
+  `/afs/@sys` reaches `/afs/b` with no packet sent; with neither listed,
+  `not found`, with no DNS query.
 
 **Failure shape (C46, point 4):**
 
@@ -1001,7 +1155,10 @@ one context does the lookups.
 
 - **L1** (with the SMB specification) a link loop and a chain of 33 link
   hops are each refused with the loop error, and a crossing reached
-  through a link keeps its depth count.
+  through a link keeps its depth count. Thirty-two links, each climbing
+  with `..` back to the cell root and re-crossing one mount point: the
+  second crossing of a mount point already in the request's visited set
+  is refused, and no request crosses more than 32 mount points in all.
 
 ### 10.6 Gaps
 
@@ -1055,7 +1212,7 @@ This specification's own choices are reopened if:
 | G2 | DOCUMENTATION | OpenAFS Administration Guide, page HDRWQ54, section "Using the @sys Variable in Pathnames", register of editions row E59. A lead only | 5.6.5 |
 | G3 | DOCUMENTATION | OpenAFS Administration Guide, page "About Volumes" (HDRWQ177): "About Mounting Volumes", "About Volume Names", "Volume Information in the VLDB", register of editions row E9. A lead only | 4, 5.1, 5.4, 5.6.1 |
 | Y1 | DOCUMENTATION | AFS Assigned Numbers Registry, "System Type Names and ID's" (`systypes.txt`), register of editions row E60. A lead only | 5.2, 5.6.5 |
-| C | DECISION | [Claim record](../reviews/2026-11-20-adr-0004-claims.md) rows `[DES-054]` and `[ADR-008]`, re-read against their sources on 2026-11-21 | 4, 5.6.2 |
+| C | DECISION | [Claim record](../reviews/2026-11-20-adr-0004-claims.md) rows `[DES-054]` and `[ADR-008]`, re-read against their sources on 2026-11-21 | 4, 12 |
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; A13; C4, C6, C11, C12, C18, C19, C20, C22, C27, C33, C40, C46 ([part 1](../adr/0004-architecture-1-core.md)); L32, L34, L35, L37 ([part 2](../adr/0004-architecture-2-os-layers.md)); O23, O50 ([part 3](../adr/0004-architecture-3-operations.md)); N5 ([part 4](../adr/0004-architecture-4-negotiation.md)) | 1, 2, 5, 8, 9, 11 |
 | D2 | DECISION | The owner's decision of 2026-11-20 on the mount-chain bound (crossing 32 allowed, 33 refused, a repeat refused at any depth), recorded in issue #80 | 1, 5.2, 5.6.1 |
 | D3 | DECISION | [vl-fs-read.md](vl-fs-read.md), [directory-format.md](directory-format.md) and [xdr.md](xdr.md) | 2, 4, 5, 7, 8 |
@@ -1131,9 +1288,11 @@ Q1 and Q2 block all code written from 5.1 and 5.4.
   volumes.
 - **Q3. The traversal rules, observed.** Rows S1 to S7 with a reference
   client: in particular a regular target in a backup volume (S7), a
-  cellular target naming the client's own cell (S4), and what a
-  reference client does when every read-only site of a replicated
-  volume fails (5.6.2, point 5). IronAFS's rule stands for S7 and point
+  cellular target naming the client's own cell (S4), what a reference
+  client does when every read-only site of a replicated volume fails or
+  is excluded (5.6.2, point 5), and, with the client's dynamic root on,
+  which volume and version `/afs/<cell>` and `/afs/.<cell>` reach
+  (`root.cell`, 5.6.3, points 1 and 2). IronAFS's rule stands for S7 and point
   5 unless the answer shows a supported workflow that depends on the
   other behaviour; then it is a class S change of this specification.
 - **Q4. Substitution, observed.** With a reference client in the lab: a
@@ -1155,7 +1314,8 @@ Q1 and Q2 block all code written from 5.1 and 5.4.
   (c) until (a) or (b), the default stays empty (5.6.5, point 10), which
   fails closed. Choosing a default is the owner's decision under issue
   #80; it is not inferred from the registry, whose list has no entry for
-  these targets.
+  these targets. Issue #80's outcome needs (a) or (b) recorded for each
+  target before the issue closes; (c) alone does not complete it.
 - **Q6. The loop error.** C46's list has no value for a refused traversal
   loop. Recommendation: the contract (C7, #67) adds a loop value, reported
   as `ELOOP` on Linux and macOS and as `STATUS_STOPPED_ON_SYMLINK` or the
@@ -1169,13 +1329,23 @@ Q1 and Q2 block all code written from 5.1 and 5.4.
 - **Q8. Volume name octets.** Which octets supported servers accept in a
   volume name. If a supported server accepts an octet that 5.4, point 7
   refuses, the set is widened at class S, with the octet named; `/`,
-  `:`, `#`, `%`, `@`, control and non-ASCII octets stay refused.
+  `:`, `#`, `%`, `@`, control and non-ASCII octets stay refused. Also:
+  whether a server accepts a base name that itself ends with `.readonly`
+  or `.backup` (5.4, point 7 states the cost if one does).
 - **Q9. A volume repeated along one path through different mount
   points.** The owner's rule refuses a repeated mount point, not a
   repeated volume, and 5.6.1, point 3 keeps it so. Refusing a repeated
   volume as well would stop a self-mount one crossing earlier, at the
   cost of paths a reference client follows. Recommendation: keep the
   owner's rule; the depth bound already bounds every loop.
+- **Q10. Authenticated VL lookups.** Does a VL server in the capture
+  matrix answer the lookups of [vl-fs-read.md](vl-fs-read.md), 5.1.4,
+  over an authenticated connection? C19, point 1 lets an authenticated
+  crossing use only location data obtained with authentication (5.6.2,
+  point 9). If no supported VL service answers authenticated lookups,
+  that is a contradiction between C19 and how cells are run, and it is
+  raised as a design issue against ADR 0004, not worked around here.
+  Settled in M2b, with rxkad.
 
 ## 14. Review
 
