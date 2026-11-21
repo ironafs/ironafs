@@ -19,6 +19,24 @@
 //! fails a check is never adopted (it may be another descriptor of this
 //! process), and a negative one never is.
 //!
+//! **Open, pending an ADR 0005 amendment: `SCM_PIDFD`.** On Linux 6.5 and
+//! later, a receiving Unix socket with `SO_PASSPIDFD` set (on it, or
+//! inherited from the listener it was accepted from) gets an `SCM_PIDFD`
+//! control message, and the kernel installs that pidfd in this process.
+//! When a receive delivers no `SCM_RIGHTS` message and leaves room for it
+//! (a data byte sent without a descriptor, or rights the kernel did not
+//! deliver; on a datagram socket wrapped as a stream, even with no data),
+//! the only message is `SCM_PIDFD`: these checks refuse it as a control
+//! message of another type, without adopting its integer, so the pidfd
+//! stays open, and repeated refusals can exhaust the descriptor table. With
+//! an `SCM_RIGHTS` message the buffer is full, the kernel creates no pidfd
+//! and sets `MSG_CTRUNC`, and the delivered descriptor is closed. No site
+//! of ADR 0005 sets `SO_PASSPIDFD`, so the exposure is a socket configured
+//! outside IronAFS (a socket unit's `PassPIDFD=`, or foreign code in the
+//! process). Recognising `SCM_PIDFD`, adopting and closing its descriptor,
+//! then refusing, needs a new constant, which ADR 0005, point 7.1, puts to
+//! the owner before the code (#57's review record holds the proposal).
+//!
 //! **Where a received descriptor is an integer.** Sheet 14 keeps it an
 //! integer "only between the checked read of the control buffer and its
 //! adoption, in one private function". Here that span is the receive

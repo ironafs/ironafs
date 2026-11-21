@@ -14,6 +14,17 @@
 //! those the kernel recorded at `connect`, `listen` or `socketpair`
 //! (see [`PeerCredentials`]). Which peer may do what (who may send a token,
 //! ADR 0004, C43, point 4) is the caller's.
+//!
+//! **Open, pending an ADR 0005 amendment: the socket type.** The two checks
+//! above establish a connected Unix peer with credentials, not a stream: a
+//! datagram socket pair has credentials cached when the pair was made,
+//! and a datagram socket of a pair can be connected to another peer
+//! without the kernel replacing them, so both checks pass and the pair's
+//! original ids are reported as the new peer's. A caller that wraps such a
+//! socket as a `UnixStream` gets stale ids. Requiring `SO_TYPE` to read
+//! `SOCK_STREAM` first needs two new constants and a second block, which
+//! ADR 0005, point 7.1, puts to the owner before the code (#57's review
+//! record holds the proposal).
 
 mod abi;
 
