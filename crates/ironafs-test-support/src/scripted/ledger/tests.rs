@@ -81,14 +81,24 @@ fn caller_of_a_retired_generation_is_stale() {
 }
 
 #[test]
-fn unscripted_attestation_is_refused() {
-    let (mut core, first, _) = core();
-    assert_eq!(
-        core.mint_caller(first, Attestation::FuseUid { uid: 0 })
-            .map(|cap| cap.context()),
-        Err(VfsError::Access)
-    );
-    // The operating system may send a uid the core refuses: not a fault.
+fn unscripted_uid_on_a_shared_binding_gets_a_context_of_its_own() {
+    let (mut core, first, second) = core();
+    // A shared binding finds or creates the uid's context (contract
+    // specification, 5.3, point 1): the same uid finds the same context on
+    // any binding, and no scripted context is reused.
+    let root = core
+        .mint_caller(first, Attestation::FuseUid { uid: 0 })
+        .unwrap();
+    let again = core
+        .mint_caller(second, Attestation::FuseUid { uid: 0 })
+        .unwrap();
+    let other = core
+        .mint_caller(first, Attestation::FskitUid { uid: 0 })
+        .unwrap();
+    assert_eq!(root.context(), again.context());
+    assert_ne!(root.context(), ALICE_CONTEXT);
+    assert_eq!(core.check_caller(first, &other), Ok(other.context()));
+    assert_eq!(core.check_caller(first, &root), Ok(root.context()));
     assert_eq!(core.layer_faults(first), 0);
 }
 

@@ -26,6 +26,17 @@
 //! has one. The bytes it serves per context, the set-uid file and the
 //! device entry, and a reply whose state changes before submission wait
 //! on those interfaces.
+//!
+//! What it does not model yet:
+//! - time: the core has no clock, so an event a binding neither
+//!   acknowledges nor reports stays open for ever, where the contract
+//!   treats it as a failed purge once its deadline passes (contract
+//!   specification, 5.10, point 8). That path needs the request deadline
+//!   of the request table, and comes with it, on the seeded clock;
+//! - per-user bindings and their owner check (5.3, point 6): every
+//!   binding is shared, so every uid is accepted;
+//! - suspended handles (C14): a handle is live, revoked, retired or on a
+//!   detached binding.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -157,8 +168,8 @@ impl ScriptedCore {
     }
 
     /// Scripts the credential context the core gives a caller that the
-    /// operating system attests as `attestation`. A context starts at its
-    /// first generation.
+    /// operating system attests as `attestation`, in place of one it would
+    /// create. A context starts at its first generation.
     pub fn script_context(&mut self, attestation: Attestation, context: ContextId) {
         self.ledger.script_context(attestation, context);
     }
@@ -170,10 +181,13 @@ impl ScriptedCore {
     /// # Errors
     ///
     /// [`VfsError::Stale`] if `binding` is not attached;
-    /// [`VfsError::Access`] if no context is scripted for `attestation`:
-    /// the core does not accept it (contract specification, 5.3, point 1).
-    /// An unknown SMB session is also counted as a layer fault of
-    /// `binding`; a uid is not, since the operating system may send it.
+    /// [`VfsError::Access`] for an SMB session no test scripted: the core
+    /// did not authenticate it, so it mints nothing, and the session is
+    /// counted as a layer fault of `binding` (contract specification, 5.3,
+    /// point 1). A uid no test scripted is always accepted, as on a shared
+    /// binding: the core creates a context for it, the same one on every
+    /// later call. Per-user bindings and their owner check (5.3,
+    /// point 6) are not modelled.
     pub fn mint_caller(
         &mut self,
         binding: BindingId,

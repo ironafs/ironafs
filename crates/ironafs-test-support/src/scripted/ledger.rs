@@ -56,6 +56,8 @@ pub(super) struct Ledger {
     faults: Mutex<BTreeMap<BindingId, u64>>,
     next_binding: u64,
     next_handle: u64,
+    /// How many contexts the core created for uids no test scripted.
+    created_contexts: u64,
     bindings: BTreeSet<BindingId>,
     /// The scripted context of each attestation.
     attested: BTreeMap<AttestationKey, ContextId>,
@@ -85,6 +87,10 @@ impl From<Attestation> for AttestationKey {
 
 const FIRST_GENERATION: CredentialGeneration = CredentialGeneration(1);
 
+/// The ids of contexts the core creates count up from here, clear of the
+/// small ids tests script.
+const FIRST_CREATED_CONTEXT: u64 = 1 << 63;
+
 impl Ledger {
     pub(super) fn new(seed: u64) -> Self {
         Self {
@@ -93,6 +99,7 @@ impl Ledger {
             faults: Mutex::new(BTreeMap::new()),
             next_binding: 0,
             next_handle: 0,
+            created_contexts: 0,
             bindings: BTreeSet::new(),
             attested: BTreeMap::new(),
             generations: BTreeMap::new(),
@@ -136,18 +143,24 @@ impl Ledger {
         if !self.attached(binding) {
             return Err(VfsError::Stale);
         }
-        // An attestation the core does not accept mints nothing and is
-        // refused with `Access`; an unknown SMB session is also a fault,
-        // while a uid the operating system sent is not (5.3, point 1).
-        let Some(context) = self
-            .attested
-            .get(&AttestationKey::from(attestation))
-            .copied()
-        else {
-            if let Attestation::SmbSession { .. } = attestation {
-                self.fault(binding);
+        let key = AttestationKey::from(attestation);
+        let context = match (self.attested.get(&key).copied(), attestation) {
+            (Some(context), _) => context,
+            // A uid on a shared binding is always accepted: the core finds
+            // or creates its context (contract specification, 5.3,
+            // point 1). Every binding here is shared.
+            (None, Attestation::FuseUid { .. } | Attestation::FskitUid { .. }) => {
+                self.created_contexts = self.created_contexts.wrapping_add(1);
+                let context = ContextId(FIRST_CREATED_CONTEXT.wrapping_add(self.created_contexts));
+                self.attested.insert(key, context);
+                context
             }
-            return Err(VfsError::Access);
+            // An SMB session the core did not authenticate mints nothing:
+            // `Access`, and a layer fault.
+            (None, Attestation::SmbSession { .. }) => {
+                self.fault(binding);
+                return Err(VfsError::Access);
+            }
         };
         let generation = self.generation(context);
         let nonce = self.fresh_nonce();
