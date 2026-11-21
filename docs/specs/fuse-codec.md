@@ -471,9 +471,9 @@ is observed when they are (section 13, Q1).
    a checked slice (`get`), never by index.
 3. READ: `offset + size` by `checked_add` in u64, then compared with
    `i64::MAX`.
-4. BATCH_FORGET: `16 × count` by `checked_mul`, then `+ 8` by
-   `checked_add`, compared with the body's length; on overflow the request
-   is refused (5.2).
+4. BATCH_FORGET: `16 × count` by `checked_mul`, compared with the length
+   of the body after its 8-byte head; on overflow the request is refused
+   (5.2).
 5. Replies: each length is a sum of constants and one payload length
    capped at 1 MiB, converted to u32 by `try_from`.
 6. The negated error number: positive values below 4,096, negated by
@@ -511,7 +511,7 @@ hostile kernel module is outside the threat model: it owns the machine.
 
 | Invariant | Section | Test (`crates/ironafs-fuse`) |
 |---|---|---|
-| Constraint 4 | 5.2, 5.4, 6 | `request::tests` reject cases; `tests/it/decode.rs` property `decode_never_panics_and_borrows_only_checked_bytes` |
+| Constraint 4 | 5.2, 5.4, 6 | `request::tests` reject cases; `tests/it/decode.rs` properties `decode_never_panics_on_any_bytes`, `decode_reports_framed_requests_faithfully` |
 | L2, point 2 | 5.3 | `init::tests::negotiate_refuses_minor_below_floor`, `negotiate_takes_the_smaller_minor` |
 | L2, point 3 | 5.3, point 3; 5.5, point 4 | `init::tests::select_*` |
 | L2, point 4; N43 | 5.4, point 9; 5.5, point 9 | `errno::tests::no_errno_is_enosys`, `errno::tests::every_value_maps_to_an_error` |
@@ -536,9 +536,12 @@ bytes with `flags2`), and one reply of each kind in 5.1, point 5.
 The codec decodes requests and encodes replies, which are different
 messages, so there is no round trip. Its properties instead
 (`tests/it/decode.rs`): for every byte string `decode` returns a value or
-an error and never panics; a request built from a decoded header and a
-body of the opcode's size decodes to the same header fields; the
-selection for every 64-bit offer is `offer & ALLOWED`.
+an error and never panics (`decode_never_panics_on_any_bytes`); a
+request with a well-formed header and a random body is decoded with that
+header, or refused with it, and a decoded LOOKUP's name is the body
+without its NUL (`decode_reports_framed_requests_faithfully`); the
+selection for every 64-bit offer is `offer & ALLOWED`
+(`init::tests::select_is_offer_and_allowed`).
 
 ### 10.3 Reject corpus
 
@@ -549,7 +552,8 @@ byte short and one long; LOOKUP without its NUL, with a byte after it,
 with a `/`, with 256 bytes, of `.` and `..`; unknown bits in each flags
 field; a READ of 1,048,577 bytes, at offset `i64::MAX`, and with `offset +
 size` over `i64::MAX`; a BATCH_FORGET whose count does not match, and one
-whose count overflows the multiplication on a 32-bit `usize`.
+whose count is `u32::MAX` (an overflow on a 32-bit `usize`, a mismatch on
+a 64-bit one).
 
 ### 10.4 Fuzz target
 
