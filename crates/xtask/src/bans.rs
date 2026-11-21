@@ -22,7 +22,8 @@
 //! such file is checked the same way, and must carry every ban itself.
 //! `CLIPPY_CONF_DIR` comes before all of them: clippy then reads the
 //! directory it names for every crate. The check refuses to run while it
-//! is set, and `cargo xtask check` lints without it. A build script can
+//! is set, before it builds anything, and `cargo xtask check` lints
+//! without it. A build script can
 //! set it again for its own crate's compiler (`cargo::rustc-env`), or set
 //! where clippy's lookup starts or its lint arguments, so the check runs
 //! the workspace's clippy and refuses any build script that does, in any
@@ -40,6 +41,23 @@
 //! through an `[env]` table: the check reads each configuration file cargo
 //! would load and refuses one that does (`cargo_env`).
 //!
+//! None of those static reads can see everything that changes what the
+//! workspace's lint runs (a cargo alias for `clippy`, a compiler wrapper,
+//! flags or settings from the environment, a configuration rewritten and
+//! put back), so the lint carries its own proof. The canary
+//! (`crates/ironafs-bans-canary`, `canary`) plants every ban, one per
+//! line, behind a feature only that lint turns on; the lint `cargo xtask
+//! check` gates on, and check-bans, run clippy on the whole workspace with
+//! it, and require each canary line's disallowed-item warning, on that
+//! line, and no other warning. A missing one fails whatever its cause. The
+//! canary must be exactly the text check-bans writes, with no other file
+//! (a `clippy.toml`, a build script), and no crate may depend on it. It
+//! proves the lint ran with the root configuration's bans on one member;
+//! a member's own configuration is proved by the fixture, and a change
+//! that reaches only some members' compilation (a build script's variable
+//! for its own crate, a configuration written and restored around one
+//! crate) is seen only through the static reads above.
+//!
 //! The ban arrays are read in one format only (`read`); a ban key or a
 //! ban array line in any other form is refused, not skipped. Keys are
 //! matched as TOML decodes them, so a quoted or escaped spelling of a ban
@@ -49,6 +67,7 @@
 //! own rules (`ironafs-client` names no clock at all) are in `check-deps`,
 //! and the pure crates cannot name the standard library (`check-pure`).
 
+mod canary;
 mod cargo_env;
 mod self_test;
 
@@ -59,6 +78,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::fixture::write_file;
+use crate::metadata::Workspace;
 use crate::pure::{CLEARED_ENVIRONMENT, first_error};
 use crate::{Command, Error};
 use crate::{json, metadata};
@@ -206,6 +226,14 @@ pub(crate) enum Violation {
     CargoInclude { line: usize },
     /// A cargo configuration file cargo would read cannot be read.
     CargoUnread(String),
+    /// The canary's ban on `path`, planted on `line` of its library, drew
+    /// no diagnostic there in the workspace's lint.
+    CanaryMissing { path: &'static str, line: usize },
+    /// The workspace's lint gave a warning or error other than the
+    /// canary's, rendered as given.
+    Lint(String),
+    /// The canary is not as check-bans writes it, or a crate depends on it.
+    Canary(String),
     /// The configuration was added, removed or rewritten while the
     /// workspace was built.
     Changed,
@@ -269,6 +297,19 @@ impl fmt::Display for Violation {
                 "cargo would read this configuration, but check-bans cannot, so an [env] table \
                  in it would go unchecked: {error}"
             ),
+            Self::CanaryMissing { path, line } => write!(
+                formatter,
+                "the canary's call to {path} on line {line} of {}/src/lib.rs drew no \
+                 disallowed-item warning in the workspace's lint, so that lint did not run \
+                 clippy with the bans this check proves (an alias, a wrapper, a configuration \
+                 or a variable changed it): find what and remove it",
+                canary::DIR
+            ),
+            Self::Lint(rendered) => write!(
+                formatter,
+                "the workspace's lint gave a warning or error: {rendered}"
+            ),
+            Self::Canary(why) => write!(formatter, "the canary: {why}"),
             Self::Changed => write!(
                 formatter,
                 "added, removed or rewritten while the workspace was built, so clippy may have \
@@ -425,6 +466,8 @@ fn names_a_ban(text: &str) -> bool {
 /// sits in a ban array in any other form, so a ban written otherwise is
 /// refused rather than skipped.
 fn read(clippy_toml: &str) -> (Vec<(Lint, &str)>, Vec<Violation>) {
+    // TOML skips a leading byte order mark; so does this.
+    let clippy_toml = clippy_toml.strip_prefix('\u{feff}').unwrap_or(clippy_toml);
     let mut lint = None;
     let mut found = Vec::new();
     let mut refused = Vec::new();
@@ -532,11 +575,16 @@ fn script_built(message: &json::Value) -> Result<Option<&str>, String> {
         .get("target")
         .and_then(|target| target.get("kind"))
         .and_then(json::Value::as_array)
-        .unwrap_or_default();
-    if !kinds
-        .iter()
-        .any(|kind| kind.as_str() == Some("custom-build"))
-    {
+        .and_then(|kinds| {
+            kinds
+                .iter()
+                .map(json::Value::as_str)
+                .collect::<Option<Vec<_>>>()
+        })
+        .ok_or_else(|| {
+            "cargo reported an artifact whose target kinds it did not list".to_owned()
+        })?;
+    if !kinds.contains(&"custom-build") {
         return Ok(None);
     }
     message
@@ -560,6 +608,7 @@ pub(crate) fn build_overrides(messages: &str) -> Vec<Violation> {
     let mut built = Vec::new();
     let mut reported = Vec::new();
     let mut finished = Vec::new();
+    let mut last = None;
     for line in messages.lines().filter(|line| !line.trim().is_empty()) {
         let Ok(message) = json::parse(line) else {
             found.push(Violation::Unbuilt(
@@ -587,20 +636,36 @@ pub(crate) fn build_overrides(messages: &str) -> Vec<Violation> {
                         }),
                 );
             }),
-            _ => Ok(()),
+            Some("compiler-message") => Ok(()),
+            _ => Err("cargo printed a message with no reason check-bans knows".to_owned()),
         };
+        last = message
+            .get("reason")
+            .and_then(json::Value::as_str)
+            .map(str::to_owned);
         if let Err(error) = read {
             found.push(Violation::Unbuilt(error));
         }
     }
-    for package in built.iter().filter(|package| !reported.contains(package)) {
-        found.push(Violation::Unbuilt(format!(
-            "cargo compiled {package}'s build script but reported no output from it"
-        )));
+    // Cargo may run one compiled build script for more than one unit, so
+    // each compiled script needs a report, and may have more.
+    let count = |list: &[String], package: &String| list.iter().filter(|id| *id == package).count();
+    let mut checked: Vec<&String> = Vec::new();
+    for package in &built {
+        if checked.contains(&package) {
+            continue;
+        }
+        checked.push(package);
+        if count(&reported, package) < count(&built, package) {
+            found.push(Violation::Unbuilt(format!(
+                "cargo compiled {package}'s build script but reported no output from it"
+            )));
+        }
     }
-    if finished != [true] {
+    if finished != [true] || last.as_deref() != Some("build-finished") {
         found.push(Violation::Unbuilt(
-            "cargo did not report one build-finished record saying the build succeeded".to_owned(),
+            "cargo did not end with one build-finished record saying the build succeeded"
+                .to_owned(),
         ));
     }
     found
@@ -677,7 +742,7 @@ pub(crate) fn check(
         write_file(&dir.join(name), text)?;
     }
     write_file(&dir.join("src").join("lib.rs"), &planted_source())?;
-    let mut command = Command::new("cargo");
+    let mut command = cargo();
     // Rustup picks the toolchain from the directory cargo runs in.
     command
         .current_dir(dir)
@@ -793,15 +858,39 @@ pub(crate) fn check_tree(
     Ok(found)
 }
 
-/// The workspace's clippy run, with every crate linted under the
-/// configuration nearest it, the files this check proves: an inherited
-/// `CLIPPY_CONF_DIR` would put one other file in their place.
-pub(crate) fn workspace_clippy() -> Command {
+/// Cargo, run with its home named outright: a relative `CARGO_HOME` is
+/// taken from each run's own directory, so it is resolved once
+/// (`cargo_env::cargo_home`), and every run reads the home check-bans read.
+fn cargo() -> Command {
     let mut command = Command::new("cargo");
+    if let Some(home) = cargo_env::cargo_home() {
+        command.env("CARGO_HOME", home);
+    }
     command
-        .args(["clippy", "--all-targets", "--workspace"])
-        .env("CARGO_BUILD_WARNINGS", "deny")
-        .env_remove(CONF_DIR);
+}
+
+/// Clippy on every target, with cargo's JSON messages, and without an
+/// inherited `CLIPPY_CONF_DIR`, which would put one other file in place of
+/// the configurations this check proves.
+fn clippy_json() -> Command {
+    let mut command = cargo();
+    command
+        .args(["clippy", "--all-targets", "--message-format", "json"])
+        .env_remove(CONF_DIR)
+        .env_remove("CARGO_BUILD_WARNINGS");
+    command
+}
+
+/// The feature that builds the canary's planted lines.
+const CANARY_FEATURE: &str = "ironafs-bans-canary/planted";
+
+/// The workspace's lint, the one `cargo xtask check` gates on: clippy on
+/// every target of every member, the canary's planted lines among them.
+/// Its warnings are not denied by cargo, since the canary's must appear;
+/// `lint` denies every other one.
+pub(crate) fn workspace_clippy() -> Command {
+    let mut command = clippy_json();
+    command.args(["--workspace", "--features", CANARY_FEATURE]);
     command
 }
 
@@ -831,14 +920,23 @@ pub(crate) fn changed(before: &Snapshot, after: &Snapshot) -> Vec<Found> {
 }
 
 /// Each configuration clippy can read for a member crate in `member_dirs`
-/// of the workspace at `root` (`config_files`), with its bytes now.
+/// of the workspace at `root` (`config_files`), and each cargo
+/// configuration cargo run in the root reads (`cargo_env::candidates`),
+/// with its bytes now.
 ///
 /// # Errors
 ///
 /// Returns an error if a configuration cannot be read.
 pub(crate) fn snapshot(root: &Path, member_dirs: &[PathBuf]) -> Result<Snapshot, Error> {
+    // With no home known, the root's own `.cargo` stands in: check-bans
+    // refuses to run without one (`cargo_env::check`).
+    let home = cargo_env::cargo_home().unwrap_or_else(|| root.join(".cargo"));
+    let cargo_configs = cargo_env::candidates(&[root.to_path_buf()], &home)
+        .into_iter()
+        .filter(|path| path.symlink_metadata().is_ok());
     config_files(root, member_dirs, Path::is_file)
         .into_iter()
+        .chain(cargo_configs)
         .map(|file| {
             let path = root.join(&file);
             fs::read(&path)
@@ -874,55 +972,122 @@ pub(crate) fn unchanged_by(
     Ok(found)
 }
 
-/// Runs the workspace's clippy (`workspace_clippy`) at the workspace the
-/// current directory is in, and refuses a configuration a build script
-/// changed while it ran, as `unchanged_by` does.
+/// What `Found` names for a violation of the workspace's lint.
+const LINT: &str = "workspace lint";
+
+/// The canary's static refusals for `workspace`: it must be a member,
+/// exactly as check-bans writes it, and no package may depend on it.
+/// Returns them, and the canary's package id.
+fn canary_state(workspace: &Workspace) -> Result<(Vec<Violation>, Option<String>), Error> {
+    let Some(member) = workspace
+        .members
+        .iter()
+        .find(|member| member.name == canary::NAME)
+    else {
+        return Ok((
+            vec![Violation::Canary(format!(
+                "{} is not a workspace member, so nothing proves the workspace's lint runs \
+                 with the bans",
+                canary::DIR
+            ))],
+            None,
+        ));
+    };
+    let mut found = canary::tampered(&canary::files(&workspace.root)?);
+    found.extend(canary::depended_on(&workspace.packages, &member.id));
+    Ok((found, Some(member.id.clone())))
+}
+
+/// Runs the workspace's lint (`workspace_clippy`) on `workspace`, in its
+/// root, after `adjust` (which only the self-test uses, to plant an
+/// evasion), and returns what is wrong: the canary's state
+/// (`canary_state`), each canary line that drew no diagnostic and every
+/// other warning (`canary::verdict`), each variable a build script sets
+/// that clippy reads (`build_overrides`), and a run that failed.
 ///
 /// # Errors
 ///
-/// Returns an error if clippy fails, or a configuration changed.
-pub(crate) fn lint_workspace(name: &'static str) -> Result<(), Error> {
-    let workspace = metadata::load(None, &[])?;
-    let member_dirs: Vec<PathBuf> = workspace
+/// Returns an error if the canary cannot be read or cargo cannot start.
+pub(crate) fn lint(
+    workspace: &Workspace,
+    adjust: impl FnOnce(&mut Command),
+) -> Result<Vec<Found>, Error> {
+    let (mut violations, canary_id) = canary_state(workspace)?;
+    let mut command = workspace_clippy();
+    // Cargo reads its configuration from the directory it runs in up, so
+    // it runs in the root, whose configuration check-bans reads.
+    command.current_dir(&workspace.root);
+    adjust(&mut command);
+    let output = command.output().map_err(Error::io("cargo clippy"))?;
+    let messages = String::from_utf8_lossy(&output.stdout);
+    violations.extend(build_overrides(&messages));
+    let member_ids: Vec<String> = workspace
+        .members
+        .iter()
+        .map(|member| member.id.clone())
+        .collect();
+    violations.extend(canary::verdict(
+        &messages,
+        canary_id.as_deref().unwrap_or_default(),
+        &member_ids,
+    ));
+    if !output.status.success() {
+        violations.push(Violation::Unbuilt(first_error(&output.stderr)));
+    }
+    Ok(violations
+        .into_iter()
+        .map(|violation| Found {
+            file: LINT.to_owned(),
+            violation,
+        })
+        .collect())
+}
+
+/// The member directories of `workspace`.
+fn member_dirs(workspace: &Workspace) -> Vec<PathBuf> {
+    workspace
         .members
         .iter()
         .map(|member| member.dir.clone())
-        .collect();
-    let before = snapshot(&workspace.root, &member_dirs)?;
-    // Cargo reads its configuration from the directory it runs in up, so
-    // it runs in the root, whose configuration check-bans reads.
-    let status = workspace_clippy()
-        .current_dir(&workspace.root)
-        .status()
-        .map_err(Error::io(name))?;
-    let found = changed(&before, &snapshot(&workspace.root, &member_dirs)?);
-    if !found.is_empty() {
-        return Err(Error::Rules {
+        .collect()
+}
+
+/// `cargo xtask check`'s lint: the workspace's lint (`lint`), refusing a
+/// configuration a build script changed while it ran (`unchanged_by`).
+///
+/// # Errors
+///
+/// Returns the violations, or why the lint could not run.
+pub(crate) fn lint_workspace() -> Result<(), Error> {
+    let workspace = metadata::load(None, &[])?;
+    let found = unchanged_by(&workspace.root, &member_dirs(&workspace), || {
+        lint(&workspace, |_| {})
+    })?;
+    if found.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Rules {
             check: CHECK,
             violations: found.iter().map(ToString::to_string).collect(),
-        });
+        })
     }
-    Error::check_status(name, status)
 }
 
 /// What `Found` names for a build script's violation.
 const BUILD_SCRIPTS: &str = "build scripts";
 
-/// Runs the workspace's clippy at `root`, building into `target_dir`, and
-/// refuses each variable clippy reads that a build script sets for its
-/// crate's compiler (`build_overrides`): `CLIPPY_CONF_DIR` removed from
-/// the environment comes back that way, and the lookup or lint arguments
-/// with it. Cargo reports a build script's output again when it does not
-/// rerun it, so a built workspace is read without rebuilding.
+/// Runs clippy on the crate at `root`, building into `target_dir`, and
+/// refuses each variable clippy reads that its build script sets for its
+/// compiler (`build_overrides`). The self-test's planted build scripts
+/// are checked so; the workspace's are read from its lint (`lint`).
 ///
 /// # Errors
 ///
 /// Returns an error if cargo cannot be started.
 pub(crate) fn check_build_scripts(root: &Path, target_dir: &Path) -> Result<Vec<Found>, Error> {
-    let mut command = workspace_clippy();
+    let mut command = clippy_json();
     command
         .current_dir(root)
-        .args(["--quiet", "--message-format", "json-render-diagnostics"])
         .arg("--target-dir")
         .arg(target_dir);
     let output = command.output().map_err(Error::io("cargo clippy"))?;
@@ -954,31 +1119,38 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     let clippy_toml = read("clippy.toml")?;
     let toolchain_toml = read("rust-toolchain.toml")?;
     if self_test {
-        return self_test::run(&workspace.target_dir, &clippy_toml, &toolchain_toml, output);
+        let root_manifest = read("Cargo.toml")?;
+        return self_test::run(
+            &workspace.target_dir,
+            &root_manifest,
+            &clippy_toml,
+            &toolchain_toml,
+            output,
+        );
     }
-    let member_dirs: Vec<PathBuf> = workspace
-        .members
-        .iter()
-        .map(|member| member.dir.clone())
-        .collect();
-    // Every cargo run below is in the root or under the target directory.
+    let refuse = |found: &[Found]| Error::Rules {
+        check: CHECK,
+        violations: found.iter().map(ToString::to_string).collect(),
+    };
+    // Refused before anything is built.
+    let conf_dir = std::env::var_os(CONF_DIR);
+    if let Some(refusal) = overridden(conf_dir.as_deref()) {
+        return Err(refuse(&[refusal]));
+    }
+    let member_dirs = member_dirs(&workspace);
+    let dir = crate::fixture::fresh_dir(&workspace.target_dir, CHECK)?;
+    // Every cargo run below is in the root or under the fixtures' directory.
     let cargo = cargo_env::check(
-        &[workspace.root.clone(), workspace.target_dir.clone()],
+        &[workspace.root.clone(), dir.clone()],
         cargo_env::cargo_home().as_deref(),
     );
     if !cargo.is_empty() {
-        return Err(Error::Rules {
-            check: CHECK,
-            violations: cargo.iter().map(ToString::to_string).collect(),
-        });
+        return Err(refuse(&cargo));
     }
-    // The build scripts run first, so the configurations proved are the
-    // ones left after them, and one they changed is refused.
-    let build = unchanged_by(&workspace.root, &member_dirs, || {
-        check_build_scripts(&workspace.root, &workspace.target_dir)
-    })?;
-    let dir = crate::fixture::fresh_dir(&workspace.target_dir, CHECK)?;
-    let conf_dir = std::env::var_os(CONF_DIR);
+    // The workspace's lint runs first, so the configurations proved are
+    // the ones left after its build scripts, and one they changed is
+    // refused.
+    let linted = unchanged_by(&workspace.root, &member_dirs, || lint(&workspace, |_| {}))?;
     let result = check_tree(
         &workspace.root,
         &member_dirs,
@@ -987,13 +1159,10 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         &dir,
     );
     crate::fixture::remove_dir(&dir)?;
-    let mut violations = build;
+    let mut violations = linted;
     violations.extend(result?);
     if !violations.is_empty() {
-        return Err(Error::Rules {
-            check: CHECK,
-            violations: violations.iter().map(ToString::to_string).collect(),
-        });
+        return Err(refuse(&violations));
     }
     let files: Vec<String> = config_files(&workspace.root, &member_dirs, Path::is_file)
         .iter()
@@ -1002,10 +1171,12 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     writeln!(
         output,
         "check-bans: {} planted calls each tripped their ban in each of {}; no ban is \
-         unresolved, and no build script or cargo configuration changes what clippy runs \
-         with",
+         unresolved; the workspace's lint drew each of the canary's {} warnings on its line \
+         and no other; no build script reported a variable clippy reads, and none left a \
+         configuration changed; no cargo configuration read sets one",
         BANS.len(),
-        files.join(", ")
+        files.join(", "),
+        BANS.len()
     )
     .map_err(Error::io("report check-bans"))
 }

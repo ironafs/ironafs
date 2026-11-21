@@ -470,7 +470,7 @@ fn build_overrides_reports_a_variable_clippy_reads_in_any_case() {
 #[test]
 fn build_overrides_ignores_other_variables_and_messages() {
     let messages = format!(
-        "{}\n{}\n{{\"reason\":\"compiler-artifact\",\"env\":[[\"CLIPPY_ARGS\",\"x\"]]}}\n\n\
+        "{}\n{}\n{{\"reason\":\"compiler-artifact\",\"target\":{{\"kind\":[\"lib\"]}},\"env\":[[\"CLIPPY_ARGS\",\"x\"]]}}\n\n\
          {FINISHED}",
         script_built("p#0.0.0"),
         executed("p#0.0.0", "[[\"OTHER\",\"1\"]]")
@@ -696,5 +696,85 @@ fn changed_violation_says_what_failed() {
         "crates/b/clippy.toml: added, removed or rewritten while the workspace was built, so \
          clippy may have linted with a configuration this check did not prove: a build script \
          writes it; remove that"
+    );
+}
+
+#[test]
+fn build_overrides_refuses_a_message_with_no_reason_it_knows() {
+    for line in [
+        "{\"reason\":\"something-new\"}",
+        "{\"no\":\"reason\"}",
+        "{\"reason\":1}",
+        "[]",
+    ] {
+        let found = build_overrides(&format!("{line}\n{FINISHED}"));
+        assert!(
+            matches!(found.as_slice(), [Violation::Unbuilt(_)]),
+            "{line}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn build_overrides_needs_build_finished_last() {
+    let messages = format!("{FINISHED}{}\n", executed("p#0.0.0", "[]"));
+    let found = build_overrides(&messages);
+    assert!(
+        matches!(found.as_slice(), [Violation::Unbuilt(_)]),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn build_overrides_needs_a_report_for_each_build_script_unit() {
+    let messages = format!(
+        "{}\n{}\n{}\n{FINISHED}",
+        script_built("p#0.0.0"),
+        script_built("p#0.0.0"),
+        executed("p#0.0.0", "[]")
+    );
+    let found = build_overrides(&messages);
+    assert!(
+        matches!(found.as_slice(), [Violation::Unbuilt(_)]),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn build_overrides_refuses_an_artifact_with_no_target_kinds() {
+    for artifact in [
+        "{\"reason\":\"compiler-artifact\",\"package_id\":\"p#0.0.0\"}",
+        "{\"reason\":\"compiler-artifact\",\"package_id\":\"p#0.0.0\",\"target\":{\"kind\":\"custom-build\"}}",
+        "{\"reason\":\"compiler-artifact\",\"package_id\":\"p#0.0.0\",\"target\":{\"kind\":[1]}}",
+    ] {
+        let found = build_overrides(&format!("{artifact}\n{FINISHED}"));
+        assert!(
+            matches!(found.as_slice(), [Violation::Unbuilt(_)]),
+            "{artifact}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn uncovered_reads_past_a_byte_order_mark() {
+    // TOML skips a leading byte order mark, and so does clippy.
+    let text = "\u{feff}\"disallowed\\u002dmethods\" = [\n  { path = \"std::thread::sleep\", reason = \"r\" },\n]\n";
+    assert!(
+        matches!(
+            unreadable(text).as_slice(),
+            [Violation::Unreadable { line: 1, .. }]
+        ),
+        "{:?}",
+        unreadable(text)
+    );
+    let text =
+        "\u{feff}disallowed-methods = [\n  { path = \"std::thread::sleep\", reason = \"r\" },\n]\n";
+    assert_eq!(unreadable(text), []);
+    assert_eq!(
+        uncovered(text),
+        [Violation::Uncovered {
+            lint: Lint::Method,
+            path: "std::thread::sleep".to_owned()
+        }]
     );
 }

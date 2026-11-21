@@ -130,3 +130,12 @@ fn candidates_are_both_names_in_each_ancestor_and_the_cargo_home() {
     .collect();
     assert_eq!(found, expected);
 }
+
+#[test]
+fn violations_read_past_a_byte_order_mark() {
+    assert_sets(
+        "\u{feff}[env]\nCLIPPY_CONF_DIR = \"/x\"\n",
+        2,
+        "CLIPPY_CONF_DIR",
+    );
+}

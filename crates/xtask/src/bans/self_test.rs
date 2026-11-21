@@ -21,6 +21,8 @@
 //! and proves each refused, beside one whose `[env]` sets another
 //! variable, which passes.
 
+mod canary;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -255,18 +257,20 @@ fn check_planted(
 /// Returns the first case that did not end as planted.
 pub(super) fn run(
     target_dir: &Path,
+    root_manifest: &str,
     clippy_toml: &str,
     toolchain_toml: &str,
     output: &mut impl Write,
 ) -> Result<(), Error> {
     let dir = fixture::fresh_dir(target_dir, CHECK)?;
-    let result = run_in(&dir, clippy_toml, toolchain_toml, output);
+    let result = run_in(&dir, root_manifest, clippy_toml, toolchain_toml, output);
     fixture::remove_dir(&dir)?;
     result
 }
 
 fn run_in(
     dir: &Path,
+    root_manifest: &str,
     clippy_toml: &str,
     toolchain_toml: &str,
     output: &mut impl Write,
@@ -308,11 +312,16 @@ fn run_in(
     }
     build_scripts(&dir.join("build"), toolchain_toml, &mut report)?;
     cargo_configs(&dir.join("cargo"), &mut report)?;
-    report(format!(
-        "check-bans --self-test: the repository's bans passed and {} planted cases failed as \
-         planted",
-        CASES.len() + 1
-    ))
+    canary::run(
+        &dir.join("canary"),
+        (root_manifest, clippy_toml, toolchain_toml),
+        &mut report,
+    )?;
+    report(
+        "check-bans --self-test: the repository's bans passed and every planted case failed as \
+         planted"
+            .to_owned(),
+    )
 }
 
 /// The build-script case: a crate under `dir` whose build script runs
@@ -348,6 +357,13 @@ fn sets(name: &str) -> String {
 /// nothing, beside its crate's manifest.
 const WRITES_CONFIG: &str = "let dir = std::env::var(\"CARGO_MANIFEST_DIR\").unwrap_or_default();\n    \
      std::fs::write(std::path::Path::new(&dir).join(\"clippy.toml\"), \"\").unwrap_or_default();";
+
+/// A build script's body that writes a cargo configuration beside its
+/// crate's manifest, which cargo would read on its next run there.
+const WRITES_CARGO_CONFIG: &str = "let dir = std::env::var(\"CARGO_MANIFEST_DIR\").unwrap_or_default();\n    \
+     let dir = std::path::Path::new(&dir).join(\".cargo\");\n    \
+     std::fs::create_dir_all(&dir).unwrap_or_default();\n    \
+     std::fs::write(dir.join(\"config.toml\"), \"\").unwrap_or_default();";
 
 /// Builds a crate under `dir` whose build script runs `body` as the check
 /// builds the workspace, and returns what it found.
@@ -405,6 +421,19 @@ fn build_scripts(
     let found = build_planted(&dir.join("planted-write"), WRITES_CONFIG, toolchain_toml)?;
     caught(case, &found, &|found| {
         found.file == ROOT_FILE && found.violation == Violation::Changed
+    })?;
+    let case = "a build script that writes a cargo configuration beside its manifest";
+    let found = build_planted(
+        &dir.join("planted-cargo"),
+        WRITES_CARGO_CONFIG,
+        toolchain_toml,
+    )?;
+    caught(case, &found, &|found| {
+        found
+            .file
+            .replace('\\', "/")
+            .ends_with(".cargo/config.toml")
+            && found.violation == Violation::Changed
     })
 }
 

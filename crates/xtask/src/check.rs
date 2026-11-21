@@ -21,7 +21,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         Command::new("cargo").args(["fmt", "--all", "--check"]),
         "cargo fmt --all --check",
     )?;
-    crate::bans::lint_workspace("cargo clippy --all-targets --workspace")?;
+    crate::bans::lint_workspace()?;
     run_command(
         Command::new("cargo").args([
             "nextest",

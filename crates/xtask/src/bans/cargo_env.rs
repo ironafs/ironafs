@@ -121,6 +121,8 @@ fn line_of(violation: &Violation) -> usize {
 /// alias named for clippy beside an `[env]` table is refused too, which
 /// costs a rename.
 pub(crate) fn violations(text: &str) -> Vec<Violation> {
+    // TOML skips a leading byte order mark; so does this.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = Vec::new();
     let mut found = Vec::new();
     for (index, line) in text.lines().enumerate() {
