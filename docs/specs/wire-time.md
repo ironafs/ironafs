@@ -17,7 +17,8 @@ revalidation, and a hostile or broken peer controls every one of them
 
 Sections keep their numbers once the specification is reviewed. Labels
 follow [README](README.md), "Labelling claims". Source ids (D1, S1 and
-so on) are in section 12. Row ids (WT1 and so on) are this table's own
+so on) are in section 12. Row ids (WT1, WR1 and so on) and the ids of
+the disagreements in 5.5 (G1 and so on) are this specification's own
 and stay stable once reviewed.
 
 **Nothing here is coded yet.** No admissible document gives the width,
@@ -163,9 +164,13 @@ is broken.
 
 ## 3. The design in short
 
-1. M2a reads four wire time fields: a file's two modification times in
-   the file service's status record, a callback promise's expiry, and a
-   fileserver's own time in the keepalive's reply. It sends none.
+1. M2a's replies carry five wire time fields (WT1 to WT5): a file's two
+   modification times in the file service's status record, a callback
+   promise's expiry in a reply and again in a break, and a fileserver's
+   own time in the keepalive's reply. M2a converts three of them, the two
+   modification times and the reply's expiry; the break's expiry is never
+   read, and the server's time is defined but not read in M2a. It sends
+   none.
 2. Only one of them feeds a deadline: the promise's expiry, which becomes
    a duration, cut to the callback specification's cap and counted on
    the boot clock from the request's send. The modification times are
@@ -246,9 +251,9 @@ in 5.2.
 
 | Row | Converted to | Use | Fed to a deadline? | Range and wrap | Refusal | Decoder, then converter |
 |---|---|---|---|---|---|---|
-| WT1 | `WallTime` (a timestamp, C37, point 1: an AFS timestamp) | an attribute the layers show as a file's modification time (S3, 5.1.3, point 2) | no. Never compared for cache validity (the data version decides, S3, 5.4, point 5), never volume incarnation evidence (S6, section 2, point 3), never handed to a clock `[OWN]` | point 6 below | the attribute fails: S3, 5.4, point 8 ("fails the attribute that needs it ... not the decode"); the operation that needs it gets out of range (C46, point 1); no attribute is made up (C46, point 4) | the file service's status record decoder (S3), then `wire_time` |
+| WT1 | `WallTime` (a timestamp, C37, point 1: an AFS timestamp) | an attribute the layers show as a file's modification time (S3, 5.1.3, point 2) | no. Never compared for cache validity (the data version decides, S3, 5.4, point 5), never volume incarnation evidence (S6, 5.1.1: a file's times are attributes only), never handed to a clock `[OWN]` | point 6 below | the attribute fails: S3, 5.4, point 8 ("fails the attribute that needs it ... not the decode"); the operation that needs it gets out of range (C46, point 1); no attribute is made up (C46, point 4) | the file service's status record decoder (S3), then `wire_time` |
 | WT2 | `WallTime`, as WT1 | as WT1: which of WT1 and WT2 a layer shows as the modification time is the contract specification's (#67) | no, as WT1 | as WT1 | as WT1 | as WT1 |
-| WT3 | a span, if the capture shows a span; if it shows a timestamp, `WallTime`, turned into a span as point 5 below says | the promise's lifetime: cut to `cb.promise.lifetime_max` and counted from the request's send on the boot clock (S1, 5.1.4 and section 6, point 5) `[ADR 0004 C26.2: Working]` | **yes, the only row that is**, and only through the boot-clock instant of the request's send, never through wall time `[ADR 0004 C37.1: Working]` | point 6 below; a lifetime of 0 or less grants no promise (S1, 5.1.4) | no promise is granted (S1, 5.1.4: "A value the conversion cannot represent grants no promise"); the reply's other values stand | the promise record's words, decoded by S3's reply decoder and read by S1, then `wire_time` |
+| WT3 | a span, if the capture shows a span; if it shows a timestamp, `WallTime`, turned into a span as point 5 below says | the promise's lifetime: cut to `cb.promise.lifetime_max` and counted from the request's send on the boot clock (S1, 5.1.4 and section 6, point 5) `[ADR 0004 C26.2: Working]` | **yes, the only row that is.** The deadline is on the boot clock, counted from the boot instant of the request's send stamp. Wall time enters only if the expiry is a timestamp, and only to turn it into a span: the expiry minus the wall time of the same send stamp (5.3, point 5), which C37, point 1, allows for an AFS timestamp. No deadline is held or compared on wall time `[ADR 0004 C37.1: Working]` | point 6 below; a lifetime of 0 or less grants no promise (S1, 5.1.4) | no promise is granted (S1, 5.1.4: "A value the conversion cannot represent grants no promise"), and so for every failure of section 6, point 7; the reply's other values stand | S3's reply decoder calls `wire_time` for WT3 with the call's `Reply` send stamp (S7) at receipt (5.3, point 9), and hands S1 the converted span or the refusal, with the promise record's other words unread |
 | WT4 | not converted | none: a break only suspends, so nothing it carries can grant, extend or shorten a promise (S1, 5.1.3, point 1) | no | not read | none: the words are bounded by the message cap and not read | the callback service's request decoder (S1); never `wire_time` |
 | WT5 | `WallTime` | diagnostics only: the skew sample and its warning (S2, 5.7, points 3 and 4). In M2a it is not read: server time is "not measured" (S2, 5.7, point 1) | no: it never feeds a deadline, never raises or lowers trust, never sets the clock, and can only shorten a promise (S2, 5.7, points 5 and 6) `[ADR 0004 C37.6: Working]` | point 6 below | no sample is taken; `skew` keeps its last state; counted as `time_refused`; the reply stays valid (S2, 5.8) | the keepalive reply decoder (S2, 5.4), then `wire_time`, only once S2's gate has passed |
 
@@ -267,6 +272,7 @@ nor here has been missed.
 | the Rx acknowledgement's maximum skew, 2 bytes | S4, 5.1, point 5 | out and in | sent as 0 and never checked on receipt (S4, 5.4, point 12, and 5.5, point 4); its unit is not stated by any source used |
 | the UUID's time-low word and its two 16-bit time fields, in a server identity | S3, 5.1.3, point 6 | in | a UUID is compared as the 16 octets it denotes, never as its words (S3, 5.1.3, point 6); its time fields are range-checked as integers and never converted |
 | the same fields of the client's host UUID, in the identity replies | S1, 5.5, points 3 and 7 | out | the host UUID is created and stored by the state directory's specification, not yet written (S1 Q9); the identity replies send it as stored. Whether its time fields hold a clock reading is section 13, Q7 |
+| a UUID or identity a callback request may carry: ProbeUuid's argument, and anything in a reset's arguments | S1, 5.1.3, points 4 and 6; 5.5, point 5 | in | never decoded: a reset's arguments are never read (S1, 5.1.3, point 4), and ProbeUuid is refused with −455 before its argument is read (S1, 5.5, point 5). Bounded by the message cap. A revision that decodes either adds it here |
 | a volume's dates (creation, last update, copy) | S6, 5.1.1 and 5.7, point 3 | in, if any reply carries them | M2a reads none: they are reported by the volume server's procedures, which M2a does not call (S6, section 2, point 3), and whether the volume sync record carries the creation date is MISSING (S3, 5.1.3, point 4; S6 Q2). The record is decoded as fixed words and handed to S6 unread (S3, 5.1.3, point 4). A revision that reads a date adds its row to 5.1 |
 | any other word of the status record, the VL entry or the volume status record | S3, 5.1.3, points 2 and 5, and 5.1.4, point 7 | in | decoded, type-checked and not interpreted (S3). The volume status record's fields are MISSING (S3 Q9); none named there is a time. A revision that finds and reads a time field adds its row to 5.1 |
 
@@ -322,9 +328,15 @@ specification's. Each is `[OWN]` under C38 unless it names its source.
    keepalive specification's bound applies: a qualified skew sample no
    older than `ka.skew.sample_max` that shows the server ahead by D
    shortens the span by D, and one showing it behind never lengthens it
-   (S2, 5.7, point 6). Then the callback specification cuts it to
-   `cb.promise.lifetime_max` (S1, section 6, point 5). Section 13, Q3
-   and Q4, hold the two open points of this rule.
+   (S2, 5.7, point 6). D is S2's lower bound on the server's lead (S2,
+   5.7, point 3), so a span corrected by it can still exceed the
+   server's intent by up to that sample's uncertainty (its round trip
+   plus g); the sample is handed to the converter by S2, which owns its
+   age test, and the converter reads no sample state itself (point 10).
+   Then the callback specification cuts it to `cb.promise.lifetime_max`
+   (S1, section 6, point 5). In M2a no sample exists (S2, 5.7, point 1),
+   so no D is ever applied; section 13, Q3, states what that leaves and
+   Q4 the order of the steps.
 6. **No era is guessed.** A 32-bit seconds field converts to exactly
    one instant, the one its row's signedness gives:
    - signed: 1901-12-13T20:45:52Z to 2038-01-19T03:14:07Z, for an epoch
@@ -345,8 +357,8 @@ specification's. Each is `[OWN]` under C38 unless it names its source.
    range is section 13, Q2.
 8. **Sub-second parts.** A row with a sub-second part states its unit
    (for example microseconds). A part equal to or above one second in
-   that unit is refused with out of range, never carried into the
-   seconds (S2, 5.8). Granularity is recorded so that a consumer that
+   that unit, or below zero if the part is signed, is refused with out
+   of range, never carried into or borrowed from the seconds (S2, 5.8). Granularity is recorded so that a consumer that
    compares two times (S2, 5.7, point 3's interval [S, S + g)) knows how
    wide each one is.
 9. **Converted at receipt.** Each row is converted when its reply is
@@ -354,11 +366,12 @@ specification's. Each is `[OWN]` under C38 unless it names its source.
    on `[ADR 0004 O40.2: Working]`. The result, a time or a refusal, is
    kept per field: a refusal fails what needs that field (5.1.2, the
    "Refusal" column), not the decode, and not the reply's other fields
-   (S3, 5.4, point 8). Section 5.5, D2, records the wording this needs
+   (S3, 5.4, point 8). Section 5.5, G2, records the wording this needs
    in S3.
 10. **No clock is read.** The converter is a pure function of the raw
-    words, the row and, for point 5, a stamp it is given: it reads no
-    clock and draws nothing from `Rng` (ADR 0004, C3, point 1, as
+    words, the row and, for point 5 only, the send stamp and the skew
+    sample (or its absence) its caller hands it: it reads no clock,
+    keeps no state, and draws nothing from `Rng` (ADR 0004, C3, point 1, as
     [xdr.md](xdr.md) quotes it).
 
 ### 5.4 Decoding: range and wrap, per row
@@ -383,6 +396,11 @@ specification's. Each is `[OWN]` under C38 unless it names its source.
      data.
    - Whatever the form, a server's expiry can make a promise shorter or
      absent, and never longer than `cb.promise.lifetime_max` (S1, 5.2).
+     If it is a timestamp, a client clock behind the server's can make
+     the promise longer than the server granted, within that cap
+     (section 13, Q3).
+   - A promise whose deadline cannot be built grants nothing (section 6,
+     point 7).
 3. **WT4.** Never converted, so it has no range.
 4. **WT5, a server's time.** Converted only once the keepalive's gate has
    passed (S2, 5.7, point 1). A server past its field's limit states a
@@ -399,11 +417,11 @@ specification's. Each is `[OWN]` under C38 unless it names its source.
 
 Each disagreement found while building the table, with the
 recommended resolution and the specification that should change. None
-changes a wire fact; each changes a sentence or a column. D1 to D4 are
-for the participating specifications' next revisions; D5 is for the
+changes a wire fact; each changes a sentence or a column. G1 to G4 are
+for the participating specifications' next revisions; G5 is for the
 clocks' wording.
 
-1. **D1. The columns of the owners' time tables.** C38, point 2, needs
+1. **G1. The columns of the owners' time tables.** C38, point 2, needs
    width, signedness, epoch and granularity for every field. The
    keepalive specification's table (S2, 5.8) has a granularity column;
    the callback specification's (S1, 5.1.4) does not; neither names the
@@ -413,51 +431,63 @@ clocks' wording.
    WT3 and WT4; S2, 5.8, names WT5; S3 adds a short "Time fields"
    paragraph naming WT1 and WT2, so that every owner points at the same
    rows.
-2. **D2. Converted at receipt, or handed on.** O40, point 2, says
+2. **G2. Converted at receipt, or handed on.** O40, point 2, says
    server times are converted at receipt. S3, 5.4, point 8, says times
    are "handed on unmodified" and that a conversion failure "fails the
    attribute that needs it". The two agree in effect only if the
    conversion happens at the decode and its result is kept per field.
+   O40, point 2's "server times" may be read as the server's clock
+   samples only, not file times; converting every row at receipt keeps
+   to either reading, so the resolution does not depend on it.
    **Resolution:** this table's 5.3, point 9; S3, 5.4, point 8, says
    "converted at receipt by the wire time table (O40, point 2); a
    refusal fails the attribute that needs it, not the decode".
-3. **D3. The order of the cut and the skew correction.** For an expiry
+3. **G3. The order of the cut and the skew correction.** For an expiry
    that is a timestamp, S2, 5.7, point 6, computes the span, cuts it to
    `cb.promise.lifetime_max`, then shortens it by D. S1, section 6,
    point 5, converts the expiry "into a 64-bit duration" through this
    table, then cuts it. If the conversion includes the correction, S1's
-   order is correction then cut. The results differ only when the span
-   less D is above the cap, and both are at or below the cap, so neither
-   is unsafe. **Resolution:** correction first, then the cut (this
+   order is correction then cut. The results differ whenever the
+   uncorrected span is above the cap and D is above 0 (a span of 8 000 s,
+   a cap of 7 200 s and D of 2 000 s give 6 000 s one way and 5 200 s the
+   other), and both are at or below the cap, so neither is unsafe. **Resolution:** correction first, then the cut (this
    table's 5.3, point 5): D is the server clock's bias in its own
    expiry, so removing it gives the server's intended span, and the
    client's cap then applies once; subtracting D after the cut counts it
    against a value that no longer contains it. S2, 5.7, point 6, changes
    to that order (section 13, Q4).
-4. **D4. The signedness of the expiry in the callback tests.** S1's test
-   C16 expects the field's maximum value to give a promise of
-   `cb.promise.lifetime_max`: that holds only if the field is unsigned.
-   Read as signed, the same bits are negative and grant no promise.
-   **Resolution:** C16's expectation for values from 2³¹ follows the
-   signedness the capture settles; until then, section 13, Q2's
-   recommendation applies (no entry, so no promise).
-5. **D5. "The monotonic clock".** C37, point 1, names two monotonic
+4. **G4. The signedness of the expiry in the callback tests.** S1's test
+   C16 expects "the field's maximum" to give a promise of
+   `cb.promise.lifetime_max`. Read as the largest value of the field's
+   type, that holds under either signedness (2³¹ − 1 or 2³² − 1, both
+   cut to the cap). Read as the all-ones word, it holds only if the field
+   is unsigned: signed, that word is −1 and grants no promise. The test's
+   wording is ambiguous, not wrong. **Resolution:** C16 names its words
+   by value once the capture settles the type (the type's largest value,
+   and separately the all-ones word with its expected result under that
+   type); until then section 13, Q2's recommendation applies (no entry,
+   so no promise).
+5. **G5. "The monotonic clock".** C37, point 1, names two monotonic
    clocks, the boot clock and the awake clock, and says which each
    timer uses. Several sentences say "the monotonic clock" without
    saying which: the Rx specification for a call's deadline and for the
    retirement window R (S4, 5.7, point 1, and 5.6, point 2), the VL and
    FS read specification for the variant memo's expiry (S3, section 6,
-   A9), and the callback specification for its tick (S1, section 6,
-   point 6). The keepalive specification starts a keepalive call with a
+   A9), the callback specification for its rate buckets' refill and its
+   tick (S1, section 6, points 2 and 6), and the Rx specification for the
+   instant its machine is given with each call into it (S4, 5.12, point
+   6). The keepalive specification starts a keepalive call with a
    deadline "on the boot clock" (S2, 5.5, point 2), through the same Rx
    start whose deadline S4 calls monotonic. **Resolution:** each names
    its clock. Recommended: a call's deadline is the caller's `Deadline`
    with its own clock kind (S7), which for the keepalive is the boot
-   clock; R, the variant memo and the callback tick are on the boot
+   clock; R, the variant memo, the callback tick and the rate buckets'
+   refill are on the boot
    clock, since each measures time that passes for peers while the host
    sleeps; Rx's idle timeout and retransmission timers are on the awake
    clock, as C37, point 1, says for round-trip and retransmission
-   timers. Not a wire time field; recorded here because the table's
+   timers; the instant given to Rx's machine is a `Stamp`, which carries
+   both (S7). Not a wire time field; recorded here because the table's
    "Fed to a deadline?" column depends on it.
 
 Also checked, and found consistent:
@@ -499,9 +529,31 @@ Every value read from a reply is untrusted (coding standards rule 2).
    overflows, then checked into `i64`; failure is out of range, and no
    promise is granted. The skew correction D is subtracted in the same
    `i128` before the check.
-7. **Adding a span to the boot-clock send instant** is the seams
-   specification's checked instant arithmetic, as S1, section 6, point
-   5, says; a sum that cannot be represented grants no promise.
+7. **The promise's deadline.** A span of 0 or less grants no promise
+   before anything else. A positive span is cut (S1, section 6, point
+   5) and converted from `i64` nanoseconds into the seams
+   specification's `Duration` by a checked conversion. The deadline is
+   then built by `Deadline::boot_after(now, first_sent, span)` (S7, 5.3,
+   points 1 and 2), where `first_sent` is the `Reply`'s send stamp and
+   `now` the caller's fresh `Clock` sample. Every way this can fail
+   grants no promise, counted as `time_refused` with the reason, and the
+   reply's other values stand:
+   - **`first_sent` is `None`** (the send sample failed; S7, `Reply`):
+     no lifetime is counted from it, so no deadline is built;
+   - **the `now` sample fails** (`DeadlineError::Clock`): no deadline;
+     the clock failure itself is S7's episode, which makes callbacks
+     suspect (C37, point 5);
+   - **`DeadlineError::FromAfterNow`** (the send stamp is newer than
+     `now` on the boot clock, which only a clock regression produces;
+     S7, 5.3, point 2): no deadline, never retried with another stamp,
+     as S7 requires;
+   - **`DeadlineError::Overflow`** (the sum cannot be represented): no
+     deadline;
+   - **the span's conversion into `Duration` fails**: no deadline.
+   These are all the errors `boot_after` returns (S7, 5.3, point 1:
+   `Clock`, `FromAfterNow`, `Overflow`). In each case the entry is served
+   under bounded revalidation (ADR 0004, C32, point 2), as for any file
+   with no promise.
 
 ## 7. Errors and failure
 
@@ -528,7 +580,7 @@ their content (ADR 0004, N5, point 2).
 
 | Threat | What stops it |
 |---|---|
-| A huge or far-future expiry that makes the client trust cached data for a long time | the span is cut to `cb.promise.lifetime_max` (S1, 5.1.4); a timestamp expiry is read against the client's own clock and never lengthened by a skew (5.3, point 5) |
+| A huge or far-future expiry that makes the client trust cached data for a long time | the span is cut to `cb.promise.lifetime_max` (S1, 5.1.4), so no expiry buys more than the cap. Not fully stopped if the expiry is a timestamp: read against a client clock that lags the server's, a promise can outlast the server's grant by the lag, within the cap; in M2a no skew sample exists to correct it (section 13, Q3) |
 | A negative, zero or wrapped expiry | no promise is granted; the file is revalidated (5.4, point 2) |
 | A value that wraps or sign-extends in conversion to look like a different time | explicit widening by the row's signedness, checked conversions, no `as` casts, no era guessing (5.3, points 3, 4 and 6) |
 | A lying modification time | it is an attribute only: never compared for cache validity, never incarnation evidence, never a deadline (5.1.2) |
@@ -545,7 +597,7 @@ their content (ADR 0004, N5, point 2).
 | Constraint 4: no panics, checked arithmetic | 5.3; sections 6 and 7 | 10.2, P1; 10.3 |
 | C6, point 3: the table, inbound and outbound | 5.1, 5.2 | review of this specification; 10.5, T1 |
 | C6, point 4: nothing coded from a source-less fact | 5.3, point 2 | 10.5, T2 |
-| C26, point 2: expiry counted from the send on the boot clock | 5.1.2, WT3; 5.3, point 5; section 6, point 7 | 10.5, T3 |
+| C26, point 2: expiry counted from the send on the boot clock | 5.1.2, WT3; 5.3, point 5; section 6, point 7 | 10.5, T3 and T7 |
 | C37, points 1 and 6: wall time only for AFS timestamps; no clock setting | 5.1.2; 5.3, points 5 and 10 | 10.5, T3 and T4; S2's KA17 |
 | C38, point 1: signed 64-bit wall time; no 32-bit time outside the codecs | 5.3, point 1; section 4 | 10.5, T5 |
 | C38, point 2: one module, each field's width, signedness, epoch and granularity | 5.1.1; 5.3, points 1 and 2 | 10.5, T1 and T5 |
@@ -639,6 +691,15 @@ and asserts that every time either converts or is refused, never wraps.
   succeeds, the data version and the promise stand, and an operation
   that needs the time gets out of range with the row id in the side
   channel; an operation that does not need it succeeds.
+- **T7 Every deadline failure grants nothing** (section 6, point 7).
+  In the simulator, a status reply with a promise, handled with in turn:
+  a `Reply` whose `first_sent` is `None`; a failed `now` sample; a
+  scripted boot-clock regression so the send stamp is newer than `now`;
+  a span whose sum with the send instant overflows (a test row with a
+  64-bit span). Each grants no promise, counts `time_refused` with its
+  reason, leaves the reply's status and data version in place, and
+  serves the entry under bounded revalidation; none is retried with
+  another stamp.
 
 ### 10.6 Gaps
 
@@ -682,13 +743,13 @@ This specification's own choices:
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| S1 | DECISION | The callback service specification, `callbacks.md` (#66), draft of 2026-11-21: 5.1.2, 5.1.3 (points 1 and 2), 5.1.4, 5.5, 5.8, section 6 (points 5 and 6), 10.5 (C16) and 13 (Q1, Q9). Its leads K1 to K3 are its own; nothing here takes a wire fact from them | 2, 5, 6, 8, 10 |
+| S1 | DECISION | The callback service specification, `callbacks.md` (#66), draft of 2026-11-21, at the revision on the keepalive branch (commit 0c3b8d7, which adds the lowering count; its section 6 has six points, where the earlier revision at b85db41 has five and numbers the promise lifetime 4 and the tick 5): 5.1.2, 5.1.3 (points 1 and 2), 5.1.4, 5.5, 5.8, section 6 (points 2, 5 and 6), 10.5 (C16) and 13 (Q1, Q9). Its leads K1 to K3 are its own; nothing here takes a wire fact from them | 2, 5, 6, 8, 10 |
 | S2 | DECISION | The keepalive and server time specification, `keepalive-and-server-time.md` (#81), draft of 2026-11-21: 5.1, 5.4, 5.5, 5.7, 5.8, 10.5 and 13 | 1, 2, 5, 7, 8, 10 |
 | S3 | DECISION | The VL and FS read specification, `vl-fs-read.md` (#65), draft of 2026-11-21: 5.1.2, 5.1.3 (points 2 to 6), 5.1.4, 5.4 (points 5 and 8), section 6 (A9) and 13 (Q1, Q9) | 2, 5, 7, 8 |
-| S4 | DECISION | The Rx specification, `rx.md` (#55), draft of 2026-11-21: 5.1 (points 1 and 5), 5.4 (point 12), 5.5 (point 4), 5.6 (points 1, 2, 5 and 6) and 5.7 (points 1 and 11). Every wire fact there is UNVERIFIED, from the community Rx draft, which was not opened for this specification | 5.1, 5.2, 5.5 |
+| S4 | DECISION | The Rx specification, `rx.md` (#55), draft of 2026-11-21: 5.1 (points 1 and 5), 5.4 (point 12), 5.5 (point 4), 5.6 (points 1, 2, 5 and 6), 5.7 (points 1 and 11) and 5.12 (point 6). Every wire fact there is UNVERIFIED, from the community Rx draft, which was not opened for this specification | 5.1, 5.2, 5.5 |
 | S5 | DECISION | [XDR profile](xdr.md): 5.1, point 7 (integers are not converted) | 4, 5.3 |
 | S6 | DECISION | The volume incarnation specification, `volume-incarnation.md` (#78), draft of 2026-11-21: section 2 (point 3), 5.1.1, 5.7 (point 3) and 13 (Q2) | 5.1, 5.2 |
-| S7 | DECISION | The seams specification, `seams-and-scheduling.md` (#71): `Stamp`, `Deadline` and `Reply` | 2, 5.3, 5.5 |
+| S7 | DECISION | The seams specification, `seams-and-scheduling.md` (#71), draft of 2026-11-21 (the seam types revision): 5.3, points 1 and 2 (`Stamp`, `Deadline`, `DeadlineError` and its three values, `FromAfterNow`'s rule), and 5.4 (`Reply` and its optional `first_sent`) | 2, 5.3, 5.5 |
 | C | DECISION | [Claim record](../reviews/2026-11-20-adr-0004-claims.md) row `[DES-019]`, recomputed on 2026-11-21; rows `[DES-051]` and `[DES-063]`, cited only for the reserved rows WR2 and WR4, as leads | 1, 5.2, 5.3, 10 |
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C3, C6, C26, C32, C37, C38, C46 ([part 1](../adr/0004-architecture-1-core.md)); O40 ([part 3](../adr/0004-architecture-3-operations.md)); N5, N25, N31 ([part 4](../adr/0004-architecture-4-negotiation.md)) | 1, 5, 7, 8, 9, 11 |
 | D2 | DECISION | ADR 0006 (Rx unprotected packets), decision 2, point 1, as S4, 5.6, point 1, applies it | 5.2 |
@@ -727,7 +788,14 @@ and the evidence label EXECUTED.
   including 2³¹ − 1 seconds, the latest the venue accepts, and one
   before 1970 if it accepts one; for WT3, two calls at known intervals,
   which tells a span (the same value) from a timestamp (a value that
-  grows with the server's clock); for WT5, the server's clock set to
+  grows with the server's clock), and, if it is a timestamp, the same
+  calls with the server's clock set to known values, including past
+  2038-01-19T03:14:07Z where the venue allows it: the server chooses the
+  expiry, so its width, epoch and signedness show only through how the
+  value follows the server's clock, and through whether a server past
+  the signed boundary sends a word from 2³¹ or a wrapped one. If the
+  venue cannot be set past 2038, WT3's signedness stays open, and Q2's
+  rule applies to it; for WT5, the server's clock set to
   known values (S2's TK1). Blocks: every converter entry, and so every
   code path that reads a server time. Recommendation: one campaign with
   S1's Q1, S2's Q1 and S3's Q1.
@@ -743,7 +811,7 @@ and the evidence label EXECUTED.
   signedness open, a spike gives the row an entry limited to the agreed
   range, which refuses values from 2³¹ with out of range and counts
   them. For WT3 that refusal grants no promise, the safer of the two
-  readings (5.5, D4). Values from 2³¹ in a seconds-since-1970 field are
+  readings (5.5, G4). Values from 2³¹ in a seconds-since-1970 field are
   2038 or later, or before 1970, so the cost now is files with such
   times showing an error instead of a time. Decided by the issue's rule
   ("If a field's width or signedness is uncertain, a spike comes
@@ -753,30 +821,43 @@ and the evidence label EXECUTED.
   client's wall clock. With the server's time "not measured" in M2a (S2,
   5.7, point 1), there is no D: a client whose clock is behind the
   server's by X relies on each promise for up to X longer than the
-  server granted it, at most to `cb.promise.lifetime_max`, and a break
-  the server then fails to deliver is A14's case. S2, 5.7, point 6,
-  says a server can never make the client rely on a promise longer than
-  "the expiry read against the client's own clock", which is true, but
-  that bound is not the server's own. Recommendation: if Q1 shows a
-  timestamp, S2's gate becomes a precondition for reading WT3 as more
-  than a short floor, or the residual is stated in S1, 5.1.4, and S2,
-  5.7, point 6, and bounded by the 60-second skew warning; that is a
-  class S decision for S1 and S2's revision, with this table's row
-  changed in the same pull request. Not needed if WT3 is a span.
-- **Q4. Order of the cut and the correction.** 5.5, D3. Recommendation:
+  server granted it, and the only bound is `cb.promise.lifetime_max`
+  (7 200 s), whatever X is. The same holds after S2's gate opens
+  whenever no sample, or no sample younger than `ka.skew.sample_max`,
+  exists, and a fresh sample still leaves up to its uncertainty (5.3,
+  point 5). The skew warning bounds nothing: it is diagnostic only and
+  changes no lifetime (S2, 5.7, point 4). A break the server stops
+  sending after its own expiry, while the client still relies on the
+  promise, is then not delivered, and that stale data is served under
+  trust is the residual. S2, 5.7, point 6's bound ("the expiry read
+  against the client's own clock") is true but is not the server's.
+  Recommendation, a class S question for the callback (#66) and
+  keepalive (#81) specifications' revision, with this table's row
+  changed in the same pull request: a timestamp expiry is used only with
+  a qualified skew sample younger than `ka.skew.sample_max`, corrected
+  by D plus the sample's uncertainty; without one, the expiry is treated
+  as absent: it grants no promise, or, if that revision prefers, a
+  promise of a short fixed lifetime of the client's own choosing that
+  takes nothing from the server's value. In M2a, where no sample can
+  exist, that means a timestamp expiry grants no promise beyond that
+  fixed lifetime. Not needed if WT3 is a span.
+- **Q4. Order of the cut and the correction.** 5.5, G3. Recommendation:
   correction first, then the cut, with S2, 5.7, point 6, changed to
   match. Only matters once S2's gate opens.
 - **Q5. Which modification time a layer shows.** WT1 and WT2 are both
   converted; which one each layer shows, and whether the other is
   exposed at all, is the contract specification's (#67). Recommendation:
   the contract specification decides, with this table unchanged.
-- **Q6. The clocks' names.** 5.5, D5. Recommendation: S1, S3 and S4 name
-  the boot or awake clock where they say "monotonic", as 5.5, D5,
+- **Q6. The clocks' names.** 5.5, G5. Recommendation: S1, S3 and S4 name
+  the boot or awake clock where they say "monotonic", as 5.5, G5,
   proposes, in their next revisions.
 - **Q7. The host UUID's time fields.** The identity replies send the
   host UUID (5.2.1). If the state directory's specification creates it
-  with a time-based UUID, its time fields carry the moment of creation
-  to any host that asks, without authentication. Recommendation: the
+  with a time-based UUID, its time fields carry the moment of creation,
+  without authentication, to any host that can send from a known
+  server's address (the server itself, or a host on the path or
+  spoofing that address); S1 answers identity calls only from a source
+  matching a known server (S1, 5.6, point 9, row I2). Recommendation: the
   state directory's specification creates it from `Rng` alone, so no
   clock reading leaves the host and no row is needed here; if it
   chooses otherwise, it adds an outbound row to 5.1 in its own pull
