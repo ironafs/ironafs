@@ -5,6 +5,11 @@
 
 mod args;
 mod bans;
+#[expect(
+    dead_code,
+    reason = "TODO(#47): the cell commands are wired in as they land"
+)]
+mod cell;
 mod check;
 mod deps;
 mod fixture;
