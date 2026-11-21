@@ -154,7 +154,10 @@ fn clean_sources(fixture: &mut Fixture) {
         fixture.file(
             allowed,
             "src/lib.rs",
-            Some("use ironafs_vfs::Mint;\npub fn mint() -> Mint { Mint::new() }\n"),
+            Some(
+                "use ironafs_vfs::Mint;\npub(crate) use ironafs_vfs::Mint as Inner;\n\
+                 fn mint() -> Mint { Mint::new() }\npub struct Core { mint: Mint, pub size: u64 }\n",
+            ),
         );
     }
     fixture.file(
@@ -162,7 +165,8 @@ fn clean_sources(fixture: &mut Fixture) {
         "src/lib.rs",
         Some(
             "// The core's Mint makes capabilities.\n\
-             pub const NOTE: &str = \"Mint\";\npub struct Minted;\n",
+             pub const NOTE: &str = \"Mint\";\npub struct Minted;\n\
+             pub const TEXT: &str = include_str!(\"note.txt\");\n",
         ),
     );
 }
@@ -173,6 +177,24 @@ const MINT_PLANTED: &str = "crates/ironafs-fuse/src/planted.rs";
 
 fn plant_mint(fixture: &mut Fixture, source: &str) {
     fixture.file(MINT_CRATE, "src/planted.rs", Some(source));
+}
+
+/// Whether the violation is source this check does not read, `what`, at
+/// `line` of the planted file.
+fn is_hidden(violation: &Violation, line: usize, what: &str) -> bool {
+    matches!(violation, Violation::HidesSource { file, line: at, what: found }
+        if file == Path::new(MINT_PLANTED) && *at == line && found == what)
+}
+
+/// Whether the violation is a public route to the mint, `route`, at
+/// `line` of `ironafs-sim`'s planted file.
+fn is_exposed(violation: &Violation, line: usize, route: &str) -> bool {
+    matches!(violation, Violation::ExposesMint { file, line: at, route: found }
+        if file == Path::new("crates/ironafs-sim/src/planted.rs") && *at == line && *found == route)
+}
+
+fn plant_in_sim(fixture: &mut Fixture, source: &str) {
+    fixture.file("ironafs-sim", "src/planted.rs", Some(source));
 }
 
 /// Whether the violation is the mint's name at `line` of `in_file`.
@@ -1154,6 +1176,93 @@ const CASES: &[Case] = &[
             );
         },
         expect: &[|found| is_mint(found, "crates/ironafs-cache/src/lib.rs", 1)],
+    },
+    Case {
+        name: "a layer includes the capability mint from a file that is not Rust",
+        plant: |fixture| {
+            fixture.file(
+                MINT_CRATE,
+                "src/mint.inc",
+                Some("pub fn m() -> ironafs_vfs::Mint { ironafs_vfs::Mint::new() }\n"),
+            );
+            plant_mint(fixture, "include!(\"mint.inc\");\n");
+        },
+        expect: &[|found| is_hidden(found, 1, "include!")],
+    },
+    Case {
+        name: "a layer includes generated source from its build output",
+        plant: |fixture| {
+            plant_mint(
+                fixture,
+                "\ninclude!(concat!(env!(\"OUT_DIR\"), \"/mint.rs\"));\n",
+            );
+        },
+        expect: &[|found| is_hidden(found, 2, "include!")],
+    },
+    Case {
+        name: "a layer loads a module from a file that is not Rust",
+        plant: |fixture| {
+            fixture.file(
+                MINT_CRATE,
+                "src/mint.inc",
+                Some("pub fn m() -> ironafs_vfs::Mint { ironafs_vfs::Mint::new() }\n"),
+            );
+            plant_mint(fixture, "#[path = \"mint.inc\"]\nmod mint;\n");
+        },
+        expect: &[|found| is_hidden(found, 1, "#[path]")],
+    },
+    Case {
+        name: "a layer loads a module through cfg_attr(path)",
+        plant: |fixture| {
+            plant_mint(
+                fixture,
+                "#[cfg_attr(unix, path = \"mint.inc\")]\nmod mint;\n",
+            );
+        },
+        expect: &[|found| is_hidden(found, 1, "#[path]")],
+    },
+    Case {
+        name: "a layer calls include through a macro fragment",
+        plant: |fixture| {
+            plant_mint(
+                fixture,
+                "macro_rules! pull { ($m:ident) => { $m!(\"mint.inc\"); } }\npull!(include);\n",
+            );
+        },
+        expect: &[
+            |found| is_hidden(found, 1, "$m!"),
+            |found| is_hidden(found, 2, "include"),
+        ],
+    },
+    Case {
+        name: "an allowed crate re-exports the capability mint under another name",
+        plant: |fixture| plant_in_sim(fixture, "pub use ironafs_vfs::Mint as Maker;\n"),
+        expect: &[|found| is_exposed(found, 1, "a public re-export")],
+    },
+    Case {
+        name: "an allowed crate hands out the capability mint from a public function",
+        plant: |fixture| {
+            plant_in_sim(
+                fixture,
+                "\npub fn make() -> ironafs_vfs::Mint { ironafs_vfs::Mint::new() }\n",
+            );
+        },
+        expect: &[|found| is_exposed(found, 2, "a public function")],
+    },
+    Case {
+        name: "an allowed crate holds the capability mint in a public field",
+        plant: |fixture| plant_in_sim(fixture, "pub struct Hand { pub mint: ironafs_vfs::Mint }\n"),
+        expect: &[|found| is_exposed(found, 1, "a public field")],
+    },
+    Case {
+        name: "an allowed crate exports a macro that makes the capability mint",
+        plant: |fixture| {
+            plant_in_sim(
+                fixture,
+                "#[macro_export]\nmacro_rules! mint { () => { ironafs_vfs::Mint::new() }; }\n",
+            );
+        },
+        expect: &[|found| is_exposed(found, 1, "an exported macro")],
     },
 ];
 

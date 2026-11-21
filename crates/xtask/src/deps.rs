@@ -307,6 +307,16 @@ pub(crate) enum Violation {
         file: PathBuf,
         line: usize,
     },
+    HidesSource {
+        file: PathBuf,
+        line: usize,
+        what: String,
+    },
+    ExposesMint {
+        file: PathBuf,
+        line: usize,
+        route: &'static str,
+    },
     NoLibrary(String),
     NoSource(String),
     Unreadable {
@@ -471,6 +481,21 @@ impl fmt::Display for Violation {
                  (ironafsd), the core (ironafs-client) and the test-only crates ironafs-sim \
                  and ironafs-test-support may name it, so no other code can look like it mints \
                  (ADR 0004, C8, point 2)",
+                file.display()
+            ),
+            Self::HidesSource { file, line, what } => write!(
+                formatter,
+                "{}:{line}: {what} brings in source the mint check does not read: outside the \
+                 crates that may name the capability mint, include!, #[path] and attributes \
+                 or macro calls built from fragments are refused, so every name is seen \
+                 (ADR 0004, C8, point 2)",
+                file.display()
+            ),
+            Self::ExposesMint { file, line, route } => write!(
+                formatter,
+                "{}:{line}: {route} gives the capability mint to code outside this crate: \
+                 no crate that may name the mint, other than ironafs-vfs, exposes it, so no \
+                 other code can mint without naming it (ADR 0004, C8, point 2)",
                 file.display()
             ),
             Self::NoLibrary(name) => write!(
