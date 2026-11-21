@@ -17,7 +17,7 @@
 //! spurious wake only re-checks the counts.
 //!
 //! The one real-time read is the watchdog on the baton (5.6, point 9): a
-//! named departure from coding standards rule 7, in [`Run::grant`]. It
+//! named departure from coding standards rule 7, in the grant. It
 //! never feeds a decision, so it cannot change a trace.
 
 mod task;
