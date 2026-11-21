@@ -51,6 +51,28 @@ pub enum Evidence {
     Authoritative,
 }
 
+/// A binding's report that a purge it was delivered failed (contract
+/// specification, 5.10, point 5).
+// TODO(#67): use `ironafs_vfs::PurgeFailed` once the contract crate has it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PurgeFailed {
+    /// The purge of the delivery of `node`'s slot at `revision` failed.
+    Node {
+        /// The node.
+        node: NodeId,
+        /// The revision of the failed delivery.
+        revision: Revision,
+    },
+    /// Under the overflow of `revision`, the purge of `node`, which the
+    /// binding held when the overflow was delivered, failed.
+    OverflowNode {
+        /// The node.
+        node: NodeId,
+        /// The overflow's revision.
+        revision: Revision,
+    },
+}
+
 /// A core whose state a test scripts, behind the contract's values.
 ///
 /// ```
@@ -92,8 +114,9 @@ impl ScriptedCore {
     /// How many layer faults the core counted: a capability presented on
     /// a binding other than its own (contract specification, 5.3,
     /// point 3), a release of a capability it has no record of (5.6,
-    /// point 2), and an acknowledgement or purge failure naming nothing
-    /// delivered (5.10, point 6).
+    /// point 2), and an acknowledgement or purge failure that is neither
+    /// valid nor a repeat (5.10, point 6). The specification counts them
+    /// per binding; this core keeps one count.
     #[must_use]
     pub fn layer_faults(&self) -> u64 {
         self.ledger.faults().saturating_add(self.faults)
@@ -282,12 +305,15 @@ impl ScriptedCore {
     /// `binding` acknowledges that it applied an event's purge (C17,
     /// point 2; contract specification, 5.10, point 3). Only the delivered
     /// revision it names is cleared; effects merged after that delivery
-    /// stay pending under their higher revision (C17, point 6). An
-    /// acknowledgement has no reply: one that names a node with no pending
-    /// slot, a revision never delivered (zero included) or an overflow not
-    /// pending, or comes from a binding not attached, changes nothing and
-    /// is counted as a layer fault; a repeated one changes nothing (5.10,
-    /// point 6).
+    /// stay pending under their higher revision (C17, point 6).
+    ///
+    /// An acknowledgement has no reply, and is valid only if it names a
+    /// delivery to `binding` not yet acknowledged or reported (5.10,
+    /// point 6). An invalid one changes nothing: if its revision is
+    /// non-zero and at or below the latest delivered for that node (or for
+    /// the overflow) it is a repeat, ignored; otherwise (a revision never
+    /// delivered, a node `binding` does not hold, an overflow never
+    /// delivered, a binding not attached) it is counted as a layer fault.
     pub fn ack(&mut self, binding: BindingId, ack: Ack) {
         let Some(stream) = self.streams.get_mut(&binding) else {
             self.fault();
@@ -308,7 +334,7 @@ impl ScriptedCore {
                 self.stale
                     .retain(|(_, failed), offered| *failed != binding || *offered > revision);
             }
-            Acked::Nothing => {}
+            Acked::Repeat => {}
             Acked::Fault => self.fault(),
         }
     }
@@ -323,31 +349,37 @@ impl ScriptedCore {
             .is_some_and(|stream| stream.gated(node))
     }
 
-    /// `binding` could not apply the purge of `node` it was delivered
-    /// under `revision`, a node event's or an overflow's (C15, point 6;
-    /// C17, point 5; contract specification, 5.10, point 5). The operating
+    /// `binding` reports that a purge it was delivered failed: a node
+    /// event's ([`PurgeFailed::Node`]) or, under an overflow, one node's
+    /// ([`PurgeFailed::OverflowNode`], reported before the overflow is
+    /// acknowledged) (C15, point 6; C17, point 5; contract specification,
+    /// 5.10, point 5). The operating
     /// system may still serve the node's old state, so the node answers
     /// [`VfsError::Stale`] in every binding: every context's handles on it,
     /// on every binding, are revoked, and new opens of it are refused until
     /// `binding` acknowledges a purge that covers it. The purge is offered
-    /// to `binding` again, as a node event or within an overflow. Nothing
-    /// else changes: no other node, handle or pending event.
+    /// to `binding` again, as a node event or, when its slot does not fit
+    /// the bound, within the overflow. Nothing else changes: no other node,
+    /// handle or pending event.
     ///
-    /// The report has no reply (5.6, point 1): one from a binding not
-    /// attached, for a node it does not hold, or naming a revision never
-    /// delivered to it changes nothing and is counted as a layer fault.
-    pub fn purge_failed(&mut self, binding: BindingId, node: NodeId, revision: Revision) {
-        let Some(stream) = self
-            .streams
-            .get_mut(&binding)
-            .filter(|stream| stream.may_have_failed(node, revision))
-        else {
+    /// The report has no reply (5.6, point 1) and follows the validity
+    /// rule of [`ScriptedCore::ack`]: an `OverflowNode` report is valid
+    /// only for a node `binding` held when the overflow was delivered,
+    /// once. An invalid report revokes nothing.
+    pub fn purge_failed(&mut self, binding: BindingId, report: PurgeFailed) {
+        let Some(stream) = self.streams.get_mut(&binding) else {
             self.fault();
             return;
         };
-        let offered = stream.retry(node);
-        self.ledger.revoke_node(node);
-        self.stale.insert((node, binding), offered);
+        let (PurgeFailed::Node { node, .. } | PurgeFailed::OverflowNode { node, .. }) = report;
+        match stream.fail(report) {
+            Ok(offered) => {
+                self.ledger.revoke_node(node);
+                self.stale.insert((node, binding), offered);
+            }
+            Err(Acked::Fault) => self.fault(),
+            Err(_) => {}
+        }
     }
 
     /// Whether a failed purge left `node` stale (C15, point 6).

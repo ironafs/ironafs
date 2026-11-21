@@ -57,7 +57,7 @@ pub mod wire;
 pub use clock::{SeededClock, TimeOverflow};
 pub use property::{Counterexample, Property, Verdict};
 pub use rng::SeededRng;
-pub use scripted::{Evidence, ScriptedCore};
+pub use scripted::{Evidence, PurgeFailed, ScriptedCore};
 pub use source::Source;
 pub use splitmix64::SplitMix64;
 pub use sweep::{Exhaustive, FailedInput, SweepFailure};

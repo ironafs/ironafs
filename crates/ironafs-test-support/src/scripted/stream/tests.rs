@@ -224,9 +224,11 @@ fn repeated_ack_changes_nothing() {
     };
     core.ack(binding, ack);
     let second = node_event(&mut core, binding);
-    // The first acknowledgement again: the later effect stays pending.
+    // The first acknowledgement again: a repeat, ignored and never a
+    // fault; the later effect stays pending.
     core.ack(binding, ack);
     assert!(core.gated(binding, FILE));
+    assert_eq!(core.layer_faults(), 0);
     core.ack(
         binding,
         Ack::Node {
@@ -333,6 +335,42 @@ fn weak_break_marks_node_suspect_authoritative_does_not() {
     // Both reach the binding all the same.
     assert_eq!(node_event(&mut core, binding).node, FILE);
     assert_eq!(node_event(&mut core, binding).node, DIRECTORY);
+}
+
+#[test]
+fn ack_of_a_delivery_folded_into_an_overflow_is_a_repeat() {
+    let mut core = ScriptedCore::with_event_bound(1, SLOT_BYTES);
+    let binding = holding(&mut core, &[FILE, DIRECTORY]);
+    weak(&mut core, FILE, &DATA);
+    let delivered = node_event(&mut core, binding);
+    // The next event folds FILE's delivered slot into an overflow.
+    weak(&mut core, DIRECTORY, &DATA);
+    core.ack(
+        binding,
+        Ack::Node {
+            node: FILE,
+            revision: delivered.revision,
+        },
+    );
+    assert_eq!(core.layer_faults(), 0);
+    assert!(core.gated(binding, FILE));
+}
+
+#[test]
+fn ack_for_a_node_not_held_is_a_fault() {
+    let mut core = ScriptedCore::new(1);
+    let binding = holding(&mut core, &[FILE]);
+    weak(&mut core, FILE, &DATA);
+    let event = node_event(&mut core, binding);
+    core.ack(
+        binding,
+        Ack::Node {
+            node: DIRECTORY,
+            revision: event.revision,
+        },
+    );
+    assert_eq!(core.layer_faults(), 1);
+    assert!(core.gated(binding, FILE));
 }
 
 #[test]
