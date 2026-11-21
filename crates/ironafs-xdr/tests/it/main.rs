@@ -12,6 +12,7 @@
 //! (`docs/specs/xdr.md`, section 10).
 
 mod golden;
+mod reject;
 mod roundtrip;
 mod support;
 mod types;

@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# sealed cut off inside serial: no offset or length in the error.
+
+type sealed
+breaks 7, point 2
+expect Truncated -
+offset none
+extent none
+requests none
+input 00000000 0000
