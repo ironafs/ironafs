@@ -131,9 +131,9 @@ that does not apply stays, with one line saying why.
      namespace specification (#80), 5.6.5, points 8 and 10;
    - the security floor keys' values and meaning: M2b-17 (planned). M2a
      reserves their names (5.4, point 5);
-   - finding the files, reading them, their order on disk and their
-     ownership: the caller. It hands this crate each source's bytes, name
-     and trust (5.1, point 3);
+   - finding the files and reading them, in the order of 5.1, point 2,
+     and by the walk of 5.1, point 3: the caller. It hands this crate each
+     source's bytes, name and trust;
    - run-time overrides (debug levels and captures, O17, point 1): the
      events specification and the control endpoint (#70). No key of this
      schema is a run-time override.
@@ -197,29 +197,43 @@ that does not apply stays, with one line saying why.
    `[ADR 0004 O17.1: Working]`. F holds `ironafs.toml` and every
    `ironafs.d/*.toml` `[ADR 0004 O18.1: Working]`; on Linux, P holds the
    files under `/etc/ironafs/policy.d/` `[ADR 0004 O17.4: Working]`. No
-   key in 5.2 may be set in R `[ADR 0004 O17.1: Working]`.
+   key in 5.2 may be set in R `[ADR 0004 O17.1: Working]`. In both
+   directories a source is an entry whose name ends in `.toml` and does
+   not start with `.`; any other entry is not a source and is not read
+   `[OWN]`, so an editor's or a package manager's temporary or backup file
+   (`.policy.toml.swp`, `policy.toml.dpkg-new`) is never taken as policy or
+   configuration.
 2. **This crate parses bytes.** The caller finds the files, reads at most
    `MAX_FILE_BYTES` + 1 bytes of each and hands over all it read, so a
-   larger file is seen and refused (config-syntax.md, 5.2), puts F's files
-   in their order, and hands over one source per file
-   ([config-syntax.md](config-syntax.md), §2) `[OWN]`.
+   larger file is seen and refused (config-syntax.md, 5.2), and hands over
+   one source per file ([config-syntax.md](config-syntax.md), §2)
+   `[OWN]`. F's sources are in this order: `ironafs.toml`, then the
+   drop-ins sorted by name, byte by byte; P's sources are sorted the same
+   way `[OWN]`. So which refusal is reported first never depends on the
+   order in which a directory lists its entries.
 3. **Trust: one walk, the same for F and P.** The caller opens every
    source by walking its path from `/` by descriptor, one component at a
    time: each directory with `openat` and `O_NOFOLLOW | O_DIRECTORY`
-   relative to the previous descriptor, the file itself with `openat` and
-   `O_NOFOLLOW`, then reads the bytes from that same descriptor. On each
-   opened descriptor, `/` included, it checks the owner and mode. The
-   source is `trusted` only when every component is owned by uid 0 and
-   writable by no other user or group; a symbolic link anywhere on the
+   relative to the previous descriptor, checking each directory's owner
+   and mode on its descriptor, `/` included, before it opens the next
+   component. The file itself is opened with `openat` and `O_NOFOLLOW |
+   O_NONBLOCK | O_NOCTTY | O_CLOEXEC` relative to its directory's
+   descriptor; `fstat` on that descriptor must show a regular file with
+   the owner and mode below before any byte is read, and the bytes are
+   then read from that same descriptor. The source is `trusted` only when
+   every component is owned by uid 0 and writable by no other user or
+   group, and the file is a regular file; a symbolic link anywhere on the
    path (including one that makes an `openat` fail with `ELOOP` or
-   `ENOTDIR`), a component with another owner, or a component writable by
-   group or others makes it `untrusted` `[OWN]`, from issue #93 ("set only
-   by a root-owned file or by policy") and the DNS client specification
-   (#60), 5.6.4, point 6, which states the same ownership test. The
-   directory listing that finds the drop-ins and policy files is read from
-   the walked directory's own descriptor. Because every check is on the
-   descriptor the bytes come from, no component can be swapped between
-   the check and the read. O17, point 4, guarantees only a "root-owned
+   `ENOTDIR`), a component with another owner, a component writable by
+   group or others, or a file that is not a regular file makes it
+   `untrusted` `[OWN]`, from issue #93 ("set only by a root-owned file or
+   by policy") and the DNS client specification (#60), 5.6.4, point 6,
+   which states the same ownership test. The directory listing that finds
+   the drop-ins and policy files is read from the walked directory's own
+   descriptor, and each file it names is opened with `openat` relative to
+   that same descriptor, the one that was checked and listed, never by a
+   new walk. Because every check is on the descriptor the bytes come from,
+   no component can be swapped between the check and the read. O17, point 4, guarantees only a "root-owned
    policy directory"; a file in it that another user can write would let
    a local edit pose as policy, which O19's "Why" names as the reason the
    directory is separate ("A separate policy directory on Linux keeps a
@@ -253,16 +267,24 @@ that does not apply stays, with one line saying why.
    refused local configuration at start does not fall back to defaults
    (Q11).
 7. **Every source state has one result** `[OWN]`. "Absent" means the
-   walk ends in `ENOENT` at the file (or, for the drop-in or policy
-   directory, at the directory): there is no such source. "Unreadable"
-   means any other failure to walk, list, open or read that is not an
-   untrust condition of point 3 (for example `EACCES` or `EIO`).
-   "Malformed" means the syntax or the schema refuses the bytes.
+   walk ends in `ENOENT` at `ironafs.toml`, or at the drop-in or policy
+   directory or any directory above it, every directory opened before it
+   having passed point 3's checks: there is no such source. A drop-in or
+   policy directory that holds no source (point 1) is absent too. A file
+   that the directory listing named but that is gone when it is opened is
+   unreadable, never absent. "Unreadable" means any other failure to
+   walk, list, open, `fstat` or read that is not an untrust condition of
+   point 3 (for example `EACCES` or `EIO`). "Malformed" means the syntax
+   or the schema refuses the bytes.
 
    | Layer | Absent | Unreadable | Untrusted | Malformed | Valid |
    |---|---|---|---|---|---|
-   | F (`ironafs.toml`, the drop-in directory, each drop-in) | contributes nothing | local refusal | local refusal | local refusal | used |
-   | P (the policy directory, each policy file) | the whole policy is absent: unmanaged if `managed_before` is false, unreadable if it is true (O19, point 5) | the policy is unreadable | the policy is incompatible | the policy is incompatible (Q12) | used, if every policy file is valid |
+   | F (`ironafs.toml`, the drop-in directory, each drop-in) | contributes nothing (`ironafs.toml` or the drop-in directory) | local refusal | local refusal | local refusal | used |
+   | P (the policy directory, each policy file) | the whole policy is absent (the policy directory): unmanaged if `managed_before` is false, unreadable if it is true (O19, point 5) | the policy is unreadable | the policy is incompatible | the policy is incompatible (Q12) | used, if every policy file is valid |
+
+   Across the policy files the worst state decides: untrusted or
+   malformed (the policy is incompatible), then unreadable, then valid
+   `[OWN]`.
 
    A local refusal keeps the last good local configuration, or stops the
    start if there is none (section 7). An unreadable policy uses the last
@@ -506,12 +528,14 @@ it refuses. A value of another syntax type is a type error (section 7).
 3. **Address** and **server address:** a string. An address is an IPv4
    address in dotted decimal (four decimal parts 0 to 255, no leading
    zero) or an IPv6 address in the text forms of RFC 4291, section 2.2,
-   without a zone index; a server address adds an optional port, written
-   `192.0.2.1:7003` or `[2001:db8::1]:7003`, 1 to 65535. Without a port,
-   the port is the one the specification of the service asked states: the
-   Rx and location service specifications (#55, #65) for `servers`, the
-   DNS client specification (#60, 5.6.4, point 4: 53) for `dns_servers` and
-   `discovery.servers` `[OWN]`. A host name is refused, decided (Q5). Two entries
+   without a zone index, whose embedded IPv4 part, if any, follows the same
+   dotted-decimal rule `[OWN]`; a server address adds an optional port,
+   written `192.0.2.1:7003` or `[2001:db8::1]:7003`, 1 to 65535 in decimal
+   without a leading zero `[OWN]`. Without a port, the port is the one the
+   specification of the service asked states: 7003, the VL service's port
+   in the location service specification (#65, 5.1.1, point 5), for
+   `servers`; 53 in the DNS client specification (#60, 5.6.4, point 4) for
+   `dns_servers` and `discovery.servers` `[OWN]`. A host name is refused, decided (Q5). Two entries
    equal as addresses and ports (after parsing, so `::1` and
    `0:0:0:0:0:0:0:1` are equal) refuse the list `[OWN]`. Either family is
    accepted whatever `network.families` says
@@ -587,15 +611,18 @@ it refuses. A value of another syntax type is a type error (section 7).
    file order `[OWN]`:
    - **a table** (an explicit header, or a table a header creates
      implicitly) must be a known table; an unknown table, even an empty
-     one, is an unknown key (5.4, points 1 and 2); a table at the path of
-     a known key that holds a value (`[cells."x".protocol]`) is a type
-     error;
+     one, is an unknown key (5.4, points 1 and 2), reported once by its
+     path: the tables and entries under it are neither checked nor
+     reported `[OWN]`; a table at the path of a known key that holds a
+     value (`[cells."x".protocol]`) is a type error;
    - **an entry** must be a known key; a value at the path of a known
      table (`network = 1` at the root) is a type error; then layer
      (5.1, point 5), type and range (5.3);
-   - every cell segment, quoted or bare, passes the cell-name constructor.
-3. **Two spellings of one cell in one source refuse it:** two cell tables
-   whose segments construct equal cell names (for example
+   - the segment of every configured cell (5.2.2, point 1), quoted or
+     bare, passes the cell-name constructor; a segment that only an
+     unknown subtree creates is not checked.
+3. **Two spellings of one cell in one source refuse it:** two configured
+   cells (5.2.2, point 1) whose segments construct equal cell names (for example
    `cells."Example.org"` and `cells."example.org."`) are a redefinition,
    though the syntax compares segments byte for byte
    (config-syntax.md, 5.1, point 8), and the error names both positions
@@ -606,14 +633,21 @@ it refuses. A value of another syntax type is a type error (section 7).
    cell refusal. **Cell refusals survive a local refusal:** after the first
    refusal, the rest of every trusted F source that parsed is still
    scanned for security keys, and the cells each unknown value covers are
-   carried in the `LocalRefusal` as refusal rules (5.2.7, point 2): a
-   per-cell value refuses its cell, a machine-wide value every cell, in
-   both cases unless a policy value covers that cell for that key (5.2.7,
-   point 1) `[OWN]`. Untrusted sources are never scanned (5.1, point 4). Part (e), keeping the last good local
-   configuration, still refuses those cells (5.8, point 5), so a refused
-   file cannot keep a cell serving under a floor its new value raised.
-   A source that does not parse yields no cell refusals; the whole
-   configuration is refused and reported, which is the residual.
+   carried in the `LocalRefusal` as refusal rules (5.2.7, point 2), each
+   a security key with its scope: a per-cell value refuses its cell, a
+   machine-wide value every cell, in both cases unless a policy value
+   covers that cell for that key (5.2.7, point 1) `[OWN]`. Validating F
+   reads no policy, so that exception is applied by `merge` (5.8, point
+   4), not here. In the scan, a cell segment the cell-name constructor
+   refuses names no cell and yields no rule, and a value of the wrong
+   syntax type is a type error (5.4, point 4) and yields none `[OWN]`.
+   Untrusted sources are never scanned (5.1, point 4). Part (e), keeping
+   the last good local configuration, still refuses those cells (5.8,
+   point 5), so a refused file cannot keep a cell serving under a floor
+   its new value raised. A source that does not parse yields no cell
+   refusals; the whole configuration is refused and reported, which is
+   the residual. The rules of an earlier refusal are not dropped by it
+   (5.8, point 5).
 5. **P collects:** in a policy source, unknown keys are collected for the
    report and validation continues; the first other failure makes the
    policy incompatible (section 7). An unknown subtree ignored in P
@@ -689,19 +723,23 @@ These are names and shapes only. What each part decides is its own.
 
 1. **Validated layers.** Part (b) provides `validate_local(sources) ->
    Result<LocalLayer, LocalRefusal>` for F (a `LocalRefusal` carries the
-   cell refusals of 5.5, point 4), and
-   `validate_policy_keys(sources) -> PolicyKeys` for P, where `PolicyKeys`
-   holds the known keys with their values, the envelope's raw values, the
-   unknown keys for the report, the cell refusals, and the first other
-   failure if any. Neither reads a file or a clock.
-2. **The envelope and the policy state** (part (c)): part (c) takes a
-   `PolicyKeys` (or the caller's "no policy source" or "unreadable"),
-   together with the managed history it needs for O19, point 5 (whether
-   a last good policy exists, from part (f), and whether the host left
-   management by the directive or the audited command), and returns the
-   policy state of O19, point 4, as a typed value `PolicyState {
-   Unmanaged, Valid(PolicyLayer), Unreadable, Incompatible(reason) }`.
-   "No policy source" with a managed history is unreadable, never
+   refusal rules of 5.5, point 4), and
+   `validate_policy_source(source) -> PolicyKeys` for one P source, where
+   `PolicyKeys` holds that source's known keys with their values, the
+   envelope's raw values, the unknown keys for the report, the cell
+   refusals, and the first other failure if any. How the sources' keys
+   form one policy is part (c)'s (5.6, point 5). Neither reads a file or a
+   clock.
+2. **The envelope and the policy state** (part (c)): part (c) takes the
+   policy's sources as the caller found them: either "absent" (5.1, point
+   7) or the list of its sources in the order of 5.1, point 2, each
+   `Unreadable`, `Untrusted` (a trust failure, which may come before any
+   byte is read) or its `PolicyKeys`; together with `managed_before`
+   (5.1, point 7) and whether a last good policy exists (part (f)). It
+   returns the policy state of O19, point 4, as a typed value
+   `PolicyState { Unmanaged, Valid(PolicyLayer), Unreadable,
+   Incompatible(reason) }`, the worst source state deciding (5.1, point
+   7). An absent policy with `managed_before` true is unreadable, never
    unmanaged (O19, point 5: "A policy that merely disappears is treated as
    unreadable"). The policy state is computed independently of F: a local
    refusal never changes it, and a policy state never refuses F `[OWN]`.
@@ -711,17 +749,21 @@ These are names and shapes only. What each part decides is its own.
      envelope path (the envelope cannot be "required" of itself);
    - `has_value(path)`: for a path without `*`, true when the policy itself
      sets it (a default, or a value from F, does not count); for a path
-     with `*`, true when the policy has at least one configured cell
-     (5.2.2, point 1) and every configured cell of the policy sets that
-     key. A reserved key's value counts
-     as a value, though every such value refuses its cells;
+     with `*`, true when at least one configured cell of the policy
+     (5.2.2, point 1) sets that key `[OWN]`, so a policy can require a
+     per-cell key with no neutral value (`dns_interface`) that it sets on
+     some of its cells only. A reserved key's value counts as a value,
+     though every such value refuses its cells;
    - the client's own version (5.3, point 6).
 3. **The classic files** (part (d)): part (d) returns a
    `ClassicContribution` (cells with their servers, and a home cell), each
    cell name built by the one constructor. The resolution order of 5.6,
    point 7, consumes it; it never enters `merge`.
-4. **Merging:** `merge(LocalLayer, PolicyInput, Running) -> Effective`,
-   where `Running` holds the active values of the restart keys and their
+4. **Merging:** `merge(LocalLayer, RefusalRules, PolicyInput, Running) ->
+   Effective`, where `RefusalRules` are the refusal rules part (e) keeps in
+   force (point 5; empty when the local configuration was accepted), to
+   which `merge` applies 5.2.7, point 1's exception for a cell a policy
+   value covers; `Running` holds the active values of the restart keys and their
    origins (from the running daemon, or empty at start, when the pending
    value becomes active), and
    `PolicyInput` is `Unmanaged` or `Policy(PolicyLayer)`: the valid
@@ -735,13 +777,20 @@ These are names and shapes only. What each part decides is its own.
    name (5.2.7, point 2), which every consumer checks before any
    network I/O for a cell (N27, point 2's rule, applied to every refusal)
    `[OWN]`.
-5. **Reload** (part (e)): part (e) compares the running `Effective` with a
-   new validation's result, and returns the typed decision the daemon
-   applies (issue #93, "Reload"). The local and policy outcomes are taken
+5. **Reload** (part (e)): part (e) compares the running `Effective`, if
+   there is one, with a new validation's result, and returns the typed
+   decision the daemon applies (issue #93, "Reload"). There is no running
+   `Effective` at start, nor while the policy gives no `PolicyInput`;
+   part (e) also holds the last good `LocalLayer`, if any, so a reload can
+   leave a fenced state `[OWN]`. The local and policy outcomes are taken
    separately `[OWN]`: a new valid policy with a refused local
    configuration is merged with the last good `LocalLayer` (plus the
    refusal's cell rules); a valid local configuration with a policy that
-   gives no `PolicyInput` fences service whatever F holds. A failing layer
+   gives no `PolicyInput` fences service whatever F holds. The refusal
+   rules of every local refusal since the last good `LocalLayer` was
+   accepted stay in force until a local configuration is accepted
+   `[OWN]`, so a later refusal that yields fewer rules (a file that no
+   longer parses) does not let a refused cell serve again. A failing layer
    keeps its last good value where its rule allows one (O18, point 5, for
    F; the last good policy only when unreadable, for P); a passing layer
    takes its new value. This page gives it the refusal kinds of
@@ -759,9 +808,11 @@ These are names and shapes only. What each part decides is its own.
    value (config-syntax.md, 7, point 1), what was expected, and a hint
    `[ADR 0004 O18.2: Working]`.
 2. **The suggestion** for an unknown key in F compares the unknown key's
-   last segment with the last segment of each known key: first the known
-   keys of the same table, then those of other tables, which are
-   suggested by their full path. Candidates within a Levenshtein distance
+   last segment with the last segment of each known key valid in F (not
+   the envelope, 5.4, point 6): first the known keys of the same table,
+   then those of other tables, which are suggested by their full path. An
+   unknown table is compared the same way with the known tables valid in
+   F `[OWN]`. Candidates within a Levenshtein distance
    of 2 are offered, closest first, ties in 5.2's order, at most three
    `[OWN]`. So `cells."x".protocl` suggests `protocol`. Distances are
    computed only between segments of at most `MAX_KEY_BYTES`
@@ -784,7 +835,7 @@ These are names and shapes only. What each part decides is its own.
 | Value | Bound | Method |
 |---|---|---|
 | byte count | 64 MiB to 2^62 − 1 | compared after the syntax's checked parse; a sum of two is at most 2^63 − 2, below `i64::MAX` |
-| port | 1 to 65535 | parsed digit by digit with `checked_mul` and `checked_add` into `u16`; overflow refuses |
+| port | 1 to 65535, no leading zero | parsed digit by digit with `checked_mul` and `checked_add` into `u16`; overflow refuses |
 | version parts | 0 to 2^32 − 1 each | parsed into `u32` with checked arithmetic; compared as a triple |
 | suggestion distance | 2 | one row of at most `MAX_KEY_BYTES` + 1 counters; no sum exceeds 2 × `MAX_KEY_BYTES` |
 | list counts | 5.2's ranges | compared before the list is stored |
@@ -857,8 +908,16 @@ in `crates/ironafs-config/tests/it/`.
 4. **Layers:** the same key in two F sources refused, naming both; a P
    value locks the key; untrusted F and P sources refused (one case per
    part of the test, and a symbolic link as the file and as a directory
-   on the path); each cell of 5.1, point 7's table, for F and for P, with
-   `managed_before` true and false; a policy machine-wide floor with a
+   on the path; a file that is not a regular file, such as a FIFO, refused
+   without blocking and without reading); each cell of 5.1, point 7's
+   table, for F and for P, with `managed_before` true and false; a missing
+   `/etc/ironafs` gives absent for F and P; an empty policy directory is
+   absent; a listed file gone at its open is unreadable; policy files in
+   two different failing states give the worst; an entry not named
+   `*.toml`, or starting with `.`, is not read; F's sources taken in the
+   order of 5.1, point 2, whatever the listing order; a refused reload
+   followed by one that does not parse keeps the first one's cell
+   refusals; a policy machine-wide floor with a
    local per-cell value for the same key: the policy's value covers the
    cell; an envelope key in F refused as unknown; a policy
    `dns_scope` with a local `dns_servers` uses neither local value (the
@@ -868,10 +927,13 @@ in `crates/ironafs-config/tests/it/`.
    `network = 1`; an unknown subtree in P configures no cell.
 6. **Versions and `required`:** a development build with any
    `min_client_version` gives incompatible; `has_value` for a `cells.*`
-   path with a policy cell lacking the key gives false.
+   path gives false when no configured policy cell sets the key, and true
+   when one of two does.
 7. **Cells:** two spellings of one cell refused; a cell in F and in P
    combined per key.
-8. **Property:** any document of known keys with valid values validates,
+8. **Property:** any F document of keys valid in F, with valid values,
+   each key once, and no two cell tables constructing one cell name,
+   validates (a security key's value may refuse cells, never the file),
    and merging is deterministic: the same sources and the same `Running`
    give the same effective configuration and origins.
 9. **No partial use:** a refusal returns no layer (the types make a
@@ -909,6 +971,7 @@ in `crates/ironafs-config/tests/it/`.
 | SYN | SPECIFICATION | [config-syntax.md](config-syntax.md) (draft, 2026-11-21) | throughout |
 | DNS | SPECIFICATION | The DNS client specification, issue #60 (draft), 5.2, 5.6.3 and 5.6.4 | 5.2.2, 5.2.4 |
 | NS | SPECIFICATION | The namespace specification, issue #80 (draft), 5.2 and 5.6.5 | 5.2.1, 5.2.6 |
+| VLFS | SPECIFICATION | The location service specification, issue #65 (draft, 2026-11-21), 5.1.1, point 5 (the VL service's port, marked unverified there) | 5.3.3 |
 | S1 | SPECIFICATION | RFC 4291, "IP Version 6 Addressing Architecture", section 2.2 (to be registered) | 5.3.3 |
 | CTL | DECISION | The controller's rulings of 2026-11-21 on Q1 to Q12 | 13 |
 | OWN | OWN | This page's own choices, each with its reason where it is made | throughout |
@@ -978,45 +1041,42 @@ Open: Q6's registration (above), and the cross-specification notes for
 
 ### 13.1 Blockers before this page leaves draft
 
-The review's stop rule was reached with these four findings open. The page
-stays draft, and no code is written from it until each is fixed and a
-scoped re-review of that fix passes. Each is quoted as the reviewer wrote
-it.
+These four findings were open when the review's fix rounds stopped. Each
+fix is now in the text; the page stays draft, and no code is written from
+it, until a scoped re-review of each fix passes. Each is quoted as the
+reviewer wrote it.
 
 1. "The per-source table gives no precedence when policy sources fail in
    different ways. It also treats a single missing policy file as absence
    of the whole policy. The part (c) interface still lists no explicit
    `managed_before` or typed input for a trust failure that occurs before
    bytes are available."
-   - Fix: across policy files the worst state decides (untrusted or
-     malformed, then unreadable, then valid); a file listed but gone at
-     open is unreadable, and only a missing or empty policy directory is
-     absent; part (c)'s input becomes the list of per-source states plus
-     `managed_before`, named in 5.8, point 2.
-   - Closed by: a scoped re-review of that change to 5.1, point 7, and
-     5.8, point 2.
+   - Fix: across policy files the worst state decides; a file listed but
+     gone at its open is unreadable, and only a missing or empty policy
+     directory (or a missing directory above it) is absent; part (c)'s
+     input is the list of per-source states plus `managed_before`.
+   - In: 5.1, point 7; 5.8, points 1 and 2.
 2. "The walk pins each opened component, and listing uses a checked
    directory descriptor. The text still permits opening listed files
    through a fresh walk that reaches a replacement directory."
    - Fix: each listed file is opened with `openat` relative to the very
      directory descriptor that was checked and listed, never by a new walk.
-   - Closed by: a scoped re-review of 5.1, point 3.
+   - In: 5.1, point 3.
 3. "The final open requires only `O_NOFOLLOW`. The walk does not require
    a regular file or prevent blocking before it can check the
    descriptor."
    - Fix: the file is opened with `O_NOFOLLOW | O_NONBLOCK | O_NOCTTY |
      O_CLOEXEC`, then `fstat` must show a regular file, else the source is
-     untrusted.
-   - Closed by: a scoped re-review of 5.1, point 3, and its test in 10,
-     point 4.
+     untrusted, before any byte is read.
+   - In: 5.1, point 3, and its test in 10, point 4.
 4. "The configured-cell rule excludes an implicit parent created solely by
    ignored policy content. The validation section still checks every cell
    segment and compares cell tables for aliases. The `required` interface
    still quantifies over every cell table."
    - Fix: 5.5, points 2 and 3, check the segment of, and compare, only
-     configured cells (5.2.2, point 1). The `required` part is already
-     fixed in 5.8, point 2.
-   - Closed by: a scoped re-review of 5.5, points 2 and 3.
+     configured cells (5.2.2, point 1); 5.8, point 2's `has_value` counts
+     configured cells only.
+   - In: 5.5, points 2 and 3; 5.8, point 2.
 
 ## 14. Review
 

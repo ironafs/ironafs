@@ -31,10 +31,13 @@ Class S. Issue #93, part (b).
 
 **Stop rule.** Two fix rounds were made (`301f8f5`, `f93c60e`). After the
 scoped check of the second, the minor findings of both seats were fixed in
-the close-out commit, and GPT's four majors were recorded, not fixed, as
-blockers in the page's section 13.1: the page stays draft and no code is
-written from it until each is fixed and a scoped re-review of the fix
-passes. Fix round 2 replaced case text with structural rules (one
+the close-out commit, and GPT's four majors were recorded as blockers in
+the page's section 13.1: the page stays draft and no code is written from
+it until each is fixed and a scoped re-review of the fix passes. One
+clause of the fourth, `has_value` in 5.8, point 2, quantifying over every
+cell table, was fixed in the close-out commit as GLM's round-3 minor; the
+rest of the four stayed open. All four were then fixed in the
+second-family pass below, pending their scoped re-review. Fix round 2 replaced case text with structural rules (one
 descriptor walk, one table of source states, one definition of a
 configured cell, one precedence for floors), after text-only fixes did not
 converge under the GPT seat.
@@ -349,7 +352,7 @@ marks an item the seat could not verify.
 - **GPT** major docs/specs/config-schema.md:200, :205, :253 | The final open requires only `O_NOFOLLOW`. The walk does not require a regular file or prevent blocking before it can check the descriptor.
   - Disposition: RECORDED as blocker 3 in the page's section 13.1, with its fix and the scoped re-review that closes it (stop rule).
 - **GPT** major docs/specs/config-schema.md:322, :496, :594, :710 | The configured-cell rule excludes an implicit parent created solely by ignored policy content. The validation section still checks every cell segment and compares cell tables for aliases. The `required` interface still quantifies over every cell table.
-  - Disposition: RECORDED as blocker 4 in the page's section 13.1, with its fix and the scoped re-review that closes it (stop rule).
+  - Disposition: RECORDED as blocker 4 in the page's section 13.1, with its fix and the scoped re-review that closes it (stop rule). Its `required` clause (:710) was fixed in the close-out commit as GLM's round-3 minor above; the 5.5, points 2 and 3, clauses stayed open.
 - **GPT** minor docs/specs/config-schema.md:243, :360 | The default rationale still calls `host` the narrowest scope, although the same spec says `servers` with no destinations sends nothing.
   - Disposition: FIXED in the close-out commit.
 - **GPT** minor docs/specs/config-schema.md:720, :869 | The determinism test says identical sources produce identical effective values and origins. After this change, the result also depends on `Running`.
@@ -364,3 +367,39 @@ marks an item the seat could not verify.
   - Disposition: NOTED. No change.
 - **GPT** ? uncertain: Fix log line 373. `git diff --check 301f8f5..f93c60e -- docs/specs/config-schema.md` passed. This was a specification review without runtime testing. No credential commands ran.
   - Disposition: NOTED. No change.
+
+## Second-family pass (Gemini, then DeepSeek)
+
+Reviewed head `91744f2`. Gemini (`gemini-4-carbon-medium`) reviewed the
+diff `main..91744f2` alone, without repository access. DeepSeek
+(`deepseek-flash`) then checked each Gemini finding against the
+repository at `91744f2`, marking each confirmed, refuted or unverifiable,
+and added findings of its own. Items F1 to F10 are DeepSeek's entries
+not marked refuted. The implementer checked each against the text before
+changing it. Every fix is in the page at this pass's fix commit, and none
+of it is reviewed yet: a scoped re-review of the fix diff comes next.
+
+| Item | Seat, severity | Disposition | origin | kind |
+|---|---|---|---|---|
+| F1: the stop-rule paragraph says all four of GPT's majors were "recorded, not fixed", but blocker 4's `required` clause was fixed in the close-out commit | DeepSeek confirmed Gemini, minor | FIXED: the stop-rule paragraph and blocker 4's disposition now say that the `required` clause was fixed in the close-out commit and the rest stayed open | introduced by the close-out commit | consistency between parts |
+| F2: landing with four confirmed blockers open; the workflow's "stop rule" names a different rule; GLM's credit after unreviewed close-out fixes; the disclosure line | DeepSeek, unverifiable, minor | NOT A DEFECT IN THE PAGE; a process question for the merge. The page is draft and says no code is written from it (13.1); docs/workflow.md §3, step 7, lets the fix rounds stop with "record the blocker", and step 8 forbids a merge while a confirmed finding is open, so the merge waits for 13.1's re-review whatever this record says. Here "stop rule" means step 7's "After two fix rounds, stop patching", not §2's rule on missing families. Credit under ADR 0003, point 7, is the merge's decision and is recomputed after this pass's fixes are verified. The disclosure line (`Written by`, under "The change") is present, as DeepSeek found | other | other |
+| F3 (1): `ENOENT` at a directory above the drop-in or policy directory (no `/etc/ironafs`) was "unreadable", so an unconfigured host would fail to start | DeepSeek confirmed Gemini, blocker | FIXED: 5.1, point 7: absent is `ENOENT` at `ironafs.toml` or at the drop-in or policy directory or any directory above it, every directory opened before it having passed the trust checks. 5.1, point 3: each directory is checked before the next component is opened. Tests in 10, point 4. The parent-check attack was refuted by DeepSeek; the check order is now stated | pre-existing | correctness |
+| F3 (2): a drop-in that was listed but is gone at its open "contributes nothing" | DeepSeek confirmed Gemini | FIXED: 5.1, point 7: for F and P alike, a listed file gone at its open is unreadable, never absent | pre-existing | correctness |
+| F3 (3): bytes read before the regular-file and owner checks (blocker 3) | DeepSeek confirmed Gemini | FIXED (blocker 3): 5.1, point 3: `O_NOFOLLOW \| O_NONBLOCK \| O_NOCTTY \| O_CLOEXEC`, and `fstat` must show a regular file, owner and mode before any byte is read; a file that is not a regular file is untrusted. Blocker 2 is fixed in the same point: listed files are opened relative to the checked and listed descriptor | pre-existing | correctness |
+| F3 (4): `policy.d` has no name filter, so a package manager's temporary file is policy | DeepSeek confirmed Gemini | FIXED: 5.1, point 1: in both directories a source is an entry whose name ends in `.toml` and does not start with `.`; other entries are not read | pre-existing | correctness |
+| F4 (1): a refused reload's cell rules are dropped by a later refusal that yields none (a file that no longer parses) | DeepSeek confirmed Gemini, major | FIXED: 5.8, point 5: the refusal rules of every local refusal since the last good `LocalLayer` stay in force until a local configuration is accepted. This is a rule in the reload interface, stated, not built | pre-existing | correctness |
+| F4 (2): the policy-covers exception cannot be evaluated by `validate_local`, and `merge` takes no refusal rules | DeepSeek confirmed Gemini | FIXED: 5.5, point 4: the rules are carried raw (key and scope), and `merge` applies the exception. 5.8, point 4: `merge(LocalLayer, RefusalRules, PolicyInput, Running)` | pre-existing | contract |
+| F4 (3): the post-refusal scan does not say what happens to a cell segment the constructor refuses | DeepSeek confirmed Gemini | FIXED: 5.5, point 4: such a segment names no cell and yields no rule; a value of the wrong type is a type error (Q8) and yields none | pre-existing | missing mechanism |
+| F5: `has_value("cells.*.<key>")` needed every configured policy cell to set the key, so a key with no neutral value (`dns_interface`) set on some cells could not be required | DeepSeek confirmed Gemini, major | FIXED: 5.8, point 2: true when at least one configured cell of the policy sets the key; `is_known` still makes an older client that does not know the key incompatible. Test in 10, point 6 | introduced by fix round 1 (the quantifier) | contract |
+| F6 (1): `validate_policy_keys(sources)` combines several policy sources, which 2.2 and 5.6, point 5, leave to part (c) | DeepSeek confirmed Gemini, major | FIXED: 5.8, point 1: `validate_policy_source(source)` validates one source. 5.8, point 2: part (c) takes "absent" or the list of per-source states (`Unreadable`, `Untrusted` or `PolicyKeys`) plus `managed_before`, and the worst state decides (blocker 1, with 5.1, point 7) | pre-existing | consistency between parts |
+| F6 (2): an ignored subtree is "one unknown path" (5.2.2, point 1), but 5.5 checks every table, entry and cell segment under it | DeepSeek confirmed Gemini | FIXED: 5.5, point 2: an unknown table is reported once and nothing under it is checked or reported; only configured cells' segments are checked and compared (blocker 4, 5.5, points 2 and 3) | introduced by fix round 2 (the configured-cell definition) | consistency between parts |
+| F6 (3): reload compares "the running `Effective`", which does not exist while fenced or at start | DeepSeek confirmed Gemini | FIXED: 5.8, point 5: the running `Effective` if there is one; part (e) also holds the last good `LocalLayer`, so a reload can leave a fenced state | pre-existing | contract |
+| F7: a policy machine-wide value outranks an F per-cell value, so an unknown F per-cell value under it does not refuse the cell, against N8, point 2 | DeepSeek confirmed Gemini with a caveat, major | REFUTED for the unknown-value half; SPECIFICATION ITEM for the rest. N8, point 2, refuses a cell so that a client never runs below a floor it cannot read. Under 5.2.7, point 1, the policy's value locks the key for that cell (O17, point 2; N3, point 1), so a client that knew the local value would also run under the policy's value. The older client runs exactly as a knowing one would, nothing is run below a floor, and the local value is shown as overridden (5.6, point 2), not dropped silently. Treating a machine-wide policy value as a floor that a local per-cell value may tighten is a change to O17, point 2's lock and needs ordered values, which M2b-17 (planned) defines. That is a specification item for M2b-17, not this page. DeepSeek itself calls the "tighten" half a deliberate choice. No change | pre-existing | contract |
+| F8 (1): F suggestions can name P-only envelope keys, and unknown table headers get no suggestion | DeepSeek confirmed Gemini, minor | FIXED: 5.9, point 2: candidates are keys valid in F; an unknown table is compared with the known tables valid in F | pre-existing | correctness |
+| F8 (2): the default port for `servers` is not stated, #65 is not in 12, and ports and embedded IPv4 parts have no leading-zero rule | DeepSeek confirmed Gemini | FIXED: 5.3, point 3: 7003, from the location service specification (#65, 5.1.1, point 5, which marks it unverified); no leading zero in a port or in an embedded IPv4 part; section 6's port row; a VLFS row in 12 | pre-existing | missing mechanism |
+| F8 (3): the order of F's files is left to the caller, which config-syntax.md leaves to this page | DeepSeek confirmed Gemini | FIXED: 5.1, point 2: `ironafs.toml`, then the drop-ins sorted by name byte by byte, and P's sources the same way; 2.2 updated; test in 10, point 4 | pre-existing | consistency between parts |
+| F9: an empty policy directory was a valid empty policy, so `rm policy.d/*` turned a managed host into one running on defaults | DeepSeek, new, major | FIXED: 5.1, point 7: a drop-in or policy directory that holds no source is absent, and so unreadable when `managed_before` is true (O19, point 5). Test in 10, point 4 | pre-existing | correctness |
+| F10: the property "any document of known keys with valid values validates" is false (two spellings of a cell; an envelope key in F) | DeepSeek, new, minor | FIXED: 10, point 8: it applies to any F document of keys valid in F, with valid values, each key once and no two cell tables naming one cell; a security value may refuse cells, never the file | pre-existing | correctness |
+
+Section 13.1 now lists each blocker's fix and where it is. The four stay
+open until a scoped re-review of the fix diff passes.
