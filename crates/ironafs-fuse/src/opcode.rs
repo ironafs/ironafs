@@ -8,6 +8,14 @@
 #[cfg(test)]
 mod tests;
 
+/// Whether a request with this opcode number is given a reply token:
+/// every request except FORGET, `BATCH_FORGET` and INTERRUPT, an opcode
+/// the interface does not define included. The decoder and the session
+/// both ask this one function, so they cannot disagree.
+pub(crate) fn takes_reply(number: u32) -> bool {
+    Opcode::from_u32(number).is_none_or(Opcode::needs_reply)
+}
+
 /// A FUSE request's operation. Each variant's value is its number on the
 /// wire. `CUSE_INIT` and the byte-swapped INIT opcodes are not FUSE
 /// requests and have no variant.

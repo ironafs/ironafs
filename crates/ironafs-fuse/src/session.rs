@@ -14,9 +14,9 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::BTreeSet;
 
-use crate::Opcode;
 use crate::reply::Reply;
 use crate::request::{self, DecodeError, Header, Malformed, Phase, Request, RequestError};
+use crate::{Opcode, opcode};
 
 #[cfg(test)]
 mod tests;
@@ -128,7 +128,7 @@ impl Session {
                     Malformed::DuplicateUnique,
                 )));
             }
-            if takes_reply(&header) {
+            if opcode::takes_reply(header.opcode) {
                 // Past the cap no token is issued (5.6, point 3).
                 if self.pending.len() >= MAX_PENDING {
                     return Err(DecodeError::Request(RequestError::unanswered(
@@ -155,7 +155,7 @@ impl Session {
             Err(_) => None,
         };
         if let Some(header) = issued
-            && takes_reply(header)
+            && opcode::takes_reply(header.opcode)
         {
             self.pending.insert(header.unique);
             // Any INIT given a token before the protocol is settled, a
@@ -200,11 +200,4 @@ impl Session {
         }
         Ok(reply.into_bytes())
     }
-}
-
-/// Whether a request with this header is given a reply token: every
-/// request except FORGET, `BATCH_FORGET` and INTERRUPT, unknown opcodes
-/// included.
-fn takes_reply(header: &Header) -> bool {
-    Opcode::from_u32(header.opcode).is_none_or(Opcode::needs_reply)
 }

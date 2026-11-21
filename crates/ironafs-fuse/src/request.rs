@@ -16,7 +16,7 @@ use ironafs_vfs::{Name, NameError, linux};
 use crate::init::{InitDefect, decode_init};
 use crate::reply::{InitReply, ReplyTo, shape};
 use crate::wire::Reader;
-use crate::{Errno, MAX_DATA, Opcode, errno};
+use crate::{Errno, MAX_DATA, Opcode, errno, opcode};
 
 #[cfg(test)]
 mod tests;
@@ -465,7 +465,7 @@ pub(crate) fn decode(
     let (header, extlen, body) = decode_header(bytes)?;
     let opcode = Opcode::from_u32(header.opcode);
     let refuse = |malformed| {
-        let replies = opcode.is_none_or(Opcode::needs_reply);
+        let replies = opcode::takes_reply(header.opcode);
         DecodeError::Request(RequestError {
             header,
             malformed,
