@@ -11,7 +11,7 @@
 
 use alloc::sync::Arc;
 use core::fmt;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::consumer::{Cause, Consumers, Move};
 
@@ -71,6 +71,28 @@ impl Reader {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stopped;
 
+/// A request that the source stop, made where it cannot be stopped at once:
+/// by a hook, under its driver's lock. The publisher honours it once the
+/// move being told has reached every consumer, before publishing it.
+/// Cheap to clone; any thread.
+#[derive(Clone, Debug)]
+pub struct StopRequest {
+    asked: Arc<AtomicBool>,
+}
+
+impl StopRequest {
+    /// Asks the source to stop.
+    pub fn ask(&self) {
+        self.asked.store(true, Ordering::Release);
+    }
+
+    /// Whether the stop was asked for.
+    #[must_use]
+    pub fn is_asked(&self) -> bool {
+        self.asked.load(Ordering::Acquire)
+    }
+}
+
 /// The one writer of the counter. Dropping it stops the source.
 #[derive(Debug)]
 pub(crate) struct Publisher {
@@ -82,6 +104,7 @@ pub(crate) struct Publisher {
     /// recovering and nothing is readable.
     withheld: bool,
     stopped: bool,
+    stop_request: StopRequest,
 }
 
 impl Publisher {
@@ -99,6 +122,9 @@ impl Publisher {
             consumers,
             withheld: false,
             stopped: false,
+            stop_request: StopRequest {
+                asked: Arc::new(AtomicBool::new(false)),
+            },
         };
         (publisher, reader)
     }
@@ -108,10 +134,15 @@ impl Publisher {
     ///
     /// # Errors
     ///
-    /// [`Stopped`] if the source has stopped, or if the next value would
-    /// be the unavailable marker, which stops it.
+    /// [`Stopped`] if the source has stopped, if the next value would be
+    /// the unavailable marker, or if a stop was asked for (before or
+    /// during the hooks), which stops it unpublished.
     pub(crate) fn advance(&mut self, cause: Cause) -> Result<NetworkGeneration, Stopped> {
         if self.stopped {
+            return Err(Stopped);
+        }
+        if self.stop_request.is_asked() {
+            self.stop();
             return Err(Stopped);
         }
         let next = match self.value.checked_add(1) {
@@ -130,11 +161,20 @@ impl Publisher {
         };
         self.consumers.tell(Move::To(generation, cause));
         telling.disarm();
+        if self.stop_request.is_asked() {
+            self.stop();
+            return Err(Stopped);
+        }
         self.value = next;
         if !self.withheld {
             self.cell.store(next, Ordering::Release);
         }
         Ok(generation)
+    }
+
+    /// The request a hook makes to stop the source.
+    pub(crate) fn stop_request(&self) -> &StopRequest {
+        &self.stop_request
     }
 
     /// Makes reads fail from now until [`Publisher::release`]: moves are

@@ -768,6 +768,46 @@ fn a_barrier_refused_or_acknowledged_for_another_request_fails_the_snapshot() {
 }
 
 #[test]
+fn records_after_the_barrier_s_acknowledgement_are_applied_before_it_publishes() {
+    let (mut monitor, reader, seen) = started();
+    monitor.lost(Loss::Resumed).unwrap();
+    let barrier = dump_to_barrier(&mut monitor);
+    let readable = seen[0].readable();
+    let mut datagram = ack(barrier);
+    datagram.extend(up_link(0, 7));
+    monitor.notification(&datagram).unwrap();
+    // The link's move was told while nothing was readable, against the
+    // fresh tables, and the snapshot published last.
+    assert_eq!(seen[0].readable(), readable);
+    assert_eq!(seen[0].last_change(), 1);
+    assert_eq!(seen[0].snapshots(), 2);
+    assert_eq!(current(&reader), seen[0].last());
+    assert!(monitor.links.entries.contains_key(&7));
+}
+
+#[test]
+fn a_barrier_answered_twice_in_one_datagram_is_refused() {
+    let refused = |barrier: u32| refusal(barrier, -105);
+    for first_ok in [true, false] {
+        let (mut monitor, reader, seen) = started();
+        monitor.lost(Loss::Resumed).unwrap();
+        let barrier = dump_to_barrier(&mut monitor);
+        let (first, second) = if first_ok {
+            (ack(barrier), refused(barrier))
+        } else {
+            (refused(barrier), ack(barrier))
+        };
+        let mut datagram = first;
+        datagram.extend(second);
+        monitor.notification(&datagram).unwrap();
+        assert_eq!(reader.current(), Err(Unavailable), "{first_ok}");
+        assert_eq!(seen[0].snapshots(), 1);
+        assert_eq!(seen[0].last_loss(), loss_code(Loss::Refused));
+        assert!(monitor.request().unwrap().is_links());
+    }
+}
+
+#[test]
 fn a_barrier_s_acknowledgement_before_bad_bytes_publishes_nothing() {
     let (mut monitor, reader, seen) = started();
     monitor.lost(Loss::Resumed).unwrap();

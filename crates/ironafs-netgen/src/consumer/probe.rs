@@ -31,6 +31,8 @@ pub(crate) struct Seen {
     pub(crate) late: AtomicU64,
     /// The last change's code (`change_code`).
     pub(crate) last_change: AtomicU64,
+    /// Moves during whose call the reader showed some generation.
+    pub(crate) readable: AtomicU64,
 }
 
 impl Seen {
@@ -54,6 +56,9 @@ impl Seen {
     }
     pub(crate) fn last_change(&self) -> u64 {
         self.last_change.load(Ordering::SeqCst)
+    }
+    pub(crate) fn readable(&self) -> u64 {
+        self.readable.load(Ordering::SeqCst)
     }
     pub(crate) fn late(&self) -> u64 {
         self.late.load(Ordering::SeqCst)
@@ -81,6 +86,9 @@ impl Consumer for Probe {
             Move::To(generation, cause) => {
                 if self.1.current() == Ok(generation) {
                     self.0.late.fetch_add(1, Ordering::SeqCst);
+                }
+                if self.1.current().is_ok() {
+                    self.0.readable.fetch_add(1, Ordering::SeqCst);
                 }
                 self.0.moves.fetch_add(1, Ordering::SeqCst);
                 self.0.last.store(generation.get(), Ordering::SeqCst);

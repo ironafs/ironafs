@@ -19,7 +19,7 @@ use alloc::collections::BTreeMap;
 use crate::Reader;
 use crate::consumer::Change;
 use crate::consumer::{Cause, Consumers, Loss};
-use crate::generation::{Publisher, Stopped};
+use crate::generation::{Publisher, StopRequest, Stopped};
 use crate::netlink::{
     AddressKey, Dump, Event, LinkState, NLMSG_NOOP, acknowledged_noop, dump_request, event,
     messages,
@@ -251,16 +251,16 @@ impl Monitor {
     /// [`Stopped`] once the source has stopped.
     pub fn notification(&mut self, datagram: &[u8]) -> Result<(), Stopped> {
         self.live()?;
-        // The barrier's acknowledgement publishes only from a whole
-        // datagram: a bad message after it is a loss, which abandons the
-        // snapshot anyway.
-        let whole = messages(datagram).all(|message| {
-            message
-                .and_then(|message| event(&message))
-                .is_ok_and(|found| found != Event::Overrun)
-        });
-        let mut refused = false;
+        // The barrier outstanding when the datagram arrived, and what the
+        // whole datagram answers it. Every record is applied in order, the
+        // fresh tables taking the live ones' place at the acknowledgement,
+        // and the snapshot is published once, after the last record.
+        let pinned = self.barrier().map(|barrier| barrier.sequence);
+        let answer = answer(datagram, pinned);
+        let mut release = false;
         for message in messages(datagram) {
+            // A hook that asked the source to stop ends the datagram.
+            self.live()?;
             let Ok((sequence, found)) =
                 message.and_then(|message| Ok((message.sequence, event(&message)?)))
             else {
@@ -302,17 +302,11 @@ impl Monitor {
                 }
                 Event::Overrun => return self.lost(Loss::Malformed),
                 Event::Error(_) | Event::Acknowledged(_) => {
-                    if self
-                        .barrier()
-                        .is_some_and(|barrier| barrier.sequence == sequence)
+                    if answer == Answer::Accepted
+                        && Some(sequence) == pinned
+                        && found == Event::Acknowledged(NLMSG_NOOP)
                     {
-                        // Only an acknowledgement of the barrier's own
-                        // request, error 0, is its answer.
-                        if found != Event::Acknowledged(NLMSG_NOOP) {
-                            refused = true;
-                        } else if whole {
-                            self.barrier_back()?;
-                        }
+                        release = self.barrier_back();
                     }
                     None
                 }
@@ -322,8 +316,11 @@ impl Monitor {
                 self.advance(Cause::Changed(change))?;
             }
         }
-        if refused {
+        if answer == Answer::Refused {
             return self.dump_failed(Loss::Refused);
+        }
+        if release {
+            self.release()?;
         }
         Ok(())
     }
@@ -464,8 +461,12 @@ impl Monitor {
         Ok(())
     }
 
-    /// Fails once the source has stopped.
-    fn live(&self) -> Result<(), Stopped> {
+    /// Fails once the source has stopped; stops it first if a hook asked
+    /// for that ([`Monitor::stop_request`]).
+    fn live(&mut self) -> Result<(), Stopped> {
+        if !self.stopped && self.publisher.stop_request().is_asked() {
+            self.stop();
+        }
         if self.stopped { Err(Stopped) } else { Ok(()) }
     }
 
@@ -497,28 +498,29 @@ impl Monitor {
         });
     }
 
-    /// The barrier came back: the snapshot is published or, if dirty,
-    /// taken again. A retake is not a failed snapshot, and moves nothing:
-    /// nothing is readable while a snapshot runs, and each change that made
-    /// it dirty moved the generation itself.
-    fn barrier_back(&mut self) -> Result<(), Stopped> {
-        if self
-            .snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.dirty)
-        {
-            self.begin_snapshot();
-            return Ok(());
+    /// The barrier came back: the fresh tables replace the live ones, and
+    /// whether the snapshot is to be published ([`Monitor::release`]) once
+    /// the rest of its datagram is applied; or, if dirty, it is taken again.
+    /// A retake is not a failed snapshot, and moves nothing: nothing is
+    /// readable while a snapshot runs, and each change that made it dirty
+    /// moved the generation itself.
+    fn barrier_back(&mut self) -> bool {
+        match self.snapshot.take() {
+            Some(snapshot) if !snapshot.dirty => {
+                self.links = snapshot.links;
+                self.addresses = snapshot.addresses;
+                true
+            }
+            Some(_) => {
+                self.begin_snapshot();
+                false
+            }
+            None => false,
         }
-        self.complete()
     }
 
-    /// The fresh tables replace the live ones, and the generation moves.
-    fn complete(&mut self) -> Result<(), Stopped> {
-        if let Some(snapshot) = self.snapshot.take() {
-            self.links = snapshot.links;
-            self.addresses = snapshot.addresses;
-        }
+    /// The snapshot is published: the generation moves.
+    fn release(&mut self) -> Result<(), Stopped> {
         self.failures = 0;
         self.started = true;
         if self.publisher.release(Cause::Snapshot).is_err() {
@@ -533,10 +535,21 @@ impl Monitor {
         self.sequence
     }
 
-    /// Whether the source has stopped.
+    /// Whether the source has stopped, or a hook asked it to stop
+    /// ([`Monitor::stop_request`]), which the next call does.
     #[must_use]
     pub fn is_stopped(&self) -> bool {
-        self.stopped
+        self.stopped || self.publisher.stop_request().is_asked()
+    }
+
+    /// The handle with which a hook asks the source to stop. A hook runs
+    /// under its driver's lock, so it cannot stop the source itself: the
+    /// stop happens once the move it is told of has been told to every
+    /// consumer, before that move is published and before any further
+    /// record is applied.
+    #[must_use]
+    pub fn stop_request(&self) -> StopRequest {
+        self.publisher.stop_request().clone()
     }
 
     /// Stops the source: every consumer is told, the generation becomes
@@ -546,6 +559,49 @@ impl Monitor {
         self.stopped = true;
         self.snapshot = None;
         self.publisher.stop();
+    }
+}
+
+/// What one notify datagram answers the barrier outstanding when it
+/// arrived.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Answer {
+    /// Nothing, or the datagram is not whole (its bad message is a loss).
+    None,
+    /// One acknowledgement of error 0 echoing `NLMSG_NOOP`, and nothing
+    /// else of the barrier's sequence.
+    Accepted,
+    /// Anything else of the barrier's sequence: an error, an
+    /// acknowledgement of another request, or a second answer.
+    Refused,
+}
+
+/// What `datagram` answers the barrier `pinned`.
+fn answer(datagram: &[u8], pinned: Option<u32>) -> Answer {
+    let Some(pinned) = pinned else {
+        return Answer::None;
+    };
+    let mut accepted = 0_u32;
+    let mut refused = false;
+    for message in messages(datagram) {
+        let Ok((sequence, found)) =
+            message.and_then(|message| Ok((message.sequence, event(&message)?)))
+        else {
+            return Answer::None;
+        };
+        match found {
+            Event::Overrun => return Answer::None,
+            _ if sequence != pinned => {}
+            Event::Acknowledged(NLMSG_NOOP) => accepted = accepted.saturating_add(1),
+            Event::Error(_) | Event::Acknowledged(_) => refused = true,
+            _ => {}
+        }
+    }
+    match accepted {
+        _ if refused => Answer::Refused,
+        0 => Answer::None,
+        1 => Answer::Accepted,
+        _ => Answer::Refused,
     }
 }
 

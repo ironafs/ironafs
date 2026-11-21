@@ -353,7 +353,7 @@ jobs:
             a_hook_that_panics_leaves_nothing_readable_and_the_source_halted \
             dropping_the_handle_stops_the_source_and_ends_both_threads \
             a_hook_that_panics_on_the_stop_still_lets_both_threads_end \
-            a_hook_that_drops_the_handle_stops_the_source_and_both_threads_end; do
+            a_hook_that_drops_the_handle_stops_the_source_before_publishing; do
             grep -Eq "PASS .* ironafs-net::it monitor::$test\$" monitor.log
           done
       - name: Run linux-udp6's kernel tests at bindv6only 0 and at 1, each in a network namespace of its own

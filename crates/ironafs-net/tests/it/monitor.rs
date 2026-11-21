@@ -229,52 +229,55 @@ fn a_hook_that_panics_on_the_stop_still_lets_both_threads_end() {
     assert!(reader.current().is_err());
 }
 
-/// A hook that, told of the second snapshot, waits for the handle and
-/// drops it: on the notify thread, under the monitor's lock.
+/// A hook that, told of the first snapshot, waits for the handle and drops
+/// it: on the notify thread, under the monitor's lock. The handle is sent
+/// as soon as `spawn` returns, with no lock held, so the wait ends.
 struct Dropper {
     handles: Receiver<MonitorHandle>,
-    snapshots: usize,
+    reader: Reader,
     sender: Sender<Seen>,
 }
 
 impl Consumer for Dropper {
     fn moved(&mut self, change: Move) {
         if let Move::To(_, Cause::Snapshot) = change {
-            self.snapshots += 1;
-            if self.snapshots == 2 {
-                drop(self.handles.recv());
-            }
+            let handle = self.handles.recv();
+            assert!(handle.is_ok(), "the hook received no handle");
+            drop(handle);
         }
-        let _ = self.sender.send((0, change, None));
+        let read = self.reader.current().ok();
+        let _ = self.sender.send((0, change, read));
     }
 }
 
 #[test]
-fn a_hook_that_drops_the_handle_stops_the_source_and_both_threads_end() {
+fn a_hook_that_drops_the_handle_stops_the_source_before_publishing() {
     let (sender, moves) = channel();
     let (give, handles) = channel();
     let pause = Arc::new(Mutex::new(()));
     let (reader, handle) = spawn(|reader| Consumers {
         negative_cache: Box::new(Dropper {
             handles,
-            snapshots: 0,
+            reader: reader.clone(),
             sender: sender.clone(),
         }),
         ..hooks(&sender, reader, &pause, None)
     })
     .unwrap();
     drop(sender);
-    wait_for(&moves, &reader, Cause::Snapshot);
-    // The resume's snapshot, on the notify thread, drops the handle.
-    handle.resumed().unwrap();
     give.send(handle).unwrap();
-    let mut stopped = Vec::new();
-    while let Ok((place, change, _)) = moves.recv() {
-        if change == Move::Stopped {
-            stopped.push(place);
-        }
+    // The first snapshot's move reaches every consumer, unpublished; then
+    // the stop; then both threads end, and the channel closes.
+    let mut told = Vec::new();
+    while let Ok((place, change, read)) = moves.recv() {
+        assert_eq!(read, None, "{place} read a generation");
+        told.push((place, matches!(change, Move::To(_, Cause::Snapshot))));
     }
-    assert_eq!(stopped, (0..7).collect::<Vec<_>>());
+    let expected: Vec<_> = (0..7)
+        .map(|place| (place, true))
+        .chain((0..7).map(|place| (place, false)))
+        .collect();
+    assert_eq!(told, expected);
     assert!(reader.current().is_err());
 }
 

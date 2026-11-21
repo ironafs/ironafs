@@ -36,19 +36,20 @@
 //!
 //! When either thread ends, or the handle is dropped, the source stops;
 //! the handle's drop joins both threads. A hook that drops the handle runs
-//! on one of the threads, under the lock: the drop only asks that thread to
-//! stop, which it does once the hook returns. A thread unwinding from a
+//! on one of the threads, under the lock: the drop only asks the source to
+//! stop ([`StopRequest`]), which the monitor does once that move has been
+//! told to every consumer, before publishing it or applying anything more;
+//! the thread then ends. A thread unwinding from a
 //! hook's panic, or finding the lock poisoned by one, halts it instead: the
 //! hooks are not called again.
 
 use std::error::Error;
 use std::fmt;
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle, ThreadId};
 
-use ironafs_netgen::{Consumers, Loss, Monitor, Reader, Request, Stopped, wake};
+use ironafs_netgen::{Consumers, Loss, Monitor, Reader, Request, StopRequest, Stopped, wake};
 use ironafs_os::{RouteError, RouteSocket};
 
 /// The receive buffer, in bytes (docs/specs/network-generation.md, 5.5,
@@ -101,21 +102,16 @@ struct State {
 }
 
 /// The state, the signal that wakes the snapshot thread while it waits
-/// for work, and a stop asked for by a hook that dropped the handle.
+/// for work, and the request with which a hook that drops the handle stops
+/// the source.
 #[derive(Debug)]
 struct Shared {
     state: Mutex<State>,
     work: Condvar,
-    stop_asked: AtomicBool,
+    stop: StopRequest,
 }
 
 impl Shared {
-    /// Whether the thread holding `state` must end: the source stopped, or
-    /// a hook dropped the handle.
-    fn ended(&self, state: &State) -> bool {
-        state.monitor.is_stopped() || self.stop_asked.load(Ordering::Acquire)
-    }
-
     /// The state. If a hook panicked while it was held, the source is
     /// halted first: its state can no longer be trusted, and its hooks are
     /// not called again.
@@ -144,7 +140,10 @@ impl Shared {
 }
 
 /// The running monitor. Dropping it stops the source and joins both
-/// threads.
+/// threads. Dropped by a hook, on one of those threads, it only asks the
+/// source to stop and joins nothing: the stop happens once the hook's move
+/// has been told to every consumer, before it is published, so the source
+/// may still read as live when the drop returns.
 #[derive(Debug)]
 pub struct MonitorHandle {
     shared: Arc<Shared>,
@@ -178,7 +177,7 @@ impl Drop for MonitorHandle {
         // holds the lock and cannot join itself: the stop is left to that
         // thread, which ends once the hook returns, and stops the source.
         if ids.contains(&thread::current().id()) {
-            self.shared.stop_asked.store(true, Ordering::Release);
+            self.shared.stop.ask();
             return;
         }
         stop(&self.shared);
@@ -221,6 +220,7 @@ pub fn spawn(
         }
     };
     monitor.subscribed();
+    let stop_request = monitor.stop_request();
     let shared = Arc::new(Shared {
         state: Mutex::new(State {
             monitor,
@@ -228,7 +228,7 @@ pub fn spawn(
             request: Arc::new(request),
         }),
         work: Condvar::new(),
-        stop_asked: AtomicBool::new(false),
+        stop: stop_request,
     });
     let mut handle = MonitorHandle {
         shared: Arc::clone(&shared),
@@ -289,13 +289,16 @@ fn follow(shared: &Shared) -> Result<(), Stopped> {
     loop {
         let notify = {
             let state = shared.lock();
-            if shared.ended(&state) {
+            if state.monitor.is_stopped() {
                 return Err(Stopped);
             }
             Arc::clone(&state.notify)
         };
         let received = notify.receive(&mut buffer);
         let mut state = shared.lock();
+        if state.monitor.is_stopped() {
+            return Err(Stopped);
+        }
         let before = (state.monitor.request(), state.monitor.barrier());
         let monitor = &mut state.monitor;
         match received {
@@ -334,7 +337,7 @@ fn snapshots(shared: &Shared) -> Result<(), Stopped> {
         let (asked, request) = {
             let mut state = shared.lock();
             loop {
-                if shared.ended(&state) {
+                if state.monitor.is_stopped() {
                     return Err(Stopped);
                 }
                 if let Some(asked) = state.monitor.request() {
@@ -364,6 +367,9 @@ fn snapshots(shared: &Shared) -> Result<(), Stopped> {
         let (next, barrier) = loop {
             let received = request.receive(&mut buffer);
             let mut state = shared.lock();
+            if state.monitor.is_stopped() {
+                return Err(Stopped);
+            }
             let monitor = &mut state.monitor;
             match received {
                 Ok(count) => monitor.reply(buffer.get(..count).unwrap_or_default())?,
@@ -372,7 +378,7 @@ fn snapshots(shared: &Shared) -> Result<(), Stopped> {
                 Err(RouteError::Truncated) => monitor.dump_failed(Loss::Truncated)?,
                 Err(_) => monitor.dump_failed(Loss::Failed)?,
             }
-            if shared.ended(&state) {
+            if state.monitor.is_stopped() {
                 return Err(Stopped);
             }
             let next = state.monitor.request();
