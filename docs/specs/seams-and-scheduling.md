@@ -2716,4 +2716,4 @@ real platforms.
 
 ## 14. Review
 
-No review record yet. It will be in `docs/reviews/`.
+The review record is [2026-11-21-m2a-71-seams](../reviews/2026-11-21-m2a-71-seams.md).
