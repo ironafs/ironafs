@@ -863,7 +863,9 @@ Decision 2's points carry their own triggers, above.
 
 ## Review
 
-The full record, with every finding and its disposition, is
+This section summarises each review round, with its findings'
+dispositions. The full record, with every finding, its disposition and
+where it was fixed, is
 [docs/reviews/2026-11-21-adr-0006-review.md](../reviews/2026-11-21-adr-0006-review.md).
 
 This ADR was written by Claude models, and its fix rounds by Claude Code
@@ -878,7 +880,8 @@ window, the call-0 match, the callback, CHALLENGE and ICMP points).
   in rounds 5 to 8; `gpt-6.2-sol`, xhigh, in rounds 9 and 10) for design,
   and DeepSeek (`deepseek-flash`, max; high in round 8) as the third
   family in rounds 5 to 8, whose last round passed with minor findings,
-  fixed and checked by GPT in round 9.
+  fixed and checked by GPT in round 9. Round 11: GLM (`glm-5.3`, high),
+  a scoped check of the published text.
 - **Round 1** reviewed the whole draft. GPT FAIL (1 blocker, 8 major, 1
   minor); GLM FAIL (2 major, 6 minor). All fixed, except that two choices
   went to the owner as questions 1 and 2.
@@ -898,7 +901,7 @@ window, the call-0 match, the callback, CHALLENGE and ICMP points).
   that changed. Round 6: GPT FAIL (6 major, 8 minor), DeepSeek FAIL (1 new
   major, 5 new minor; earlier findings partly fixed), and one major from
   the author's own sweep. Round 7: GPT FAIL (9 major, 4 minor), DeepSeek
-  FAIL (2 major, 6 moderate or minor). From round 7 the interim answers
+  FAIL (2 major, 2 moderate, 4 minor). From round 7 the interim answers
   to questions 3 and 4 are applied and marked. Round 8: GPT FAIL (2
   major, 6 minor), DeepSeek PASS with 6 minor. Round 9: GPT FAIL (1
   major, 4 minor). Every finding was fixed in the next round, or
@@ -914,6 +917,11 @@ window, the call-0 match, the callback, CHALLENGE and ICMP points).
   Q3 and Q4 and cite their findings by round; decided question 2 cites
   rounds by their numbers here; and the sweep below was run again on
   this pull request's tree.
+- **Round 11**: GLM (`glm-5.3`, high), a scoped check of the pull
+  request's commit (`e6f3ece..1a3fb45`): PASS, with 3 minor findings,
+  fixed in the next commit and recorded: the record's round 7 counts,
+  the sweep's wording about the dated records, and the description of
+  this section; rounds stopped.
 
 **Partial supersession of ADR 0004, YYYY-MM-DD (issue #52): C30, C31,
 C32 and O23** (interim, pending the owner's decisions (Q3, Q4)).
@@ -980,8 +988,9 @@ YYYY-MM-DD is the date the owner accepts this ADR.
     unchanged.
   - `docs/reviews/2026-11-20-adr-0004-review.md`, ADR 0004's Review
     entry for the documentation sweep at M1's exit and its record
-    `docs/reviews/2026-11-21-m1-close-sweep.md`: dated records, none
-    stating C30, C31, C32 or O23. Unchanged.
+    `docs/reviews/2026-11-21-m1-close-sweep.md`: dated records. The
+    first cites the ids C30, C31, C32 and O23 in its finding tables;
+    none states the rules. Unchanged.
   - `docs/reviews/2026-11-20-adr-0004-claims.md`, row ADR-002 (no Rx
     security class protects an ABORT): agrees with the fact table.
     A dated record. Unchanged.
