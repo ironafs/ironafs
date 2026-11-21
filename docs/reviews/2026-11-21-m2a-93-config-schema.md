@@ -422,3 +422,10 @@ before the stop rule.
 | `RefusalRules` kept across reloads omit the value's source, which 5.9, point 4, requires a cell refusal to name | GPT, major | FIXED: 5.5, point 4, and 5.8, point 4: each rule carries the source and position of the value that raised it, kept with the rule while part (e) keeps it | introduced by the second-family fix (F4) | contract |
 | The determinism property names only sources and `Running`, though `merge` now also takes `RefusalRules` | GPT, major | FIXED: 10, point 8: the same `LocalLayer`, `RefusalRules`, `PolicyInput` and `Running` give the same effective configuration, origins and refused cells; the separate test that a refusal survives a later parse error stays | introduced by the second-family fix (F4) | consistency between parts |
 | The same as above: test 8's determinism clause omits `RefusalRules` | DeepSeek, minor | FIXED, by the same change | introduced by the second-family fix (F4) | consistency between parts |
+
+GPT's check of `a58d61d..4180337` closed blocker 3 and both majors, and
+left blocker 1 partly open. Its fix was then applied:
+
+| Finding | Seat, severity | Disposition | origin | kind |
+|---|---|---|---|---|
+| Blocker 1, remainder: 5.8, point 2's qualifier "before any file is known" excludes a listing that fails after it has returned entries | GPT, blocker | FIXED: 5.8, point 2: a directory outcome is given whenever the walk or the listing fails there, whether or not the listing has already returned entries; it comes first, and file outcomes already obtained are kept. 13.1, blocker 1, says the same. Test in 10, point 4: a listing that returns a policy entry and then fails | introduced by the scoped round (the qualifier) | contract |

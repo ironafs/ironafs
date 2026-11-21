@@ -744,8 +744,9 @@ These are names and shapes only. What each part decides is its own.
    failure, which may come before any byte is read) or, for a file, its
    `PolicyKeys`. An outcome is for a policy file, in the order of 5.1,
    point 2, or for the policy directory or a directory above it, when the
-   walk or the listing fails there before any file is known; that outcome
-   comes first, followed by any file outcomes already obtained `[OWN]`; together with `managed_before`
+   walk or the listing fails there, whether or not the listing has
+   already returned entries; that outcome comes first, followed by any
+   file outcomes already obtained `[OWN]`; together with `managed_before`
    (5.1, point 7) and whether a last good policy exists (part (f)). It
    returns the policy state of O19, point 4, as a typed value
    `PolicyState { Unmanaged, Valid(PolicyLayer), Unreadable,
@@ -927,7 +928,10 @@ in `crates/ironafs-config/tests/it/`.
    table, for F and for P, with `managed_before` true and false; a missing
    `/etc/ironafs` gives absent for F and P; an empty policy directory is
    absent; a listed file gone at its open is unreadable; an untrusted
-   policy directory gives incompatible and an unlistable one unreadable; policy files in
+   policy directory gives incompatible and an unlistable one unreadable;
+   a listing that returns a policy entry and then fails gives the
+   directory's unreadable outcome first, with that entry's outcome kept,
+   and the worst decides; policy files in
    two different failing states give the worst; an entry not named
    `*.toml`, or starting with `.`, is not read; F's sources taken in the
    order of 5.1, point 2, whatever the listing order; a refused reload
@@ -1071,7 +1075,8 @@ reviewer wrote it.
      gone at its open is unreadable, and only a missing or empty policy
      directory (or a missing directory above it) is absent; part (c)'s
      input is the list of outcomes, for the policy directory when the walk
-     or listing fails there and for each file, plus `managed_before`.
+     or listing fails there (also after the listing has returned
+     entries) and for each file, plus `managed_before`.
    - In: 5.1, point 7; 5.8, points 1 and 2.
 2. "The walk pins each opened component, and listing uses a checked
    directory descriptor. The text still permits opening listed files
