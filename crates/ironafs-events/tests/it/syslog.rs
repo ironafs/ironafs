@@ -168,15 +168,18 @@ fn every_encoding_is_printable_ascii_within_its_cap() {
                 let def = event.def();
                 let text = String::from_utf8_lossy(bytes);
                 let msgid = match def.stream() {
-                    Stream::Diagnostic => format!(" ironafs.diag.{} - ", def.id()),
-                    Stream::Audit => format!(" ironafs.audit.{} - ", def.id()),
+                    Stream::Diagnostic => format!("ironafs.diag.{}", def.id()),
+                    Stream::Audit => format!("ironafs.audit.{}", def.id()),
                 };
-                assert!(text.contains(&msgid), "{text}");
-                assert!(
-                    text.contains(&format!(" event={} v={} ", def.name(), def.version())),
-                    "{text}"
-                );
-                assert_eq!(text.contains(" truncated=1"), encoded.truncated(), "{text}");
+                let (header, pairs) = parse_syslog(&text).unwrap();
+                assert_eq!(header[5], msgid, "{text}");
+                assert_eq!(header[6], "-", "{text}");
+                let keys: Vec<&str> = pairs.iter().map(|(key, _)| key.as_str()).collect();
+                assert_eq!(keys[..4], ["event", "v", "subsystem", "audience"], "{text}");
+                assert_eq!(keys.last(), Some(&"msg"), "{text}");
+                assert_eq!(pairs[0].1, def.name(), "{text}");
+                assert_eq!(pairs[1].1, def.version().to_string(), "{text}");
+                assert_eq!(keys.contains(&"truncated"), encoded.truncated(), "{text}");
             }
             Err(EncodeError::OverSizeLimit { stream, id }) => {
                 assert_eq!((stream, id), (event.def().stream(), event.def().id()));
