@@ -118,13 +118,14 @@ jobs:
         run: cargo test --doc --workspace --locked
 
   os-linux:
-    name: os-linux (${{ matrix.target }})
+    name: os-linux (${{ matrix.runner }}, ${{ matrix.target }})
     # The real-call tests and the ABI check of ironafs-os on each Linux
     # target ADR 0005 allows, each on its own architecture with its own C
-    # library's headers (point 5.6; sheet tests, point 6.4). Each lane
-    # names the target it proves and the sites it must have proved; a run
-    # that proves none fails. Ubuntu 26.04 lanes join when GitHub offers
-    # that runner image (issue #57's acceptance names it).
+    # library's headers (point 5.6; sheet tests, point 6.4), on Ubuntu
+    # 24.04 and 26.04. Each lane names the target it proves, the sites
+    # check-abi must have proved, and the native tests that must have run;
+    # check-abi also checks that $CC is that target's compiler (its
+    # architecture and C library).
     strategy:
       fail-fast: false
       matrix:
@@ -147,6 +148,24 @@ jobs:
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
             nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
             cc: musl-gcc
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-26.04
+            nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-26.04
+            nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+            cc: musl-gcc
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-26.04-arm
+            nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-26.04-arm
+            nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
+            cc: musl-gcc
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     permissions:
@@ -154,6 +173,12 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       SITES: linux-clock linux-random
+      NATIVE_TESTS: >-
+        linux_clock::tests::read_clock_boot_advances_and_never_goes_back
+        linux_clock::tests::read_clock_awake_advances_and_never_goes_back
+        linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names
+        linux_random::tests::getrandom_reports_a_full_piece_of_at_most_256_bytes
+        mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -184,7 +209,12 @@ jobs:
           install -d "$cargo_bin"
           install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
       - name: Run ironafs-os's tests on the target, real system calls included
-        run: cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked
+        run: |
+          cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked > nextest.log 2>&1
+          cat nextest.log
+          for test in $NATIVE_TESTS; do
+            grep -Eq "PASS .* ironafs-os $test\$" nextest.log
+          done
       - name: Prove the target's foreign declarations against its C headers
         env:
           CC: ${{ matrix.cc || 'cc' }}
@@ -199,6 +229,36 @@ jobs:
         env:
           CC: ${{ matrix.cc || 'cc' }}
         run: cargo --locked xtask check-abi --self-test
+
+  os-linux-glibc-2-28:
+    name: os-linux (glibc 2.28, aarch64)
+    # The oldest glibc of the build goal (ADR 0004, L42, point 3; ADR 0005,
+    # point 5.5): ironafs-os built and its tests run on AlmaLinux 8. The
+    # conditional glibc 2.17 artefact is qualified separately, before it is
+    # offered.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    container:
+      image: docker.io/library/almalinux:8@sha256:34a85f19e05e28243249d45dd3842621741a43b110865ca80575c9b4e083cc29
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install a C toolchain and Rust
+        run: |
+          dnf --assumeyes install gcc
+          ldd --version | head -n 1 | grep -q ' 2\.28$'
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs > rustup-init.sh
+          sh rustup-init.sh -y --default-toolchain none --profile minimal
+          "$HOME/.cargo/bin/rustup" toolchain install --profile minimal --no-self-update --no-update
+      - name: Run ironafs-os's tests on glibc 2.28
+        run: |
+          "$HOME/.cargo/bin/cargo" test -p ironafs-os --locked > test.log 2>&1
+          cat test.log
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' test.log
+          grep -q '^test linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names \.\.\. ok$' test.log
 
   miri:
     name: miri
@@ -268,20 +328,21 @@ jobs:
 
   ci-ok:
     name: ci-ok
-    needs: [lint, test, os-linux, miri, trailers]
+    needs: [lint, test, os-linux, os-linux-glibc-2-28, miri, trailers]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - name: Require lint, test, os-linux, Miri and trailer check success
+      - name: Require lint, test, os-linux, glibc 2.28, Miri and trailer check success
         env:
           LINT_RESULT: ${{ needs.lint.result }}
           TEST_RESULT: ${{ needs.test.result }}
           OS_LINUX_RESULT: ${{ needs.os-linux.result }}
+          OLD_GLIBC_RESULT: ${{ needs.os-linux-glibc-2-28.result }}
           MIRI_RESULT: ${{ needs.miri.result }}
           TRAILERS_RESULT: ${{ needs.trailers.result }}
         run: |
-          printf 'lint: %s\ntest: %s\nos-linux: %s\nmiri: %s\ntrailers: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$OS_LINUX_RESULT" "$MIRI_RESULT" "$TRAILERS_RESULT"
-          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$OS_LINUX_RESULT" == success && "$MIRI_RESULT" == success && "$TRAILERS_RESULT" == success ]]
+          printf 'lint: %s\ntest: %s\nos-linux: %s\nglibc 2.28: %s\nmiri: %s\ntrailers: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$OS_LINUX_RESULT" "$OLD_GLIBC_RESULT" "$MIRI_RESULT" "$TRAILERS_RESULT"
+          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$OS_LINUX_RESULT" == success && "$OLD_GLIBC_RESULT" == success && "$MIRI_RESULT" == success && "$TRAILERS_RESULT" == success ]]
