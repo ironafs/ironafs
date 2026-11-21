@@ -1669,7 +1669,7 @@ This specification's own choices:
 - the observation shows a supported resolver sends a reply with trailing
   bytes or other tolerated-elsewhere oddities (5.4, point 6);
 - any registered source is updated, obsoleted, or gains an erratum that
-  changes a rule cited here (register rows E3 to E28);
+  changes a rule cited here (register rows E6 and E13 to E37);
 - a non-Linux Unix build is planned: its own resolver configuration page
   is registered first (section 13, Q7).
 
@@ -1677,32 +1677,32 @@ This specification's own choices:
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| S1 | SPECIFICATION | RFC 1035, "Domain names - implementation and specification", November 1987, register row E3, <https://www.rfc-editor.org/rfc/rfc1035> | 4, 5.1, 5.2, 5.4, 5.5, 5.6, 10 |
-| S2 | SPECIFICATION | RFC 1183, "New DNS RR Definitions", October 1990, §1 (AFSDB), register row E4 | 5.1, 5.4 |
-| S3 | SPECIFICATION | RFC 2181, "Clarifications to the DNS Specification", July 1997, register row E5 | 5.1, 5.4, 5.6.5, 5.6.7 |
-| S4 | SPECIFICATION | RFC 2308, "Negative Caching of DNS Queries (DNS NCACHE)", March 1998, register row E6 | 5.4, 5.6.5, 5.6.6, 5.6.7 |
-| S5 | SPECIFICATION | RFC 2782, "A DNS RR for specifying the location of services (DNS SRV)", February 2000, register row E7 | 5.1, 5.4, 5.6.6 |
-| S6 | SPECIFICATION | RFC 3596, "DNS Extensions to Support IP Version 6", October 2003, register row E8 | 5.1, 5.4 |
-| S7 | SPECIFICATION | RFC 3597, "Handling of Unknown DNS Resource Record (RR) Types", September 2003, §4, register row E9 | 5.4 |
-| S8 | SPECIFICATION | RFC 4343, "DNS Case Insensitivity Clarification", January 2006, register row E10 | 5.4 |
-| S9 | SPECIFICATION | RFC 5452, "Measures for Making DNS More Resilient against Forged Answers", January 2009, register row E11 | 5.4, 5.5, 5.6.5, 5.6.7, 8 |
-| S10 | SPECIFICATION | RFC 5864, "DNS SRV Resource Records for AFS", April 2010, register row E12; claim record rows `[DES-008]` `[DES-010]` | 3, 5.1, 5.6.6, 5.6.7, 8 |
-| S11 | SPECIFICATION | RFC 6761, "Special-Use Domain Names", February 2013, §6.2, register row E13 | 10 |
-| S12 | SPECIFICATION | RFC 6840, "Clarifications and Implementation Notes for DNS Security (DNSSEC)", February 2013, §5.7 and §5.8, register row E14 | 5.5 |
-| S13 | SPECIFICATION | RFC 6891, "Extension Mechanisms for DNS (EDNS(0))", April 2013, register row E15 | 5.1, 5.2, 5.3, 5.4, 5.5, 5.6.5 |
-| S14 | SPECIFICATION | RFC 6895, "Domain Name System (DNS) IANA Considerations", April 2013, §2, register row E16 | 5.1, 5.6.8 |
-| S15 | SPECIFICATION | RFC 7766, "DNS Transport over TCP - Implementation Requirements", March 2016, register row E17 | 5.5, 5.6.5 |
-| S16 | SPECIFICATION | RFC 8200, "Internet Protocol, Version 6 (IPv6) Specification", July 2017, §5, register row E18 | 5.2 |
-| S17 | SPECIFICATION | RFC 9619, "In the DNS, QDCOUNT Is (Usually) One", July 2024, register row E19 | 5.1, 5.4 |
-| S18 | SPECIFICATION | RFC 9715, "IP Fragmentation Avoidance in DNS over UDP", January 2025, register row E20 | 5.2 |
-| S19 | SPECIFICATION | "Use of Bit 0x20 in DNS Labels to Improve Transaction Identity", draft-vixie-dnsext-dns0x20-00, March 2008 (expired Internet-Draft), register row E21 | 5.4, 5.5, 5.6.5 |
-| S20 | SPECIFICATION | RFC 9520, "Negative Caching of DNS Resolution Failures", December 2023, §3.1 and §3.2, register row E25 | 5.6.5, 5.6.7 |
-| S21 | SPECIFICATION | RFC 4291, "IP Version 6 Addressing Architecture", February 2006, §2.4, §2.5.5.1 and §2.5.5.2, register row E26 | 5.4 |
-| S22 | SPECIFICATION | RFC 6890, "Special-Purpose IP Address Registries", April 2013, §2.2.2 and §2.2.3, register row E27 | 5.4 |
-| S23 | SPECIFICATION | RFC 5771, "IANA Guidelines for IPv4 Multicast Address Assignments", March 2010, §3, register row E28 | 5.4 |
-| M1 | DOCUMENTATION | resolv.conf(5), Linux man-pages 6.19, page dated 2026-08-22, register row E22, <https://man7.org/linux/man-pages/man5/resolv.conf.5.html> | 3, 4, 5.2, 5.6.2 |
-| M2 | DOCUMENTATION | systemd-resolved.service(8), systemd 262, register row E23, <https://www.freedesktop.org/software/systemd/man/latest/systemd-resolved.service.html>; claim record row `[DES-002]` | 3, 5.6.2 |
-| M3 | DOCUMENTATION | NetworkManager.conf(5), NetworkManager 1.58.0, register row E24, <https://networkmanager.dev/docs/api/latest/NetworkManager.conf.html> | 3, 5.6.2 |
+| S1 | SPECIFICATION | RFC 1035, "Domain names - implementation and specification", November 1987, register row E13, <https://www.rfc-editor.org/rfc/rfc1035> | 4, 5.1, 5.2, 5.4, 5.5, 5.6, 10 |
+| S2 | SPECIFICATION | RFC 1183, "New DNS RR Definitions", October 1990, §1 (AFSDB), register row E14 | 5.1, 5.4 |
+| S3 | SPECIFICATION | RFC 2181, "Clarifications to the DNS Specification", July 1997, register row E15 | 5.1, 5.4, 5.6.5, 5.6.7 |
+| S4 | SPECIFICATION | RFC 2308, "Negative Caching of DNS Queries (DNS NCACHE)", March 1998, register row E16 | 5.4, 5.6.5, 5.6.6, 5.6.7 |
+| S5 | SPECIFICATION | RFC 2782, "A DNS RR for specifying the location of services (DNS SRV)", February 2000, register row E17 | 5.1, 5.4, 5.6.6 |
+| S6 | SPECIFICATION | RFC 3596, "DNS Extensions to Support IP Version 6", October 2003, register row E18 | 5.1, 5.4 |
+| S7 | SPECIFICATION | RFC 3597, "Handling of Unknown DNS Resource Record (RR) Types", September 2003, §4, register row E19 | 5.4 |
+| S8 | SPECIFICATION | RFC 4343, "DNS Case Insensitivity Clarification", January 2006, register row E20 | 5.4 |
+| S9 | SPECIFICATION | RFC 5452, "Measures for Making DNS More Resilient against Forged Answers", January 2009, register row E21 | 5.4, 5.5, 5.6.5, 5.6.7, 8 |
+| S10 | SPECIFICATION | RFC 5864, "DNS SRV Resource Records for AFS", April 2010, register row E22; claim record rows `[DES-008]` `[DES-010]` | 3, 5.1, 5.6.6, 5.6.7, 8 |
+| S11 | SPECIFICATION | RFC 6761, "Special-Use Domain Names", February 2013, §6.2, register row E23 | 10 |
+| S12 | SPECIFICATION | RFC 6840, "Clarifications and Implementation Notes for DNS Security (DNSSEC)", February 2013, §5.7 and §5.8, register row E24 | 5.5 |
+| S13 | SPECIFICATION | RFC 6891, "Extension Mechanisms for DNS (EDNS(0))", April 2013, register row E25 | 5.1, 5.2, 5.3, 5.4, 5.5, 5.6.5 |
+| S14 | SPECIFICATION | RFC 6895, "Domain Name System (DNS) IANA Considerations", April 2013, §2, register row E26 | 5.1, 5.6.8 |
+| S15 | SPECIFICATION | RFC 7766, "DNS Transport over TCP - Implementation Requirements", March 2016, register row E27 | 5.5, 5.6.5 |
+| S16 | SPECIFICATION | RFC 8200, "Internet Protocol, Version 6 (IPv6) Specification", July 2017, §5, register row E28 | 5.2 |
+| S17 | SPECIFICATION | RFC 9619, "In the DNS, QDCOUNT Is (Usually) One", July 2024, register row E29 | 5.1, 5.4 |
+| S18 | SPECIFICATION | RFC 9715, "IP Fragmentation Avoidance in DNS over UDP", January 2025, register row E30 | 5.2 |
+| S19 | SPECIFICATION | "Use of Bit 0x20 in DNS Labels to Improve Transaction Identity", draft-vixie-dnsext-dns0x20-00, March 2008 (expired Internet-Draft), register row E31 | 5.4, 5.5, 5.6.5 |
+| S20 | SPECIFICATION | RFC 9520, "Negative Caching of DNS Resolution Failures", December 2023, §3.1 and §3.2, register row E35 | 5.6.5, 5.6.7 |
+| S21 | SPECIFICATION | RFC 4291, "IP Version 6 Addressing Architecture", February 2006, §2.4, §2.5.5.1 and §2.5.5.2, register row E6 | 5.4 |
+| S22 | SPECIFICATION | RFC 6890, "Special-Purpose IP Address Registries", April 2013, §2.2.2 and §2.2.3, register row E36 | 5.4 |
+| S23 | SPECIFICATION | RFC 5771, "IANA Guidelines for IPv4 Multicast Address Assignments", March 2010, §3, register row E37 | 5.4 |
+| M1 | DOCUMENTATION | resolv.conf(5), Linux man-pages 6.19, page dated 2026-08-22, register row E32, <https://man7.org/linux/man-pages/man5/resolv.conf.5.html> | 3, 4, 5.2, 5.6.2 |
+| M2 | DOCUMENTATION | systemd-resolved.service(8), systemd 262, register row E33, <https://www.freedesktop.org/software/systemd/man/latest/systemd-resolved.service.html>; claim record row `[DES-002]` | 3, 5.6.2 |
+| M3 | DOCUMENTATION | NetworkManager.conf(5), NetworkManager 1.58.0, register row E34, <https://networkmanager.dev/docs/api/latest/NetworkManager.conf.html> | 3, 5.6.2 |
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C3, C4, C6, C12, C33, C34, C37, C39 ([part 1](../adr/0004-architecture-1-core.md)); O17, O47 and the threat table ([part 3](../adr/0004-architecture-3-operations.md)); N5 ([part 4](../adr/0004-architecture-4-negotiation.md)); the overview's open question 1 | 1, 2, 5.6, 8, 9, 11 |
 | D2 | DECISION | [ADR 0005](../adr/0005-ironafs-os.md), Decision, points 5 and 6, and Decision 3, point 1 | 1, 5.2, 5.4, 5.6.1 |
 | D3 | DECISION | [ADR 0001](../adr/0001-licence-and-dont-copy.md), "Don't copy" and "Test tools and test data" | 10, 12 |
@@ -1715,7 +1715,7 @@ this specification, and none are cited: not a C library's resolver, not a
 resolver daemon's, not any library's. The resolver configuration's format
 comes from its manual page only. No AFS implementation's source was read.
 The specification states the protocol in IronAFS's own words and quotes
-none of the sources' text (register rows E3 to E28). The test names,
+none of the sources' text (register rows E6 and E13 to E37). The test names,
 addresses and values of section 10 are IronAFS's own; none is a source's
 example.
 
