@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# The freshness check of the scheduled tiers (docs/specs/testing.md, 5.5,
+# point 3): it fails when a tier's last complete run is too old (nightly 2
+# days, weekly 8), so a schedule GitHub disabled is seen. It runs on pushes,
+# pull requests and its own schedule, never only inside the schedules it
+# watches. It is advisory: ci-ok does not depend on it. Its self-test runs
+# in ci.yml's lint job, which is required.
+#
+# The job runs repository code (xtask) with a read-only token: `actions:
+# read` lists the runs and their jobs, which on a public repository anyone
+# can read; `contents: read` checks the code out. It holds no secret; `gh`
+# takes the job's own token from GH_TOKEN, and nothing prints it.
+
+name: Freshness
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "29 6 * * *"
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  freshness:
+    name: freshness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Check the nightly and weekly tiers ran recently and completely
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: cargo --locked xtask freshness

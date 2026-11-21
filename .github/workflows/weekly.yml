@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# The weekly tier (docs/specs/testing.md, 5.5). Its manifest is
+# tests/tiers/weekly.txt: each id there is a job of that name with a step
+# named "run <id>", and the freshness check (freshness.yml) counts a run
+# only when attempt 1 reported every id that way.
+#
+# Rules for every job added here (5.5, points 2, 4 and 9):
+# - `permissions: contents: read` and nothing else, and no secret;
+# - no artefact upload and no cache of anything a test produced or read;
+# - test output is captured by the xtask runner, never streamed to the log,
+#   and seeds come from the operating system's random source;
+# - no `concurrency` key: a dispatched run must never cancel a running
+#   weekly, and a failed run is never re-run to green.
+#
+# Slots, each added with its manifest id by the change that builds it:
+# - TODO(#45): each fuzz target for 60 minutes, one job per target, from
+#   its tracked seeds only: no corpus is carried between runs until M4;
+# - the interoperability harness with every fault case of ADR 0004 O48,
+#   point 2, against the test cell.
+# Until then the tier runs `build`, which proves the schedule fires and the
+# default branch builds on the current runner image.
+
+name: Weekly
+
+on:
+  schedule:
+    - cron: "41 4 * * 0"
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: run build
+        run: |
+          cargo build --workspace --all-targets --locked
+          # A build that produced nothing proves nothing: name each binary.
+          for binary in afs xtask; do
+            if [[ ! -x "target/debug/$binary" ]]; then
+              printf 'missing binary: %s\n' "$binary"
+              exit 1
+            fi
+            printf 'built: %s\n' "$binary"
+          done
