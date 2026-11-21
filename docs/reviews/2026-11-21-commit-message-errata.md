@@ -7,7 +7,7 @@ The messages of the squash merges on `main` were audited on 2026-11-21, from the
 
 ## The disclosure line
 
-ADR 0003, point 6, asks every pull request description written by a model to end with a line `Written by <agent>:<model>.`, and the description becomes the squash message. Five squash merges made after ADR 0003 was accepted lack that line:
+ADR 0003, point 6, asks every pull request description written by a model to carry a visible line `Written by <agent>:<model>.`, adding "for the maintainer" when it writes for the owner's account, placed above the trailer block; the description becomes the squash message. Five squash merges made after ADR 0003 was accepted lack that line:
 
 | Commit | Pull request | Subject | Writing disclosed by its `Assisted-by` trailers |
 |---|---|---|---|
@@ -23,4 +23,4 @@ Every squash merge on `main` up to #89 carries its `Class:`, `Assisted-by:` and 
 
 ## Wrapping
 
-The squash messages up to #89 are wrapped at 72 columns, the usual git style. On GitHub's commit page that reads as a narrow column. From 2026-11-21 squash messages are written like the pull request descriptions they come from: a short subject, one line per paragraph and per list item, and the trailer block one trailer per line. The text of the earlier messages is unaffected.
+Most squash messages up to #89 are wrapped at 72 columns, the usual git style; three (`661bdb4`, #23; `9db9478`, #24; `f81aa7d`, #39) already have some unwrapped paragraphs. On GitHub's commit page a wrapped message reads as a narrow column. From 2026-11-21 squash messages are written like the pull request descriptions they come from: a short subject, one line per paragraph and per list item, and the trailer block one trailer per line. The text of the earlier messages is unaffected.
