@@ -43,8 +43,10 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         Command::new("cargo").args(["test", "--doc", "--workspace"]),
         "cargo test --doc --workspace",
     )?;
-    crate::deps::run(false, output)?;
-    crate::grants::run(false, output)?;
+    for self_test in [false, true] {
+        crate::deps::run(self_test, output)?;
+        crate::grants::run(self_test, output)?;
+    }
 
     check_reuse_result(
         Command::new("reuse").arg("lint").status(),
