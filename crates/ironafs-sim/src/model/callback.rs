@@ -45,6 +45,16 @@ pub enum CbProc {
 }
 
 impl CbProc {
+    /// The call's kind.
+    #[must_use]
+    pub const fn kind(&self) -> CbKind {
+        match self {
+            Self::CallBack { .. } => CbKind::Break,
+            Self::InitState(_) => CbKind::Reset,
+            Self::Probe => CbKind::Probe,
+        }
+    }
+
     /// The IronAFS name (5.1.2).
     #[must_use]
     pub const fn name(&self) -> &'static str {
@@ -56,6 +66,17 @@ impl CbProc {
             Self::Probe => "cb.probe",
         }
     }
+}
+
+/// The kind of a callback call, for the network's fault plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CbKind {
+    /// A break.
+    Break,
+    /// Any of the three resets.
+    Reset,
+    /// A probe.
+    Probe,
 }
 
 /// One call to a client's callback service.
@@ -84,7 +105,13 @@ pub fn encode_cb_request(request: &CbRequest) -> Vec<u8> {
     let mut out = Writer::default();
     out.addr(request.from);
     out.u32(request.to.0);
-    match &request.procedure {
+    write_cb_proc(&mut out, &request.procedure);
+    out.into_bytes()
+}
+
+/// Appends `procedure`; shared with the simulator's forging procedure.
+pub(super) fn write_cb_proc(out: &mut Writer, procedure: &CbProc) {
+    match procedure {
         CbProc::CallBack { fids } => {
             out.u8(0);
             out.fids(fids);
@@ -99,19 +126,11 @@ pub fn encode_cb_request(request: &CbRequest) -> Vec<u8> {
         }
         CbProc::Probe => out.u8(2),
     }
-    out.into_bytes()
 }
 
-/// The request `bytes` encode.
-///
-/// # Errors
-///
-/// An [`EnvelopeError`] if `bytes` are not exactly one request.
-pub fn decode_cb_request(bytes: &[u8]) -> Result<CbRequest, EnvelopeError> {
-    let mut input = Reader::new(bytes);
-    let from = input.addr()?;
-    let to = ClientId(input.u32()?);
-    let procedure = match input.u8()? {
+/// Reads a procedure written by [`write_cb_proc`].
+pub(super) fn read_cb_proc(input: &mut Reader<'_>) -> Result<CbProc, EnvelopeError> {
+    Ok(match input.u8()? {
         0 => CbProc::CallBack {
             fids: input.fids()?,
         },
@@ -123,7 +142,19 @@ pub fn decode_cb_request(bytes: &[u8]) -> Result<CbRequest, EnvelopeError> {
         }),
         2 => CbProc::Probe,
         _ => return Err(EnvelopeError::Tag),
-    };
+    })
+}
+
+/// The request `bytes` encode.
+///
+/// # Errors
+///
+/// An [`EnvelopeError`] if `bytes` are not exactly one request.
+pub fn decode_cb_request(bytes: &[u8]) -> Result<CbRequest, EnvelopeError> {
+    let mut input = Reader::new(bytes);
+    let from = input.addr()?;
+    let to = ClientId(input.u32()?);
+    let procedure = read_cb_proc(&mut input)?;
     input.end()?;
     Ok(CbRequest {
         from,

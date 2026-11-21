@@ -12,6 +12,7 @@
 //! total: every count is checked against the bytes left before anything
 //! is allocated, and trailing bytes are an error.
 
+use super::callback::{read_cb_proc, write_cb_proc};
 use super::types::{
     Addr, Answer, ClientId, ContextId, Fid, FileKind, Procedure, Promise, Release, Request,
     Results, ServerUuid, Service, Site, SiteServer, Status, Uniquifier, VlEntry, Vnode, VolSync,
@@ -99,6 +100,25 @@ pub fn encode_request(request: &Request) -> Vec<u8> {
             out.u64(*offset);
             out.bytes(bytes);
         }
+        Procedure::SimDeliverBreaks => out.u8(10),
+        Procedure::SimReset { client } => {
+            out.u8(11);
+            out.u32(client.0);
+        }
+        Procedure::SimProbe { client } => {
+            out.u8(12);
+            out.u32(client.0);
+        }
+        Procedure::SimForge {
+            from,
+            to,
+            procedure,
+        } => {
+            out.u8(13);
+            out.addr(*from);
+            out.u32(to.0);
+            write_cb_proc(&mut out, procedure);
+        }
     }
     out.0
 }
@@ -153,6 +173,18 @@ pub fn decode_request(bytes: &[u8]) -> Result<Request, EnvelopeError> {
             fid: input.fid()?,
             offset: input.u64()?,
             bytes: input.bytes()?,
+        },
+        10 => Procedure::SimDeliverBreaks,
+        11 => Procedure::SimReset {
+            client: ClientId(input.u32()?),
+        },
+        12 => Procedure::SimProbe {
+            client: ClientId(input.u32()?),
+        },
+        13 => Procedure::SimForge {
+            from: input.addr()?,
+            to: ClientId(input.u32()?),
+            procedure: read_cb_proc(&mut input)?,
         },
         _ => return Err(EnvelopeError::Tag),
     };
@@ -254,6 +286,10 @@ pub fn encode_answer(answer: &Answer) -> Vec<u8> {
         Results::Wrote { data_version } => {
             out.u8(6);
             out.u64(*data_version);
+        }
+        Results::Started { pushes } => {
+            out.u8(7);
+            out.u32(*pushes);
         }
     }
     out.0
@@ -592,6 +628,9 @@ impl<'a> Reader<'a> {
             }),
             6 => Results::Wrote {
                 data_version: self.u64()?,
+            },
+            7 => Results::Started {
+                pushes: self.u32()?,
             },
             _ => return Err(EnvelopeError::Tag),
         })

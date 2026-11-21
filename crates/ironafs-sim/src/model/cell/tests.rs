@@ -4,7 +4,12 @@
 //! The cell routes each request by address and service, drops what a
 //! down or absent server would never answer, and moves a volume.
 
-use super::Cell;
+use std::sync::{Arc, Mutex};
+
+use super::{Cell, CellWorld, PUSH_ATTEMPTS, PUSH_INTERVAL, PUSH_TIMEOUT};
+use crate::model::callback::{
+    CbAnswer, CbKind, CbProc, CbRequest, Reset, decode_cb_request, encode_cb_answer,
+};
 use crate::model::codes::{MARSHALLING, UNKNOWN_PROCEDURE, VOLUME_MOVED};
 use crate::model::envelope::{decode_answer, encode_request};
 use crate::model::fs::{FileServer, FileSpec};
@@ -12,6 +17,7 @@ use crate::model::types::{
     Addr, Answer, ClientId, ContextId, Fid, Procedure, Release, Request, Results, Service, Site,
     SiteServer, VlEntry, VolumeId, VolumeIds, VolumeKind,
 };
+use crate::sched::{Served, World};
 
 const VL: Addr = Addr([10, 0, 0, 1]);
 const FS1: Addr = Addr([10, 0, 0, 2]);
@@ -142,4 +148,141 @@ fn envelope_bytes_are_answered_or_dropped_and_garbage_is_a_marshalling_abort() {
         cell.serve_bytes(&[1, 2]).map(|reply| decode_answer(&reply)),
         Some(Ok(Answer::Abort(MARSHALLING)))
     );
+}
+
+const ME: ClientId = ClientId(0);
+const PEER: ClientId = ClientId(1);
+const ATTACKER: Addr = Addr([192, 0, 2, 9]);
+
+fn shared() -> Arc<Mutex<Cell>> {
+    Arc::new(Mutex::new(cell()))
+}
+
+fn bytes_from(client: ClientId, to: Addr, procedure: Procedure) -> Vec<u8> {
+    encode_request(&Request {
+        to,
+        service: Service::Fs,
+        client,
+        context: ContextId(1),
+        procedure,
+    })
+}
+
+fn reply(served: Served) -> Answer {
+    match served {
+        Served::Reply(bytes) => decode_answer(&bytes).unwrap(),
+        other => panic!("not a reply: {other:?}"),
+    }
+}
+
+fn started(count: u32) -> Answer {
+    Answer::Result(Results::Started { pushes: count })
+}
+
+#[test]
+fn the_world_holds_a_lost_clients_call_until_its_reset_is_answered() {
+    let cell = shared();
+    let mut world = CellWorld::new(&cell);
+    reply(world.serve(0, &bytes_from(ME, FS1, status())));
+    let write = Procedure::PeerWrite {
+        fid: fid(),
+        offset: 0,
+        bytes: b"x".to_vec(),
+    };
+    reply(world.serve(1, &bytes_from(PEER, FS1, write)));
+    assert_eq!(
+        reply(world.serve(2, &bytes_from(PEER, FS1, Procedure::SimDeliverBreaks))),
+        started(1)
+    );
+    let polled = world.poll();
+    let push = polled.pushes.first().unwrap();
+    assert_eq!(polled.pushes.len(), 1);
+    assert_eq!((push.endpoint, push.attempts), (0, PUSH_ATTEMPTS));
+    assert_eq!((push.interval, push.timeout), (PUSH_INTERVAL, PUSH_TIMEOUT));
+    assert_eq!(
+        decode_cb_request(&push.request).unwrap(),
+        CbRequest {
+            from: FS1,
+            to: ME,
+            procedure: CbProc::CallBack { fids: vec![fid()] },
+        }
+    );
+    assert!(world.admit(push.token, 1));
+    world.settled(push.token, None);
+
+    assert_eq!(world.serve(3, &bytes_from(ME, FS1, status())), Served::Hold);
+    let polled = world.poll();
+    let reset = polled.pushes.first().unwrap();
+    assert_eq!(
+        decode_cb_request(&reset.request).unwrap().procedure,
+        CbProc::InitState(Reset::One)
+    );
+    assert_eq!(polled.releases, []);
+    world.settled(reset.token, Some(encode_cb_answer(&CbAnswer::Empty)));
+    let polled = world.poll();
+    let (released, bytes) = polled.releases.first().unwrap();
+    assert_eq!(*released, 3);
+    assert!(matches!(
+        decode_answer(bytes.as_ref().unwrap()).unwrap(),
+        Answer::Result(Results::Status { .. })
+    ));
+}
+
+#[test]
+fn a_forged_call_is_pushed_by_the_network_and_no_server_hears_its_answer() {
+    let cell = shared();
+    let mut world = CellWorld::new(&cell);
+    let forge = Procedure::SimForge {
+        from: FS1,
+        to: ME,
+        procedure: CbProc::CallBack { fids: vec![fid()] },
+    };
+    assert_eq!(
+        reply(world.serve(0, &bytes_from(PEER, ATTACKER, forge))),
+        started(1)
+    );
+    let polled = world.poll();
+    let push = polled.pushes.first().unwrap();
+    let request = decode_cb_request(&push.request).unwrap();
+    assert_eq!(request.from, FS1);
+    world.settled(push.token, Some(encode_cb_answer(&CbAnswer::Empty)));
+    let cell = cell.lock().unwrap();
+    assert_eq!(cell.forged_answers(), &[(request, Some(CbAnswer::Empty))]);
+    let mut cell = cell.clone();
+    assert_eq!(cell.file_server(FS1).unwrap().delivered(), []);
+}
+
+#[test]
+fn callback_faults_lose_the_attempts_they_name_for_their_kind_and_client() {
+    let cell = shared();
+    cell.lock().unwrap().drop_callbacks(ME, CbKind::Break, 2);
+    let mut world = CellWorld::new(&cell);
+    for (client, procedure) in [
+        (ME, CbProc::CallBack { fids: vec![fid()] }),
+        (ME, CbProc::Probe),
+        (PEER, CbProc::CallBack { fids: vec![fid()] }),
+    ] {
+        let forge = Procedure::SimForge {
+            from: FS1,
+            to: client,
+            procedure,
+        };
+        reply(world.serve(0, &bytes_from(PEER, ATTACKER, forge)));
+    }
+    let tokens: Vec<u64> = world.poll().pushes.iter().map(|push| push.token).collect();
+    let admitted = |world: &mut CellWorld, token: u64| -> Vec<bool> {
+        (1..=3).map(|attempt| world.admit(token, attempt)).collect()
+    };
+    assert_eq!(admitted(&mut world, tokens[0]), [false, false, true]);
+    assert_eq!(admitted(&mut world, tokens[1]), [true, true, true]);
+    assert_eq!(admitted(&mut world, tokens[2]), [true, true, true]);
+}
+
+#[test]
+fn the_world_drops_calls_to_a_down_server_and_answers_garbage_with_a_marshalling_abort() {
+    let cell = shared();
+    cell.lock().unwrap().set_down(FS1, true);
+    let mut world = CellWorld::new(&cell);
+    assert_eq!(world.serve(0, &bytes_from(ME, FS1, status())), Served::Drop);
+    assert_eq!(reply(world.serve(1, b"junk")), Answer::Abort(MARSHALLING));
 }
