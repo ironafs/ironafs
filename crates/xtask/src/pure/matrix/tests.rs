@@ -69,6 +69,7 @@ fn workspace(root: &Path) -> Workspace {
             lib_root: Some(root.join("crates/ironafs-xdr/src/lib.rs")),
             target_kinds: vec!["lib".into()],
             editions: vec!["2024".into()],
+            target_roots: Vec::new(),
         }],
         packages: vec![],
     }

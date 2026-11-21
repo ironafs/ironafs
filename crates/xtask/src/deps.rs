@@ -317,6 +317,10 @@ pub(crate) enum Violation {
         line: usize,
         route: &'static str,
     },
+    TargetOutside {
+        name: String,
+        file: PathBuf,
+    },
     NoLibrary(String),
     NoSource(String),
     Unreadable {
@@ -496,6 +500,13 @@ impl fmt::Display for Violation {
                 "{}:{line}: {route} gives the capability mint to code outside this crate: \
                  no crate that may name the mint, other than ironafs-vfs, exposes it, so no \
                  other code can mint without naming it (ADR 0004, C8, point 2)",
+                file.display()
+            ),
+            Self::TargetOutside { name, file } => write!(
+                formatter,
+                "{name} has a target whose root file, {}, lies outside its package directory, \
+                 which the mint check reads: every target's source stays inside its crate, so \
+                 every name is seen (ADR 0004, C8, point 2)",
                 file.display()
             ),
             Self::NoLibrary(name) => write!(

@@ -36,6 +36,8 @@ pub(crate) struct Member {
     pub(crate) target_kinds: Vec<String>,
     /// The edition of each target, in the order of `target_kinds`' targets.
     pub(crate) editions: Vec<String>,
+    /// The root file of each target, in the same order.
+    pub(crate) target_roots: Vec<PathBuf>,
 }
 
 impl Member {
@@ -133,8 +135,10 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
         let mut lib_root = None;
         let mut target_kinds = Vec::new();
         let mut editions = Vec::new();
+        let mut target_roots = Vec::new();
         for target in array(package, "targets")? {
             editions.push(string(target, "edition")?.to_owned());
+            target_roots.push(PathBuf::from(string(target, "src_path")?));
             for kind in array(target, "kind")? {
                 let kind = kind.as_str().ok_or_else(unexpected)?;
                 if kind == "lib" {
@@ -155,6 +159,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             lib_root,
             target_kinds,
             editions,
+            target_roots,
         });
     }
 

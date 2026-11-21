@@ -3,7 +3,12 @@
 
 //! Tests for finding the capability mint's name in a file's tokens.
 
-use super::{MAY_NAME, exposed_lines, hiding_lines, mint_lines};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use super::{MAY_NAME, exposed_lines, hiding_lines, mint_lines, scan};
+use crate::deps::Violation;
+use crate::metadata::{Member, Workspace};
 use crate::rust_source;
 
 fn lines_of(source: &str) -> Vec<usize> {
@@ -157,4 +162,80 @@ fn exposed_lines_read_a_tuple_field_whose_type_starts_with_a_path_separator() {
         exposed_of("pub struct W(pub ::ironafs_vfs::Mint);\n"),
         vec![(1, "a public field")]
     );
+}
+
+/// A workspace member named `name` at `crates/<name>` under `root`, with
+/// one library target whose root file is `lib`.
+fn member_at(root: &Path, name: &str, lib: PathBuf) -> Member {
+    Member {
+        name: name.into(),
+        id: name.into(),
+        dir: root.join("crates").join(name),
+        lib_root: Some(lib.clone()),
+        target_kinds: vec!["lib".into()],
+        editions: vec!["2024".into()],
+        target_roots: vec![lib],
+    }
+}
+
+fn write(path: &Path, contents: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, contents).unwrap();
+}
+
+/// rustc reads `mod hidden;` as `hidden/mod.rs` through a link to a
+/// directory, and a target's root file may lie outside its package, so
+/// both are reported rather than left unread.
+#[cfg(unix)]
+#[test]
+fn scan_reports_a_directory_link_and_a_target_outside_the_package() {
+    let root = std::env::temp_dir().join(format!("ironafs-xtask-mint-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let mint = "pub fn m() -> ironafs_vfs::Mint { ironafs_vfs::Mint::new() }\n";
+    write(&root.join("other/hidden/mod.rs"), mint);
+    write(&root.join("elsewhere/lib.rs"), mint);
+    let linked = root.join("crates/ironafs-fuse");
+    write(&linked.join("src/lib.rs"), "mod hidden;\n");
+    std::os::unix::fs::symlink(root.join("other/hidden"), linked.join("src/hidden")).unwrap();
+    write(&root.join("crates/ironafs-smb/src/lib.rs"), "");
+    // An allowed crate's source outside its package would skip the check of
+    // its public routes in the same way.
+    write(&root.join("crates/ironafs-sim/src/lib.rs"), "");
+    let workspace = Workspace {
+        target_dir: root.join("target"),
+        members: vec![
+            member_at(&root, "ironafs-fuse", linked.join("src/lib.rs")),
+            // Cargo gives a manifest's path as written, `..` and all.
+            member_at(
+                &root,
+                "ironafs-smb",
+                root.join("crates/ironafs-smb/../../elsewhere/lib.rs"),
+            ),
+            member_at(&root, "ironafs-sim", root.join("elsewhere/lib.rs")),
+            member_at(&root, "ironafs-vfs", root.join("elsewhere/lib.rs")),
+        ],
+        packages: Vec::new(),
+        root: root.clone(),
+    };
+
+    let violations = scan(&workspace).unwrap();
+
+    assert_eq!(
+        violations,
+        [
+            Violation::Unreadable {
+                file: PathBuf::from("crates/ironafs-fuse/src/hidden"),
+                error: "a symbolic link to a directory, which this check does not follow".into(),
+            },
+            Violation::TargetOutside {
+                name: "ironafs-smb".into(),
+                file: PathBuf::from("elsewhere/lib.rs"),
+            },
+            Violation::TargetOutside {
+                name: "ironafs-sim".into(),
+                file: PathBuf::from("elsewhere/lib.rs"),
+            },
+        ]
+    );
+    fs::remove_dir_all(&root).unwrap();
 }

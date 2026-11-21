@@ -86,6 +86,10 @@ fn member(name: &str, lib: Option<&str>, target_kinds: &[&str]) -> Member {
         lib_root: lib.map(|file| PathBuf::from(format!("/w/crates/{name}/{file}"))),
         target_kinds: target_kinds.iter().map(|kind| (*kind).into()).collect(),
         editions: target_kinds.iter().map(|_| "2024".into()).collect(),
+        target_roots: lib
+            .map(|file| PathBuf::from(format!("/w/crates/{name}/{file}")))
+            .into_iter()
+            .collect(),
     }
 }
 
@@ -101,9 +105,16 @@ fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
             members: vec![
                 member("ironafs-a", Some("src/lib.rs"), &["lib"]),
                 member("ironafs-b", Some("src/lib.rs"), &["lib"]),
-                member("ironafs-c", None, &["bin"]),
+                Member {
+                    target_roots: vec![PathBuf::from("/w/crates/ironafs-c/src/main.rs")],
+                    ..member("ironafs-c", None, &["bin"])
+                },
                 Member {
                     editions: vec!["2024".into(), "2018".into()],
+                    target_roots: vec![
+                        PathBuf::from("/w/crates/ironafs-d/src/lib.rs"),
+                        PathBuf::from("/w/crates/ironafs-d/build.rs"),
+                    ],
                     ..member("ironafs-d", Some("src/lib.rs"), &["lib", "custom-build"])
                 },
             ],

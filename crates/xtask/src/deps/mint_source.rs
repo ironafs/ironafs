@@ -21,7 +21,9 @@
 //!   or a build script's output under the target directory), `#[path]`
 //!   (also inside `cfg_attr`), an attribute built from a macro fragment, a
 //!   `#` that opens no attribute, or a macro called through a fragment
-//!   ([`hiding_lines`]).
+//!   ([`hiding_lines`]). In every crate the check reads, a target whose
+//!   root file lies outside the package directory, and a symbolic link to
+//!   a directory (which `mod` follows), are refused for the same reason.
 //! - **In the allowed crates other than `ironafs-vfs`,** no public route
 //!   may hand the mint out ([`exposed_lines`]): a public re-export,
 //!   function or method, constant or static, type alias or field naming
@@ -51,11 +53,16 @@
 //!   third-party crate, procedural or not, enters without the owner's
 //!   decision (the third-party lists), but a workspace procedural-macro
 //!   crate's output is not seen here;
+//! - a build script can write Rust source into its own package before the
+//!   compiler reads it, and the check reads the tree as it is when it
+//!   runs. The type ban of the open item above closes it, as clippy reads
+//!   what the compiler reads;
 //! - only workspace members are read. A local crate outside the workspace
 //!   is refused by the graph rules, and registry and git crates are
 //!   third-party; the excluded `fuzz/` crate, which ships nothing, is not
 //!   read.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::{Violation, pure_source};
@@ -229,7 +236,9 @@ fn names_mint(tokens: &[Token]) -> bool {
 
 /// Reads every Rust file of every workspace crate outside [`MAY_NAME`],
 /// and reports each line that names the mint, and each file it cannot
-/// read as Rust.
+/// read as Rust. In every crate but the definition, it also reports a
+/// target whose root file lies outside the package directory, and a
+/// symbolic link to a directory, which it would not read.
 ///
 /// # Errors
 ///
@@ -243,6 +252,14 @@ pub(super) fn scan(workspace: &Workspace) -> Result<Vec<Violation>, Error> {
             continue;
         }
         let allowed = MAY_NAME.contains(&name);
+        for root in &member.target_roots {
+            if let Some(file) = outside(workspace, &member.dir, root) {
+                violations.push(Violation::TargetOutside {
+                    name: member.name.clone(),
+                    file,
+                });
+            }
+        }
         for (shown, tokens) in rust_files(workspace, &member.dir, &mut violations)? {
             if allowed {
                 violations.extend(exposed_lines(&tokens).into_iter().map(|(line, route)| {
@@ -275,8 +292,9 @@ pub(super) fn scan(workspace: &Workspace) -> Result<Vec<Violation>, Error> {
 }
 
 /// Every Rust file of the package in `dir`, as shown and as tokens. A file
-/// that cannot be read as Rust, or a symbolic link to a Rust name that
-/// leads to no file, is added to `violations` instead.
+/// that cannot be read as Rust, a symbolic link to a directory, or a
+/// symbolic link to a Rust name that leads to no file, is added to
+/// `violations` instead.
 ///
 /// # Errors
 ///
@@ -289,6 +307,14 @@ fn rust_files(
 ) -> Result<Vec<(PathBuf, Vec<Token>)>, Error> {
     let (mut files, links) = package_files(dir, &workspace.target_dir)?;
     for link in links {
+        if link.is_dir() {
+            // rustc reads `mod name;` as `name/mod.rs` through the link.
+            violations.push(Violation::Unreadable {
+                file: shown(workspace, &link),
+                error: "a symbolic link to a directory, which this check does not follow".into(),
+            });
+            continue;
+        }
         if !is_rust(&link) {
             continue;
         }
@@ -312,6 +338,24 @@ fn rust_files(
         }
     }
     Ok(read)
+}
+
+/// The target root `file`, as shown, if it lies outside the package
+/// directory `dir`. Cargo gives a manifest's `path` as written, `..` and
+/// all, so both are resolved first; a path that does not resolve is
+/// outside.
+fn outside(workspace: &Workspace, dir: &Path, file: &Path) -> Option<PathBuf> {
+    let resolved = fs::canonicalize(file).ok();
+    let inside = match (&resolved, fs::canonicalize(dir)) {
+        (Some(file), Ok(dir)) => file.starts_with(dir),
+        _ => false,
+    };
+    if inside {
+        return None;
+    }
+    let root = fs::canonicalize(&workspace.root).unwrap_or_else(|_| workspace.root.clone());
+    let file = resolved.unwrap_or_else(|| file.to_path_buf());
+    Some(file.strip_prefix(&root).unwrap_or(&file).to_path_buf())
 }
 
 fn is_rust(path: &Path) -> bool {

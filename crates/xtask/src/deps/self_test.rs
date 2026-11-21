@@ -1235,6 +1235,20 @@ const CASES: &[Case] = &[
         ],
     },
     Case {
+        name: "a layer's library lies outside its package directory",
+        plant: |fixture| {
+            fixture.manifest_tail(MINT_CRATE, "\n[lib]\npath = \"../../elsewhere/lib.rs\"\n");
+            fixture.root_file(
+                "elsewhere/lib.rs",
+                "pub fn m() -> ironafs_vfs::Mint { ironafs_vfs::Mint::new() }\n",
+            );
+        },
+        expect: &[|found| {
+            matches!(found, Violation::TargetOutside { name, file }
+                if name == MINT_CRATE && file == Path::new("elsewhere/lib.rs"))
+        }],
+    },
+    Case {
         name: "an allowed crate re-exports the capability mint under another name",
         plant: |fixture| plant_in_sim(fixture, "pub use ironafs_vfs::Mint as Maker;\n"),
         expect: &[|found| is_exposed(found, 1, "a public re-export")],
