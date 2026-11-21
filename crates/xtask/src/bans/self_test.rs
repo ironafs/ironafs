@@ -9,14 +9,19 @@
 //! leaves out a ban, and proves the check fails on each, naming that ban
 //! and that file, or the variable. It also reads a ban array with an
 //! indented key, and a root `.clippy.toml`, and proves an unplanted ban in
-//! either caught as in `clippy.toml`; and it builds a crate whose build script sets
-//! `CLIPPY_CONF_DIR` for its compiler and proves that refused, beside one
-//! whose build script sets another variable, which passes.
+//! either caught as in `clippy.toml`; and proves a ban written in a format
+//! the check cannot read, and a ban key spelt with a TOML escape, refused
+//! as unreadable. It builds crates whose build scripts set
+//! `CLIPPY_CONF_DIR`, and `Clippy_Conf_Dir`, for their compilers, and one
+//! whose build script writes a `clippy.toml`, and proves each refused,
+//! beside one whose build script sets another variable, which passes.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::{CHECK, CONF_DIR, Found, Lint, Violation, check_build_scripts, check_tree};
+use super::{
+    CHECK, CONF_DIR, Found, Lint, Violation, check_build_scripts, check_tree, unchanged_by,
+};
 use crate::Error;
 use crate::fixture::{self, write_file};
 
@@ -303,9 +308,9 @@ fn run_in(
     ))
 }
 
-/// The build-script case: a crate whose build script sets `name` for its
-/// compiler, under `dir`.
-fn build_script_crate(dir: &Path, name: &str, toolchain_toml: &str) -> Result<(), Error> {
+/// The build-script case: a crate under `dir` whose build script runs
+/// `body`.
+fn build_script_crate(dir: &Path, body: &str, toolchain_toml: &str) -> Result<(), Error> {
     let files = [
         (
             "Cargo.toml",
@@ -313,14 +318,7 @@ fn build_script_crate(dir: &Path, name: &str, toolchain_toml: &str) -> Result<()
              # Not part of the workspace whose target directory holds it.\n[workspace]\n"
                 .to_owned(),
         ),
-        (
-            "build.rs",
-            // A directory that exists and holds no configuration.
-            format!(
-                "fn main() {{\n    let dir = std::env::var(\"OUT_DIR\").unwrap_or_default();\n    \
-                 println!(\"cargo::rustc-env={name}={{dir}}\");\n}}\n"
-            ),
-        ),
+        ("build.rs", format!("fn main() {{\n    {body}\n}}\n")),
         ("src/lib.rs", "pub fn planted() {}\n".to_owned()),
         ("rust-toolchain.toml", toolchain_toml.to_owned()),
     ];
@@ -330,21 +328,52 @@ fn build_script_crate(dir: &Path, name: &str, toolchain_toml: &str) -> Result<()
     Ok(())
 }
 
-/// Proves a build script that sets `CLIPPY_CONF_DIR`, in any case, is
-/// refused, and one that sets another variable is not.
+/// A build script's body that sets `name` for its crate's compiler, to a
+/// directory that exists and holds no configuration.
+fn sets(name: &str) -> String {
+    format!(
+        "let dir = std::env::var(\"OUT_DIR\").unwrap_or_default();\n    \
+         println!(\"cargo::rustc-env={name}={{dir}}\");"
+    )
+}
+
+/// A build script's body that writes an empty `clippy.toml`, which bans
+/// nothing, beside its crate's manifest.
+const WRITES_CONFIG: &str = "let dir = std::env::var(\"CARGO_MANIFEST_DIR\").unwrap_or_default();\n    \
+     std::fs::write(std::path::Path::new(&dir).join(\"clippy.toml\"), \"\").unwrap_or_default();";
+
+/// Builds a crate under `dir` whose build script runs `body` as the check
+/// builds the workspace, and returns what it found.
+fn build_planted(dir: &Path, body: &str, toolchain_toml: &str) -> Result<Vec<Found>, Error> {
+    build_script_crate(dir, body, toolchain_toml)?;
+    unchanged_by(dir, &[dir.to_path_buf()], || {
+        check_build_scripts(dir, &dir.join("target"))
+    })
+}
+
+/// Proves a build script that sets `CLIPPY_CONF_DIR`, in any case, or
+/// writes a configuration, is refused, and one that sets another variable
+/// is not.
 fn build_scripts(
     dir: &Path,
     toolchain_toml: &str,
     report: &mut impl FnMut(String) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let clean = "a build script that sets another variable";
-    let clean_dir = dir.join("clean");
-    build_script_crate(&clean_dir, "PLANTED", toolchain_toml)?;
-    let found = check_build_scripts(&clean_dir, &clean_dir.join("target"))?;
+    let found = build_planted(&dir.join("clean"), &sets("PLANTED"), toolchain_toml)?;
     if !found.is_empty() {
         return Err(failure(clean, &found));
     }
     report(format!("passed: {clean}"))?;
+    let mut caught = |case: &'static str, found: &[Found], refused: &dyn Fn(&Found) -> bool| {
+        if found.is_empty() || !found.iter().all(refused) {
+            return Err(failure(case, found));
+        }
+        for violation in found {
+            report(format!("caught: {case}: {violation}"))?;
+        }
+        Ok(())
+    };
     // Windows reads environment names without regard to case.
     for (case, name, place) in [
         (
@@ -358,18 +387,18 @@ fn build_scripts(
             "planted-case",
         ),
     ] {
-        let case_dir = dir.join(place);
-        build_script_crate(&case_dir, name, toolchain_toml)?;
-        let found = check_build_scripts(&case_dir, &case_dir.join("target"))?;
-        let refused = |found: &Found| matches!(&found.violation, Violation::BuildOverride { name: set, .. } if set == name);
-        if found.is_empty() || !found.iter().all(refused) {
-            return Err(failure(case, &found));
-        }
-        for violation in &found {
-            report(format!("caught: {case}: {violation}"))?;
-        }
+        let found = build_planted(&dir.join(place), &sets(name), toolchain_toml)?;
+        caught(
+            case,
+            &found,
+            &|found| matches!(&found.violation, Violation::BuildOverride { name: set, .. } if set == name),
+        )?;
     }
-    Ok(())
+    let case = "a build script that writes a clippy.toml beside its manifest";
+    let found = build_planted(&dir.join("planted-write"), WRITES_CONFIG, toolchain_toml)?;
+    caught(case, &found, &|found| {
+        found.file == ROOT_FILE && found.violation == Violation::Changed
+    })
 }
 
 fn failure(case: &'static str, found: &[Found]) -> Error {

@@ -25,7 +25,16 @@
 //! is set, and `cargo xtask check` lints without it. A build script can
 //! set it again for its own crate's compiler (`cargo::rustc-env`), or set
 //! where clippy's lookup starts or its lint arguments, so the check runs
-//! the workspace's clippy and refuses any build script that does.
+//! the workspace's clippy and refuses any build script that does, in any
+//! case of the name.
+//!
+//! A build script runs before its crate is linted and can also write a
+//! configuration. The check builds the workspace first and proves the
+//! configurations left after it, and both it and `cargo xtask check`'s
+//! own lint refuse a configuration added, removed or rewritten while the
+//! workspace was built (`unchanged_by`). A build script that rewrites one
+//! and puts it back before the build ends is not seen: it is code run with
+//! the developer's rights, which rule 21 and `check-deps` hold, not this.
 //!
 //! The ban arrays are read in one format only (`read`); a ban key or a
 //! ban array line in any other form is refused, not skipped. Keys are
@@ -185,6 +194,9 @@ pub(crate) enum Violation {
     BuildOverride { package: String, name: String },
     /// The workspace's clippy did not finish, with the error given.
     Unbuilt(String),
+    /// The configuration was added, removed or rewritten while the
+    /// workspace was built.
+    Changed,
 }
 
 impl fmt::Display for Violation {
@@ -228,6 +240,12 @@ impl fmt::Display for Violation {
                 formatter,
                 "the build script of {package} sets {name} for its crate's compiler, which \
                  changes the configuration or lints clippy runs with there: remove it"
+            ),
+            Self::Changed => write!(
+                formatter,
+                "added, removed or rewritten while the workspace was built, so clippy may have \
+                 linted with a configuration this check did not prove: a build script writes \
+                 it; remove that"
             ),
             Self::Unbuilt(error) => write!(
                 formatter,
@@ -759,6 +777,101 @@ pub(crate) fn workspace_clippy() -> Command {
     command
 }
 
+/// A configuration clippy can read, relative to the workspace root, and
+/// its bytes.
+pub(crate) type Snapshot = Vec<(PathBuf, Vec<u8>)>;
+
+/// Each configuration in `before` or `after` that one of them lacks or
+/// holds other bytes in.
+pub(crate) fn changed(before: &Snapshot, after: &Snapshot) -> Vec<Found> {
+    let mut files: Vec<&PathBuf> = before.iter().chain(after).map(|(file, _)| file).collect();
+    files.sort();
+    files.dedup();
+    let bytes = |snapshot: &'_ Snapshot, file: &PathBuf| {
+        snapshot
+            .iter()
+            .find_map(|(named, bytes)| (named == file).then(|| bytes.clone()))
+    };
+    files
+        .into_iter()
+        .filter(|file| bytes(before, file) != bytes(after, file))
+        .map(|file| Found {
+            file: file.display().to_string(),
+            violation: Violation::Changed,
+        })
+        .collect()
+}
+
+/// Each configuration clippy can read for a member crate in `member_dirs`
+/// of the workspace at `root` (`config_files`), with its bytes now.
+///
+/// # Errors
+///
+/// Returns an error if a configuration cannot be read.
+pub(crate) fn snapshot(root: &Path, member_dirs: &[PathBuf]) -> Result<Snapshot, Error> {
+    config_files(root, member_dirs, Path::is_file)
+        .into_iter()
+        .map(|file| {
+            let path = root.join(&file);
+            fs::read(&path)
+                .map(|bytes| (file, bytes))
+                .map_err(Error::path_io("read", &path))
+        })
+        .collect()
+}
+
+/// Runs `build`, which builds the workspace at `root` whose members are in
+/// `member_dirs`, and adds to what it found each configuration a build
+/// script added, removed or rewrote while it ran (`changed`).
+///
+/// Cargo runs a build script before compiling its crate, so one that
+/// writes a configuration changes what clippy lints that crate, and those
+/// after it, with. This sees every such change left in place when the
+/// build ends. It cannot see a build script that writes a configuration
+/// and puts the old bytes back before the build ends: a build script is
+/// code run with the developer's rights, which no check of its output
+/// bounds; what may run as one is held by rule 21 and `check-deps`.
+///
+/// # Errors
+///
+/// Returns an error if a configuration cannot be read, or `build` fails.
+pub(crate) fn unchanged_by(
+    root: &Path,
+    member_dirs: &[PathBuf],
+    build: impl FnOnce() -> Result<Vec<Found>, Error>,
+) -> Result<Vec<Found>, Error> {
+    let before = snapshot(root, member_dirs)?;
+    let mut found = build()?;
+    found.extend(changed(&before, &snapshot(root, member_dirs)?));
+    Ok(found)
+}
+
+/// Runs the workspace's clippy (`workspace_clippy`) at the workspace the
+/// current directory is in, and refuses a configuration a build script
+/// changed while it ran, as `unchanged_by` does.
+///
+/// # Errors
+///
+/// Returns an error if clippy fails, or a configuration changed.
+pub(crate) fn lint_workspace(name: &'static str) -> Result<(), Error> {
+    let workspace = metadata::load(None, &[])?;
+    let member_dirs: Vec<PathBuf> = workspace
+        .members
+        .iter()
+        .map(|member| member.dir.clone())
+        .collect();
+    let before = snapshot(&workspace.root, &member_dirs)?;
+    let status = workspace_clippy().status().map_err(Error::io(name))?;
+    let found = changed(&before, &snapshot(&workspace.root, &member_dirs)?);
+    if !found.is_empty() {
+        return Err(Error::Rules {
+            check: CHECK,
+            violations: found.iter().map(ToString::to_string).collect(),
+        });
+    }
+    Error::check_status(name, status)
+}
+
 /// What `Found` names for a build script's violation.
 const BUILD_SCRIPTS: &str = "build scripts";
 
@@ -815,6 +928,11 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         .iter()
         .map(|member| member.dir.clone())
         .collect();
+    // The build scripts run first, so the configurations proved are the
+    // ones left after them, and one they changed is refused.
+    let build = unchanged_by(&workspace.root, &member_dirs, || {
+        check_build_scripts(&workspace.root, &workspace.target_dir)
+    })?;
     let dir = crate::fixture::fresh_dir(&workspace.target_dir, CHECK)?;
     let conf_dir = std::env::var_os(CONF_DIR);
     let result = check_tree(
@@ -825,8 +943,8 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         &dir,
     );
     crate::fixture::remove_dir(&dir)?;
-    let mut violations = result?;
-    violations.extend(check_build_scripts(&workspace.root, &workspace.target_dir)?);
+    let mut violations = build;
+    violations.extend(result?);
     if !violations.is_empty() {
         return Err(Error::Rules {
             check: CHECK,

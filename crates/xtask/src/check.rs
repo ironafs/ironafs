@@ -21,7 +21,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         Command::new("cargo").args(["fmt", "--all", "--check"]),
         "cargo fmt --all --check",
     )?;
-    run_command(&mut clippy(), "cargo clippy --all-targets --workspace")?;
+    crate::bans::lint_workspace("cargo clippy --all-targets --workspace")?;
     run_command(
         Command::new("cargo").args([
             "nextest",
@@ -58,10 +58,6 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     } else {
         report_skipped("cargo-deny", output)
     }
-}
-
-fn clippy() -> Command {
-    crate::bans::workspace_clippy()
 }
 
 fn run_command(command: &mut Command, name: &'static str) -> Result<(), Error> {

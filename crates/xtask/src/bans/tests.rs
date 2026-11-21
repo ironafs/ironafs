@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::ffi::OsStr;
 
 use super::{
-    BANS, Ban, CONF_DIR, Found, Lint, Violation, build_overrides, config_files, fired_violations,
-    listed, overridden, planted_source, root_config, uncovered, unreadable,
+    BANS, Ban, CONF_DIR, Found, Lint, Snapshot, Violation, build_overrides, changed, config_files,
+    fired_violations, listed, overridden, planted_source, root_config, uncovered, unreadable,
 };
 
 /// Clippy's short-format warning for `ban` fired on line `line`, spelt
@@ -643,4 +643,58 @@ fn unreadable_reports_an_entry_line_holding_more_than_one_ban() {
             "{text:?}: {found:?}"
         );
     }
+}
+
+/// A snapshot holding each of `files` with its text.
+fn snapshot(files: &[(&str, &str)]) -> Snapshot {
+    files
+        .iter()
+        .map(|(file, text)| (PathBuf::from(file), text.as_bytes().to_vec()))
+        .collect()
+}
+
+/// A configuration `changed` names for `file`.
+fn changed_file(file: &str) -> Found {
+    Found {
+        file: file.to_owned(),
+        violation: Violation::Changed,
+    }
+}
+
+#[test]
+fn changed_accepts_the_same_configurations() {
+    let files = snapshot(&[("clippy.toml", "a"), ("crates/b/clippy.toml", "b")]);
+    assert_eq!(changed(&files, &files.clone()), []);
+}
+
+#[test]
+fn changed_reports_a_configuration_rewritten_added_or_removed() {
+    let before = snapshot(&[("clippy.toml", "a"), ("crates/b/clippy.toml", "b")]);
+    for (after, file) in [
+        (
+            snapshot(&[("clippy.toml", "a "), ("crates/b/clippy.toml", "b")]),
+            "clippy.toml",
+        ),
+        (
+            snapshot(&[
+                ("clippy.toml", "a"),
+                ("crates/b/clippy.toml", "b"),
+                ("crates/c/.clippy.toml", "a"),
+            ]),
+            "crates/c/.clippy.toml",
+        ),
+        (snapshot(&[("clippy.toml", "a")]), "crates/b/clippy.toml"),
+    ] {
+        assert_eq!(changed(&before, &after), [changed_file(file)], "{file}");
+    }
+}
+
+#[test]
+fn changed_violation_says_what_failed() {
+    assert_eq!(
+        changed_file("crates/b/clippy.toml").to_string(),
+        "crates/b/clippy.toml: added, removed or rewritten while the workspace was built, so \
+         clippy may have linted with a configuration this check did not prove: a build script \
+         writes it; remove that"
+    );
 }
