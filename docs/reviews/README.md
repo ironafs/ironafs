@@ -41,6 +41,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-01-xdr-spec](2026-11-21-m2a-01-xdr-spec.md) | Issue #42: `docs/specs/`, its template and the XDR profile with caps |
 | [2026-11-21-m2a-71-seams](2026-11-21-m2a-71-seams.md) | Issue #71: the `Rpc` and `Disk` seams and the scheduling model |
 | [2026-11-21-m2a-79-sim](2026-11-21-m2a-79-sim.md) | Issue #79, part (a): the simulator's baton scheduler, trace, replay and interleaving witness |
+| [2026-11-21-m2a-96-simmodels](2026-11-21-m2a-96-simmodels.md) | Issue #96, part 1: the simulator's VL and fileserver models, read side |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).

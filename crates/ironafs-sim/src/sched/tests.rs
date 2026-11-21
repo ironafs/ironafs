@@ -59,7 +59,7 @@ fn one_task_runs_to_its_end() {
     assert_eq!(outcome.failure, None);
     assert_eq!(
         outcome.trace,
-        "ironafs-sim trace 1\n\
+        "ironafs-sim trace 2\n\
          d0 sched run one seed=5 incarnation=0 plants=-\n\
          d0 sched spawn t0 only\n\
          d0 sched decide [t0] pick=0 drawn draws=1 at="

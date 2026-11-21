@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::{Cell, CellWorld, PUSH_ATTEMPTS, PUSH_INTERVAL, PUSH_TIMEOUT};
+use super::{Cell, CellWorld, NETWORK, PUSH_ATTEMPTS, PUSH_INTERVAL, PUSH_TIMEOUT};
 use crate::model::callback::{
     CbAnswer, CbKind, CbProc, CbRequest, Reset, decode_cb_request, encode_cb_answer,
 };
@@ -134,7 +134,7 @@ fn a_moved_volume_is_served_by_its_new_server_and_refused_as_moved_by_the_old() 
 }
 
 #[test]
-fn envelope_bytes_are_answered_or_dropped_and_garbage_is_a_marshalling_abort() {
+fn envelope_bytes_are_answered_or_dropped() {
     let mut cell = cell();
     let bytes = encode_request(&request(FS1, Service::Fs, status()));
     let answer = cell.serve_bytes(&bytes).map(|reply| decode_answer(&reply));
@@ -144,15 +144,35 @@ fn envelope_bytes_are_answered_or_dropped_and_garbage_is_a_marshalling_abort() {
     ));
     cell.set_down(FS1, true);
     assert_eq!(cell.serve_bytes(&bytes), None);
+}
+
+#[test]
+fn malformed_bytes_get_a_marshalling_abort_only_from_a_server_that_is_up() {
+    let mut cell = cell();
+    // An address prefix, then bytes that are no request.
+    let garbage = |to: Addr| [&to.0[..], &[0xee, 0xee]].concat();
     assert_eq!(
-        cell.serve_bytes(&[1, 2]).map(|reply| decode_answer(&reply)),
+        cell.serve_bytes(&garbage(FS1))
+            .map(|reply| decode_answer(&reply)),
         Some(Ok(Answer::Abort(MARSHALLING)))
     );
+    assert_eq!(
+        cell.serve_bytes(&garbage(VL))
+            .map(|reply| decode_answer(&reply)),
+        Some(Ok(Answer::Abort(MARSHALLING)))
+    );
+    // Bytes to a down server, or to an address no server holds, never
+    // reach a server: dropped, whatever they contain.
+    cell.set_down(FS1, true);
+    assert_eq!(cell.serve_bytes(&garbage(FS1)), None);
+    assert_eq!(cell.serve_bytes(&garbage(Addr([10, 9, 9, 9]))), None);
+    // Too short to name any server: dropped.
+    assert_eq!(cell.serve_bytes(&[1, 2]), None);
 }
 
 const ME: ClientId = ClientId(0);
 const PEER: ClientId = ClientId(1);
-const ATTACKER: Addr = Addr([192, 0, 2, 9]);
+const ABSENT: Addr = Addr([192, 0, 2, 9]);
 
 fn shared() -> Arc<Mutex<Cell>> {
     Arc::new(Mutex::new(cell()))
@@ -238,7 +258,7 @@ fn a_forged_call_is_pushed_by_the_network_and_no_server_hears_its_answer() {
         procedure: CbProc::CallBack { fids: vec![fid()] },
     };
     assert_eq!(
-        reply(world.serve(0, &bytes_from(PEER, ATTACKER, forge))),
+        reply(world.serve(0, &bytes_from(PEER, NETWORK, forge))),
         started(1)
     );
     let polled = world.poll();
@@ -267,7 +287,7 @@ fn callback_faults_lose_the_attempts_they_name_for_their_kind_and_client() {
             to: client,
             procedure,
         };
-        reply(world.serve(0, &bytes_from(PEER, ATTACKER, forge)));
+        reply(world.serve(0, &bytes_from(PEER, NETWORK, forge)));
     }
     let tokens: Vec<u64> = world.poll().pushes.iter().map(|push| push.token).collect();
     let admitted = |world: &mut CellWorld, token: u64| -> Vec<bool> {
@@ -284,5 +304,49 @@ fn the_world_drops_calls_to_a_down_server_and_answers_garbage_with_a_marshalling
     cell.lock().unwrap().set_down(FS1, true);
     let mut world = CellWorld::new(&cell);
     assert_eq!(world.serve(0, &bytes_from(ME, FS1, status())), Served::Drop);
-    assert_eq!(reply(world.serve(1, b"junk")), Answer::Abort(MARSHALLING));
+    let mut junk = FS2.0.to_vec();
+    junk.extend_from_slice(b"junk");
+    assert_eq!(reply(world.serve(1, &junk)), Answer::Abort(MARSHALLING));
+}
+
+#[test]
+fn the_world_drops_bytes_to_an_absent_or_down_server_unread() {
+    let cell = shared();
+    cell.lock().unwrap().set_down(FS1, true);
+    let mut world = CellWorld::new(&cell);
+    let mut junk = ABSENT.0.to_vec();
+    junk.extend_from_slice(b"junk");
+    assert_eq!(world.serve(0, &junk), Served::Drop);
+    let mut junk = FS1.0.to_vec();
+    junk.extend_from_slice(b"junk");
+    assert_eq!(world.serve(1, &junk), Served::Drop);
+}
+
+#[test]
+fn only_the_network_address_forges_and_it_serves_nothing_else() {
+    let cell = shared();
+    let mut world = CellWorld::new(&cell);
+    let forge = || Procedure::SimForge {
+        from: FS1,
+        to: ME,
+        procedure: CbProc::Probe,
+    };
+    assert_eq!(
+        world.serve(0, &bytes_from(PEER, ABSENT, forge())),
+        Served::Drop
+    );
+    assert_eq!(
+        reply(world.serve(1, &bytes_from(PEER, FS1, forge()))),
+        Answer::Abort(UNKNOWN_PROCEDURE)
+    );
+    assert_eq!(
+        reply(world.serve(2, &bytes_from(PEER, NETWORK, status()))),
+        Answer::Abort(UNKNOWN_PROCEDURE)
+    );
+    assert_eq!(world.poll().pushes, []);
+    assert_eq!(
+        reply(world.serve(3, &bytes_from(PEER, NETWORK, forge()))),
+        started(1)
+    );
+    assert_eq!(world.poll().pushes.len(), 1);
 }

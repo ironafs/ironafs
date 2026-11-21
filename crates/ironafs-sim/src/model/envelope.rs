@@ -123,6 +123,14 @@ pub fn encode_request(request: &Request) -> Vec<u8> {
     out.0
 }
 
+/// The server a request's bytes are addressed to: their first four
+/// bytes, which every request starts with, read before anything else so
+/// that bytes to a server that is not there are dropped unread.
+#[must_use]
+pub fn destination(bytes: &[u8]) -> Option<Addr> {
+    Reader(bytes).addr().ok()
+}
+
 /// The request `bytes` encode.
 ///
 /// # Errors
@@ -310,6 +318,13 @@ pub fn decode_answer(bytes: &[u8]) -> Result<Answer, EnvelopeError> {
     input.end()?;
     Ok(answer)
 }
+
+/// The fewest bytes a site encodes to: a tag, an address, a partition,
+/// a version and a release state.
+const SITE_MIN: usize = 11;
+
+/// The bytes every status record encodes to.
+const STATUS_MIN: usize = 70;
 
 /// Appends envelope values to a buffer; shared with the callback
 /// envelope.
@@ -582,7 +597,7 @@ impl<'a> Reader<'a> {
                     read_only: self.id()?,
                     backup: self.id()?,
                 };
-                let count = self.count(1)?;
+                let count = self.count(SITE_MIN)?;
                 let sites = (0..count).map(|_| self.site()).collect::<Result<_, _>>()?;
                 Results::VlEntry(VlEntry { name, ids, sites })
             }
@@ -596,7 +611,7 @@ impl<'a> Reader<'a> {
                 sync: self.sync()?,
             },
             3 => {
-                let count = self.count(1)?;
+                let count = self.count(STATUS_MIN)?;
                 let statuses = (0..count)
                     .map(|_| self.status())
                     .collect::<Result<_, _>>()?;

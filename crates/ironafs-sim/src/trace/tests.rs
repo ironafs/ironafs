@@ -109,9 +109,9 @@ fn vocabulary_accepts_every_code_and_refuses_free_text() {
 
 #[test]
 fn identities_ignore_metadata() {
-    let first = "ironafs-sim trace 1\nd0 sched run sample seed=1\n\
+    let first = "ironafs-sim trace 2\nd0 sched run sample seed=1\n\
                  d0 sched decide [t0,t1] pick=1 drawn draws=1 at=5\n";
-    let second = "ironafs-sim trace 1\nd0 sched run sample seed=2\n\
+    let second = "ironafs-sim trace 2\nd0 sched run sample seed=2\n\
                   d0 sched decide [t0,t1] pick=1 drawn draws=1 at=9\n";
     assert_ne!(first, second);
     assert_eq!(chosen_identities(first), chosen_identities(second));

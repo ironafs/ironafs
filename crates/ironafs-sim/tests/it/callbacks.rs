@@ -18,7 +18,7 @@ use std::time::Duration;
 use ironafs_sim::model::callback::{
     CbAnswer, CbKind, CbProc, CbRequest, Reset, decode_cb_request, encode_cb_answer,
 };
-use ironafs_sim::model::cell::{Cell, PUSH_ATTEMPTS, serve_in};
+use ironafs_sim::model::cell::{Cell, NETWORK, PUSH_ATTEMPTS, serve_in};
 use ironafs_sim::model::check::{BREAK_ORDER, Binding, BreakOrder, CONTINUITY, Continuity};
 use ironafs_sim::model::envelope::{decode_answer, encode_request};
 use ironafs_sim::model::front::{self, FrontEnd, Item};
@@ -31,7 +31,7 @@ use ironafs_sim::trace::{ops, terminal};
 use ironafs_time::BootDeadline;
 
 const FS1: Addr = Addr([10, 0, 0, 2]);
-const ATTACKER: Addr = Addr([192, 0, 2, 9]);
+
 const ME: ClientId = ClientId(0);
 const PEER: ClientId = ClientId(1);
 
@@ -232,7 +232,7 @@ fn forged(setup: &mut Setup, _cell: &Shared, seen: &Seen) {
             },
         };
         assert_eq!(
-            ask(cx, ATTACKER, PEER, forge),
+            ask(cx, NETWORK, PEER, forge),
             Ok(Answer::Result(Results::Started { pushes: 1 }))
         );
     });
@@ -358,7 +358,7 @@ fn a14_run(name: &'static str, seed: u64, a14: bool) -> (Outcome, Cell, Vec<CbRe
                 to: ME,
                 procedure: CbProc::Probe,
             };
-            ask(cx, ATTACKER, PEER, probe).unwrap();
+            ask(cx, NETWORK, PEER, probe).unwrap();
         });
         let (service_seen, service_toy) = (Arc::clone(&calls), Arc::clone(&toy));
         setup.task("callbacks", move |cx: &TaskCx| {

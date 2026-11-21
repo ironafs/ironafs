@@ -8,6 +8,10 @@
 //! bumps a file's data version and owes a break to every other client
 //! that holds a callback promise on the file.
 //!
+//! Which breaks a write owes is the simulator's own design: the callback
+//! specification (`docs/specs/callbacks.md`) states the client's service,
+//! not a server's bookkeeping.
+//!
 //! It sends breaks, resets and probes to a client's callback service on
 //! demand (`docs/specs/callbacks.md`, 5.1.2), and keeps callback
 //! continuity as that specification's 5.8 states assumption A14: a break
@@ -98,8 +102,11 @@ pub enum VolumeState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BulkFault {
     /// One status record and one promise fewer than the files asked.
+    /// The server still records a promise for every file asked, as one
+    /// that issued them and then lost an item in its reply would.
     DropLast,
-    /// The item at this index has a kind outside the three known.
+    /// The item at this index has a kind outside the three known. An
+    /// index past the reply's last item plants nothing.
     UnclassifiedAt(usize),
 }
 
