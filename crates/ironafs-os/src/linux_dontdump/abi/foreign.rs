@@ -4,6 +4,17 @@
 //! The foreign declaration of site `linux-dontdump`.
 
 use core::ffi::{c_int, c_void};
+use std::io;
+
+/// The errno the last failed call on this thread set.
+pub(in crate::linux_dontdump) fn last_error() -> io::Error {
+    io::Error::last_os_error()
+}
+
+/// Where a secret buffer's memory is released, wiped, just before it is
+/// freed: nothing happens here; the Miri stand-in observes it.
+#[inline(always)]
+pub(in crate::linux_dontdump) fn released(_memory: &[u8]) {}
 
 // SAFETY: `int madvise(void *addr, size_t length, int advice)`, as
 // `madvise(2)` and `<sys/mman.h>` declare it in glibc and musl; it is in

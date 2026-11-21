@@ -8,10 +8,51 @@
 //! the first and the last byte of the range (so Miri checks that the
 //! pointer is valid for the whole length) and returns 0; anything else
 //! returns -1. It changes no byte, as the advice changes no content.
+//!
+//! A test can [`plan`] the next call to fail with an errno, which
+//! [`last_error`] then returns, as the C library's errno would be; and
+//! [`last_release`] says whether the last buffer released was all zero.
 
 use core::ffi::{c_int, c_void};
+use std::cell::Cell;
+use std::io;
 
 use super::MADV_DONTDUMP;
+
+/// The next call's answer.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::linux_dontdump) enum Plan {
+    /// As the kernel answers the wrapper's call.
+    Advise,
+    /// -1, with this errno.
+    Fail(c_int),
+}
+
+thread_local! {
+    static PLAN: Cell<Plan> = const { Cell::new(Plan::Advise) };
+    static ERRNO: Cell<c_int> = const { Cell::new(0) };
+    static RELEASE: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Plans the next call's answer on this thread; it is used once.
+pub(in crate::linux_dontdump) fn plan(next: Plan) {
+    PLAN.with(|plan| plan.set(next));
+}
+
+/// The errno the last planned failure set.
+pub(in crate::linux_dontdump) fn last_error() -> io::Error {
+    io::Error::from_raw_os_error(ERRNO.with(Cell::get))
+}
+
+/// Records whether the memory released is all zero.
+pub(in crate::linux_dontdump) fn released(memory: &[u8]) {
+    RELEASE.with(|release| release.set(Some(memory.iter().all(|byte| *byte == 0))));
+}
+
+/// Whether the last memory released on this thread was all zero.
+pub(in crate::linux_dontdump) fn last_release() -> Option<bool> {
+    RELEASE.with(Cell::get)
+}
 
 /// The block the wrapper advises: 64 KiB in size and alignment.
 const BLOCK: usize = 64 * 1024;
@@ -31,6 +72,10 @@ pub(in crate::linux_dontdump) unsafe fn madvise(
     let shape =
         advice == MADV_DONTDUMP && addr.addr() % BLOCK == 0 && length != 0 && length % BLOCK == 0;
     if !shape {
+        return -1;
+    }
+    if let Plan::Fail(errno) = PLAN.with(|plan| plan.replace(Plan::Advise)) {
+        ERRNO.with(|cell| cell.set(errno));
         return -1;
     }
     let bytes: *const u8 = addr.cast_const().cast();
