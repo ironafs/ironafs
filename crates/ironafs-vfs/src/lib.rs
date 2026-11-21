@@ -13,7 +13,7 @@
 //! - what failed: one semantic error type ([`VfsError`]; C46);
 //! - why a write is committed ([`CommitReason`]; C9);
 //! - what changed: the invalidation stream and its acknowledgements
-//!   ([`Event`], [`Ack`], [`Effects`]; C17);
+//!   ([`Event`], [`Ack`], [`PurgeFailed`], [`Effects`]; C17);
 //! - room to grow: bounded extension lists ([`Extensions`]; N41, point 7),
 //!   and the reserved operations refused as not supported ([`Reserved`];
 //!   N46, point 1);
@@ -45,7 +45,8 @@ pub use error::{Surface, VfsError};
 pub use extension::{Extension, ExtensionError, Extensions, MAX_EXTENSION_BYTES, MAX_EXTENSIONS};
 pub use ingress::{Ingress, RequestId};
 pub use invalidation::{
-    Ack, Effects, Entries, Event, Invalidation, NodeId, Overflow, Revision, Rights, Scope,
+    Ack, Effects, Entries, Event, Invalidation, NodeId, Overflow, PurgeFailed, Revision, Rights,
+    Scope,
 };
 pub use name::{MAX_NAME_BYTES, Name, NameError, linux};
 pub use reserved::Reserved;

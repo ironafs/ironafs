@@ -8,7 +8,8 @@
 //! node's slot per binding holds the union of its pending [`Effects`] and
 //! a [`Revision`]. A layer applies an event's purge and then acknowledges
 //! the revision it applied ([`Ack`]), which clears only effects up to that
-//! revision (C17, points 2 and 6). When a binding's pending events reach
+//! revision (C17, points 2 and 6), or reports a purge that failed
+//! ([`PurgeFailed`]). When a binding's pending events reach
 //! their byte bound it gets one [`Overflow`] instead, which gates and
 //! purges every node it holds.
 //!
@@ -201,4 +202,48 @@ pub enum Ack {
         /// The overflow's revision applied.
         revision: Revision,
     },
+}
+
+/// A binding's report that the operating system's purge of a delivery
+/// failed: sent instead of an [`Ack`], never with one (the contract
+/// specification, 5.10, point 5; C17, point 5).
+///
+/// Under an overflow, the binding reports each node that failed as an
+/// `OverflowNode` and then acknowledges the overflow, which clears it for
+/// every node not reported. A report is untrusted: the core acts on it only
+/// if it names a delivery it made to this binding (5.10, point 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PurgeFailed {
+    /// The purge of a delivery of the node's slot failed.
+    Node {
+        /// The node.
+        node: NodeId,
+        /// The revision the delivery carried.
+        revision: Revision,
+    },
+    /// The purge of one node the binding holds failed under an overflow.
+    OverflowNode {
+        /// The node.
+        node: NodeId,
+        /// The overflow's revision.
+        revision: Revision,
+    },
+}
+
+impl PurgeFailed {
+    /// The node whose purge failed.
+    #[must_use]
+    pub const fn node(self) -> NodeId {
+        match self {
+            Self::Node { node, .. } | Self::OverflowNode { node, .. } => node,
+        }
+    }
+
+    /// The revision of the delivery, or of the overflow, it reports.
+    #[must_use]
+    pub const fn revision(self) -> Revision {
+        match self {
+            Self::Node { revision, .. } | Self::OverflowNode { revision, .. } => revision,
+        }
+    }
 }

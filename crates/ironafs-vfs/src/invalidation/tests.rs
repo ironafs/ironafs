@@ -4,7 +4,7 @@
 //! Tests for merging a node's pending effects, and for when they widen
 //! (ADR 0004, C17, point 6; N47, point 3).
 
-use super::{Effects, Entries, Rights, Scope};
+use super::{Effects, Entries, NodeId, PurgeFailed, Revision, Rights, Scope};
 use crate::{ContextId, Name};
 
 fn name(bytes: &[u8]) -> Name {
@@ -164,4 +164,24 @@ fn one_name_never_covers_a_rename() {
     });
     assert!(!entries(Entries::Name(name(b"a"))).covers(&rename));
     assert!(!entries(Entries::Name(name(b"a2"))).covers(&rename));
+}
+
+#[test]
+fn purge_failed_names_its_node_and_revision_for_a_delivery() {
+    let failed = PurgeFailed::Node {
+        node: NodeId(7),
+        revision: Revision(12),
+    };
+    assert_eq!(failed.node(), NodeId(7));
+    assert_eq!(failed.revision(), Revision(12));
+}
+
+#[test]
+fn purge_failed_names_its_node_and_the_overflow_revision() {
+    let failed = PurgeFailed::OverflowNode {
+        node: NodeId(9),
+        revision: Revision(40),
+    };
+    assert_eq!(failed.node(), NodeId(9));
+    assert_eq!(failed.revision(), Revision(40));
 }
