@@ -65,6 +65,8 @@ jobs:
         run: cargo --locked xtask check-pure
       - name: Prove the pure-crate build catches planted violations
         run: cargo --locked xtask check-pure --self-test
+      - name: Prove the coverage report catches planted exports
+        run: cargo --locked xtask coverage --self-test
 
   test:
     name: test

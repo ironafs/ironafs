@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Files left out of the coverage report (testing specification 5.4,
+# point 3). One entry per line: `<pattern> # <reason>`, the pattern relative
+# to the workspace root, `*` for any characters inside one path segment and
+# `**` as a whole segment for any number of segments. An entry without a
+# reason fails `cargo xtask coverage`. Exclusions are made here only, never
+# with attributes, markers or `cfg(coverage)` code in source; the first
+# reviewer checks each new line.
+#
+# Test code needs no entry: the tool leaves out `tests`, `examples` and
+# `benches` directories and files named `tests.rs` or ending in `_tests.rs`
+# or `-tests.rs` (rule 15's unit-test files), and the command fails if such
+# a file reaches the report anyway.
