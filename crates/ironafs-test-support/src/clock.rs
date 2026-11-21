@@ -9,7 +9,10 @@ use std::fmt;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use ironafs_time::{AwakeInstant, BootInstant, Clock, ClockError, ClockKind, WallTime};
+use ironafs_time::{
+    AwakeInstant, BootInstant, Clock, ClockError, ClockKind, Deadline, Doubt, Stamp, Waited,
+    WallTime, Watch,
+};
 
 use crate::SplitMix64;
 
@@ -22,7 +25,19 @@ mod tests;
 /// [`SeededClock::advance`] moves all three; [`SeededClock::suspend`]
 /// moves the boot clock and wall time but not the awake clock, as a
 /// machine asleep does. Wall time can be set to any value, to model a jump.
-/// Each clock can be made to fail its reads (C37, point 5).
+/// Each clock can be made to fail its reads (C37, point 5), and moved back
+/// ([`SeededClock::regress`]).
+///
+/// Like every `Clock` (seams and scheduling specification, 5.2, point 3,
+/// and 5.3, point 2), it keeps the doubt counts and the episode count from
+/// its scripted reads: a failed read moves both counts and opens an episode
+/// if none is open, until a valid sample closes it; a regression of a
+/// monotonic clock moves the boot count and counts an episode; a suspend,
+/// or a wall-time jump, past one second (C37, point 4's proposed threshold;
+/// a read here takes no time, so there is no sampling skew) counts an
+/// episode. Its [`Clock::wait`] never blocks: it advances all three clocks
+/// by the time left on the deadline's clock, with checked arithmetic, then
+/// evaluates the outcome again; an overflow is `ClockFailed`.
 ///
 /// A clock built [from a seed](SeededClock::from_seed) starts at values
 /// drawn from it, so code under test cannot rely on clocks starting at
@@ -53,10 +68,30 @@ struct ClockState {
     boot: BootInstant,
     awake: AwakeInstant,
     wall: WallTime,
-    boot_failing: bool,
-    awake_failing: bool,
-    wall_failing: bool,
+    failing: Failing,
+    doubt: Doubt,
+    episodes: u64,
+    /// An episode of failed reads is open until a valid sample returns.
+    failing_episode: bool,
+    /// What a read is judged against for a regression: the last valid
+    /// sample's boot and awake values, lowered to a read's value once that
+    /// read's regression is counted, so one regression counts once.
+    boot_reference: Option<BootInstant>,
+    awake_reference: Option<AwakeInstant>,
+    /// The last valid sample, for suspends and wall jumps.
+    last_sample: Option<(BootInstant, AwakeInstant, WallTime)>,
 }
+
+/// Which clocks fail their reads.
+#[derive(Clone, Copy, Debug, Default)]
+struct Failing {
+    boot: bool,
+    awake: bool,
+    wall: bool,
+}
+
+/// C37, point 4's proposed threshold for a suspend or a wall jump.
+const THRESHOLD_NANOS: i128 = 1_000_000_000;
 
 /// A clock was moved past the last value its type can hold. The clock is
 /// left as it was.
@@ -80,9 +115,13 @@ impl SeededClock {
                 boot,
                 awake,
                 wall,
-                boot_failing: false,
-                awake_failing: false,
-                wall_failing: false,
+                failing: Failing::default(),
+                doubt: Doubt { boot: 0, awake: 0 },
+                episodes: 0,
+                failing_episode: false,
+                boot_reference: None,
+                awake_reference: None,
+                last_sample: None,
             }),
         }
     }
@@ -141,13 +180,44 @@ impl SeededClock {
         self.state().wall = wall;
     }
 
+    /// Moves `clock` back by `duration`: a regression.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeOverflow`], and moves nothing, if the clock would
+    /// pass its origin (or, for wall time, its first value).
+    pub fn regress(&self, clock: ClockKind, duration: Duration) -> Result<(), TimeOverflow> {
+        let mut state = self.state();
+        let back = u64::try_from(duration.as_nanos()).map_err(|_| TimeOverflow)?;
+        match clock {
+            ClockKind::Boot => {
+                let nanos = state
+                    .boot
+                    .as_nanos()
+                    .checked_sub(back)
+                    .ok_or(TimeOverflow)?;
+                state.boot = BootInstant::from_nanos(nanos);
+            }
+            ClockKind::Awake => {
+                let nanos = state
+                    .awake
+                    .as_nanos()
+                    .checked_sub(back)
+                    .ok_or(TimeOverflow)?;
+                state.awake = AwakeInstant::from_nanos(nanos);
+            }
+            ClockKind::Wall => state.wall = state.wall.checked_sub(duration).ok_or(TimeOverflow)?,
+        }
+        Ok(())
+    }
+
     /// Makes every later read of `clock` fail while `failing` is true.
     pub fn set_failing(&self, clock: ClockKind, failing: bool) {
         let mut state = self.state();
         match clock {
-            ClockKind::Boot => state.boot_failing = failing,
-            ClockKind::Awake => state.awake_failing = failing,
-            ClockKind::Wall => state.wall_failing = failing,
+            ClockKind::Boot => state.failing.boot = failing,
+            ClockKind::Awake => state.failing.awake = failing,
+            ClockKind::Wall => state.failing.wall = failing,
         }
     }
 
@@ -173,28 +243,177 @@ impl SeededClock {
     }
 }
 
-impl Clock for SeededClock {
-    fn boot(&self) -> Result<BootInstant, ClockError> {
-        let state = self.state();
-        read(state.boot, state.boot_failing, ClockKind::Boot)
+impl ClockState {
+    /// A failed read: both counts move, and an episode opens if none is.
+    fn fail(&mut self, clock: ClockKind) -> ClockError {
+        // The counts cannot reach the end of 64 bits in any test; saturating
+        // keeps a failure a failure.
+        self.doubt.boot = self.doubt.boot.saturating_add(1);
+        self.doubt.awake = self.doubt.awake.saturating_add(1);
+        if !self.failing_episode {
+            self.failing_episode = true;
+            self.episodes = self.episodes.saturating_add(1);
+        }
+        ClockError::new(clock)
     }
 
-    fn awake(&self) -> Result<AwakeInstant, ClockError> {
-        let state = self.state();
-        read(state.awake, state.awake_failing, ClockKind::Awake)
+    /// A regression of either monotonic clock: the boot count moves and one
+    /// episode is counted.
+    fn regressed(&mut self) {
+        self.doubt.boot = self.doubt.boot.saturating_add(1);
+        self.episodes = self.episodes.saturating_add(1);
     }
 
-    fn wall(&self) -> Result<WallTime, ClockError> {
-        let state = self.state();
-        read(state.wall, state.wall_failing, ClockKind::Wall)
+    fn read_boot(&mut self) -> Result<BootInstant, ClockError> {
+        if self.failing.boot {
+            return Err(self.fail(ClockKind::Boot));
+        }
+        if self
+            .boot_reference
+            .is_some_and(|reference| self.boot < reference)
+        {
+            self.regressed();
+            self.boot_reference = Some(self.boot);
+        }
+        Ok(self.boot)
+    }
+
+    fn read_awake(&mut self) -> Result<AwakeInstant, ClockError> {
+        if self.failing.awake {
+            return Err(self.fail(ClockKind::Awake));
+        }
+        if self
+            .awake_reference
+            .is_some_and(|reference| self.awake < reference)
+        {
+            self.regressed();
+            self.awake_reference = Some(self.awake);
+        }
+        Ok(self.awake)
+    }
+
+    fn read_wall(&mut self) -> Result<WallTime, ClockError> {
+        if self.failing.wall {
+            return Err(self.fail(ClockKind::Wall));
+        }
+        Ok(self.wall)
+    }
+
+    /// One valid sample's own checks against the last valid sample: a
+    /// suspend or a wall jump past the threshold counts an episode. A
+    /// regression was already counted by the reads.
+    fn check_sample(&mut self, boot: BootInstant, awake: AwakeInstant, wall: WallTime) {
+        if let Some((last_boot, last_awake, last_wall)) = self.last_sample {
+            let boot_grew = i128::from(boot.as_nanos()) - i128::from(last_boot.as_nanos());
+            let awake_grew = i128::from(awake.as_nanos()) - i128::from(last_awake.as_nanos());
+            let wall_moved = wall_nanos(wall) - wall_nanos(last_wall);
+            // A regression is its own episode, counted by the reads; the
+            // clocks are then not compared across it.
+            if boot_grew >= 0 && awake_grew >= 0 {
+                if boot_grew - awake_grew > THRESHOLD_NANOS {
+                    self.episodes = self.episodes.saturating_add(1);
+                }
+                if (wall_moved - boot_grew).abs() > THRESHOLD_NANOS {
+                    self.episodes = self.episodes.saturating_add(1);
+                }
+            }
+        }
+        self.last_sample = Some((boot, awake, wall));
+        self.boot_reference = Some(boot);
+        self.awake_reference = Some(awake);
+        self.failing_episode = false;
     }
 }
 
-/// A read of `clock`: its `value`, or its error while it is failing.
-fn read<T>(value: T, failing: bool, clock: ClockKind) -> Result<T, ClockError> {
-    if failing {
-        Err(ClockError::new(clock))
-    } else {
-        Ok(value)
+/// Wall time as signed nanoseconds since 1970, wide enough never to
+/// overflow.
+fn wall_nanos(wall: WallTime) -> i128 {
+    i128::from(wall.seconds()) * 1_000_000_000 + i128::from(wall.subsec_nanos())
+}
+
+impl Clock for SeededClock {
+    fn boot(&self) -> Result<BootInstant, ClockError> {
+        self.state().read_boot()
+    }
+
+    fn awake(&self) -> Result<AwakeInstant, ClockError> {
+        self.state().read_awake()
+    }
+
+    fn wall(&self) -> Result<WallTime, ClockError> {
+        self.state().read_wall()
+    }
+
+    fn sample(&self) -> Result<Stamp, ClockError> {
+        let mut state = self.state();
+        let first = state.read_boot()?;
+        let awake = state.read_awake()?;
+        let wall = state.read_wall()?;
+        let boot = state.read_boot()?;
+        // Reads take no time here, so the bracket's two boot reads agree.
+        let _ = first;
+        state.check_sample(boot, awake, wall);
+        Ok(Stamp {
+            boot,
+            awake,
+            wall,
+            doubt: state.doubt,
+            episodes: state.episodes,
+        })
+    }
+
+    fn wait(&self, signal: &dyn Watch, deadline: &Deadline, cancel: &dyn Watch) -> Waited {
+        if let Some(outcome) = self.evaluate(signal, deadline, cancel) {
+            return outcome;
+        }
+        let left = {
+            let mut state = self.state();
+            match (deadline.boot_at(), deadline.awake_at()) {
+                (Some(at), _) => state.read_boot().map(|now| at.remaining(now)),
+                (None, Some(at)) => state.read_awake().map(|now| at.remaining(now)),
+                (None, None) => return Waited::ClockFailed,
+            }
+        };
+        let Ok(left) = left else {
+            return Waited::ClockFailed;
+        };
+        if self.advance(left).is_err() {
+            return Waited::ClockFailed;
+        }
+        self.evaluate(signal, deadline, cancel)
+            .unwrap_or(Waited::DeadlinePassed)
+    }
+}
+
+impl SeededClock {
+    /// One evaluation of a wait's outcome, in the order of the seams and
+    /// scheduling specification, 5.3, point 4; `None` while undecided.
+    fn evaluate(
+        &self,
+        signal: &dyn Watch,
+        deadline: &Deadline,
+        cancel: &dyn Watch,
+    ) -> Option<Waited> {
+        if cancel.is_set() {
+            return Some(Waited::Cancelled);
+        }
+        let mut state = self.state();
+        let passed = match (deadline.boot_at(), deadline.awake_at()) {
+            (Some(at), _) => state
+                .read_boot()
+                .map(|now| (at.has_passed(now), state.doubt.boot)),
+            (None, Some(at)) => state
+                .read_awake()
+                .map(|now| (at.has_passed(now), state.doubt.awake)),
+            (None, None) => return Some(Waited::ClockFailed),
+        };
+        drop(state);
+        match passed {
+            Err(_) => Some(Waited::ClockFailed),
+            Ok((_, doubt)) if doubt > deadline.latched_doubt() => Some(Waited::ClockFailed),
+            Ok((true, _)) => Some(Waited::DeadlinePassed),
+            Ok((false, _)) if signal.is_set() => Some(Waited::Signalled),
+            Ok((false, _)) => None,
+        }
     }
 }

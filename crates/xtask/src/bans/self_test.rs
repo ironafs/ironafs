@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use super::{CHECK, Violation, check};
+use super::{CHECK, TIME_CRATE_EXEMPT, Violation, check, crate_config_drift};
 use crate::Error;
 use crate::fixture;
 
@@ -78,10 +78,11 @@ pub(super) fn run(
     target_dir: &Path,
     clippy_toml: &str,
     toolchain_toml: &str,
+    time_crate: &Path,
     output: &mut impl Write,
 ) -> Result<(), Error> {
     let dir = fixture::fresh_dir(target_dir, CHECK)?;
-    let result = run_in(&dir, clippy_toml, toolchain_toml, output);
+    let result = run_in(&dir, clippy_toml, toolchain_toml, time_crate, output);
     fixture::remove_dir(&dir)?;
     result
 }
@@ -90,12 +91,13 @@ fn run_in(
     dir: &Path,
     clippy_toml: &str,
     toolchain_toml: &str,
+    time_crate: &Path,
     output: &mut impl Write,
 ) -> Result<(), Error> {
     let mut report =
         |line: String| writeln!(output, "{line}").map_err(Error::io("report check-bans self-test"));
     let clean = "the repository's clippy.toml";
-    let found = check(clippy_toml, toolchain_toml, &dir.join("clean"))?;
+    let found = check(clippy_toml, toolchain_toml, time_crate, &dir.join("clean"))?;
     if !found.is_empty() {
         return Err(failure(clean, &found));
     }
@@ -105,7 +107,12 @@ fn run_in(
         if planted == clippy_toml {
             return Err(failure(case.name, &[]));
         }
-        let found = check(&planted, toolchain_toml, &dir.join(format!("case-{index}")))?;
+        let found = check(
+            &planted,
+            toolchain_toml,
+            time_crate,
+            &dir.join(format!("case-{index}")),
+        )?;
         match found.first() {
             Some(_) if found.iter().all(case.expect) && found.iter().any(case.needs) => {
                 for violation in &found {
@@ -115,10 +122,50 @@ fn run_in(
             _ => return Err(failure(case.name, &found)),
         }
     }
+    // `ironafs-time`'s own file: the root without the constructor bans
+    // passes; one that keeps them, or drops another ban, is drift.
+    let own: String = clippy_toml
+        .lines()
+        .filter(|line| {
+            !TIME_CRATE_EXEMPT
+                .iter()
+                .any(|path| line.contains(&format!("\"{path}\"")))
+        })
+        .flat_map(|line| [line, "\n"])
+        .collect();
+    let drift_cases = [
+        (
+            "the crate file kept whole, constructor bans included",
+            clippy_toml.to_owned(),
+        ),
+        (
+            "the crate file without a rule 7 ban",
+            own.lines()
+                .filter(|line| !line.contains(&format!("\"{REMOVED}\"")))
+                .flat_map(|line| [line, "\n"])
+                .collect(),
+        ),
+    ];
+    if !crate_config_drift(clippy_toml, &own).is_empty() {
+        return Err(failure(
+            "the crate file as the root without the constructor bans",
+            &[],
+        ));
+    }
+    report("passed: the crate file as the root without the constructor bans".to_owned())?;
+    for (name, planted) in &drift_cases {
+        let found = crate_config_drift(clippy_toml, planted);
+        match found.as_slice() {
+            [violation @ Violation::CrateConfigDrift(_)] => {
+                report(format!("caught: {name}: {violation}"))?;
+            }
+            _ => return Err(failure(name, &found)),
+        }
+    }
     report(format!(
         "check-bans --self-test: the repository's bans passed and {} planted cases failed as \
          planted",
-        CASES.len()
+        CASES.len() + drift_cases.len()
     ))
 }
 

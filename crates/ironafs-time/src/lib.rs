@@ -45,6 +45,7 @@ extern crate alloc;
 
 mod instant;
 mod seam;
+mod wait;
 mod wall;
 
 pub use instant::{
@@ -52,4 +53,7 @@ pub use instant::{
     MonotonicDeadline, MonotonicInstant,
 };
 pub use seam::{Clock, ClockError, ClockKind, Rng, RngError};
+pub use wait::{
+    Deadline, DeadlineError, Doubt, Registration, Stamp, Waited, Waker, Watch, WatchFull, WatchRef,
+};
 pub use wall::WallTime;

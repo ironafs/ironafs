@@ -11,7 +11,7 @@
 use core::error::Error;
 use core::fmt;
 
-use crate::{AwakeInstant, BootInstant, WallTime};
+use crate::{AwakeInstant, BootInstant, Deadline, Stamp, Waited, WallTime, Watch};
 
 #[cfg(test)]
 mod tests;
@@ -41,15 +41,22 @@ mod tests;
 /// sample, which point 4 defines as an awake read bracketed by two boot
 /// reads, all three succeeding.
 ///
-/// Nothing in this crate enforces this. `Clock` reports each read on its
-/// own, and [`MonotonicDeadline::after`](crate::MonotonicDeadline::after)
-/// builds a deadline from any instant it is given; the code that holds
-/// the clock keeps the episode and decides when a sample is valid.
+/// The `Clock` implementation keeps the episode and the doubt (seams and
+/// scheduling specification, 5.3, point 2): it remembers its last valid
+/// sample, and [`Clock::sample`] and every read move two doubt counts, one
+/// per monotonic clock, and an episode count. A [`Deadline`] latches its
+/// clock's count when it is built, so a failure or a regression after that
+/// fails it at its next evaluation, even if the sample taken then is good.
+/// [`MonotonicDeadline::after`](crate::MonotonicDeadline::after) builds a
+/// bare instant with no latch; seams take a [`Deadline`].
 ///
 /// ```
-/// use ironafs_time::{AwakeInstant, BootInstant, Clock, ClockError, WallTime};
+/// use ironafs_time::{
+///     AwakeInstant, BootInstant, Clock, ClockError, Deadline, Doubt, Stamp, WallTime, Waited,
+///     Watch,
+/// };
 ///
-/// /// A clock stopped at the origin of each timeline.
+/// /// A clock stopped at the origin of each timeline, which never fails.
 /// struct Stopped;
 ///
 /// impl Clock for Stopped {
@@ -61,6 +68,37 @@ mod tests;
 ///     }
 ///     fn wall(&self) -> Result<WallTime, ClockError> {
 ///         Ok(WallTime::UNIX_EPOCH)
+///     }
+///     fn sample(&self) -> Result<Stamp, ClockError> {
+///         Ok(Stamp {
+///             boot: self.boot()?,
+///             awake: self.awake()?,
+///             wall: self.wall()?,
+///             doubt: Doubt { boot: 0, awake: 0 },
+///             episodes: 0,
+///         })
+///     }
+///     fn wait(&self, signal: &dyn Watch, deadline: &Deadline, cancel: &dyn Watch) -> Waited {
+///         // The outcomes in their order. Undecided, a wait goes on
+///         // waiting; time never moves here, so a deadline still ahead never
+///         // passes, and this wait blocks for ever.
+///         let origin_passed = deadline
+///             .boot_at()
+///             .is_some_and(|at| at.has_passed(BootInstant::from_nanos(0)))
+///             || deadline
+///                 .awake_at()
+///                 .is_some_and(|at| at.has_passed(AwakeInstant::from_nanos(0)));
+///         if cancel.is_set() {
+///             Waited::Cancelled
+///         } else if origin_passed {
+///             Waited::DeadlinePassed
+///         } else if signal.is_set() {
+///             Waited::Signalled
+///         } else {
+///             loop {
+///                 std::thread::park();
+///             }
+///         }
 ///     }
 /// }
 ///
@@ -92,6 +130,26 @@ pub trait Clock: Send + Sync {
     /// Returns a [`ClockError`] for [`ClockKind::Wall`] if the clock cannot
     /// be read.
     fn wall(&self) -> Result<WallTime, ClockError>;
+
+    /// Takes one sample as ADR 0004, C37, point 4, does (an awake read and a
+    /// wall read bracketed by two boot reads), and applies the checks of the
+    /// seams and scheduling specification, 5.3, point 2: a failed read moves
+    /// both doubt counts and opens an episode if none is open; a regression
+    /// of either monotonic clock moves the boot count and counts an episode;
+    /// a detected suspend or a wall jump past the threshold counts an
+    /// episode.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`ClockError`] of the first read that failed. No
+    /// [`Stamp`] exists then, so no deadline can be built from it.
+    fn sample(&self) -> Result<Stamp, ClockError>;
+
+    /// Waits until `signal` is raised, `cancel` fires or `deadline` passes:
+    /// the one blocking primitive of the core (5.3, point 3). Every wake,
+    /// spurious or not, evaluates the outcome in the order of [`Waited`],
+    /// the deadline's latched doubt included.
+    fn wait(&self, signal: &dyn Watch, deadline: &Deadline, cancel: &dyn Watch) -> Waited;
 }
 
 /// A source of random bytes (ADR 0004, C3, point 3).
