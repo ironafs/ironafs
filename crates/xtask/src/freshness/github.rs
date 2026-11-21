@@ -7,9 +7,10 @@
 //! rule 21). `gh` takes its token from `GH_TOKEN` in CI; nothing here reads
 //! or prints it.
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use super::{Job, Listing, Run, Step};
+use crate::Command;
 
 #[cfg(test)]
 mod tests;

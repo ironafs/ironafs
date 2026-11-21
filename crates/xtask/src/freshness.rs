@@ -218,6 +218,11 @@ pub(crate) fn parse_manifest(text: &str) -> Result<Vec<String>, String> {
 /// [`Error::Rules`] when a tier is stale or incomplete (exit status 1);
 /// [`Error::CouldNotRun`] when a manifest or the API could not be read, or a
 /// list was cut short (exit status 2).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "rule 7 covers shipped code; the freshness check measures a run's age against \
+              the real date, and xtask is never shipped"
+)]
 pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error> {
     if self_test {
         return self_test::run(output);
