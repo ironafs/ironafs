@@ -14,6 +14,8 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    # Only this label; Dependabot's per-ecosystem defaults are not used.
+    labels: ["dependencies"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -23,3 +25,5 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    # Only this label; Dependabot's per-ecosystem defaults are not used.
+    labels: ["dependencies"]

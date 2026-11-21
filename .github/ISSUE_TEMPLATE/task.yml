@@ -3,7 +3,7 @@
 
 name: Task
 description: A unit of work, written as a brief (docs/workflow.md §3).
-labels: ["type:task"]
+labels: ["type:task", "needs-triage"]
 body:
   - type: textarea
     id: outcome
