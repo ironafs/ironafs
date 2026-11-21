@@ -113,38 +113,122 @@ pub const fn select_flags(offer: InitFlags) -> InitFlags {
     offer.intersection(ALLOWED)
 }
 
-/// The kernel's INIT request.
+/// The kernel's INIT request, as [`crate::request::decode`] checked it.
+/// Only the decoder makes one, so [`negotiate`] sees only offers whose
+/// body and flags were validated (fuse-codec.md 5.3, point 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct InitRequest {
-    /// The kernel's major version.
-    pub major: u32,
-    /// The kernel's minor version.
-    pub minor: u32,
-    /// The kernel's largest read-ahead, in bytes.
-    pub max_readahead: u32,
-    /// The flags the kernel offers.
-    pub offer: InitFlags,
+pub struct InitRequest(Offer);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Offer {
+    /// A major other than 7: nothing past the major is read.
+    OtherMajor(u32),
+    /// Major 7.
+    Seven {
+        minor: u32,
+        max_readahead: u32,
+        offer: InitFlags,
+    },
 }
 
-/// Decodes an INIT body (fuse-codec.md 5.1, point 4; 5.3, point 2):
-/// `None` if it is shorter than 16 bytes, or than 20 when it says it
-/// carries `flags2`. Bytes past the fields read are ignored.
-pub(crate) fn decode_init(body: &[u8]) -> Option<InitRequest> {
-    let mut reader = Reader::new(body);
-    let major = reader.u32()?;
-    let minor = reader.u32()?;
-    let max_readahead = reader.u32()?;
-    let flags = reader.u32()?;
-    let mut offer = u64::from(flags);
-    if offer & INIT_EXT.0 != 0 {
-        offer |= u64::from(reader.u32()?) << 32;
+impl InitRequest {
+    /// The kernel's major version.
+    #[must_use]
+    pub const fn major(&self) -> u32 {
+        match self.0 {
+            Offer::OtherMajor(major) => major,
+            Offer::Seven { .. } => MAJOR,
+        }
     }
-    Some(InitRequest {
-        major,
+
+    /// The kernel's minor version, for major 7.
+    #[must_use]
+    pub const fn minor(&self) -> Option<u32> {
+        match self.0 {
+            Offer::OtherMajor(_) => None,
+            Offer::Seven { minor, .. } => Some(minor),
+        }
+    }
+
+    /// The flags the kernel offers, for major 7.
+    #[must_use]
+    pub const fn offer(&self) -> Option<InitFlags> {
+        match self.0 {
+            Offer::OtherMajor(_) => None,
+            Offer::Seven { offer, .. } => Some(offer),
+        }
+    }
+
+    /// A major-7 request with these values, for the tests of negotiation.
+    #[cfg(test)]
+    pub(crate) const fn seven(minor: u32, max_readahead: u32, offer: InitFlags) -> Self {
+        Self(Offer::Seven {
+            minor,
+            max_readahead,
+            offer,
+        })
+    }
+}
+
+/// Why an INIT body was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InitDefect {
+    /// Not the size its version and flags give.
+    Body,
+    /// A flag offered by a minor that does not define it.
+    Flags,
+}
+
+/// The size of INIT's body before 7.36, and without `FUSE_INIT_EXT`.
+const INIT_IN_SIZE: usize = 16;
+/// The size of INIT's extended body, with `FUSE_INIT_EXT` (7.36).
+const INIT_IN_EXT_SIZE: usize = 64;
+/// The minor that defines `FUSE_INIT_EXT` and the extended body.
+const INIT_EXT_MINOR: u32 = 36;
+/// The minor that defines `FUSE_NO_EXPORT_SUPPORT`.
+const NO_EXPORT_SUPPORT_MINOR: u32 = 40;
+
+/// Decodes an INIT body (fuse-codec.md 5.3, point 2):
+///
+/// 1. the major first; for a major other than 7 nothing else is read,
+///    since the kernel sends a new INIT after the major-only reply;
+/// 2. for major 7, exactly 16 bytes without `FUSE_INIT_EXT`, and exactly
+///    64 with it (`flags2` and eleven unused words, which are not read);
+/// 3. each allowlisted flag only from the minor that defines it.
+pub(crate) fn decode_init(body: &[u8]) -> Result<InitRequest, InitDefect> {
+    let mut reader = Reader::new(body);
+    let major = reader.u32().ok_or(InitDefect::Body)?;
+    if major != MAJOR {
+        return Ok(InitRequest(Offer::OtherMajor(major)));
+    }
+    let minor = reader.u32().ok_or(InitDefect::Body)?;
+    let max_readahead = reader.u32().ok_or(InitDefect::Body)?;
+    let flags = reader.u32().ok_or(InitDefect::Body)?;
+    let extended = u64::from(flags) & INIT_EXT.0 != 0;
+    let size = if extended {
+        INIT_IN_EXT_SIZE
+    } else {
+        INIT_IN_SIZE
+    };
+    if body.len() != size {
+        return Err(InitDefect::Body);
+    }
+    let flags2 = if extended {
+        reader.u32().ok_or(InitDefect::Body)?
+    } else {
+        0
+    };
+    let offer = InitFlags(u64::from(flags) | (u64::from(flags2) << 32));
+    if (offer.contains(INIT_EXT) && minor < INIT_EXT_MINOR)
+        || (offer.contains(NO_EXPORT_SUPPORT) && minor < NO_EXPORT_SUPPORT_MINOR)
+    {
+        return Err(InitDefect::Flags);
+    }
+    Ok(InitRequest(Offer::Seven {
         minor,
         max_readahead,
-        offer: InitFlags(offer),
-    })
+        offer,
+    }))
 }
 
 /// Why an [`InitConfig`] was refused.
@@ -278,32 +362,27 @@ pub const fn negotiate(
     request: &InitRequest,
     config: &InitConfig,
 ) -> Result<InitOutcome, InitRefused> {
-    if request.major > MAJOR {
-        return Ok(InitOutcome::OfferMajor);
-    }
-    if request.major < MAJOR {
-        return Err(InitRefused::MajorTooOld {
-            major: request.major,
-        });
-    }
-    if request.minor < MIN_MINOR {
-        return Err(InitRefused::MinorBelowFloor {
-            minor: request.minor,
-        });
-    }
-    let minor = if request.minor < MAX_MINOR {
-        request.minor
-    } else {
-        MAX_MINOR
+    let (minor, max_readahead, offer) = match request.0 {
+        Offer::OtherMajor(major) if major > MAJOR => return Ok(InitOutcome::OfferMajor),
+        Offer::OtherMajor(major) => return Err(InitRefused::MajorTooOld { major }),
+        Offer::Seven {
+            minor,
+            max_readahead,
+            offer,
+        } => (minor, max_readahead, offer),
     };
-    let max_readahead = if request.max_readahead < config.max_readahead {
-        request.max_readahead
+    if minor < MIN_MINOR {
+        return Err(InitRefused::MinorBelowFloor { minor });
+    }
+    let minor = if minor < MAX_MINOR { minor } else { MAX_MINOR };
+    let max_readahead = if max_readahead < config.max_readahead {
+        max_readahead
     } else {
         config.max_readahead
     };
     Ok(InitOutcome::Ready(Negotiated {
         minor,
-        flags: select_flags(request.offer),
+        flags: select_flags(offer),
         max_readahead,
         max_write: config.max_write,
         max_background: config.max_background,

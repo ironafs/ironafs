@@ -15,7 +15,6 @@
 //! ```
 //! use ironafs_fuse::init::{InitConfig, InitOutcome, negotiate};
 //! use ironafs_fuse::request::{Phase, Request, decode};
-//! use ironafs_fuse::reply;
 //!
 //! // An INIT at protocol 7.23: a 40-byte header, then major, minor,
 //! // max_readahead and flags.
@@ -30,12 +29,13 @@
 //! }
 //!
 //! let (header, request) = decode(&bytes, Phase::AwaitingInit)?;
-//! let Request::Init(init) = request else { panic!("not an init") };
+//! let Request::Init { init, reply } = request else { panic!("not an init") };
 //! let config = InitConfig::new(131_072, 131_072, 12, 9, 1)?;
 //! let InitOutcome::Ready(negotiated) = negotiate(&init, &config)? else { panic!("not 7.x") };
 //! assert_eq!(negotiated.minor(), 23);
-//! let answer = reply::init(header.unique, &negotiated);
-//! assert_eq!(answer.len(), 80);
+//! let answer = reply.init(&negotiated);
+//! assert_eq!(answer.as_bytes().len(), 80);
+//! assert_eq!(header.unique, 1);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 

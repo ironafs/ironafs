@@ -88,7 +88,8 @@ fn decode_reports_framed_requests_faithfully() {
             match decode(&bytes, framed.phase) {
                 Ok((header, request)) => {
                     assert_eq!(header, framed.header);
-                    if let Request::Lookup { name } = request {
+                    if let Request::Lookup { name, reply } = request {
+                        assert_eq!(reply.unique(), framed.header.unique);
                         assert_eq!(
                             Some(name.as_bytes()),
                             framed.body.split_last().map(|(_, name)| name)

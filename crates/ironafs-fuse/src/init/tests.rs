@@ -7,9 +7,9 @@
 use ironafs_test_support::{Property, Source};
 
 use super::{
-    ALLOWED, ConfigError, DIRECT_IO_ALLOW_MMAP, INIT_EXT, InitConfig, InitFlags, InitOutcome,
-    InitRefused, InitRequest, MAX_MINOR, MIN_MINOR, NEVER, NO_EXPORT_SUPPORT, PASSTHROUGH,
-    POSIX_ACL, WRITEBACK_CACHE, decode_init, negotiate, select_flags,
+    ALLOWED, ConfigError, DIRECT_IO_ALLOW_MMAP, INIT_EXT, InitConfig, InitDefect, InitFlags,
+    InitOutcome, InitRefused, InitRequest, MAX_MINOR, MIN_MINOR, NEVER, NO_EXPORT_SUPPORT,
+    PASSTHROUGH, POSIX_ACL, WRITEBACK_CACHE, decode_init, negotiate, select_flags,
 };
 
 fn flags(bits: u64) -> InitFlags {
@@ -82,13 +82,10 @@ fn select_is_offer_and_allowed() {
         });
 }
 
-fn request(major: u32, minor: u32) -> InitRequest {
-    InitRequest {
-        major,
-        minor,
-        max_readahead: 131_072,
-        offer: flags(u64::MAX),
-    }
+/// A major-7 request offering every flag the given minor may offer, built
+/// the way the decoder would accept it.
+fn request(minor: u32) -> InitRequest {
+    InitRequest::seven(minor, 131_072, flags(u64::MAX))
 }
 
 fn config() -> InitConfig {
@@ -98,7 +95,7 @@ fn config() -> InitConfig {
 #[test]
 fn negotiate_takes_the_smaller_minor() {
     for (kernel, expected) in [(23, 23), (40, 40), (46, 46), (50, 46)] {
-        match negotiate(&request(7, kernel), &config()) {
+        match negotiate(&request(kernel), &config()) {
             Ok(InitOutcome::Ready(negotiated)) => {
                 assert_eq!(negotiated.minor(), expected, "{kernel}");
                 assert_eq!(negotiated.flags(), ALLOWED, "{kernel}");
@@ -113,15 +110,18 @@ fn negotiate_takes_the_smaller_minor() {
 #[test]
 fn negotiate_refuses_minor_below_floor() {
     assert_eq!(
-        negotiate(&request(7, 22), &config()).unwrap_err(),
+        negotiate(&request(22), &config()).unwrap_err(),
         InitRefused::MinorBelowFloor { minor: 22 }
     );
 }
 
 #[test]
 fn negotiate_offers_major_7_to_a_newer_major() {
+    let init = decode_init(&[8, 0, 0, 0]).unwrap();
+    assert_eq!(init.major(), 8);
+    assert_eq!(init.minor(), None);
     assert!(matches!(
-        negotiate(&request(8, 0), &config()),
+        negotiate(&init, &config()),
         Ok(InitOutcome::OfferMajor)
     ));
 }
@@ -129,19 +129,18 @@ fn negotiate_offers_major_7_to_a_newer_major() {
 #[test]
 fn negotiate_refuses_older_major() {
     assert_eq!(
-        negotiate(&request(6, 40), &config()).unwrap_err(),
+        negotiate(&decode_init(&[6, 0, 0, 0]).unwrap(), &config()).unwrap_err(),
         InitRefused::MajorTooOld { major: 6 }
     );
 }
 
 #[test]
 fn readahead_is_the_smaller() {
-    let Ok(InitOutcome::Ready(negotiated)) = negotiate(&request(7, 40), &config()) else {
+    let Ok(InitOutcome::Ready(negotiated)) = negotiate(&request(40), &config()) else {
         panic!("not negotiated");
     };
     assert_eq!(negotiated.max_readahead, 65_536);
-    let mut small = request(7, 40);
-    small.max_readahead = 4_096;
+    let small = InitRequest::seven(40, 4_096, flags(0));
     let Ok(InitOutcome::Ready(negotiated)) = negotiate(&small, &config()) else {
         panic!("not negotiated");
     };
@@ -156,57 +155,102 @@ fn config_refuses_max_write_over_the_data_cap() {
     );
 }
 
-/// An INIT body at protocol 7.23: `major`, `minor`, `max_readahead`,
-/// `flags`, little-endian.
+/// An INIT body at protocol 7.23, by hand: `major`, `minor`,
+/// `max_readahead`, `flags`, little-endian.
 const INIT_7_23: [u8; 16] = [
     0x07, 0, 0, 0, // major 7
     0x17, 0, 0, 0, // minor 23
     0x00, 0x00, 0x02, 0, // max_readahead 131,072
-    0x00, 0x00, 0x00, 0x40, // flags: INIT_EXT (bit 30), which 7.23 never sends
+    0x01, 0x00, 0x00, 0x00, // flags: ASYNC_READ (bit 0)
 ];
 
+/// The extended INIT body of 7.36 and later (64 bytes): the 16 above with
+/// this minor and `flags`, then `flags2` and eleven unused words.
+fn extended(minor: u8, flags: u32, flags2: u32) -> [u8; 64] {
+    let mut body = [0u8; 64];
+    body[..16].copy_from_slice(&INIT_7_23);
+    body[4] = minor;
+    body[12..16].copy_from_slice(&flags.to_le_bytes());
+    body[16..20].copy_from_slice(&flags2.to_le_bytes());
+    body
+}
+
 #[test]
-fn decode_init_16_bytes_reads_no_flags2() {
-    let mut body = INIT_7_23;
-    body[15] = 0x00;
-    body[12] = 0x01; // ASYNC_READ only
+fn decode_init_16_bytes_at_7_23() {
+    let init = decode_init(&INIT_7_23).unwrap();
+    assert_eq!(init.major(), 7);
+    assert_eq!(init.minor(), Some(23));
+    assert_eq!(init.offer(), Some(flags(1)));
+    assert_eq!(init, InitRequest::seven(23, 131_072, flags(1)));
+}
+
+#[test]
+fn decode_init_other_major_reads_only_the_major() {
+    // A newer major's body is not 7.x's layout; only the major is read.
+    for body in [&[9u8, 0, 0, 0][..], &[9, 0, 0, 0, 1, 2], &[5, 0, 0, 0]] {
+        let init = decode_init(body).unwrap();
+        assert_eq!(init.minor(), None, "{body:?}");
+        assert_eq!(init.offer(), None, "{body:?}");
+    }
+    assert_eq!(decode_init(&[9, 0, 0]), Err(InitDefect::Body));
+}
+
+#[test]
+fn decode_init_ext_reads_the_64_byte_body() {
+    let init = decode_init(&extended(46, 1 << 30, 1 << 6)).unwrap();
+    assert_eq!(init.minor(), Some(46));
+    assert_eq!(init.offer(), Some(flags((1 << 30) | (1 << 38))));
+}
+
+#[test]
+fn decode_init_refuses_bodies_of_other_sizes() {
+    // INIT_EXT set: exactly 64 bytes.
+    let body = extended(46, 1 << 30, 0);
+    for size in [16, 20, 63] {
+        assert_eq!(decode_init(&body[..size]), Err(InitDefect::Body), "{size}");
+    }
+    let mut longer = body.to_vec();
+    longer.push(0);
+    assert_eq!(decode_init(&longer), Err(InitDefect::Body));
+    // INIT_EXT clear: exactly 16 bytes.
+    assert_eq!(decode_init(&INIT_7_23[..15]), Err(InitDefect::Body));
+    let mut longer = INIT_7_23.to_vec();
+    longer.push(0);
+    assert_eq!(decode_init(&longer), Err(InitDefect::Body));
+    assert_eq!(decode_init(&extended(46, 0, 0)), Err(InitDefect::Body));
+}
+
+#[test]
+fn decode_init_refuses_flags_before_their_minor() {
+    // FUSE_INIT_EXT is 7.36's, FUSE_NO_EXPORT_SUPPORT 7.40's (E70).
     assert_eq!(
-        decode_init(&body),
-        Some(InitRequest {
-            major: 7,
-            minor: 23,
-            max_readahead: 131_072,
-            offer: flags(1),
-        })
+        decode_init(&extended(35, 1 << 30, 0)),
+        Err(InitDefect::Flags)
     );
+    assert!(decode_init(&extended(36, 1 << 30, 0)).is_ok());
+    assert_eq!(
+        decode_init(&extended(39, 1 << 30, 1 << 6)),
+        Err(InitDefect::Flags)
+    );
+    assert!(decode_init(&extended(40, 1 << 30, 1 << 6)).is_ok());
+    let mut body = INIT_7_23;
+    body[15] = 0x40; // INIT_EXT at 7.23, in a 16-byte body
+    assert_eq!(decode_init(&body), Err(InitDefect::Body));
 }
 
 #[test]
-fn decode_init_ext_without_flags2_is_refused() {
-    assert_eq!(decode_init(&INIT_7_23), None);
-}
-
-#[test]
-fn decode_init_64_bytes_with_init_ext_reads_flags2_shifted() {
-    let mut body = [0u8; 64];
-    body[..16].copy_from_slice(&INIT_7_23);
-    body[4] = 46;
-    body[16..20].copy_from_slice(&[0x40, 0x00, 0x00, 0x00]); // flags2 bit 6 = bit 38
-    let decoded = decode_init(&body).unwrap();
-    assert_eq!(decoded.minor, 46);
-    assert_eq!(decoded.offer, flags((1 << 30) | (1 << 38)));
-}
-
-#[test]
-fn decode_init_64_bytes_without_init_ext_ignores_flags2() {
-    let mut body = [0u8; 64];
-    body[..16].copy_from_slice(&INIT_7_23);
-    body[15] = 0;
-    body[16..20].copy_from_slice(&[0xff; 4]);
-    assert_eq!(decode_init(&body).unwrap().offer, flags(0));
-}
-
-#[test]
-fn decode_init_short_body_is_refused() {
-    assert_eq!(decode_init(&INIT_7_23[..15]), None);
+fn negotiated_flags_are_defined_at_the_negotiated_minor() {
+    // Whatever a valid offer holds, each selected flag exists at the
+    // negotiated minor: the offer was checked against the kernel's minor,
+    // and the negotiated minor is never below it while it is at most 46.
+    for minor in [36u8, 39, 40, 46] {
+        let flags2 = if minor >= 40 { 1 << 6 } else { 0 };
+        let init = decode_init(&extended(minor, 1 << 30, flags2)).unwrap();
+        let Ok(InitOutcome::Ready(negotiated)) = negotiate(&init, &config()) else {
+            panic!("{minor}");
+        };
+        let selected = negotiated.flags();
+        assert!(!selected.contains(NO_EXPORT_SUPPORT) || negotiated.minor() >= 40);
+        assert!(!selected.contains(INIT_EXT) || negotiated.minor() >= 36);
+    }
 }

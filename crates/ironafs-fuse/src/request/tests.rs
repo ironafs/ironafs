@@ -10,7 +10,13 @@ use super::{
     DecodeError, Forget, FrameError, Header, Malformed, Open, Phase, Read, Release, Request, decode,
 };
 use crate::init::{INIT_EXT, InitFlags, InitRequest, NO_EXPORT_SUPPORT};
+use crate::reply::ReplyTo;
 use crate::{Errno, Opcode};
+
+/// The reply token the decoder gives a request of [`request`]'s unique.
+fn to<S>() -> ReplyTo<S> {
+    ReplyTo::new(7, 0)
+}
 
 const READY: Phase = Phase::Negotiated { minor: 46 };
 
@@ -92,7 +98,10 @@ fn lookup_golden_vector_decodes() {
         }
     );
     match request {
-        Request::Lookup { name } => assert_eq!(name.as_bytes(), b"cell"),
+        Request::Lookup { name, reply } => {
+            assert_eq!(name.as_bytes(), b"cell");
+            assert_eq!(reply.unique(), 0x1122);
+        }
         other => panic!("{other:?}"),
     }
 }
@@ -116,7 +125,10 @@ fn getattr_with_and_without_fh() {
     ]);
     assert_eq!(
         decoded(&request(3, &body), READY),
-        Request::Getattr { fh: None }
+        Request::Getattr {
+            fh: None,
+            reply: to()
+        }
     );
     let body = le(&[
         &1u32.to_le_bytes(),
@@ -125,7 +137,10 @@ fn getattr_with_and_without_fh() {
     ]);
     assert_eq!(
         decoded(&request(3, &body), READY),
-        Request::Getattr { fh: Some(77) }
+        Request::Getattr {
+            fh: Some(77),
+            reply: to()
+        }
     );
 }
 
@@ -152,18 +167,27 @@ fn read_of_4096_at_8192() {
     };
     assert_eq!(
         decoded(&request(15, &read_body(8192, 4096, 0)), READY),
-        Request::Read(expected)
+        Request::Read {
+            read: expected,
+            reply: ReplyTo::new(7, 4096)
+        }
     );
     assert_eq!(
         decoded(&request(28, &read_body(8192, 4096, 0)), READY),
-        Request::Readdir(expected)
+        Request::Readdir {
+            read: expected,
+            reply: to()
+        }
     );
     assert_eq!(
         decoded(&request(15, &read_body(8192, 4096, 2)), READY),
-        Request::Read(Read {
-            lock_owner: Some(66),
-            ..expected
-        })
+        Request::Read {
+            read: Read {
+                lock_owner: Some(66),
+                ..expected
+            },
+            reply: ReplyTo::new(7, 4096)
+        }
     );
 }
 
@@ -172,11 +196,17 @@ fn open_release_flush_access_interrupt_forget() {
     let open = le(&[&0o100_000u32.to_le_bytes(), &0u32.to_le_bytes()]);
     assert_eq!(
         decoded(&request(14, &open), READY),
-        Request::Open(Open { flags: 0o100_000 })
+        Request::Open {
+            open: Open { flags: 0o100_000 },
+            reply: to()
+        }
     );
     assert_eq!(
         decoded(&request(27, &open), READY),
-        Request::Opendir(Open { flags: 0o100_000 })
+        Request::Opendir {
+            open: Open { flags: 0o100_000 },
+            reply: to()
+        }
     );
     let release = le(&[
         &5u64.to_le_bytes(),
@@ -193,24 +223,34 @@ fn open_release_flush_access_interrupt_forget() {
     };
     assert_eq!(
         decoded(&request(18, &release), READY),
-        Request::Release(expected)
+        Request::Release {
+            release: expected,
+            reply: to()
+        }
     );
     assert_eq!(
         decoded(&request(29, &release), READY),
-        Request::Releasedir(expected)
+        Request::Releasedir {
+            release: expected,
+            reply: to()
+        }
     );
     let flush = le(&[&5u64.to_le_bytes(), &[0xee; 8], &8u64.to_le_bytes()]);
     assert_eq!(
         decoded(&request(25, &flush), READY),
         Request::Flush {
             fh: 5,
-            lock_owner: 8
+            lock_owner: 8,
+            reply: to()
         }
     );
     let access = le(&[&4u32.to_le_bytes(), &[0xee; 4]]);
     assert_eq!(
         decoded(&request(34, &access), READY),
-        Request::Access { mask: 4 }
+        Request::Access {
+            mask: 4,
+            reply: to()
+        }
     );
     assert_eq!(
         decoded(&request(36, &0x55u64.to_le_bytes()), READY),
@@ -224,9 +264,18 @@ fn open_release_flush_access_interrupt_forget() {
 
 #[test]
 fn empty_bodies() {
-    assert_eq!(decoded(&request(5, &[]), READY), Request::Readlink);
-    assert_eq!(decoded(&request(17, &[]), READY), Request::Statfs);
-    assert_eq!(decoded(&request(38, &[]), READY), Request::Destroy);
+    assert_eq!(
+        decoded(&request(5, &[]), READY),
+        Request::Readlink { reply: to() }
+    );
+    assert_eq!(
+        decoded(&request(17, &[]), READY),
+        Request::Statfs { reply: to() }
+    );
+    assert_eq!(
+        decoded(&request(38, &[]), READY),
+        Request::Destroy { reply: to() }
+    );
     assert_eq!(
         malformed(&request(17, &[0]), READY),
         Malformed::BodyLength {
@@ -297,12 +346,10 @@ fn init_at_7_23_and_7_46() {
     ]);
     assert_eq!(
         decoded(&request(26, &body), Phase::AwaitingInit),
-        Request::Init(InitRequest {
-            major: 7,
-            minor: 23,
-            max_readahead: 4096,
-            offer: InitFlags::from_bits(1),
-        })
+        Request::Init {
+            init: InitRequest::seven(23, 4096, InitFlags::from_bits(1)),
+            reply: to(),
+        }
     );
     let mut body = le(&[
         &7u32.to_le_bytes(),
@@ -314,16 +361,24 @@ fn init_at_7_23_and_7_46() {
     body.resize(64, 0);
     assert_eq!(
         decoded(&request(26, &body), Phase::AwaitingInit),
-        Request::Init(InitRequest {
-            major: 7,
-            minor: 46,
-            max_readahead: 4096,
-            offer: InitFlags::from_bits(INIT_EXT.bits() | NO_EXPORT_SUPPORT.bits()),
-        })
+        Request::Init {
+            init: InitRequest::seven(
+                46,
+                4096,
+                InitFlags::from_bits(INIT_EXT.bits() | NO_EXPORT_SUPPORT.bits()),
+            ),
+            reply: to(),
+        }
     );
     assert_eq!(
-        malformed(&request(26, &body[..15]), Phase::AwaitingInit),
+        malformed(&request(26, &body[..20]), Phase::AwaitingInit),
         Malformed::InitBody
+    );
+    let mut early = body.clone();
+    early[4] = 39; // NO_EXPORT_SUPPORT offered at 7.39
+    assert_eq!(
+        malformed(&request(26, &early), Phase::AwaitingInit),
+        Malformed::InitFlags
     );
 }
 
@@ -331,12 +386,18 @@ fn init_at_7_23_and_7_46() {
 fn opcodes_not_decoded_and_unknown() {
     assert_eq!(
         decoded(&request(16, &[1, 2, 3]), READY),
-        Request::NotDecoded(Opcode::Write)
+        Request::NotDecoded {
+            opcode: Opcode::Write,
+            reply: to()
+        }
     );
     for opcode in [0, 7, 19, 54, 4096, 436_207_616] {
         assert_eq!(
             decoded(&request(opcode, &[1, 2, 3]), READY),
-            Request::Unknown { opcode }
+            Request::Unknown {
+                opcode,
+                reply: to()
+            }
         );
     }
 }
@@ -391,7 +452,10 @@ fn extensions_refused_from_minor_38() {
     );
     assert_eq!(
         decoded(&bytes, Phase::Negotiated { minor: 37 }),
-        Request::Getattr { fh: None }
+        Request::Getattr {
+            fh: None,
+            reply: to()
+        }
     );
 }
 
@@ -486,7 +550,7 @@ fn read_ranges_are_capped() {
     );
     assert!(matches!(
         decoded(&request(15, &read_body(0, 1_048_576, 0)), READY),
-        Request::Read(_)
+        Request::Read { .. }
     ));
     let max = u64::try_from(i64::MAX).unwrap();
     assert_eq!(
@@ -499,12 +563,12 @@ fn read_ranges_are_capped() {
     );
     assert!(matches!(
         decoded(&request(15, &read_body(max - 1, 1, 0)), READY),
-        Request::Read(_)
+        Request::Read { .. }
     ));
     // A directory offset is the layer's cookie, not a byte offset.
     assert!(matches!(
         decoded(&request(28, &read_body(u64::MAX, 4096, 0)), READY),
-        Request::Readdir(_)
+        Request::Readdir { .. }
     ));
 }
 
@@ -516,7 +580,7 @@ fn errors_reply_as_the_spec_says() {
                 error.header,
                 header(u32::from_le_bytes(bytes[4..8].try_into().unwrap()))
             );
-            error.reply()
+            error.errno()
         }
         other => panic!("{other:?}"),
     };
@@ -537,4 +601,77 @@ fn errors_reply_as_the_spec_says() {
     assert_eq!(reply(&request(2, &[0; 7]), READY), None);
     assert_eq!(reply(&request(36, &[0; 7]), READY), None);
     assert_eq!(reply(&request(42, &[0; 7]), READY), None);
+}
+
+#[test]
+fn statx_decodes() {
+    let body = le(&[
+        &1u32.to_le_bytes(),
+        &[0xee; 4],
+        &77u64.to_le_bytes(),
+        &0x800u32.to_le_bytes(),
+        &0xfffu32.to_le_bytes(),
+    ]);
+    assert_eq!(
+        decoded(&request(52, &body), READY),
+        Request::Statx {
+            fh: Some(77),
+            flags: 0x800,
+            mask: 0xfff,
+            reply: to()
+        }
+    );
+    let mut without_fh = body.clone();
+    without_fh[0] = 0;
+    assert!(matches!(
+        decoded(&request(52, &without_fh), READY),
+        Request::Statx { fh: None, .. }
+    ));
+    let mut unknown = body.clone();
+    unknown[0] = 2;
+    assert_eq!(
+        malformed(&request(52, &unknown), READY),
+        Malformed::UnknownFlags
+    );
+    for found in [23, 25] {
+        assert_eq!(
+            malformed(&request(52, &vec![0; found]), READY),
+            Malformed::BodyLength {
+                expected: 24,
+                found
+            }
+        );
+    }
+}
+
+#[test]
+fn open_flags_word_is_checked_from_7_33() {
+    // Reserved below 7.33; from it, `open_flags`, whose one defined bit
+    // needs a flag never selected (fuse-codec.md 5.4, point 6).
+    let open = le(&[&0u32.to_le_bytes(), &1u32.to_le_bytes()]);
+    let zero = le(&[&0u32.to_le_bytes(), &0u32.to_le_bytes()]);
+    for opcode in [14, 27] {
+        assert!(decode(&request(opcode, &open), Phase::Negotiated { minor: 32 }).is_ok());
+        assert_eq!(
+            malformed(&request(opcode, &open), Phase::Negotiated { minor: 33 }),
+            Malformed::UnknownFlags
+        );
+        assert!(decode(&request(opcode, &zero), Phase::Negotiated { minor: 33 }).is_ok());
+    }
+}
+
+#[test]
+fn refused_requests_reply_only_when_owed() {
+    let Err(DecodeError::Request(error)) = decode(&request(3, &[0; 15]), READY) else {
+        panic!("not refused");
+    };
+    let reply = error.into_reply().unwrap();
+    assert_eq!(
+        reply.as_bytes(),
+        [16, 0, 0, 0, 0xfb, 0xff, 0xff, 0xff, 7, 0, 0, 0, 0, 0, 0, 0]
+    );
+    let Err(DecodeError::Request(error)) = decode(&request(2, &[0; 7]), READY) else {
+        panic!("not refused");
+    };
+    assert_eq!(error.into_reply(), None);
 }

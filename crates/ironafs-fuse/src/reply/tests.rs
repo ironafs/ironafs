@@ -2,12 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Tests for the replies: byte vectors written by hand from fuse-codec.md
-//! 5.1, points 3 and 5, and the rules of 5.5, points 5 to 10.
+//! 5.1, points 3 and 5, and the rules of 5.5, points 5 to 11.
 
-use super::{
-    Attr, EncodeError, Kind, StatFs, Timestamp, attr, data, empty, entry, error, init,
-    init_major_only, open, opendir, readlink, statfs,
-};
+use super::{Attr, EncodeError, Kind, ReplyTo, StatFs, Timestamp, shape};
 use crate::Errno;
 use crate::init::{InitConfig, InitFlags, InitOutcome, InitRequest, negotiate};
 
@@ -22,6 +19,10 @@ fn head(len: u32, error: i32, unique: u64) -> Vec<u8> {
         &error.to_le_bytes(),
         &unique.to_le_bytes(),
     ])
+}
+
+fn to<S>() -> ReplyTo<S> {
+    ReplyTo::new(7, 0)
 }
 
 fn sample_attr() -> Attr {
@@ -63,10 +64,16 @@ fn sample_attr_bytes(mode: u32) -> Vec<u8> {
     ])
 }
 
+fn mode_of_attr_reply(reply: &[u8]) -> u32 {
+    u32::from_le_bytes(reply[92..96].try_into().unwrap())
+}
+
 #[test]
 fn error_reply_is_negative_and_bare() {
     assert_eq!(
-        error(0x1122, Errno::ENOENT),
+        ReplyTo::<shape::Entry>::new(0x1122, 0)
+            .error(Errno::ENOENT)
+            .as_bytes(),
         [
             16, 0, 0, 0, 0xfe, 0xff, 0xff, 0xff, 0x22, 0x11, 0, 0, 0, 0, 0, 0
         ]
@@ -75,7 +82,10 @@ fn error_reply_is_negative_and_bare() {
 
 #[test]
 fn empty_reply_is_the_header_alone() {
-    assert_eq!(empty(7), [16, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(
+        to::<shape::Empty>().ok().as_bytes(),
+        [16, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0]
+    );
 }
 
 #[test]
@@ -87,34 +97,43 @@ fn entry_reply_layout() {
         &[0; 24], // entry_valid, attr_valid, both nsec fields
         &sample_attr_bytes(0o100_644),
     ]);
-    assert_eq!(entry(7, 0x55, 3, &sample_attr()), expected);
+    assert_eq!(
+        to::<shape::Entry>()
+            .entry(0x55, 3, &sample_attr())
+            .as_bytes(),
+        expected
+    );
 }
 
 #[test]
 fn attr_reply_layout() {
     let expected = le(&[&head(120, 0, 7), &[0; 16], &sample_attr_bytes(0o100_644)]);
-    assert_eq!(attr(7, &sample_attr()), expected);
+    assert_eq!(
+        to::<shape::Attr>().attr(&sample_attr()).as_bytes(),
+        expected
+    );
 }
 
 #[test]
 fn entry_and_attr_timeouts_are_zero() {
-    let reply = entry(7, 1, 1, &sample_attr());
-    assert_eq!(reply[32..56], [0; 24]);
-    let reply = attr(7, &sample_attr());
-    assert_eq!(reply[16..32], [0; 16]);
+    let reply = to::<shape::Entry>().entry(7, 1, &sample_attr());
+    assert_eq!(reply.as_bytes()[32..56], [0; 24]);
+    let reply = to::<shape::Attr>().attr(&sample_attr());
+    assert_eq!(reply.as_bytes()[16..32], [0; 16]);
 }
 
 #[test]
 fn attr_clears_set_id_bits() {
     let mut value = sample_attr();
-    value.permissions = 0o7777;
-    let reply = attr(7, &value);
-    let mode = u32::from_le_bytes(reply[16 + 16 + 60..16 + 16 + 64].try_into().unwrap());
-    assert_eq!(mode, 0o101_777);
-    value.permissions = 0xffff;
-    let reply = attr(7, &value);
-    let mode = u32::from_le_bytes(reply[16 + 16 + 60..16 + 16 + 64].try_into().unwrap());
-    assert_eq!(mode, 0o101_777);
+    for permissions in [0o7777, 0xffff] {
+        value.permissions = permissions;
+        let reply = to::<shape::Attr>().attr(&value);
+        assert_eq!(
+            mode_of_attr_reply(reply.as_bytes()),
+            0o101_777,
+            "{permissions:o}"
+        );
+    }
 }
 
 #[test]
@@ -127,9 +146,12 @@ fn kinds_have_their_type_bits() {
         let mut value = sample_attr();
         value.kind = kind;
         value.permissions = 0o755;
-        let reply = attr(7, &value);
-        let mode = u32::from_le_bytes(reply[92..96].try_into().unwrap());
-        assert_eq!(mode, bits | 0o755, "{kind:?}");
+        let reply = to::<shape::Attr>().attr(&value);
+        assert_eq!(
+            mode_of_attr_reply(reply.as_bytes()),
+            bits | 0o755,
+            "{kind:?}"
+        );
     }
 }
 
@@ -141,6 +163,73 @@ fn timestamp_refuses_out_of_range() {
     assert!(Timestamp::new(u64::try_from(i64::MAX).unwrap() + 1, 0).is_none());
 }
 
+/// `struct fuse_sx_time` (16 bytes): seconds, nanoseconds, reserved.
+fn sx_time(seconds: u64, nanos: u32) -> Vec<u8> {
+    le(&[&seconds.to_le_bytes(), &nanos.to_le_bytes(), &[0; 4]])
+}
+
+/// `struct fuse_statx_out` for [`sample_attr`], field by field (288
+/// bytes): the reply's own fields, then `struct fuse_statx` (256).
+fn sample_statx_bytes(mask: u32, birth: &[u8]) -> Vec<u8> {
+    le(&[
+        &[0; 8],  // attr_valid
+        &[0; 4],  // attr_valid_nsec
+        &[0; 4],  // flags
+        &[0; 16], // spare
+        &mask.to_le_bytes(),
+        &4096u32.to_le_bytes(), // blksize
+        &[0; 8],                // attributes
+        &1u32.to_le_bytes(),    // nlink
+        &1000u32.to_le_bytes(),
+        &100u32.to_le_bytes(),
+        &0o100_644u16.to_le_bytes(), // mode
+        &[0; 2],
+        &0x0102u64.to_le_bytes(), // ino
+        &5000u64.to_le_bytes(),
+        &10u64.to_le_bytes(),
+        &[0; 8], // attributes_mask
+        &sx_time(1_700_000_000, 1),
+        birth,
+        &sx_time(1_700_000_002, 999_999_999),
+        &sx_time(1_700_000_001, 2),
+        &[0; 16],  // rdev and dev, major and minor
+        &[0; 112], // spare
+    ])
+}
+
+#[test]
+fn statx_reply_layout_without_birth_time() {
+    let expected = le(&[&head(304, 0, 7), &sample_statx_bytes(0x7ff, &[0; 16])]);
+    assert_eq!(
+        to::<shape::Statx>().statx(&sample_attr(), None).as_bytes(),
+        expected
+    );
+}
+
+#[test]
+fn statx_reply_reports_a_birth_time_it_has() {
+    let birth = Timestamp::new(1_600_000_000, 5).unwrap();
+    let expected = le(&[
+        &head(304, 0, 7),
+        &sample_statx_bytes(0xfff, &sx_time(1_600_000_000, 5)),
+    ]);
+    assert_eq!(
+        to::<shape::Statx>()
+            .statx(&sample_attr(), Some(birth))
+            .as_bytes(),
+        expected
+    );
+}
+
+#[test]
+fn statx_clears_set_id_bits() {
+    let mut value = sample_attr();
+    value.permissions = 0o7777;
+    let reply = to::<shape::Statx>().statx(&value, None);
+    let mode = u16::from_le_bytes(reply.as_bytes()[76..78].try_into().unwrap());
+    assert_eq!(mode, 0o101_777);
+}
+
 #[test]
 fn open_reply_is_direct_io_only() {
     let expected = le(&[
@@ -149,43 +238,56 @@ fn open_reply_is_direct_io_only() {
         &1u32.to_le_bytes(),
         &[0; 4],
     ]);
-    assert_eq!(open(7, 9), expected);
+    assert_eq!(to::<shape::Open>().open(9).as_bytes(), expected);
 }
 
 #[test]
 fn opendir_reply_sets_no_cache_flag() {
     let expected = le(&[&head(32, 0, 7), &9u64.to_le_bytes(), &[0; 8]]);
-    assert_eq!(opendir(7, 9), expected);
+    assert_eq!(to::<shape::Opendir>().opendir(9).as_bytes(), expected);
 }
 
 #[test]
 fn data_reply_carries_the_bytes() {
-    assert_eq!(data(7, b"abc").unwrap(), le(&[&head(19, 0, 7), b"abc"]));
-    assert_eq!(data(7, b"").unwrap(), head(16, 0, 7));
+    let reply = ReplyTo::<shape::Data>::new(7, 3).data(b"abc").unwrap();
+    assert_eq!(reply.as_bytes(), le(&[&head(19, 0, 7), b"abc"]));
+    let reply = ReplyTo::<shape::Data>::new(7, 3).data(b"").unwrap();
+    assert_eq!(reply.as_bytes(), head(16, 0, 7));
 }
 
 #[test]
-fn data_over_cap_refused() {
-    assert_eq!(data(7, &vec![0; 1_048_576]).unwrap().len(), 16 + 1_048_576);
-    assert_eq!(
-        data(7, &vec![0; 1_048_577]).unwrap_err(),
-        EncodeError::DataTooLong
-    );
+fn data_over_the_request_size_refused() {
+    let refused = ReplyTo::<shape::Data>::new(7, 3).data(b"abcd").unwrap_err();
+    assert_eq!(refused.error, EncodeError::DataTooLong);
+    // The reply is still owed, and can be an error.
+    assert_eq!(refused.reply.error(Errno::EIO).as_bytes().len(), 16);
+    let full = ReplyTo::<shape::Data>::new(7, 1_048_576).data(&vec![0; 1_048_576]);
+    assert_eq!(full.unwrap().as_bytes().len(), 16 + 1_048_576);
 }
 
 #[test]
 fn link_target_caps() {
     assert_eq!(
-        readlink(7, b"../x").unwrap(),
+        to::<shape::Readlink>()
+            .readlink(b"../x")
+            .unwrap()
+            .as_bytes(),
         le(&[&head(20, 0, 7), b"../x"])
     );
-    assert_eq!(readlink(7, &[b'a'; 4095]).unwrap().len(), 16 + 4095);
     assert_eq!(
-        readlink(7, &[b'a'; 4096]).unwrap_err(),
-        EncodeError::LinkTarget
+        to::<shape::Readlink>()
+            .readlink(&[b'a'; 4095])
+            .unwrap()
+            .as_bytes()
+            .len(),
+        16 + 4095
     );
-    assert_eq!(readlink(7, b"").unwrap_err(), EncodeError::LinkTarget);
-    assert_eq!(readlink(7, b"a\0b").unwrap_err(), EncodeError::LinkTarget);
+    for target in [&[b'a'; 4096][..], b"", b"a\0b"] {
+        assert_eq!(
+            to::<shape::Readlink>().readlink(target).unwrap_err().error,
+            EncodeError::LinkTarget
+        );
+    }
 }
 
 #[test]
@@ -211,17 +313,12 @@ fn statfs_reply_layout() {
         &1024u32.to_le_bytes(),
         &[0; 28],
     ]);
-    assert_eq!(statfs(7, &value), expected);
+    assert_eq!(to::<shape::Statfs>().statfs(&value).as_bytes(), expected);
 }
 
 #[test]
 fn init_reply_splits_flags() {
-    let request = InitRequest {
-        major: 7,
-        minor: 46,
-        max_readahead: 131_072,
-        offer: InitFlags::from_bits(u64::MAX),
-    };
+    let request = InitRequest::seven(46, 131_072, InitFlags::from_bits(u64::MAX));
     let config = InitConfig::new(65_536, 1_048_576, 12, 9, 1_000_000_000).unwrap();
     let Ok(InitOutcome::Ready(negotiated)) = negotiate(&request, &config) else {
         panic!("not negotiated");
@@ -240,13 +337,13 @@ fn init_reply_splits_flags() {
         &(1u32 << 6).to_le_bytes(), // flags2: NO_EXPORT_SUPPORT
     ]);
     expected.resize(80, 0);
-    assert_eq!(init(7, &negotiated), expected);
+    assert_eq!(to::<shape::Init>().init(&negotiated).as_bytes(), expected);
 }
 
 #[test]
 fn init_major_only_reply() {
     assert_eq!(
-        init_major_only(7),
+        to::<shape::Init>().offer_major().as_bytes(),
         le(&[&head(20, 0, 7), &7u32.to_le_bytes()])
     );
 }

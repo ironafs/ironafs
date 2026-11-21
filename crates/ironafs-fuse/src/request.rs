@@ -7,11 +7,14 @@
 //! constraint 4): every length is checked against the bytes read and the
 //! opcode's layout before a field is used, every read goes through a
 //! cursor that cannot pass the end, and nothing is allocated from a
-//! decoded length. A decoded request borrows the read buffer.
+//! decoded length but a LOOKUP's name, copied only after its 255-byte
+//! cap is checked. A decoded request borrows the read buffer, and carries
+//! the one [`ReplyTo`] it takes, if it takes one.
 
 use ironafs_vfs::{Name, NameError, linux};
 
-use crate::init::{InitRequest, decode_init};
+use crate::init::{InitDefect, InitRequest, decode_init};
+use crate::reply::{ReplyTo, shape};
 use crate::wire::Reader;
 use crate::{Errno, MAX_DATA, Opcode, errno};
 
@@ -32,6 +35,9 @@ const READ_LOCKOWNER: u32 = 1 << 1;
 const RELEASE_FLUSH: u32 = 1 << 0;
 /// `FUSE_RELEASE_FLOCK_UNLOCK`.
 const RELEASE_FLOCK_UNLOCK: u32 = 1 << 1;
+/// The first minor whose OPEN body carries `open_flags` in its second
+/// word, which is reserved below it.
+const OPEN_FLAGS_MINOR: u32 = 33;
 
 /// The request header's fields the layer uses (fuse-codec.md 5.1,
 /// point 2). They are handed on unjudged: the layer looks each id up.
@@ -110,18 +116,22 @@ pub struct Forget {
     pub nlookup: u64,
 }
 
+/// The size of one `BATCH_FORGET` record: `nodeid` and `nlookup`, a u64
+/// each.
+const FORGET_RECORD: usize = 16;
+
 /// The records of a `BATCH_FORGET`, read in place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ForgetBatch<'a> {
-    /// Exactly `16 × count` bytes, checked by the decoder.
-    records: &'a [u8],
+    /// The whole records, exactly `count` of them, checked by the decoder.
+    records: &'a [[u8; FORGET_RECORD]],
 }
 
 impl ForgetBatch<'_> {
     /// How many records the batch holds.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.records.len() / FORGET_RECORD
+        self.records.len()
     }
 
     /// Whether the batch holds none.
@@ -130,33 +140,58 @@ impl ForgetBatch<'_> {
         self.records.is_empty()
     }
 
-    /// The records, in order.
+    /// The records, in order. Each field is taken from its own eight bytes
+    /// of the record's array, so no width can be misread or defaulted.
     pub fn iter(&self) -> impl Iterator<Item = Forget> {
-        let (records, _) = self.records.as_chunks::<FORGET_RECORD>();
-        records.iter().map(|record| {
-            let (node, nlookup) = record.split_at(8);
+        self.records.iter().map(|record| {
+            let [
+                n0,
+                n1,
+                n2,
+                n3,
+                n4,
+                n5,
+                n6,
+                n7,
+                c0,
+                c1,
+                c2,
+                c3,
+                c4,
+                c5,
+                c6,
+                c7,
+            ] = *record;
             Forget {
-                node: u64::from_le_bytes(node.try_into().unwrap_or_default()),
-                nlookup: u64::from_le_bytes(nlookup.try_into().unwrap_or_default()),
+                node: u64::from_le_bytes([n0, n1, n2, n3, n4, n5, n6, n7]),
+                nlookup: u64::from_le_bytes([c0, c1, c2, c3, c4, c5, c6, c7]),
             }
         })
     }
 }
 
-/// The size of one `BATCH_FORGET` record.
-const FORGET_RECORD: usize = 16;
-
-/// A decoded request (fuse-codec.md 2, point 1).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A decoded request (fuse-codec.md 2, point 1), with the reply it takes.
+/// The three requests that take no reply carry none (5.6, point 1).
+#[derive(Debug, PartialEq, Eq)]
 pub enum Request<'a> {
     /// INIT: negotiate with [`crate::init::negotiate`].
-    Init(InitRequest),
+    Init {
+        /// The kernel's offer, checked.
+        init: InitRequest,
+        /// The reply.
+        reply: ReplyTo<shape::Init>,
+    },
     /// DESTROY.
-    Destroy,
+    Destroy {
+        /// The reply.
+        reply: ReplyTo<shape::Empty>,
+    },
     /// LOOKUP of one name in the header's node.
     Lookup {
         /// The name, checked by the Linux name codec.
         name: Name,
+        /// The reply.
+        reply: ReplyTo<shape::Entry>,
     },
     /// FORGET of the header's node. No reply.
     Forget {
@@ -169,34 +204,87 @@ pub enum Request<'a> {
     Getattr {
         /// The handle, when the kernel names one.
         fh: Option<u64>,
+        /// The reply.
+        reply: ReplyTo<shape::Attr>,
+    },
+    /// STATX.
+    Statx {
+        /// The handle, when the kernel names one.
+        fh: Option<u64>,
+        /// The `statx(2)` synchronisation flags, unjudged.
+        flags: u32,
+        /// The fields asked for, unjudged: the reply says which it fills.
+        mask: u32,
+        /// The reply.
+        reply: ReplyTo<shape::Statx>,
     },
     /// READLINK.
-    Readlink,
+    Readlink {
+        /// The reply.
+        reply: ReplyTo<shape::Readlink>,
+    },
     /// OPEN.
-    Open(Open),
+    Open {
+        /// The request.
+        open: Open,
+        /// The reply.
+        reply: ReplyTo<shape::Open>,
+    },
     /// OPENDIR.
-    Opendir(Open),
+    Opendir {
+        /// The request.
+        open: Open,
+        /// The reply.
+        reply: ReplyTo<shape::Opendir>,
+    },
     /// READ.
-    Read(Read),
+    Read {
+        /// The request.
+        read: Read,
+        /// The reply, of at most `read.size` bytes.
+        reply: ReplyTo<shape::Data>,
+    },
     /// READDIR.
-    Readdir(Read),
+    Readdir {
+        /// The request.
+        read: Read,
+        /// The reply.
+        reply: ReplyTo<shape::Readdir>,
+    },
     /// RELEASE.
-    Release(Release),
+    Release {
+        /// The request.
+        release: Release,
+        /// The reply.
+        reply: ReplyTo<shape::Empty>,
+    },
     /// RELEASEDIR.
-    Releasedir(Release),
+    Releasedir {
+        /// The request.
+        release: Release,
+        /// The reply.
+        reply: ReplyTo<shape::Empty>,
+    },
     /// FLUSH.
     Flush {
         /// The handle.
         fh: u64,
         /// The lock owner.
         lock_owner: u64,
+        /// The reply.
+        reply: ReplyTo<shape::Empty>,
     },
     /// STATFS.
-    Statfs,
+    Statfs {
+        /// The reply.
+        reply: ReplyTo<shape::Statfs>,
+    },
     /// ACCESS.
     Access {
         /// The `access(2)` mask, unjudged.
         mask: u32,
+        /// The reply.
+        reply: ReplyTo<shape::Empty>,
     },
     /// INTERRUPT of an earlier request. No reply.
     Interrupt {
@@ -205,12 +293,19 @@ pub enum Request<'a> {
     },
     /// An opcode of the interface this codec does not decode yet. The
     /// layer answers [`Errno::EOPNOTSUPP`], never `ENOSYS` (5.4, point 9).
-    NotDecoded(Opcode),
+    NotDecoded {
+        /// The opcode.
+        opcode: Opcode,
+        /// The reply.
+        reply: ReplyTo<shape::ErrorOnly>,
+    },
     /// An opcode the interface does not define. The layer answers
     /// [`Errno::EOPNOTSUPP`].
     Unknown {
         /// Its number.
         opcode: u32,
+        /// The reply.
+        reply: ReplyTo<shape::ErrorOnly>,
     },
 }
 
@@ -248,8 +343,10 @@ pub enum Malformed {
         /// The body's size.
         found: usize,
     },
-    /// An INIT body too short for its fields.
+    /// An INIT body of another size than its version and flags give.
     InitBody,
+    /// An INIT offering a flag its minor does not define.
+    InitFlags,
     /// A name with no NUL, or bytes after it.
     NameUnterminated,
     /// Bytes that are not a name.
@@ -262,46 +359,60 @@ pub enum Malformed {
     ForgetCount,
 }
 
-/// A refused request, with its header so that the reply can name it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+impl Malformed {
+    /// The error a refused request is answered with.
+    const fn errno(self) -> Errno {
+        match self {
+            Self::Name(error) => errno::for_name_error(error),
+            Self::OutOfRange => Errno::EINVAL,
+            Self::BeforeInit
+            | Self::InitAgain
+            | Self::Extensions
+            | Self::BodyLength { .. }
+            | Self::InitBody
+            | Self::InitFlags
+            | Self::NameUnterminated
+            | Self::UnknownFlags
+            | Self::ForgetCount => Errno::EIO,
+        }
+    }
+}
+
+/// A refused request, with its header and, unless it takes no reply, the
+/// reply it is owed.
+#[derive(Debug, PartialEq, Eq)]
 pub struct RequestError {
     /// The request's header.
     pub header: Header,
     /// Why it was refused.
     pub malformed: Malformed,
+    /// The reply owed; `None` for a request that takes none (5.6,
+    /// point 1).
+    reply: Option<ReplyTo<shape::ErrorOnly>>,
 }
 
 impl RequestError {
-    /// The error to answer with, or `None` for a request that takes no
-    /// reply (fuse-codec.md 5.6, point 1).
+    /// The error the reply carries, or `None` for a request that takes no
+    /// reply.
     #[must_use]
-    pub fn reply(&self) -> Option<Errno> {
-        if let Some(opcode) = Opcode::from_u32(self.header.opcode)
-            && !opcode.needs_reply()
-        {
-            return None;
-        }
-        Some(match self.malformed {
-            Malformed::Name(error) => errno::for_name_error(error),
-            Malformed::OutOfRange => Errno::EINVAL,
-            Malformed::BeforeInit
-            | Malformed::InitAgain
-            | Malformed::Extensions
-            | Malformed::BodyLength { .. }
-            | Malformed::InitBody
-            | Malformed::NameUnterminated
-            | Malformed::UnknownFlags
-            | Malformed::ForgetCount => Errno::EIO,
-        })
+    pub fn errno(&self) -> Option<Errno> {
+        self.reply.as_ref().map(|_| self.malformed.errno())
+    }
+
+    /// The error reply, or `None` for a request that takes no reply.
+    #[must_use]
+    pub fn into_reply(self) -> Option<crate::reply::Reply> {
+        let errno = self.malformed.errno();
+        self.reply.map(|reply| reply.error(errno))
     }
 }
 
 /// Why [`decode`] refused a request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum DecodeError {
     /// The header cannot be trusted; no reply.
     Frame(FrameError),
-    /// The body was refused; answer with [`RequestError::reply`].
+    /// The body was refused; answer with [`RequestError::into_reply`].
     Request(RequestError),
 }
 
@@ -315,10 +426,17 @@ pub enum DecodeError {
 /// cap.
 pub fn decode(bytes: &[u8], phase: Phase) -> Result<(Header, Request<'_>), DecodeError> {
     let (header, extlen, body) = decode_header(bytes)?;
-    let refuse = |malformed| DecodeError::Request(RequestError { header, malformed });
     let opcode = Opcode::from_u32(header.opcode);
-    match (phase, opcode) {
-        (Phase::AwaitingInit, Some(Opcode::Init)) => {}
+    let refuse = |malformed| {
+        let replies = opcode.is_none_or(Opcode::needs_reply);
+        DecodeError::Request(RequestError {
+            header,
+            malformed,
+            reply: replies.then(|| ReplyTo::new(header.unique, 0)),
+        })
+    };
+    let minor = match (phase, opcode) {
+        (Phase::AwaitingInit, Some(Opcode::Init)) => 0,
         (Phase::AwaitingInit, _) => return Err(refuse(Malformed::BeforeInit)),
         (Phase::Negotiated { .. }, Some(Opcode::Init)) => {
             return Err(refuse(Malformed::InitAgain));
@@ -327,17 +445,19 @@ pub fn decode(bytes: &[u8], phase: Phase) -> Result<(Header, Request<'_>), Decod
             if minor >= EXTENSIONS_MINOR && extlen != 0 {
                 return Err(refuse(Malformed::Extensions));
             }
+            minor
         }
-    }
+    };
     let Some(opcode) = opcode else {
         return Ok((
             header,
             Request::Unknown {
                 opcode: header.opcode,
+                reply: ReplyTo::new(header.unique, 0),
             },
         ));
     };
-    decode_body(opcode, body)
+    decode_body(opcode, body, header.unique, minor)
         .map(|request| (header, request))
         .map_err(refuse)
 }
@@ -345,10 +465,10 @@ pub fn decode(bytes: &[u8], phase: Phase) -> Result<(Header, Request<'_>), Decod
 /// The header, its `total_extlen` field and the body.
 fn decode_header(bytes: &[u8]) -> Result<(Header, u16, &[u8]), DecodeError> {
     let frame = |error| DecodeError::Frame(error);
-    let short = frame(FrameError::Short { read: bytes.len() });
-    let (head, body) = bytes.split_at_checked(HEADER_SIZE).ok_or(short)?;
+    let short = || frame(FrameError::Short { read: bytes.len() });
+    let (head, body) = bytes.split_at_checked(HEADER_SIZE).ok_or_else(short)?;
     let mut reader = Reader::new(head);
-    let len = reader.u32().ok_or(short)?;
+    let len = reader.u32().ok_or_else(short)?;
     if usize::try_from(len).ok() != Some(bytes.len()) {
         return Err(frame(FrameError::LengthMismatch {
             declared: len,
@@ -356,14 +476,14 @@ fn decode_header(bytes: &[u8]) -> Result<(Header, u16, &[u8]), DecodeError> {
         }));
     }
     let header = Header {
-        opcode: reader.u32().ok_or(short)?,
-        unique: reader.u64().ok_or(short)?,
-        nodeid: reader.u64().ok_or(short)?,
-        uid: reader.u32().ok_or(short)?,
-        gid: reader.u32().ok_or(short)?,
-        pid: reader.u32().ok_or(short)?,
+        opcode: reader.u32().ok_or_else(short)?,
+        unique: reader.u64().ok_or_else(short)?,
+        nodeid: reader.u64().ok_or_else(short)?,
+        uid: reader.u32().ok_or_else(short)?,
+        gid: reader.u32().ok_or_else(short)?,
+        pid: reader.u32().ok_or_else(short)?,
     };
-    let extlen = reader.u16().ok_or(short)?;
+    let extlen = reader.u16().ok_or_else(short)?;
     Ok((header, extlen, body))
 }
 
@@ -389,23 +509,45 @@ fn field<T>(value: Option<T>, body: &[u8], size: usize) -> Result<T, Malformed> 
     })
 }
 
-fn decode_body(opcode: Opcode, body: &[u8]) -> Result<Request<'_>, Malformed> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per opcode of the table, so one place shows which are decoded"
+)]
+fn decode_body(
+    opcode: Opcode,
+    body: &[u8],
+    unique: u64,
+    minor: u32,
+) -> Result<Request<'_>, Malformed> {
     Ok(match opcode {
-        Opcode::Init => Request::Init(decode_init(body).ok_or(Malformed::InitBody)?),
+        Opcode::Init => Request::Init {
+            init: decode_init(body).map_err(|defect| match defect {
+                InitDefect::Body => Malformed::InitBody,
+                InitDefect::Flags => Malformed::InitFlags,
+            })?,
+            reply: ReplyTo::new(unique, 0),
+        },
         Opcode::Destroy => {
             exact(body, 0)?;
-            Request::Destroy
+            Request::Destroy {
+                reply: ReplyTo::new(unique, 0),
+            }
         }
         Opcode::Readlink => {
             exact(body, 0)?;
-            Request::Readlink
+            Request::Readlink {
+                reply: ReplyTo::new(unique, 0),
+            }
         }
         Opcode::Statfs => {
             exact(body, 0)?;
-            Request::Statfs
+            Request::Statfs {
+                reply: ReplyTo::new(unique, 0),
+            }
         }
         Opcode::Lookup => Request::Lookup {
             name: decode_name(body)?,
+            reply: ReplyTo::new(unique, 0),
         },
         Opcode::Forget => {
             let mut reader = exact(body, 8)?;
@@ -414,9 +556,21 @@ fn decode_body(opcode: Opcode, body: &[u8]) -> Result<Request<'_>, Malformed> {
             }
         }
         Opcode::BatchForget => Request::BatchForget(decode_batch_forget(body)?),
-        Opcode::Getattr => decode_getattr(body)?,
-        Opcode::Open => Request::Open(decode_open(body)?),
-        Opcode::Opendir => Request::Opendir(decode_open(body)?),
+        Opcode::Getattr => {
+            let (fh, _) = decode_getattr(body, 16)?;
+            Request::Getattr {
+                fh,
+                reply: ReplyTo::new(unique, 0),
+            }
+        }
+        Opcode::Open => Request::Open {
+            open: decode_open(body, minor)?,
+            reply: ReplyTo::new(unique, 0),
+        },
+        Opcode::Opendir => Request::Opendir {
+            open: decode_open(body, minor)?,
+            reply: ReplyTo::new(unique, 0),
+        },
         Opcode::Read => {
             let read = decode_read(body)?;
             let end = read
@@ -426,16 +580,47 @@ fn decode_body(opcode: Opcode, body: &[u8]) -> Result<Request<'_>, Malformed> {
             if i64::try_from(end).is_err() {
                 return Err(Malformed::OutOfRange);
             }
-            Request::Read(read)
+            Request::Read {
+                read,
+                reply: ReplyTo::new(unique, read.size),
+            }
         }
-        Opcode::Readdir => Request::Readdir(decode_read(body)?),
-        Opcode::Release => Request::Release(decode_release(body)?),
-        Opcode::Releasedir => Request::Releasedir(decode_release(body)?),
-        Opcode::Flush => decode_flush(body)?,
+        Opcode::Readdir => Request::Readdir {
+            read: decode_read(body)?,
+            reply: ReplyTo::new(unique, 0),
+        },
+        Opcode::Release => Request::Release {
+            release: decode_release(body)?,
+            reply: ReplyTo::new(unique, 0),
+        },
+        Opcode::Releasedir => Request::Releasedir {
+            release: decode_release(body)?,
+            reply: ReplyTo::new(unique, 0),
+        },
+        Opcode::Flush => {
+            let mut reader = exact(body, 24)?;
+            let fh = field(reader.u64(), body, 24)?;
+            field(reader.skip(8), body, 24)?;
+            Request::Flush {
+                fh,
+                lock_owner: field(reader.u64(), body, 24)?,
+                reply: ReplyTo::new(unique, 0),
+            }
+        }
         Opcode::Access => {
             let mut reader = exact(body, 8)?;
             Request::Access {
                 mask: field(reader.u32(), body, 8)?,
+                reply: ReplyTo::new(unique, 0),
+            }
+        }
+        Opcode::Statx => {
+            let (fh, mut reader) = decode_getattr(body, 24)?;
+            Request::Statx {
+                fh,
+                flags: field(reader.u32(), body, 24)?,
+                mask: field(reader.u32(), body, 24)?,
+                reply: ReplyTo::new(unique, 0),
             }
         }
         Opcode::Interrupt => {
@@ -476,32 +661,24 @@ fn decode_body(opcode: Opcode, body: &[u8]) -> Result<Request<'_>, Malformed> {
         | Opcode::Removemapping
         | Opcode::Syncfs
         | Opcode::Tmpfile
-        | Opcode::Statx
-        | Opcode::CopyFileRange64 => Request::NotDecoded(opcode),
+        | Opcode::CopyFileRange64 => Request::NotDecoded {
+            opcode,
+            reply: ReplyTo::new(unique, 0),
+        },
     })
 }
 
-fn decode_getattr(body: &[u8]) -> Result<Request<'_>, Malformed> {
-    let mut reader = exact(body, 16)?;
-    let flags = field(reader.u32(), body, 16)?;
-    field(reader.skip(4), body, 16)?;
-    let fh = field(reader.u64(), body, 16)?;
+/// GETATTR's body, or the first 16 bytes of STATX's: `getattr_flags`, a
+/// reserved word and `fh`; `size` is the whole body's size.
+fn decode_getattr(body: &[u8], size: usize) -> Result<(Option<u64>, Reader<'_>), Malformed> {
+    let mut reader = exact(body, size)?;
+    let flags = field(reader.u32(), body, size)?;
+    field(reader.skip(4), body, size)?;
+    let fh = field(reader.u64(), body, size)?;
     if flags & !GETATTR_FH != 0 {
         return Err(Malformed::UnknownFlags);
     }
-    Ok(Request::Getattr {
-        fh: (flags & GETATTR_FH != 0).then_some(fh),
-    })
-}
-
-fn decode_flush(body: &[u8]) -> Result<Request<'_>, Malformed> {
-    let mut reader = exact(body, 24)?;
-    let fh = field(reader.u64(), body, 24)?;
-    field(reader.skip(8), body, 24)?;
-    Ok(Request::Flush {
-        fh,
-        lock_owner: field(reader.u64(), body, 24)?,
-    })
+    Ok(((flags & GETATTR_FH != 0).then_some(fh), reader))
 }
 
 /// A name and its terminating NUL, with no other NUL (5.4, point 5).
@@ -514,27 +691,31 @@ fn decode_name(body: &[u8]) -> Result<Name, Malformed> {
 }
 
 fn decode_batch_forget(body: &[u8]) -> Result<ForgetBatch<'_>, Malformed> {
-    let (head, records) = body.split_at_checked(8).ok_or(Malformed::BodyLength {
+    let (head, rest) = body.split_at_checked(8).ok_or(Malformed::BodyLength {
         expected: 8,
         found: body.len(),
     })?;
     let count = field(Reader::new(head).u32(), body, 8)?;
-    let expected = usize::try_from(count)
-        .ok()
-        .and_then(|count| count.checked_mul(FORGET_RECORD))
-        .ok_or(Malformed::ForgetCount)?;
-    if records.len() != expected {
+    let (records, trailing) = rest.as_chunks::<FORGET_RECORD>();
+    if !trailing.is_empty() || usize::try_from(count).ok() != Some(records.len()) {
         return Err(Malformed::ForgetCount);
     }
     Ok(ForgetBatch { records })
 }
 
-fn decode_open(body: &[u8]) -> Result<Open, Malformed> {
+/// OPEN's and OPENDIR's body (5.4, point 6). The second word is reserved
+/// below 7.33 and ignored there; from 7.33 it is `open_flags`, whose one
+/// defined bit, `FUSE_OPEN_KILL_SUIDGID`, comes only with
+/// `FUSE_HANDLE_KILLPRIV_V2`, which is never selected, so any bit is
+/// refused.
+fn decode_open(body: &[u8], minor: u32) -> Result<Open, Malformed> {
     let mut reader = exact(body, 8)?;
-    // `open_flags`, the second word, is ignored (5.4, point 6).
-    Ok(Open {
-        flags: field(reader.u32(), body, 8)?,
-    })
+    let flags = field(reader.u32(), body, 8)?;
+    let open_flags = field(reader.u32(), body, 8)?;
+    if minor >= OPEN_FLAGS_MINOR && open_flags != 0 {
+        return Err(Malformed::UnknownFlags);
+    }
+    Ok(Open { flags })
 }
 
 /// READ's and READDIR's shared body, with its size cap (5.2).
@@ -604,7 +785,12 @@ impl core::fmt::Display for Malformed {
             Self::BodyLength { expected, found } => {
                 write!(formatter, "a body of {found} bytes where {expected} belong")
             }
-            Self::InitBody => formatter.write_str("an init body too short for its fields"),
+            Self::InitBody => {
+                formatter.write_str("an init body of another size than its version and flags give")
+            }
+            Self::InitFlags => {
+                formatter.write_str("an init offering a flag its minor does not define")
+            }
             Self::NameUnterminated => formatter.write_str("a name not ended by its one nul"),
             Self::Name(error) => write!(formatter, "not a name: {error}"),
             Self::UnknownFlags => formatter.write_str("an undefined bit in a flags field"),
