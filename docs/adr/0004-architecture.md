@@ -4,7 +4,8 @@
 # 0004: The architecture
 
 Status: accepted (2026-11-20), by the owner, after the review rounds
-recorded below. Raised in issue #20. Amended 2026-11-20 (#32).
+recorded below. Raised in issue #20. Amended 2026-11-20 (#32) and
+2026-11-21 (#53).
 
 ## Context
 
@@ -704,3 +705,137 @@ The full record, with every finding and its disposition, is
   - Checked and unchanged: `README.md`, `AGENTS.md`, `CONTRIBUTING.md`,
     `AI.md`, the skills, and `docs/workflow.md` §2 and §6, which earlier
     pull requests brought in line (#23, #35, #36, #37, #39).
+- **Amendment, 2026-11-21 (#53): eight working decisions for M2a.
+  O50, points 1, 3 and 4, and its "Revisit if"; O12, point 2; O40,
+  point 2; C34, point 2; C4, points 1 and 3; N46, point 3; C5, point 1,
+  and C5's "Revisit if".** Each point is Working, and each stays
+  Working. No firm decision changes: the amendments schedule earlier, or
+  narrow, what firm decisions already require.
+  - Audit in M2a (O50, points 1 and 3). M2a now builds audit for the
+    audited operations it performs (O9, point 5), among them the state
+    directory's initialisation and the generation record's
+    initialisation, loss and reset: the checkpoint, and a durable intent
+    before a reset, refused if admission fails (O10, points 8 and 10).
+    The audited reset of N27, point 6, is a lost generation record's
+    recovery; removing the state directory is not. M2b keeps the audit
+    events of the operations it adds. Evidence: the texts disagreed.
+    N11, point 6, and N27, point 6 (both Firm), audit the state
+    directory's initialisation, a lost generation record and its reset,
+    and O9 (Firm) audits configuration and policy changes and daemon
+    start and stop. O50, point 1, built the state directory (N8,
+    point 3) and the configuration parser in M2a, while point 3 placed
+    audit in M2b.
+  - Linux OS policy in M2a (O50, point 1). Evidence: O19, points 1, 3,
+    5, 6 and 7, are Firm: every client version reads the envelope, and
+    an incompatible policy is never silently ignored. O50 scheduled
+    managed preferences for M4 and policy templates for M5, and no
+    Linux policy, so an M2a build would have ignored a `required` key or
+    a newer `min_client_version`. The floor keys stay in M2b, the first
+    release that authenticates (N8, point 1, Firm).
+  - Fileserver skew only on qualified evidence (O12, point 2; O40,
+    point 2; O50, points 1 and 3). Above 60 seconds absolute is a
+    warning; a fileserver's time comes only from a call qualified under
+    N31, otherwise "not measured"; the KDC check moves to M2b's
+    `afs diagnose tokens`. Evidence: N31 (Firm) takes a wire fact only
+    from an allowlisted passage or a black-box fixture, and the claim
+    record holds no claim for a fileserver reply that carries the
+    server's time, so O12, point 2, and O40, point 2, promised a value
+    no qualified source yet gives. M2a authenticates nobody, so it
+    reaches no KDC. The threshold is the owner's (2026-11-20; #81).
+  - Single-family operation only by the administrator's choice (C34,
+    point 2). Evidence: on Linux, with IPv6 disabled at boot "it will
+    not be possible to open an IPv6 socket" (the kernel's
+    [IPv6 documentation](https://docs.kernel.org/networking/ipv6.html),
+    option `disable`), and a second bind on the port fails when the IPv6
+    socket is not IPv6-only (ipv6(7), bind(2)). C34, point 2, said nothing of that case, and a
+    silent start on one family would leave callbacks over the other
+    unreceived with no one told. The owner decided the rule on
+    2026-11-20.
+  - The log transport's home (C4, point 3). Evidence: the owner's
+    decision of 2026-11-20, with ADR 0005's reading (#101): the Linux
+    journald and syslog writes need no `unsafe`, the macOS shim and the
+    Windows Event Log are sinks that need sites, and `ironafsd` and
+    `afs` share one transport (O4, point 1).
+  - N46, point 3's check moves from M2a to M3 (M3-16), with the first
+    writable mount; M2a-46 runs the part that can run, copies from
+    `/afs`. N46's "Revisit if" names the M3 check, and O50, point 4,
+    lists it. Evidence: the texts disagreed: the check needs a copy into
+    `/afs`, and O50, point 1, makes M2a's mount read-only.
+  - Pure crates are `no_std` (C4, point 1). Evidence: the owner's
+    decision of 2026-11-20, after research by a read-only GPT seat
+    (`gpt-6.2-sol`, high) and a Claude Mythos design check, and a check
+    with compiler probes (the Claude self-check that built probe
+    crates); the record is
+    [docs/reviews/2026-11-21-m2a-13-check-deps.md](../reviews/2026-11-21-m2a-13-check-deps.md).
+    `cargo xtask check-pure` builds each pure crate against
+    `core` and `alloc` (a35ba20, #84). What the compiler does not stop,
+    and review checks: values derived from addresses, and `static`
+    items with interior mutability, in a pure crate; and an out-of-tree
+    `#[path]` or `include!` under a cfg no build takes (the source rules
+    of `check-pure` refuse both in every file; review confirms).
+  - A dated exception for SHA-256 and HMAC-SHA-256 (C5, point 1).
+    Evidence: the owner's decision of 2026-11-20, taken after a
+    recommendation, a non-author family's check that disagreed with it,
+    the judgement seat's ruling and a recheck (issue #77; the plan's
+    review rounds 13 to 17,
+    [docs/reviews/2026-11-21-m2-plus-plan.md](../reviews/2026-11-21-m2-plus-plan.md)).
+    M2a's two callers need these functions before the provider
+    decisions of M2b and of M5 or M6. Coding standards rule 21 is not
+    edited: it still says mainstream cryptography is never hand-rolled,
+    and this point is the one exception, scoped and dated. Residuals:
+    no cryptographer has read the code unless the owner arranged one
+    (M2a-67, #77); and on a host whose FIPS switch is on, `auto` refuses
+    rxkad and NTLM only (O31, point 4), so the two callers, which
+    protect no AFS traffic, still run, and `require` refuses every cell.
+  - With #101 (ADR 0005, which amends C4, point 3's row and C5,
+    point 5): this amendment leaves that row and point 5 alone. Its C4
+    text sits in its own paragraphs. Its transport paragraph carries the
+    trigger #101 adds to C4's "Revisit if"; if #101 lands first, the
+    paragraph's copy is dropped. The two touch the same
+    lines only in C5's "Revisit if", the status line, the ADR index row
+    and the end of this section: whichever lands second keeps both
+    texts. C5, point 1's wipe is the `ironafs-os` site #101 lists
+    (O28, point 2).
+  - Sweep: the repository was searched for each id ("O50", "O12",
+    "O40", "C34", "C4", "N46", "C5", with and without ", point") and for
+    "skew", "both families", "dual-family", "single-family",
+    "copy-range", "copy_file_range", "SHA-256", "HMAC", "hand-roll",
+    "pure crate", "no I/O and no", "journald sink", "log calls of O8",
+    "transport" and "audit events (O9)".
+    - Rewritten as above: O50, points 1, 3 and 4, and its "Revisit if",
+      O12, point 2, and its "Revisit if", and O40, point 2, and its
+      "Revisit if" (part 3); C4, points 1 and 3, C5, point 1, and its
+      "Revisit if", and C34, point 2, and its "Revisit if" (part 1);
+      N46, point 3, and its "Revisit if" (part 4).
+    - Agree, unchanged: O12, point 3 (the KDC skew, now M2b's); O44,
+      point 2 (a runbook for clock skew); O1, point 1 (`ironafs-events`
+      pure); O4 and O8, point 2 (the CLI's direct path, which waits on
+      the bindings ADR linking the shim); O6, point 2, and O28 (the
+      exception's callers and wipe); O31 (no FIPS mode; the residual
+      above); C3, point 1; C4, point 7, and the alternative that names
+      C4, points 1, 4 and 7 (part 1); C30, point 1 (one socket per
+      family; C30 to C32 are ADR 0006's, #52); C37, point 4 ("sampling
+      skew", unrelated); N8; N27, point 6; N11, point 6; the overview's
+      S4; and the decision index, whose titles do not change.
+    - Part 1's consequence 4 (the dependency decisions for the
+      cryptography crate come first): unchanged; the exception adds no
+      dependency, and the provider's decision is still made under the
+      `add-dependency` checklist at M2b-03 or M5-32.
+    - `docs/coding-standards.md` rule 21: unchanged, by the owner's
+      decision (above). Rules 15 and 20: `tests/it/` already holds a
+      crate's integration tests. Unchanged.
+    - `crates/xtask/src/pure.rs`, `deps.rs`, `ironafs-time` and
+      `.github/workflows/ci.yml`: implement or cite C4, point 1, as it
+      now reads. Unchanged.
+    - `README.md`, `docs/workflow.md` §6 and part 2: name the phases or
+      O50 without restating the changed points. Unchanged.
+    - Review records and research notes record their own dates and are
+      not rewritten.
+    - The changed rules bind the same actors as before (the
+      maintainer's session, contributors and their agents); no bot acts
+      on them. Of the M2a issues that cite the amended text, #81
+      (M2a-64), #77 (M2a-67), #93 (M2a-32) and #94 (M2a-33) already
+      cite it; M2a-16, M2a-35, M2a-46, M2a-58 and M2a-75 are planned and
+      cite it when filed.
+  - Review rounds: class S on the strongest row, from families that
+    wrote neither the amendment nor the decision. Pending.

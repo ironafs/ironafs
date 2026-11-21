@@ -460,7 +460,8 @@ installed can read it.
 ### O12. `afs status` and `afs diagnose`
 
 **Working.** Revisit if: support cases show a recurring failure neither
-command names.
+command names, or the 60-second skew warning of point 2 proves too
+early or too late in use.
 
 1. `afs status` shows: version, cells, per-server state (up or down, last
    contact, round-trip time, callbacks held, revalidation mode), cache
@@ -470,11 +471,17 @@ command names.
    the caller's own credential context observed it, and the caller's own
    cache use and pending stores. Machine-wide per-server state and
    counters are in the administrator's projection.
-2. `afs diagnose` checks: clock skew against servers and the KDC; tokens;
-   DNS and cell discovery; reachability of the volume location and file
-   servers; callback reachability; cache disk health and storage protection
-   (O27); and the OS layer's own state (FUSE mount flags, FSKit extension
-   enablement, the SMB route and its configuration).
+2. `afs diagnose` checks: clock skew; tokens; DNS and cell discovery;
+   reachability of the volume location and file servers; callback
+   reachability; cache disk health and storage protection (O27); and the
+   OS layer's own state (FUSE mount flags, FSKit extension enablement, the
+   SMB route and its configuration). Clock skew:
+   - against a fileserver, an absolute skew above 60 seconds is a
+     warning. A fileserver's time is used only from a call whose reply
+     time field is qualified under N31; without such a call the check
+     says "not measured" and shows no value (O40, point 2);
+   - against the KDC, it is part of the authentication chain of point 3,
+     from the first release that authenticates (M2b in the plan, O50).
 3. `afs diagnose tokens` walks the authentication chain for the caller: the
    credential cache found and its type `[PLT-014]`, ticket lifetimes, the
    KDC reached and how it was found, encryption types offered and accepted,
@@ -1434,15 +1441,20 @@ capability either works or it does not.
 ### O40. Protocol details that users notice
 
 **Working.** Revisit if: the specification work for the file service (C6)
-shows a server behaviour that contradicts a point here.
+shows a server behaviour that contradicts a point here, or evidence
+qualified under N31 establishes, or rules out, a fileserver call whose
+reply carries the server's time.
 
 1. IronAFS assumes the file service offers 64-bit fetch and store calls
    beside 32-bit ones; the specification work (C6) confirms it. The client
    uses the 64-bit calls by default, and the 32-bit calls only when a
    server lacks them. Files
    across the 2 GiB and 4 GiB boundaries are tested.
-2. Server times are converted at receipt. Clock skew is detected and warned
-   about.
+2. Server times are converted at receipt. Skew against a fileserver is
+   measured only from a call whose reply time field is qualified under
+   N31; then an absolute skew above 60 seconds is warned about (O12,
+   point 2). Without such a call the skew is "not measured", and no
+   value is shown.
 3. An over-quota or partition-full failure at store time is kept in the
    journal and reported. The data is never dropped (C28, C29). The commit
    that met the failure returns it (C9, point 1); keeping the record is
@@ -1830,7 +1842,9 @@ that executes a pull request's code is untrusted by construction.
 ### O50. The order of work
 
 **Working.** Revisit if: a phase's gate fails, a specification route proves
-unavailable, or an rxgk trigger in point 9 opens a scheduling review. The
+unavailable, an rxgk trigger in point 9 opens a scheduling review, or a
+firm decision is found to need, in an earlier phase, work this order
+schedules later. The
 GitHub milestones are the live record of the phases and their issues
 ([docs/workflow.md](../workflow.md) §6). This decision records the order
 and the reasons. It is a plan, and it promises no dates.
@@ -1841,9 +1855,24 @@ and the reasons. It is a plan, and it promises no dates.
    - The cache (C18 to C27), the layer contract (C7), the FUSE layer and
      its hosting (L2, L7), the dynamic root (C12), the boot clock (C37).
    - The simulator (O45); `ironafs-events` with the journald sink (O1,
-     O8); `afs status` and the core `afs diagnose` checks (O12); the
+     O8); `afs status` and the core `afs diagnose` checks (O12), with the
+     fileserver skew check only on evidence qualified under N31, and
+     otherwise "not measured" (O12, point 2; O40, point 2); the
      configuration parser (O18). The state directory is versioned from this
      phase (N8).
+   - Audit (O9, O10) for the audited operations M2a performs (O9,
+     point 5), among them the state directory's initialisation (N11,
+     point 6) and the per-cell configuration generation record's
+     initialisation, loss and reset (N27, point 6): the audit checkpoint (O10, point 2), and a
+     durable audit intent before a reset, which is refused if admission
+     fails (O10, points 8 and 10). A cell whose generation record is lost
+     recovers by the administrator's audited reset (N27, point 6);
+     removing the whole state directory is not the recovery path.
+   - Linux OS policy (O17, point 4; O19): the envelope, whole-policy
+     validation, the four states, reload fencing and the last good
+     policy's store, written with the same atomic-file primitive as the
+     audit checkpoint (O19, point 8). The security floor keys stay in M2b
+     (point 3; N8, point 1).
    - Specification gates come first: the volume-incarnation evidence, the
      directory format and the callback procedures.
    - Unauthenticated data is never cached (C20). So acceptance against a
@@ -1860,17 +1889,18 @@ and the reasons. It is a plan, and it promises no dates.
      rxkad-k5, rxkad-kdf, and the ACL and mode-bit rule. The route also
      confirms or corrects the position of O23.4.
    - `aklog` in the CLI with the platform's Kerberos library; token renewal
-     and reacquisition on restart; `afs diagnose tokens` (O12); audit
-     events (O9); security floor keys (N3, N8); reading the Linux FIPS
-     switch and the `fips` key (O31, point 4).
+     and reacquisition on restart; `afs diagnose tokens` with the KDC
+     skew check (O12, points 2 and 3); the audit events of the operations
+     this phase adds (O9, point 5); security floor keys (N3, N8); reading
+     the Linux FIPS switch and the `fips` key (O31, point 4).
    - The Linux login service as a systemd user unit (O36, O37).
    - The cross-context, cross-user and revocation acceptance cases on
      Linux (O48).
    - The rxgk preparation of point 9.
 4. **Linux writes and locks (M3).** The journal, stores, creates, renames,
    deletes, removing open files, ACL and mount-point commands, the lock
-   service, quotas at store, `afs pending`, and upgrade with pending writes
-   (O32, O33).
+   service, quotas at store, `afs pending`, upgrade with pending writes
+   (O32, O33), and the copy-range fallback check of N46, point 3.
 5. **macOS (M4).** First the macOS gate (L13). Then per-user FSKit mounts
    (read, then write if the durability gate passes), the logging shim
    (O8), managed preferences (O17), the per-user launch agent (L14, O36)
