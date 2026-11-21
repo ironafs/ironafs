@@ -32,6 +32,7 @@ the evidence that refutes it.
 | [2026-11-20-workflow-implementer](2026-11-20-workflow-implementer.md) | Issue #40: Claude implements from M2a; label rules and triage |
 | [2026-11-21-m2a-01-xdr-spec](2026-11-21-m2a-01-xdr-spec.md) | Issue #42: `docs/specs/`, its template and the XDR profile with caps |
 | [2026-11-21-m2a-55-rx](2026-11-21-m2a-55-rx.md) | Issue #55: the Rx transport and null class specification, first version from documents only |
+| [2026-11-21-m2a-66-callbacks](2026-11-21-m2a-66-callbacks.md) | Issue #66: the callback service specification, procedures and allowlist, first version from documents only |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
