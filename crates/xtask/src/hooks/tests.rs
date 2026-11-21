@@ -101,7 +101,7 @@ fn forced_install_moves_both_foreign_hooks_and_refuses_an_existing_backup() {
     let mut output = Vec::new();
     assert!(matches!(
         install_in(&directory, true, &mut output),
-        Err(Error::HookIo { path, source, .. })
+        Err(Error::PathIo { path, source, .. })
             if path == commit_msg_backup && source.kind() == io::ErrorKind::AlreadyExists
     ));
     assert_eq!(fs::read(&pre_push).unwrap(), b"original pre-push");

@@ -27,7 +27,7 @@ enum Error {
     },
     UnexpectedOutput(&'static str),
     ForeignHook(PathBuf),
-    HookIo {
+    PathIo {
         operation: &'static str,
         path: PathBuf,
         source: io::Error,
@@ -40,8 +40,8 @@ impl Error {
         move |source| Self::Io { operation, source }
     }
 
-    fn hook_io(operation: &'static str, path: &Path) -> impl FnOnce(io::Error) -> Self {
-        move |source| Self::HookIo {
+    fn path_io(operation: &'static str, path: &Path) -> impl FnOnce(io::Error) -> Self {
+        move |source| Self::PathIo {
             operation,
             path: path.to_path_buf(),
             source,
@@ -91,7 +91,7 @@ impl fmt::Display for Error {
                     path.display()
                 )
             }
-            Self::HookIo {
+            Self::PathIo {
                 operation,
                 path,
                 source,
