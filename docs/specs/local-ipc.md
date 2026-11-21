@@ -120,8 +120,9 @@ sites. Sheets 17 to 19 refer to the control IPC design for the pipe's
 instance count and caps ("its 5.2"), the prefix rule ("control IPC 5.4,
 step 1") and the named zeroisation places. The control IPC design is two
 specifications, this framework and the control endpoint specification,
-and those references resolve to this document: 5.2, point 10 (the
-instance count); 5.4, point 1 (the prefix rule); and 5.5, point 7 (the
+and those references resolve to these places of the framework (the
+table above says which part holds each): 5.2, point 10 (the instance
+count); 5.4, point 1 (the prefix rule); and 5.5, point 7 (the
 zeroisation places).
 
 Section 9 shows where each is kept and which test fails if it is broken.
@@ -269,11 +270,14 @@ the profile has no other form.
    page offers that option only on stream sockets and lists only stream
    and datagram types for the family `[P5: CONFIRMED]`, so no packet type
    is used.
-2. **Windows:** a named pipe in byte mode, read in byte mode, rejecting
-   remote clients, used with overlapped I/O (ADR 0005, sheets 17 and 18)
-   `[D2 sheet 17]`. A byte-mode pipe does not separate one write from
-   another `[P1 dwPipeMode: CONFIRMED]`, so framing is this document's,
-   as on Unix.
+2. **Windows, the control endpoint:** a named pipe in byte mode, read in
+   byte mode, rejecting remote clients, used with overlapped I/O (ADR
+   0005, sheets 17 and 18) `[D2 sheet 17]`. A byte-mode pipe does not
+   separate one write from another `[P1 dwPipeMode: CONFIRMED]`, so
+   framing is this document's, as on Unix. ADR 0005's sheets decide this
+   transport for the control endpoint only. Another endpoint on Windows
+   names its transport in its own specification; nothing in
+   local-ipc-windows.md applies to it until that specification says so.
 3. Each endpoint specification names its own address, the permissions
    of that address, and the operating-system checks of the caller and of
    the daemon. This framework requires of every transport only: an
@@ -659,9 +663,12 @@ typedef Extension ExtensionList<16>;
    No tag is registered for `IpcError` in this version, so its budget
    has no part for typed values (5.1.7, point 8); a body type with
    registered tags adds that part. For each row the generator also emits
-   the row's **decode charge**: its request body's memory budget in
-   bytes, and the largest number of heap requests one decode of it can
-   make (xdr.md 5.2, point 9.5), the typed values' included. 5.2.1,
+   a **decode charge** for each of the row's bodies (request, reply,
+   part, event or notice): the body's memory budget in bytes, and the
+   largest number of heap requests one decode of it can make (xdr.md
+   5.2, point 9.5), the typed values' included. The daemon uses the
+   request and notice charges; a client uses the reply, part and event
+   charges (5.4, point 19). 5.2.1,
    rule 2 reserves both before the body is decoded.
 8. **Policy budgets:** [local-ipc-resources.md](local-ipc-resources.md), 5.2, point 8.
 9. **Rules between budgets:** [local-ipc-resources.md](local-ipc-resources.md), 5.2, point 9.
@@ -760,7 +767,10 @@ In [local-ipc-resources.md](local-ipc-resources.md), 5.2.1.
      `stream_bytes_max` (5.2, point 11); a notice row states its
      overload rule, `drop` or `fatal` (5.2.1, rule 2); an event row
      states its delivery class, droppable or mandatory, and a mandatory
-     one its coalescing key and bound (5.2.1, rule 4); and each body
+     one its **pending bound**: the most events of that row one
+     connection can have pending at once, over all its keys together
+     and counting one being written, as a constant (5.2.1, rule 4); and
+     each body
      states whether it is secret-bearing and, for a daemon-to-client
      body, who may receive it (5.5, point 6). The endpoint specification
      adds who may send it.
@@ -868,14 +878,23 @@ so a looser input is a fault, not a peer's habit.
      The connection becomes `Open` only when a binding row's
      handler reports that the endpoint's registration and capability
      checks passed. That is one step under the connection's output
-     lock: if the connection is still `AwaitBinding`, the handler's
-     `REPLY` is appended, the state becomes `Open` and the handshake
-     slots are freed, in that order, and only then is any other frame
-     admitted or any `EVENT` queued. If the handshake deadline or a
-     fatal error entered `Closing` first, it has won: the result is
-     suppressed (point 13), the connection never opens, and the
-     endpoint specification says what becomes of a capability spent on
-     it. A
+     lock, and a binding request's result slot is completed only under
+     that same lock, by whichever path completes it (5.6.4, rule 4).
+     The step opens the connection only if all four hold when it runs:
+     the handler's success is what completed the binding request's
+     slot (not a deadline, and not a failure); the clock is before the
+     binding request's deadline; the clock is before the connection's
+     handshake deadline, read in the step itself, whether or not that
+     deadline's timer has yet run; and the state is `AwaitBinding`.
+     Then the handler's `REPLY` is appended, the state becomes `Open`
+     and the handshake slots are freed, in that order, and only then
+     is any other frame admitted or any `EVENT` queued. If any of the
+     four fails, the connection never opens: a slot already completed
+     by its deadline keeps that reply and the connection closes as a
+     failed binding; a passed handshake deadline or a `Closing` state
+     suppresses the result (point 13). The endpoint specification says
+     what becomes of a capability spent on a binding that did not
+     open. A
      binding that fails is answered with the endpoint's code and the
      connection is closed. An endpoint open only to registered peers
      has a binding row: the generator refuses an adapter catalogue
@@ -1136,6 +1155,19 @@ free.
      (`ipc-tx-daemon-stage`); the buffer is queued as it is, never
      copied, and no function returns its bytes. A reply suppressed at
      5.4, point 13 never leaves that buffer.
+   - **The gate, per endpoint and operating system** `[OWN]`. Each
+     endpoint specification names, for each operating system, the
+     daemon check a client makes and the gate that proves it there
+     (for the Windows control pipe, ADR 0005, sheet 20, in
+     local-ipc-windows.md, 10.5). Until that gate's result is recorded
+     for an endpoint on an operating system, no secret-bearing message
+     of that endpoint exists there in either direction: the client's
+     send and receive operations for secret-bearing bodies, and the
+     daemon's encode operation for them, are not built for that
+     target, by one constant per endpoint and operating system that
+     the generated code tests at compile time. The daemon therefore
+     cannot encode or transmit such a body there, whatever a client
+     does. One endpoint's gate never opens another's.
    - A terminal reply built in terminal capacity or in the reserved
      reply slot is never secret-bearing. It is an `ErrorReplyBody`,
      whose `text` holds no secret (5.1.6, point 2), or a streaming
@@ -1208,15 +1240,18 @@ free.
      kind is not request (5.4, point 6);
    - a streaming row without its one early-end form, or with a
      secret-bearing one (5.5, point 6); an event row without a delivery
-     class, or a mandatory one without its coalescing key and bound
-     (5.2.1, rule 4);
+     class, or a mandatory one without a constant pending bound
+     (5.3.3, point 2);
    - a request row whose error arm is not `IpcError` (5.1.5, point 1);
    - a message whose largest size (5.2, point 6) is above its frame
      class's cap, or a frame class cap above `ipc.frame.ceiling`;
    - a variable item without a cap; a cap or memory budget the static
      proof of xdr.md 5.2, point 9 breaks.
-   It computes T and R for each endpoint (5.2.1, rules 1 and 2) and each
-   row's decode charge (5.2, point 7), and emits them.
+   It computes, for each endpoint, T, R (5.2.1, rules 1 and 2) and M:
+   the sum over the endpoint's mandatory rows of the pending bound
+   times the row's largest framed event plus `ipc.overhead.frame`
+   (5.2.1, rule 4), 0 with no such row. It computes each body's decode
+   charge (5.2, point 7), and emits them all.
 4. **What each definition declares** `[OWN]`, in the generator's
    notation: per catalogue row, the facts of 5.3.3, point 2, a
    streaming row's one early-end form (5.5, point 6) and an event row's
@@ -1237,8 +1272,8 @@ free.
 6. **The generator emits,** per message: the type; an encoder; a decoder
    that takes a byte slice and returns the value or a typed error and
    never panics; the caps and budgets as named constants; the catalogue
-   of each endpoint as a static table; T and R per endpoint; each row's
-   decode charge; and the schema digest as a constant `[OWN]`. The
+   of each endpoint as a static table; T, R and M per endpoint; each
+   body's decode charge; and the schema digest as a constant `[OWN]`. The
    encoder of a secret-bearing body is emitted private to the
    connection operation of 5.5, point 6.
 7. **The schema digest** `[OWN]`, as issue #62 records the owner's
@@ -1326,7 +1361,8 @@ The rows for the Windows states (`PreAttestation`, `Draining`) are in
    nothing applied, or a stream's terminal reply reporting the cut. A
    mutating handler that claimed the slot first (5.6.4, rule 4) is not
    stopped: its own result, the ordinary success reply included, is the
-   reply. A close
+   reply, except on a row whose outcome can be unknown, where the
+   deadline still answers (5.6.4, rule 4's table). A close
    that arrives first stops the handler the same way and no reply is
    sent (5.4, point 13).
 4. **A change is whole or absent.** A mutating request is either applied
@@ -1364,7 +1400,7 @@ In [local-ipc-resources.md](local-ipc-resources.md), 5.6.4.
 | version choice: the previous minor | computed only when `minor` ≥ 1 | n/a: at `M.0` only `M.0` is accepted |
 | client: the highest common version; the daemon range's shape | compares of (major, minor) pairs | `daemon_max.minor` − 1 is computed only when `daemon_max.minor` ≥ 1 |
 | digest record lengths: file name (u32), content (u64) | a name is at most 64 bytes (5.6.1, point 1); content above 2⁶⁴ − 1 bytes cannot exist in the set | the generator refuses the set (`try_from`) |
-| generator sizes: largest message size, T, R, decode charges, budgets | caps < 2³² | 64-bit `checked_add` and `checked_mul`; overflow refuses the definition |
+| generator sizes: largest message size, T, R, M (a pending bound × a framed size, summed), decode charges, budgets | caps < 2³² | 64-bit `checked_add` and `checked_mul`; overflow refuses the definition |
 
 Rows for the accounts, queues, deadlines and client staging are in
 [local-ipc-resources.md](local-ipc-resources.md), section 6.
@@ -1607,9 +1643,9 @@ cap in force:
   body byte read before authorisation; after every refusal that keeps
   the connection, the next frame read at the right offset; the live
   bytes each account counts never above its budget, and each allocation
-  inside a reservation; the output queue above its budget only by
-  funded terminal replies and mandatory events; nothing queued after a
-  closing notice
+  inside a reservation; ordinary occupancy above the output budget only
+  by funded terminal replies, and mandatory occupancy never above M;
+  nothing queued after a closing notice
   (5.2.1, rules 2 and 4; 5.4, point 13).
 - `ironafs-ipc_session_client`: the same from the daemon's side into the
   client; no outstanding request reported done after a failed
@@ -1644,7 +1680,11 @@ cap in force:
   binding request before the binding are each `NotBound`; two
   connections of one caller binding at once cannot pass the caller's
   open budget; a binding that finishes after the handshake deadline
-  fired is suppressed and never opens; a failed binding closes;
+  fired is suppressed and never opens; with the stand-in clock past
+  the handshake deadline and its timer held back, a successful binding
+  still does not open; a binding request whose own deadline completed
+  its slot first is answered `DeadlineExceeded`, the later success
+  opens nothing, and the connection closes; a failed binding closes;
   the handshake deadline covers the wait; the connection counts as a
   handshake slot until it is `Open`.
 - `caller_before_bytes` (Linux, macOS): with a stand-in transport that
@@ -1767,6 +1807,47 @@ of 10.5.
   adapter endpoint specification (ADR 0004, S1), at most the ceiling.
   Blocks: enabling the adapter endpoint.
 - Q4 and Q5 (Windows) are in [local-ipc-windows.md](local-ipc-windows.md), section 13.
+- **Q6. The adapter endpoint's mandatory events** (ADR 0004, C16,
+  point 6). This framework keeps the space and the order (5.2.1,
+  rules 1 and 4) and requires each event row to declare its class and
+  a constant pending bound. The rest belongs to the adapter endpoint
+  specification (ADR 0004, S1), not yet written, which must:
+  - make the epoch advance a mandatory row;
+  - show how coalescing and overflow keep the pending advances within
+    the row's bound in every state, so that an append is never refused
+    in normal operation;
+  - say what a refused append (a fault) does to the binding, and when,
+    without depending on the connection's queue draining;
+  - keep C16, point 6's separate moments: the revocation recorded, the
+    advance applied by the front end, and the advance acknowledged or
+    the binding torn down. A written event is none of these.
+
+  Two review findings stand open against it until then, quoted as
+  received:
+
+  > C16.6 — PARTLY. The mandatory class and prepaid space are present,
+  > but the generic output and arithmetic rules still reject any `EVENT`
+  > above the ordinary queue budget. A pending limit per key does not
+  > bound the number of live keys. The generator output list omits M,
+  > and there is no explicit requirement that the adapter's epoch
+  > advance use the mandatory class. The saturation test also puts the
+  > event behind existing frames and then expects it to be written
+  > first.
+
+  > New mandatory-event teardown contradiction. Exceeding the declared
+  > bound supposedly closes the connection at once and tears down the
+  > binding, but the cited fatal path enters `Closing` and drains queued
+  > output. The new paragraph treats writing the event as the end of its
+  > fencing handoff, while C16.6 distinguishes front-end application
+  > from acknowledgement or teardown. It also leaves ordinary coalescing
+  > and overflow indistinguishable from exceeding the bound due to a
+  > fault.
+
+  Of the first, the occupancy, the aggregate bound, M and the test are
+  settled here; the requirement on the epoch advance is the adapter
+  endpoint specification's. Of the second, the framework's teardown and
+  fencing sentences are withdrawn; all of it is that specification's.
+  Blocks: enabling the adapter endpoint.
 
 ## 14. Review
 

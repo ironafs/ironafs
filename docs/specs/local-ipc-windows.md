@@ -15,7 +15,10 @@ This is the third of three parts of the local IPC framework. The first,
 checks, and the table that says which part holds each place; the second,
 [local-ipc-resources.md](local-ipc-resources.md), holds admission, the
 accounts and scheduling. Section and point numbers are shared by the
-three parts: a number names one place, whichever part cites it. Labels
+three parts: a number names one place, whichever part cites it. This
+part applies to the Windows control endpoint only, whose transport ADR
+0005, sheets 17 to 20 decide; another endpoint's Windows transport is
+its own specification's, with its own sites and gate (10.5). Labels
 follow [README](README.md), "Labelling claims". Source ids are those of
 local-ipc.md, section 12.
 
@@ -76,34 +79,50 @@ Point 10 of the list that local-ipc.md, 5.2 starts:
       one of these states, and counts against P from its creation until
       its handle is closed:
 
-      | Instance state | Counts as a listener | Counts as a connection (point 8) | Operations that may be outstanding |
+      | Instance state | Armed (counts as a listener) | Counts as a connection (point 8) | Operations that may be outstanding |
       |---|---|---|---|
       | Listening | yes | no | one connect wait |
-      | Refused: its connect completed and admission's first step failed | yes | no | none; it is disconnected at once |
-      | Idle: released, or refused and disconnected, with no connect wait yet | yes | no | none |
+      | Refused: its connect completed and admission's first step failed | no | no | none; it is disconnected at once and is then Idle |
+      | Idle: released, or refused and disconnected, with no connect wait | no | no | none; armed or closed at once (Handoffs) |
       | `PreAttestation` | no | yes, and a handshake slot | one read, of at most 4 bytes |
       | `AwaitHello`, `AwaitBinding` | no | yes, a handshake slot and a per-caller one | one read, one write |
       | `Open`; `Closing` after `Open` | no | yes; no handshake slot | one read, one write |
       | `Closing` never `Open` | no | yes; the handshake slots it held | one read, one write |
       | `Draining` | no | yes; and the handshake slots it held when it entered | those started before, each awaiting its terminal completion |
 
-      **Handoffs** `[OWN]`. When a listener's connect wait completes,
-      one step under the admission lock either makes the instance a
-      connection (it leaves the listener count and enters the
-      connection count) or leaves it a listener, Refused. The daemon
-      keeps the configured number of listeners: when the listener count
-      is below it, it gives an Idle instance a connect wait, or creates
-      an instance if none is Idle. A connection's **handshake slots**,
+      **Handoffs** `[OWN]`. Two counts are kept, both under the
+      admission lock. **Live handles** is every instance from its
+      creation until its handle is closed, in any state of the table;
+      it is at most P. **Armed** is the instances with a connect wait
+      outstanding, the Listening ones only; the daemon keeps it at the
+      configured number of listening instances.
+      - When a listener's connect wait completes, the instance leaves
+        the armed count, and the same step either makes it a connection
+        (it enters the connection count) or makes it Refused. A Refused
+        instance has nothing outstanding; it is disconnected in that
+        step and is Idle.
+      - Whenever the armed count is below the configured number, the
+        daemon arms an Idle instance if there is one, and otherwise
+        creates and arms a new instance. It can: live handles are then
+        armed + connections, below P by the configuration rule below.
+      - Whenever an instance becomes Idle (Refused, or a connection
+        released) while the armed count is already at the configured
+        number, because a replacement was armed while it was a
+        connection, its handle is closed in that step. So no instance
+        rests in Idle, and the armed count is below the configured
+        number only inside one step.
+
+      A connection's **handshake slots**,
       global and per caller, are freed at the first of: the step that
       makes it `Open`, or its release. So an `Open` connection never
       holds one, and a connection refused or timed out in the handshake
       holds its slots through `Closing` and `Draining`.
 
-      An instance is **released**, and only then leaves every count but
-      P's, when every operation started on it has reached its terminal
-      completion and it has been disconnected (ADR 0005, sheet 18). A
-      released instance is Idle until it is given a new connect wait or
-      its handle is closed.
+      An instance is **released**, and only then leaves the connection
+      count and frees any handshake slot, when every operation started
+      on it has reached its terminal completion and it has been
+      disconnected (ADR 0005, sheet 18). It is still a live handle: it
+      is Idle, and is armed or closed as Handoffs says.
     - **Configuration is refused unless** listening instances +
       connections in all ≤ P `[OWN]`. Connections in handshake are
       inside connections in all (point 9), and `Draining` instances stay
@@ -122,8 +141,11 @@ Point 10 of the list that local-ipc.md, 5.2 starts:
       gate records it; nothing here is coded from it.
     - **Outstanding operations** are at most the last column's: one
       connect wait on a listener, one read and one write on a connected
-      instance, so at most 2 × P in all `[D2 sheet 18]`. Each operation's
-      block is inside the admission allowance (5.2.1, rule 1); its
+      instance, so at most 2 × P in all `[D2 sheet 18]`. A connected
+      instance's read and write blocks are inside its connection's
+      admission allowance; a listener's connect block is the instance's
+      own charge, in the global account only, made when the instance is
+      created (5.2.1, rule 1). No block is charged twice. An operation's
       buffer is one this connection has already reserved (the prefix,
       envelope, frame or discard buffer for a read; a queued frame for a
       write), at most one frame. So outstanding operations are bounded
@@ -173,6 +195,11 @@ on Windows. Its rule, in full:
      instance's current one and the connection is still in
      pre-attestation; any other result is discarded and its buffer
      zeroed (5.5, point 7).
+   - The capture holds at most one token-information buffer at a time,
+     each at most 1,024 bytes (ADR 0005, sheet 19 caps each buffer; that
+     they are never held together is this specification's requirement
+     on the capture `[OWN]`, which the connection's capture scratch
+     pays for, 5.2.1, rule 1).
    - Only after the caller is captured is point 2's second step applied
      and the prefix checked as point 3 says.
 
@@ -183,20 +210,32 @@ in local-ipc-resources.md), and the rule that goes with them:
 
    | Label | Side | Buffer | Zeroed |
    |---|---|---|---|
-   | `ipc-rx-pending` (Windows) | daemon | every read buffer of the pipe driver, the 4-byte prefix buffer included | before reuse or free, on every path (completed, cancelled, failed, discarded for a stale generation or a closed connection), and never before the operation's terminal completion (ADR 0005, sheet 18) |
-   | `ipc-tx-daemon` (Windows) | daemon | the same storage as `ipc-tx-daemon-stage`, from the moment a write is started on it until that write's terminal completion; the pipe driver owns it then | only at terminal completion, on every path. A timeout, close or stop in the row above requests the write's cancellation and waits; it never zeroes or frees a buffer the operating system still holds |
-   | `ipc-tx-pending` (Windows) | client | the client's overlapped write buffer, if it uses one | after terminal completion, on every path |
-   | `ipc-rx-client-pending` (Windows) | client | the client's overlapped read buffer, if it uses one | after terminal completion, on every path |
+   | `ipc-rx-pending` (Windows) | daemon | every read buffer of the pipe driver, the 4-byte prefix buffer included | when its use ends (below), on every path (the frame or prefix consumed, cancelled, failed, discarded for a stale generation or a closed connection), and never before the outstanding operation's terminal completion (ADR 0005, sheet 18) |
+   | `ipc-tx-daemon` (Windows) | daemon | the same storage as `ipc-tx-daemon-stage`, from the moment a write is started on it until that write's terminal completion; the pipe driver owns it then | when its use ends (below), and never before the outstanding write's terminal completion. A timeout, close or stop in the row above requests the write's cancellation and waits; it never zeroes or frees a buffer the operating system still holds |
+   | `ipc-tx-pending` (Windows) | client | the client's overlapped write buffer, if it uses one | when its use ends (below), never before terminal completion |
+   | `ipc-rx-client-pending` (Windows) | client | the client's overlapped read buffer, if it uses one | when its use ends (below), never before terminal completion |
 
    **One owner at a time** `[OWN]`, after ADR 0005, sheet 18. A buffer
    belongs to its connection until an overlapped read or write is
    started on it, then to the transport until that operation's terminal
    completion, then to the connection again; its reservation goes with
-   it and is never doubled. While the transport owns a buffer, every
-   trigger in the table means: request cancellation, wait for the
-   terminal completion, then zero with `ironafs-os`'s wipe (ADR 0005,
-   sheet 24) and release. This holds for the client's Windows rows as
-   for the daemon's.
+   it and is never doubled.
+
+   **A completion returns ownership; it does not end the use** `[OWN]`.
+   A buffer's use ends, and only then is it zeroed, at one of two
+   events: its frame (or prefix) has been wholly consumed, that is,
+   every byte read and every value that borrows from it dropped, or
+   every byte written; or it is abandoned (a failure, a cancellation, a
+   stale generation, a close, a stop). A read or write that completes
+   successfully with fewer bytes than asked is neither: the bytes
+   already read or still unwritten stay in the buffer, the charge
+   stays, and the next operation on the same buffer continues from the
+   count the completion reported (for the prefix, ADR 0005, sheet 18's
+   short completion). When a use ends while the transport owns the
+   buffer, the order is: request cancellation, wait for the terminal
+   completion, then zero with `ironafs-os`'s wipe (ADR 0005, sheet 24)
+   and release. This holds for the client's Windows rows as for the
+   daemon's.
 
 ### 5.6 States and ordering
 
@@ -336,10 +375,24 @@ Paths and conventions are those of local-ipc.md, section 10.
   - a disconnect, and a reconnect by another client, between the prefix
     read and the capture: the first identity is never bound to the second
     client;
+  - `capture_scratch_peak`: under a counting allocator, the capture
+    of a standard user and of an administrator with a linked token
+    never has more than one token-information buffer live, and never
+    more than 1,024 bytes of them;
+  - `short_completions_keep_bytes`: a secret-bearing frame read in
+    three short completions, and one written in three, arrive whole:
+    nothing is zeroed between completions, the charge is unchanged, and
+    the buffer is zeroed once, after the frame is consumed; the same
+    frames with a cancellation after the first short completion and a
+    terminal completion delayed past the close are zeroed only at that
+    completion;
   - `pipe_pool`: P instances in use, in every state of 5.2, point 10's
     table, `Draining` included; with the pool full, a connect that has
     just completed and fails admission is disconnected with no read and
-    its instance listens again; a handshake that was refused keeps its
+    its instance listens again, with the armed count back at the
+    configured number and no instance left Idle; a connection released
+    after its replacement was armed has its handle closed; a handshake
+    that was refused keeps its
     handshake slot through `Closing` and through a delayed terminal
     completion, and an `Open` connection holds none; a configuration
     whose listeners plus connections in all pass P is refused; with the
@@ -347,23 +400,24 @@ Paths and conventions are those of local-ipc.md, section 10.
     read; with every instance in use a connect finds the pipe busy; the
     buffer sizes the live pipe reports are recorded;
   - **the daemon check, ADR 0005, sheet 20** (a shipping gate for every
-    secret-bearing message on Windows): the real daemon checked by an
-    ordinary, unprivileged user; a pipe of the same name held by another
-    user's process; the server exiting and being replaced between
-    connect and check; and the residual interval before the process is
-    opened, with the server's pid observed, independently of the check,
-    to be held by another process: the check must answer "not the
-    service" from a step that tells the connected pipe's server from
-    the replacement, before any credential is read. Sheet 20 sets what
-    counts as a pass. Until it passes, no secret-bearing message moves
-    on the Windows control pipe in either direction: no client sends
-    one and none accepts a secret-bearing reply, part or event. Sheets
-    16 to 20 cover the control endpoint's transport only. An endpoint
-    with another transport (the adapter endpoint on Windows) names, in
-    its own specification, its transport and its daemon check, with
-    their own `ironafs-os` sites and gate, before any secret-bearing
-    message of that endpoint is enabled; this gate does not stand in
-    for that.
+    secret-bearing message on the Windows control pipe, in both
+    directions, enforced as local-ipc.md, 5.5, point 6 says): the real
+    daemon checked by an ordinary, unprivileged user; a pipe of the same
+    name held by another user's process; the server exiting and being
+    replaced between connect and check; and the residual interval before
+    the process is opened, with the server's pid observed, independently
+    of the check, to be held by another process: the check must answer
+    "not the service" from a step that tells the connected pipe's server
+    from the replacement, before any credential is read. Sheet 20 sets
+    what counts as a pass. Until it passes, no secret-bearing message
+    moves on the Windows control pipe in either direction: no client
+    sends one and none accepts a secret-bearing reply, part or event.
+    Sheets 16 to 20 cover the control endpoint's transport only. An
+    endpoint with another transport (the adapter endpoint on Windows)
+    names, in its own specification, its transport and its daemon check,
+    with their own `ironafs-os` sites and gate, before any
+    secret-bearing message of that endpoint is enabled; this gate does
+    not stand in for that.
 
 ## 11. Revisit if
 

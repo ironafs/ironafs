@@ -9,8 +9,8 @@ written from the specification, and tests check the code against it.
 
 | Spec | Kind | Class | Status | Implements |
 |---|---|---|---|---|
-| [Local IPC framework](local-ipc.md) | format | S | draft (2026-11-21) | ADR 0004, C43 points 1 and 2, C44 points 1 to 6, C45 points 1 to 3, N41 points 1 to 9, C5 point 5 as amended by ADR 0005; constraint 4 |
-| [Local IPC framework: resources and scheduling](local-ipc-resources.md) | behaviour | S | draft (2026-11-21) | ADR 0004, C39 points 2 and 3, O28 points 2 and 3, C16 point 6; constraint 4 |
+| [Local IPC framework](local-ipc.md) | format | S | draft (2026-11-21) | ADR 0004, C43 points 1 and 2, C44 points 1 to 6, C45 points 1 to 3, N41 points 1 to 9, C16 point 6 (what a catalogue declares), C5 point 5 as amended by ADR 0005; constraint 4 |
+| [Local IPC framework: resources and scheduling](local-ipc-resources.md) | behaviour | S | draft (2026-11-21) | ADR 0004, C39 points 2 and 3, O28 points 2 and 3, C16 point 6 (the reserved space and the order); constraint 4 |
 | [Local IPC framework: the Windows named pipe](local-ipc-windows.md) | behaviour | S | draft (2026-11-21) | ADR 0004, C45 point 1, C5 point 5 as amended by ADR 0005; ADR 0005, sheets 17 to 20 |
 | [XDR profile](xdr.md) | protocol | S | draft (2026-11-20) | ADR 0004, C3 point 1, C4 points 1 and 4, C6 points 1, 2 and 4, N31 points 1 and 2, O47 points 2 to 4; constraint 4 |
 
