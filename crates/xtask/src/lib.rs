@@ -5,6 +5,7 @@
 
 mod args;
 mod check;
+mod coverage;
 mod deps;
 mod fixture;
 mod grants;
@@ -146,6 +147,7 @@ fn run_task(
         args::Task::CheckDeps { self_test } => deps::run(self_test, output),
         args::Task::CheckGrants { self_test } => grants::run(self_test, output),
         args::Task::CheckPure { self_test } => pure::run(self_test, output),
+        args::Task::Coverage { self_test } => coverage::run(self_test, output),
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
         args::Task::Trailers(mode) => trailers::run(mode, output),

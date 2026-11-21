@@ -48,6 +48,9 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         crate::grants::run(self_test, output)?;
         crate::pure::run(self_test, output)?;
     }
+    // The coverage report itself runs only in the nightly coverage job,
+    // which installs the pinned tool; its self-test needs no tool.
+    crate::coverage::run(true, output)?;
 
     check_reuse_result(
         Command::new("reuse").arg("lint").status(),
