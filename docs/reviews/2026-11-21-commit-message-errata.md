@@ -17,7 +17,7 @@ ADR 0003, point 6, asks every pull request description written by a model to end
 | `05fa895` | #30 | adr 0004: part status lines say accepted | `claude-code:claude-opus-5-5` |
 | `1f44f21` | #32 | adr 0004: rxgk is planned for M6 against the clean-room peer (O50.9) | `claude-code:claude-opus-5-5` |
 
-In each, the message was written by the model its `Assisted-by` trailers name, for the maintainer, and the trailers already disclose that. The line itself is what is missing. The root commit (`ce1cb25`) and `41c3ab1` (#6) also have no such line; both were made before ADR 0003 was accepted.
+In each, the message was written for the maintainer by a model its `Assisted-by` trailers name, so the trailers already disclose the model writing. The line itself is what is missing. The root commit (`ce1cb25`) and `41c3ab1` (#6) also have no such line; both were made before ADR 0003 was accepted.
 
 Every squash merge on `main` up to #89 carries its `Class:`, `Assisted-by:` and the owner's `Signed-off-by:` trailers; no other omission was found.
 
