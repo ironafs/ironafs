@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `check-retries --self-test`: plants a retry in each place nextest takes
-//! one from, a missing profile file and an unreadable one, in fixture
-//! repositories, and proves the check fails on each and passes on the clean
-//! fixture.
+//! one from and in each spelling of a profile's `retries`, an escape that
+//! spells a name, a missing profile file or `xtask` source and an
+//! unreadable profile file, in fixture repositories, and proves the check
+//! fails on each and passes on the clean fixture.
 
 use std::io::Write;
 use std::path::Path;
@@ -16,6 +17,8 @@ use crate::fixture::{self, Fixture};
 const WORKFLOW: &str = ".github/workflows/ci.yml";
 const ACTION: &str = ".github/actions/test/action.yml";
 const CARGO_CONFIG: &str = ".cargo/config.toml";
+const XTASK_CHECK: &str = "crates/xtask/src/check.rs";
+const XTASK_OTHER: &str = "crates/xtask/src/mutants.rs";
 
 const CLEAN_PROFILES: &str = "# A --retries option or NEXTEST_RETRIES overrides this.\n\
                               [profile.default]\nretries = 0\n\n\
@@ -24,6 +27,10 @@ const CLEAN_PROFILES: &str = "# A --retries option or NEXTEST_RETRIES overrides 
 const CLEAN_WORKFLOW: &str = "jobs:\n  test:\n    env:\n      NEXTEST_RETRIES: 0\n    steps:\n\
                               \x20     - run: cargo nextest run --profile ci --retries 0\n";
 const CLEAN_CARGO_CONFIG: &str = "[alias]\nxtask = \"run --package xtask --\"\n";
+const CLEAN_XTASK_CHECK: &str = "//! Runs `--retries 0` whatever the environment says.\n\
+                                 const RUN: &[&str] = &[\"nextest\", \"run\", \"--retries\",\n\
+                                 \x20   \"0\", \"--no-tests\", \"fail\"];\n\
+                                 const SEP: char = '\\u{1f}';\n";
 
 /// The files of the clean fixture, with `path` set to `text`, or removed
 /// when `text` is `None`.
@@ -32,6 +39,7 @@ fn with(path: &str, text: Option<&str>) -> Vec<(String, String)> {
         (PROFILES, CLEAN_PROFILES),
         (WORKFLOW, CLEAN_WORKFLOW),
         (CARGO_CONFIG, CLEAN_CARGO_CONFIG),
+        (XTASK_CHECK, CLEAN_XTASK_CHECK),
     ]
     .into_iter()
     .filter(|(existing, _)| *existing != path)
@@ -54,16 +62,119 @@ struct Case {
 fn names(violation: &Violation, path: &str) -> bool {
     let path = Path::new(path);
     match violation {
-        Violation::ProfilesMissing(file)
+        Violation::Missing(file)
         | Violation::Unreadable { file, .. }
         | Violation::Profile { file, .. }
+        | Violation::ProfileTable { file, .. }
+        | Violation::Escape { file, .. }
         | Violation::Option { file, .. }
         | Violation::Environment { file, .. }
         | Violation::ConfigFile { file, .. } => file == path,
     }
 }
 
+/// The clean profiles with `[profile.ci]`'s `retries = 0` line replaced.
+fn ci_retries(replacement: &str) -> Vec<(String, String)> {
+    with(
+        PROFILES,
+        Some(&CLEAN_PROFILES.replace("[profile.ci]\nretries = 0", replacement)),
+    )
+}
+
+fn is_table(found: &Violation) -> bool {
+    matches!(found, Violation::ProfileTable { .. }) && names(found, PROFILES)
+}
+
 const CASES: &[Case] = &[
+    Case {
+        name: "a profile with retries as a table header",
+        files: || ci_retries("[profile.ci.retries]\nbackoff = \"fixed\"\ncount = 2"),
+        expect: is_table,
+    },
+    Case {
+        name: "a per-test override with retries as a table header",
+        files: || {
+            ci_retries(
+                "[profile.ci]\n[[profile.ci.overrides]]\nfilter = 'all()'\n\
+                 [profile.ci.overrides.retries]\nbackoff = \"fixed\"\ncount = 2",
+            )
+        },
+        expect: is_table,
+    },
+    Case {
+        name: "a profile with retries as dotted keys",
+        files: || ci_retries("[profile.ci]\nretries.backoff = \"fixed\"\nretries.count = 2"),
+        expect: is_table,
+    },
+    Case {
+        name: "a top-level dotted key ending in retries.count",
+        files: || ci_retries("[profile.ci]\n\n[x]\n\n[profile]\nci.retries.count = 2"),
+        expect: is_table,
+    },
+    Case {
+        name: "a per-test override with retries as dotted keys",
+        files: || {
+            ci_retries(
+                "[profile.ci]\n[[profile.ci.overrides]]\nfilter = 'all()'\n\
+                 retries.backoff = \"fixed\"\nretries.count = 2",
+            )
+        },
+        expect: is_table,
+    },
+    Case {
+        name: "an inline override with retries as a dotted key",
+        files: || {
+            ci_retries(
+                "[profile.ci]\noverrides = [{ filter = \"all()\", retries.backoff = \"fixed\" }]",
+            )
+        },
+        expect: is_table,
+    },
+    Case {
+        name: "a profile whose retries key is spelled with an escape",
+        files: || ci_retries("[profile.ci]\n\"\\u0072etries\" = 2"),
+        expect: |found| matches!(found, Violation::Profile { .. }) && names(found, PROFILES),
+    },
+    Case {
+        name: "a workflow value joined to a quoted 0",
+        files: || {
+            with(
+                WORKFLOW,
+                Some(&CLEAN_WORKFLOW.replace("--retries 0", "--retries \"0\"1")),
+            )
+        },
+        expect: |found| {
+            matches!(found, Violation::Option { value, .. } if value == "0\"1")
+                && names(found, WORKFLOW)
+        },
+    },
+    Case {
+        name: "a cargo alias spelling the option with an escape",
+        files: || {
+            with(
+                CARGO_CONFIG,
+                Some("[alias]\nt = \"nextest run --\\u0072etries 2\"\n"),
+            )
+        },
+        expect: |found| matches!(found, Violation::Escape { .. }) && names(found, CARGO_CONFIG),
+    },
+    Case {
+        name: "an xtask command with the retries option at 2",
+        files: || {
+            let mut files = with("", None);
+            files.push((
+                XTASK_OTHER.to_owned(),
+                "const RUN: &[&str] = &[\"nextest\", \"run\", \"--retries\", \"2\"];\n".to_owned(),
+            ));
+            files
+        },
+        expect: |found| matches!(found, Violation::Option { .. }) && names(found, XTASK_OTHER),
+    },
+    Case {
+        name: "no xtask source",
+        files: || with(XTASK_CHECK, None),
+        expect: |found| matches!(found, Violation::Missing(_)) && names(found, "crates/xtask"),
+    },
     Case {
         name: "a profile with retries = 1",
         files: || {
@@ -111,7 +222,7 @@ const CASES: &[Case] = &[
     Case {
         name: "no profile file",
         files: || with(PROFILES, None),
-        expect: |found| matches!(found, Violation::ProfilesMissing(_)) && names(found, PROFILES),
+        expect: |found| matches!(found, Violation::Missing(_)) && names(found, PROFILES),
     },
     Case {
         name: "a workflow command with the retries option at 1",
@@ -211,7 +322,8 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
     }
     report(format!(
         "{CHECK} --self-test: the clean fixture passed and {} planted cases failed as planted \
-         (profiles, overrides, {GITHUB}/ commands and environments, cargo configuration)",
+         (profiles, overrides, {GITHUB}/ commands and environments, cargo configuration, xtask \
+         source)",
         CASES.len()
     ))
 }

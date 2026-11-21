@@ -120,15 +120,152 @@ fn profile_violations_refuse_an_unterminated_string() {
     );
 }
 
+fn table(line: usize) -> Violation {
+    Violation::ProfileTable {
+        file: PathBuf::from(PROFILES),
+        line,
+    }
+}
+
+#[test]
+fn profile_violations_catch_retries_as_a_table_in_every_spelling() {
+    for (text, line) in [
+        ("[profile.ci.retries]\nbackoff = \"fixed\"\ncount = 2\n", 1),
+        ("[profile.ci . \"retries\"]\ncount = 2\n", 1),
+        ("[[profile.ci.overrides.retries]]\ncount = 2\n", 1),
+        ("[profile.ci]\nretries.backoff = \"fixed\"\n", 2),
+        ("profile.ci.retries.count = 2\n", 1),
+        ("[profile.ci]\n'retries'.count = 2\n", 2),
+        (
+            "[profile.ci]\noverrides = [{ filter = \"all()\", retries.count = 2 }]\n",
+            2,
+        ),
+        (
+            "[[profile.ci.overrides]]\nfilter = 'all()'\nretries.backoff = \"fixed\"\n",
+            3,
+        ),
+    ] {
+        assert_profiles(text, &[table(line)]);
+    }
+}
+
+#[test]
+fn profile_violations_ignore_retries_as_a_value() {
+    assert_profiles(
+        "[profile.ci]\nx = [\"retries\", \"y\"]\nz = [\n  \"retries\",\n]\nw = \"retries\"\n",
+        &[],
+    );
+}
+
+#[test]
+fn profile_violations_decode_escapes_in_quoted_keys() {
+    assert_profiles("[profile.ci]\n\"\\u0072etries\" = 2\n", &[profile(2, "2")]);
+    assert_profiles(
+        "[profile.ci]\n\"\\U00000072etries\".count = 2\n",
+        &[table(2)],
+    );
+    assert_profiles("[profile.ci]\n\"\\x72etries\" = 2\n", &[profile(2, "2")]);
+}
+
+#[test]
+fn profile_violations_count_lines_joined_by_a_line_ending_backslash() {
+    assert_profiles(
+        "[profile.ci]\nnote = \"\"\"a \\  \n\n   b\"\"\"\nretries = 1\n",
+        &[profile(5, "1")],
+    );
+}
+
+#[test]
+fn profile_violations_refuse_an_invalid_escape() {
+    for (text, error) in [
+        (
+            "[profile.ci]\nnote = \"a\\\nb\"\n",
+            "line 2: invalid escape",
+        ),
+        ("[profile.ci]\nnote = \"\\q\"\n", "line 2: invalid escape"),
+        ("[profile.ci]\nnote = \"\\u00\"\n", "line 2: invalid escape"),
+    ] {
+        assert_eq!(
+            profile_violations(text, Path::new(PROFILES)),
+            [Violation::Unreadable {
+                file: PathBuf::from(PROFILES),
+                error: error.to_owned(),
+            }]
+        );
+    }
+}
+
+#[test]
+fn command_violations_keep_quotes_attached_to_the_value() {
+    for (text, expected) in [
+        (
+            "run: cargo nextest run --retries \"0\"1\n",
+            option(1, "0\"1"),
+        ),
+        (
+            "run: cargo nextest run --retries=0\"1\"\n",
+            option(1, "0\"1\""),
+        ),
+        (
+            "run: cargo nextest run --retries \"0\"$EXTRA\n",
+            option(1, "0\"$EXTRA"),
+        ),
+        (
+            "run: NEXTEST_RETRIES='0'2 cargo nextest run\n",
+            environment(1, "0'2"),
+        ),
+        (
+            "run: NEXTEST_RETRIES=0\"1\" cargo nextest run\n",
+            environment(1, "0\"1\""),
+        ),
+    ] {
+        assert_commands(text, &[expected]);
+    }
+}
+
+fn escape(line: usize, spelled: char) -> Violation {
+    Violation::Escape {
+        file: PathBuf::from(WORKFLOW),
+        line,
+        spelled,
+    }
+}
+
+#[test]
+fn command_violations_catch_escapes_that_spell_a_name() {
+    for (text, spelled) in [
+        ("t = \"nextest run --\\u0072etries 2\"\n", 'r'),
+        ("\"NEXTEST_\\u0052ETRIES\" = \"2\"\n", 'R'),
+        ("run: cargo nextest run $'\\x2d'-retries 2\n", '-'),
+        ("run: cargo nextest run --$'\\162'etries 2\n", 'r'),
+        ("run: cargo nextest run --\\u{72}etries 2\n", 'r'),
+        ("NEXTEST_RETRIES\\U0000003d2\n", '='),
+    ] {
+        let found = command_violations(text, Path::new(WORKFLOW));
+        assert!(found.contains(&escape(1, spelled)), "{text}: {found:?}");
+    }
+}
+
+#[test]
+fn command_violations_pass_escapes_that_spell_no_name() {
+    assert_commands(
+        "run: printf '%s  %s\\n' a b\nx = \"\\u00e9 \\\\u0072 \\t \\u{1f}\"\n",
+        &[],
+    );
+}
+
 #[test]
 fn command_violations_catch_the_option() {
     for (text, value) in [
         ("run: cargo nextest run --retries 2\n", "2"),
         ("run: cargo nextest run --retries=1\n", "1"),
-        ("args = [\"nextest\", \"run\", \"--retries\", \"3\"]\n", "3"),
+        (
+            "args = [\"nextest\", \"run\", \"--retries\", \"3\"]\n",
+            "3\"",
+        ),
         (
             "run: cargo nextest run --retries \"$RETRIES\"\n",
-            "$RETRIES",
+            "$RETRIES\"",
         ),
         ("run: cargo nextest run --retries\n", ""),
     ] {
@@ -141,7 +278,10 @@ fn command_violations_catch_the_environment() {
     for (text, value) in [
         ("    NEXTEST_RETRIES: 2\n", "2"),
         ("run: NEXTEST_RETRIES=1 cargo nextest run\n", "1"),
-        ("run: echo \"NEXTEST_RETRIES=4\" >> \"$GITHUB_ENV\"\n", "4"),
+        (
+            "run: echo \"NEXTEST_RETRIES=4\" >> \"$GITHUB_ENV\"\n",
+            "4\"",
+        ),
         ("NEXTEST_RETRIES = { value = \"2\", force = true }\n", "{"),
     ] {
         assert_commands(text, &[environment(1, value)]);
@@ -221,7 +361,7 @@ fn write(root: &Path, path: &str, text: &str) {
 }
 
 #[test]
-fn check_reads_profiles_workflows_actions_and_cargo_configuration() {
+fn check_reads_profiles_workflows_actions_cargo_configuration_and_xtask() {
     let root = scratch("reads");
     write(&root, PROFILES, "[profile.default]\nretries = 1\n");
     write(&root, WORKFLOW, "run: cargo nextest run --retries 2\n");
@@ -240,18 +380,29 @@ fn check_reads_profiles_workflows_actions_and_cargo_configuration() {
         "crates/a/.cargo/config",
         "[env]\nNEXTEST_RETRIES = \"5\"\n",
     );
+    write(
+        &root,
+        "crates/xtask/src/mutants.rs",
+        "fn f() { run([\"nextest\", \"run\", \"--retries\", \"8\"]); }\n",
+    );
+    write(
+        &root,
+        "crates/xtask/src/retries.rs",
+        "const O: &str = \"--retries\";\n",
+    );
+    write(&root, "crates/xtask/src/retries/x.rs", "--retries 9\n");
     write(&root, "target/.github/x.yml", "--retries 6\n");
     write(&root, "docs/notes.md", "--retries 7\n");
     let (found, read) = check(&root, &root.join("target")).expect("check runs");
     let _ = fs::remove_dir_all(&root);
-    assert_eq!(read, 5);
+    assert_eq!(read, 6);
     assert_eq!(
         found,
         [
             Violation::Option {
                 file: PathBuf::from(".cargo/config.toml"),
                 line: 2,
-                value: "4".to_owned(),
+                value: "4\"".to_owned(),
             },
             profile(2, "1"),
             Violation::Environment {
@@ -263,20 +414,55 @@ fn check_reads_profiles_workflows_actions_and_cargo_configuration() {
             Violation::Environment {
                 file: PathBuf::from("crates/a/.cargo/config"),
                 line: 2,
-                value: "5".to_owned(),
+                value: "5\"".to_owned(),
+            },
+            Violation::Option {
+                file: PathBuf::from("crates/xtask/src/mutants.rs"),
+                line: 1,
+                value: "8\"".to_owned(),
             },
         ]
     );
 }
 
 #[test]
-fn check_fails_without_the_nextest_configuration() {
+fn check_fails_without_the_nextest_configuration_or_xtask() {
     let root = scratch("missing");
     write(&root, WORKFLOW, "run: cargo nextest run --retries 0\n");
     let (found, read) = check(&root, &root.join("target")).expect("check runs");
     let _ = fs::remove_dir_all(&root);
     assert_eq!(read, 1);
-    assert_eq!(found, [Violation::ProfilesMissing(PathBuf::from(PROFILES))]);
+    assert_eq!(
+        found,
+        [
+            Violation::Missing(PathBuf::from(PROFILES)),
+            Violation::Missing(PathBuf::from("crates/xtask")),
+        ]
+    );
+}
+
+#[test]
+fn check_does_not_take_another_file_for_the_profiles() {
+    let root = scratch("lookalike");
+    write(
+        &root,
+        ".github/x/.config/nextest.toml",
+        "run: --retries 3\n",
+    );
+    write(&root, "crates/xtask/src/lib.rs", "\n");
+    let (found, _) = check(&root, &root.join("target")).expect("check runs");
+    let _ = fs::remove_dir_all(&root);
+    assert_eq!(
+        found,
+        [
+            Violation::Missing(PathBuf::from(PROFILES)),
+            Violation::Option {
+                file: PathBuf::from(".github/x/.config/nextest.toml"),
+                line: 1,
+                value: "3".to_owned(),
+            },
+        ]
+    );
 }
 
 #[test]

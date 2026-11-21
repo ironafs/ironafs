@@ -11,8 +11,8 @@ use crate::Error;
 #[cfg(test)]
 mod tests;
 
-/// The test run's arguments to cargo. `check-retries` reads them, so the
-/// run passes `--retries 0` whatever the environment says.
+/// The test run's arguments to cargo. They pass `--retries 0`, so the
+/// environment cannot add retries; `check-retries` reads this file.
 pub(crate) const NEXTEST_RUN: &[&str] = &[
     "nextest",
     "run",
