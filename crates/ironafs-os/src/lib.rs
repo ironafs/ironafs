@@ -41,18 +41,28 @@ compile_error!(
 );
 
 mod clock;
+mod dump;
 mod random;
 
 #[cfg(target_os = "linux")]
 mod linux_clock;
 #[cfg(target_os = "linux")]
+mod linux_dontdump;
+#[cfg(target_os = "linux")]
 mod linux_random;
 mod mem_wipe;
+#[cfg(target_os = "linux")]
+mod unix_nodump;
 
 pub use clock::{ClockError, OsClock};
+pub use dump::DumpError;
 #[cfg(target_os = "linux")]
 pub use linux_clock::read_clock;
+#[cfg(target_os = "linux")]
+pub use linux_dontdump::SecretBuffer;
 #[cfg(target_os = "linux")]
 pub use linux_random::fill_random;
 pub use mem_wipe::wipe;
 pub use random::RandomError;
+#[cfg(target_os = "linux")]
+pub use unix_nodump::disable_dumps;

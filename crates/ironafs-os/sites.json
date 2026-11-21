@@ -201,11 +201,48 @@
       "blocks": "one per call: one on macOS (`setrlimit`), three on Linux (`setrlimit`, and `prctl` to set and to read back)",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved",
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented",
         "aarch64-apple-darwin": "approved"
+      },
+      "code": {
+        "module": "unix_nodump",
+        "headers": [
+          "sys/resource.h",
+          "sys/prctl.h"
+        ],
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "setrlimit",
+                "safe": false
+              },
+              {
+                "name": "prctl",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "setrlimit"
+          },
+          {
+            "kind": "call",
+            "operation": "prctl"
+          },
+          {
+            "kind": "call",
+            "operation": "prctl"
+          }
+        ],
+        "impls": 0
       }
     },
     {
@@ -218,10 +255,34 @@
       "blocks": "one",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved"
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented"
+      },
+      "code": {
+        "module": "linux_dontdump",
+        "headers": [
+          "sys/mman.h"
+        ],
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "madvise",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "madvise"
+          }
+        ],
+        "impls": 0
       }
     },
     {
