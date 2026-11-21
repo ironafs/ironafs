@@ -1,0 +1,133 @@
+// SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! The tests of `linux-rtnetlink` (ADR 0005, sheet 23) that only the Miri
+//! stand-ins can run: they record each call and return queued replies, so
+//! these check each call's arguments and the receive of every reply the
+//! sheet names, through the wrapper's own buffers.
+
+use super::super::abi::stand_in::{Call, Reply, calls, reply, short_sends};
+use super::super::abi::{AF_NETLINK, NETLINK_ROUTE, SOCK_CLOEXEC, SOCK_RAW, sockaddr_nl};
+use super::super::{GROUPS, RouteSocket};
+use crate::route::RouteError;
+
+/// The kernel's address, or one with `groups`.
+fn netlink(port: u32, groups: u32) -> sockaddr_nl {
+    sockaddr_nl {
+        nl_family: 16,
+        nl_pad: 0,
+        nl_pid: port,
+        nl_groups: groups,
+    }
+}
+
+/// A reply of `bytes` from the kernel.
+fn from_kernel(bytes: &[u8]) -> Reply {
+    Reply {
+        bytes: bytes.to_vec(),
+        sender: netlink(0, 0),
+        name_length: 12,
+    }
+}
+
+#[test]
+fn a_notify_socket_binds_with_the_groups_and_a_request_socket_with_none() {
+    let _ = calls();
+    let notify = RouteSocket::notify().unwrap();
+    let request = RouteSocket::request().unwrap();
+    let socket = Call::Socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    assert_eq!(
+        calls(),
+        [
+            socket.clone(),
+            Call::Bind(netlink(0, GROUPS), 12),
+            socket,
+            Call::Bind(netlink(0, 0), 12),
+        ]
+    );
+    drop((notify, request));
+}
+
+#[test]
+fn a_send_names_the_kernel_and_carries_every_byte() {
+    let socket = RouteSocket::request().unwrap();
+    let _ = calls();
+    let request: Vec<u8> = (0..20).collect();
+    socket.send(&request).unwrap();
+    assert_eq!(calls(), [Call::Send(request, 0, netlink(0, 0), 12)]);
+}
+
+#[test]
+fn a_short_send_is_an_error() {
+    let socket = RouteSocket::request().unwrap();
+    short_sends();
+    assert!(matches!(
+        socket.send(&[1; 20]),
+        Err(RouteError::ShortSend {
+            sent: 19,
+            length: 20
+        })
+    ));
+}
+
+#[test]
+fn a_whole_reply_from_the_kernel_is_returned_into_the_buffer() {
+    let socket = RouteSocket::request().unwrap();
+    reply(from_kernel(&[7; 40]));
+    let mut buffer = [0_u8; 64];
+    assert_eq!(socket.receive(&mut buffer).unwrap(), 40);
+    assert_eq!(buffer[..40], [7; 40]);
+    assert_eq!(buffer[40..], [0; 24]);
+}
+
+#[test]
+fn a_short_sender_address_and_a_wrong_family_are_no_sender() {
+    let socket = RouteSocket::notify().unwrap();
+    let mut short = from_kernel(&[1; 8]);
+    short.name_length = 8;
+    reply(short);
+    let mut wrong = from_kernel(&[1; 8]);
+    wrong.sender.nl_family = 2;
+    reply(wrong);
+    let mut buffer = [0_u8; 64];
+    for _ in 0..2 {
+        assert!(matches!(
+            socket.receive(&mut buffer),
+            Err(RouteError::BadSender)
+        ));
+    }
+}
+
+#[test]
+fn a_reply_from_another_port_is_refused() {
+    let socket = RouteSocket::notify().unwrap();
+    let mut forged = from_kernel(&[1; 8]);
+    forged.sender = netlink(4242, 1);
+    reply(forged);
+    let mut buffer = [0_u8; 64];
+    assert!(matches!(
+        socket.receive(&mut buffer),
+        Err(RouteError::NotKernel(4242))
+    ));
+}
+
+#[test]
+fn a_reply_longer_than_the_buffer_is_truncated() {
+    let socket = RouteSocket::request().unwrap();
+    reply(from_kernel(&[1; 100]));
+    let mut buffer = [0_u8; 16];
+    assert!(matches!(
+        socket.receive(&mut buffer),
+        Err(RouteError::Truncated)
+    ));
+    assert_eq!(buffer, [1; 16]);
+}
+
+#[test]
+fn a_receive_passes_no_flags() {
+    let socket = RouteSocket::request().unwrap();
+    reply(from_kernel(&[1; 4]));
+    let _ = calls();
+    socket.receive(&mut [0_u8; 8]).unwrap();
+    assert_eq!(calls(), [Call::Receive(0)]);
+}

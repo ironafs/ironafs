@@ -658,10 +658,92 @@
       "blocks": "one per call (four); one that adopts the descriptor",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved"
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented"
+      },
+      "code": {
+        "module": "linux_rtnetlink",
+        "headers": [
+          "errno.h",
+          "sys/socket.h",
+          "sys/uio.h",
+          "linux/netlink.h",
+          "linux/rtnetlink.h"
+        ],
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "socket",
+                "safe": false
+              },
+              {
+                "name": "bind",
+                "safe": false
+              },
+              {
+                "name": "sendto",
+                "safe": false
+              },
+              {
+                "name": "recvmsg",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "abi::socket",
+            "arguments": [
+              "domain",
+              "kind",
+              "protocol"
+            ]
+          },
+          {
+            "kind": "adopt",
+            "operation": "OwnedFd::from_raw_fd",
+            "arguments": [
+              "descriptor"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::bind",
+            "arguments": [
+              "descriptor",
+              "address",
+              "length"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::sendto",
+            "arguments": [
+              "descriptor",
+              "buffer",
+              "length",
+              "flags",
+              "address",
+              "address_length"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::recvmsg",
+            "arguments": [
+              "descriptor",
+              "pointer",
+              "flags"
+            ]
+          }
+        ],
+        "impls": 0
       }
     },
     {
