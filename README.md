@@ -23,29 +23,39 @@ on Linux, a kernel extension on macOS, a driver on Windows. (OpenAFS also
 includes an experimental FUSE-based client.) Kernel code is getting harder
 to ship everywhere.
 
-- **On macOS,** third-party kernel extensions need reduced security settings
-  on Apple silicon. Apple's replacement for filesystem extensions is FSKit,
-  which runs in user space.
-- **On Linux,** new kernel interfaces are increasingly limited to GPL code,
-  while FUSE keeps gaining speed and features.
-- **On Windows,** the plan is a small SMB server inside IronAFS on the local
-  machine, reached as `\\afs` through Windows' own SMB client, with no driver.
-  So far only the transport is measured (see the planned design below), and
-  the path is behind a gate. The Cloud Files API, which presents files on
-  demand as placeholders, can follow later as an optional offline companion.
+- **On macOS,** third-party kernel extensions need Reduced Security on Apple
+  silicon, set by the user in Recovery. Apple's user-space alternative for
+  file systems is FSKit.
+- **On Linux,** the kernel keeps no stable interface for modules, some
+  symbols are only for GPL-tagged modules, and on Debian, for example,
+  Secure Boot blocks unsigned modules built outside the kernel tree. FUSE
+  lets a file system run in user space instead. For per-user correctness,
+  IronAFS starts with FUSE's entry and attribute caching off and uses
+  neither passthrough nor the writeback cache. The kernel then asks
+  IronAFS again for every lookup and attribute read, so IronAFS expects
+  metadata-heavy work to be slower than with those results cached in the
+  kernel, until measured.
+- **On Windows,** new kernel drivers must, with some exceptions, be signed
+  through Microsoft. Windows 11 24H2 and later, and Windows Server 2025,
+  are removing default trust in older cross-signed drivers, apart from an
+  allow list. IronAFS plans a small SMB server of its own on the
+  local machine instead, reached through Windows' own SMB client (see
+  below).
 
 All three systems offer a way to expose files without third-party kernel
 code: FUSE and FSKit as supported filesystem interfaces, and on Windows, if
 the gate passes, Windows' own SMB client talking to a local server. IronAFS
-is a client built for that world. The background
-is in the
-[research notes](docs/research/2026-11-18-driverless-afs-clients.md).
+is a client built for that world. The sources are in two research notes:
+[kernel code against user space](docs/research/2026-11-20-kernel-code-and-user-space.md)
+and [AFS clients without kernel code](docs/research/2026-11-18-driverless-afs-clients.md).
 
 ## Goals
 
-- **Do what the existing AFS client does.** Reach parity with the OpenAFS
-  client and its user-facing tools: the cache manager, tokens and `aklog`,
-  `fs` commands, mount points, ACLs and volume access. Then modernise it.
+- **Do what users of an AFS client rely on.** `/afs`, tokens and `aklog`,
+  the `fs` commands, mount points, ACLs and volume access, against existing
+  cells; then add what a client written today can. Where IronAFS will
+  differ (no PAGs; programs in AFS never gain set-uid privileges),
+  [ADR 0004](docs/adr/0004-architecture.md) says so.
 - **Share as much as possible.** One core does everything that is not
   operating-system specific; each platform adds only a thin layer.
 - **No kernel code of our own.** FUSE on Linux, FSKit on macOS, and on
@@ -87,8 +97,9 @@ This is the intended shape, not code that exists. The architecture is
 decided in [ADR 0004](docs/adr/0004-architecture.md), accepted on
 2026-11-20.
 
-**Windows, planned:** an online `\\afs` path through Windows' own SMB client to
-an SMB 3.1.1 server of IronAFS's own on the local machine, behind a gate on
+**Windows, planned:** an online path through Windows' own SMB client to an
+SMB 3.1.1 server of IronAFS's own on the local machine, as `\\afs` where
+that name can be used and otherwise by the loopback address, behind a gate on
 identity, security, application compatibility and coherency. What has been
 measured is the transport: Windows' SMB client reaching a listener on the
 local machine beside Windows' own file sharing, on Windows 10 22H2 and
@@ -98,6 +109,33 @@ A Cloud Files replica may follow later as an optional offline companion,
 and becomes the Windows surface if the gate fails; if both fail,
 Windows has no surface until one passes. ADR 0004 records this
 decision ([part 2](docs/adr/0004-architecture-2-os-layers.md), L15).
+
+**Planned platforms** ([part 2](docs/adr/0004-architecture-2-os-layers.md),
+L37 to L39):
+
+- tier 1: Ubuntu 24.04 and 26.04 (x86_64 and aarch64), on the kernels of
+  GitHub's hosted runners; macOS 27 on Apple silicon; Windows 11 Pro 26H2
+  (x64), in a workgroup at first;
+- tier 2: Windows 11 Pro 26H2 (Arm64), in a workgroup at first; Windows 10
+  Pro 22H2 (x86_64), in a workgroup, SMB only, with Extended Security
+  Updates and the current cumulative update, until 2027-10-12;
+- candidates: Ubuntu's generic kernels, until tested on a native kernel
+  (L37); and RHEL 7.9, 8.10, 9 and 10, Debian 12 and 13, Windows 11 Pro
+  25H2, Windows 11 Home, Enterprise and Education, static musl builds,
+  and FreeBSD (L39). Each becomes a target only on the conditions its decision names,
+  such as a named test venue that qualifies it.
+
+**Order of work** ([part 3](docs/adr/0004-architecture-3-operations.md),
+O50). A plan, with no dates:
+
+1. M2a: the core and Linux, read-only and unauthenticated; a small Windows
+   SMB identity spike runs beside it.
+2. M2b: rxkad, the security class existing cells use, with `aklog`.
+3. M3: writes and locks on Linux.
+4. M4: macOS.
+5. M5: Windows.
+6. M6: rxgk and other security work.
+7. M7: proposed later work.
 
 ## Compatibility
 
@@ -164,21 +202,10 @@ Development uses the exact toolchain pinned in `rust-toolchain.toml`
 (1.100.0). `rust-version` in `Cargo.toml` (1.100) is the minimum. A lower
 minimum is set only once CI tests it.
 
-Run `cargo xtask check` for the local checks. Install
-[cargo-nextest](https://nexte.st/) separately. Run `cargo xtask hooks install`
-to opt in to the `pre-push` hook for local checks and the `commit-msg` hook
-for branch commit trailers. Use
-`cargo xtask hooks install --force` to replace a hook that xtask did not
-install. This moves the existing hook to `pre-push.xtask-backup` or
-`commit-msg.xtask-backup` in the hooks directory and prints the backup path.
-The command refuses if that path is already in use.
-
-To run checks individually, use `cargo fmt --all --check`,
-`cargo clippy --all-targets --workspace`,
-`cargo nextest run --workspace --retries 0 --no-tests fail`,
-`cargo test --doc --workspace`, `reuse lint` and `cargo deny check`.
-The local batch reports `reuse` and `cargo-deny` as skipped if they are
-absent. CI requires both, runs the tests on Linux, and runs Clippy for
+Run `cargo xtask check` for the local checks (install
+[cargo-nextest](https://nexte.st/) first).
+[CONTRIBUTING.md](CONTRIBUTING.md) explains the optional git hooks and how
+to run each check on its own. CI runs the tests on Linux, and Clippy for
 Linux, Windows and macOS.
 
 ## Contributing
