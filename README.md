@@ -19,9 +19,9 @@ operating system and no kernel code of its own.
 ## Why
 
 The widely deployed AFS clients depend on kernel components: a kernel module
-on Linux, a kernel extension on macOS, a driver on Windows. (An experimental
-FUSE-based client exists, but never became the norm.) Kernel code is getting
-harder to ship everywhere.
+on Linux, a kernel extension on macOS, a driver on Windows. (OpenAFS also
+includes an experimental FUSE-based client.) Kernel code is getting harder
+to ship everywhere.
 
 - **On macOS,** third-party kernel extensions need reduced security settings
   on Apple silicon. Apple's replacement for filesystem extensions is FSKit,
@@ -83,8 +83,9 @@ uses too:
      (Linux)         (macOS)          (Windows)
 ```
 
-This is the intended shape, not code that exists. The architecture decision
-is the next design step.
+This is the intended shape, not code that exists. The architecture is
+decided in [ADR 0004](docs/adr/0004-architecture.md), accepted on
+2026-11-20.
 
 **Windows, planned:** an online `\\afs` path through Windows' own SMB client to
 an SMB 3.1.1 server of IronAFS's own on the local machine, behind a gate on
@@ -94,9 +95,9 @@ local machine beside Windows' own file sharing, on Windows 10 22H2 and
 Windows 11 24H2 and 26H2, to the client's first packet. A full SMB session has not been
 measured yet ([the UNC note](docs/research/2026-11-19-windows-unc-without-a-driver.md)).
 A Cloud Files replica may follow later as an optional offline companion,
-and is the Windows surface if the gate fails. This is the maintainer's
-decision of 2026-11-19, to be recorded in ADR 0004
-([#20](https://github.com/ironafs/ironafs/issues/20)).
+and becomes the Windows surface if the gate fails; if both fail,
+Windows has no surface until one passes. ADR 0004 records this
+decision ([part 2](docs/adr/0004-architecture-2-os-layers.md), L15).
 
 ## Compatibility
 
