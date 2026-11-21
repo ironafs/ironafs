@@ -72,7 +72,7 @@ pub(in crate::linux_dontdump) unsafe fn madvise(
     let shape =
         advice == MADV_DONTDUMP && addr.addr() % BLOCK == 0 && length != 0 && length % BLOCK == 0;
     if !shape {
-        return -1;
+        return refused();
     }
     if let Plan::Fail(errno) = PLAN.with(|plan| plan.replace(Plan::Advise)) {
         ERRNO.with(|cell| cell.set(errno));
@@ -85,4 +85,15 @@ pub(in crate::linux_dontdump) unsafe fn madvise(
     let range = unsafe { core::slice::from_raw_parts(bytes, length) };
     let _ = (range.first(), range.last());
     0
+}
+
+/// `EINVAL`.
+const EINVAL: c_int = 22;
+
+/// A call of a shape the stand-in does not model: -1, with `EINVAL` as
+/// its errno, so no earlier errno (such as a planned `EINTR`) is reported
+/// for it.
+fn refused() -> c_int {
+    ERRNO.with(|cell| cell.set(EINVAL));
+    -1
 }

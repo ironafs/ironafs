@@ -8,11 +8,13 @@
 //! the errno, fails here. Built only under Miri, where the stand-ins
 //! replace the calls.
 
+use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 
 use super::super::abi::stand_in::{Plan, calls, plan};
-use super::super::{receive_fd, send_fd};
+use super::super::abi::{iovec, msghdr};
+use super::super::{receive_fd, send_fd, send_message};
 use crate::fdpass::FdPassError;
 
 /// `EPIPE` and `ECONNRESET`.
@@ -54,4 +56,25 @@ fn a_failed_receive_is_returned_with_its_errno() {
         Err(FdPassError::Receive(error)) => assert_eq!(error.raw_os_error(), Some(ECONNRESET)),
         other => panic!("{other:?}"),
     }
+}
+
+/// `EINVAL`.
+const EINVAL: i32 = 22;
+
+#[test]
+fn a_malformed_message_after_an_interruption_fails_with_einval_not_eintr() {
+    // A stand-in that left the last errno in place would answer EINTR, and
+    // the wrapper's retry would never end.
+    let (sender, _receiver) = UnixStream::pair().unwrap();
+    let mut byte = 1_u8;
+    let mut buffer = iovec {
+        iov_base: (&raw mut byte).cast(),
+        iov_len: 1,
+    };
+    let message = msghdr::new(&raw mut buffer, core::ptr::null_mut(), 0).unwrap();
+    plan(Plan::Interrupt(1));
+    let first = send_message(sender.as_fd(), &message).unwrap_err();
+    assert_eq!(first.kind(), io::ErrorKind::Interrupted);
+    let second = send_message(sender.as_fd(), &message).unwrap_err();
+    assert_eq!(second.raw_os_error(), Some(EINVAL));
 }

@@ -103,7 +103,7 @@ pub(in crate::linux_fdpass) unsafe fn sendmsg(
     flags: c_int,
 ) -> isize {
     if sockfd < 0 || flags & MSG_NOSIGNAL == 0 {
-        return -1;
+        return refused();
     }
     if let Some(failed) = planned() {
         return failed;
@@ -113,13 +113,13 @@ pub(in crate::linux_fdpass) unsafe fn sendmsg(
     let message = unsafe { core::ptr::read(msg) };
     let (buffers, count) = message.buffers();
     if count != 1 || message.control_length() != SPACE {
-        return -1;
+        return refused();
     }
     #[expect(unsafe_code, reason = "linux-fdpass: Miri stand-in")]
     // SAFETY: `msg_iov` names one valid `iovec`, as promised; Miri checks.
     let buffer = unsafe { core::ptr::read(buffers) };
     if buffer.iov_len != 1 {
-        return -1;
+        return refused();
     }
     let data: *const u8 = buffer.iov_base.cast_const().cast();
     #[expect(unsafe_code, reason = "linux-fdpass: Miri stand-in")]
@@ -137,19 +137,19 @@ pub(in crate::linux_fdpass) unsafe fn sendmsg(
         _ => return -1,
     };
     if (header.level(), header.kind()) != (SOL_SOCKET, SCM_RIGHTS) {
-        return -1;
+        return refused();
     }
     let mut copies = Vec::new();
     for &descriptor in control.descriptors.iter().take(count) {
         if descriptor < 0 {
-            return -1;
+            return refused();
         }
         #[expect(unsafe_code, reason = "linux-fdpass: Miri stand-in")]
         // SAFETY: the caller promises each descriptor in the control data
         // is open for the call.
         let borrowed = unsafe { BorrowedFd::borrow_raw(descriptor) };
         let Ok(copy) = borrowed.try_clone_to_owned() else {
-            return -1;
+            return refused();
         };
         copies.push(copy);
     }
@@ -171,7 +171,7 @@ pub(in crate::linux_fdpass) unsafe fn recvmsg(
     flags: c_int,
 ) -> isize {
     if sockfd < 0 || flags & MSG_CMSG_CLOEXEC == 0 {
-        return -1;
+        return refused();
     }
     if let Some(failed) = planned() {
         return failed;
@@ -184,13 +184,13 @@ pub(in crate::linux_fdpass) unsafe fn recvmsg(
     let mut message = unsafe { core::ptr::read(msg) };
     let (buffers, count) = message.buffers();
     if count != 1 || message.control_length() < SPACE {
-        return -1;
+        return refused();
     }
     #[expect(unsafe_code, reason = "linux-fdpass: Miri stand-in")]
     // SAFETY: `msg_iov` names one valid `iovec`, as promised; Miri checks.
     let buffer: iovec = unsafe { core::ptr::read(buffers) };
     if buffer.iov_len < 1 {
-        return -1;
+        return refused();
     }
     let data: *mut u8 = buffer.iov_base.cast();
     #[expect(unsafe_code, reason = "linux-fdpass: Miri stand-in")]
@@ -203,7 +203,7 @@ pub(in crate::linux_fdpass) unsafe fn recvmsg(
     }
     let length = if delivered == 2 { TWO } else { ONE };
     let Some(header) = cmsghdr::new(length, SOL_SOCKET, SCM_RIGHTS) else {
-        return -1;
+        return refused();
     };
     let control: *mut Control = message.control().cast();
     let written = Control {
@@ -215,10 +215,21 @@ pub(in crate::linux_fdpass) unsafe fn recvmsg(
     // size, valid for writes and aligned as promised; Miri checks.
     let () = unsafe { core::ptr::write(control, written) };
     if message.set_control_length(SPACE).is_none() {
-        return -1;
+        return refused();
     }
     #[expect(unsafe_code, reason = "linux-fdpass: Miri stand-in")]
     // SAFETY: as the read of `msg` above, for one write.
     let () = unsafe { core::ptr::write(msg, message) };
     1
+}
+
+/// `EINVAL`.
+const EINVAL: c_int = 22;
+
+/// A call of a shape the stand-in does not model: -1, with `EINVAL` as
+/// its errno, so no earlier errno (such as a planned `EINTR`) is reported
+/// for it.
+fn refused() -> isize {
+    ERRNO.with(|cell| cell.set(EINVAL));
+    -1
 }

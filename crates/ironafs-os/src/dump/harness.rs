@@ -249,8 +249,9 @@ pub(crate) fn core_limits() -> (String, String) {
     )
 }
 
-/// The end of the last segment of a 64-bit little-endian ELF core file:
-/// the length a whole image has.
+/// The end of the last part of a 64-bit little-endian ELF core file (its
+/// headers, its segments, and the section header table of extended
+/// numbering): the length a whole image has.
 fn elf_core_end(image: &[u8]) -> Option<usize> {
     let u16_at = |at: usize| Some(u16::from_le_bytes(image.get(at..at + 2)?.try_into().ok()?));
     let u64_at = |at: usize| Some(u64::from_le_bytes(image.get(at..at + 8)?.try_into().ok()?));
@@ -258,10 +259,25 @@ fn elf_core_end(image: &[u8]) -> Option<usize> {
     if image.get(..6)? != b"\x7fELF\x02\x01" || u16_at(16)? != 4 {
         return None;
     }
+    let u32_at = |at: usize| Some(u32::from_le_bytes(image.get(at..at + 4)?.try_into().ok()?));
     let table = usize::try_from(u64_at(0x20)?).ok()?;
     let entry = usize::from(u16_at(0x36)?);
-    let count = usize::from(u16_at(0x38)?);
-    let mut end = table + entry * count;
+    // The section header table: with more program headers than `e_phnum`
+    // can hold, Linux writes `PN_XNUM` (0xffff) there and the real count in
+    // the first section header's `sh_info`, in a section header table it
+    // appends.
+    let sections = usize::try_from(u64_at(0x28)?).ok()?;
+    let section_entry = usize::from(u16_at(0x3a)?);
+    let section_count = usize::from(u16_at(0x3c)?);
+    let count = match u16_at(0x38)? {
+        0xffff => usize::try_from(u32_at(sections.checked_add(0x2c)?)?).ok()?,
+        count => usize::from(count),
+    };
+    let mut end = (table + entry * count).max(if section_count == 0 {
+        0
+    } else {
+        sections + section_entry * section_count
+    });
     for index in 0..count {
         let header = table + entry * index;
         let offset = usize::try_from(u64_at(header + 8)?).ok()?;
@@ -288,6 +304,17 @@ impl PrivateDir {
         Self::at(std::env::temp_dir().join(format!("{prefix}-{}-{count}", std::process::id())))
     }
 
+    /// A new directory in `parent`, which must be a trusted parent (see
+    /// [`trusted_parent`]), its name `prefix`, this process's id and a
+    /// count.
+    pub(crate) fn create_in(parent: &Path, prefix: &str) -> io::Result<Self> {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNT: AtomicU32 = AtomicU32::new(0);
+        trusted_parent(parent)?;
+        let count = COUNT.fetch_add(1, Ordering::Relaxed);
+        Self::at(parent.join(format!("{prefix}-{}-{count}", std::process::id())))
+    }
+
     /// A new directory at `path`, mode 0700.
     pub(crate) fn at(path: PathBuf) -> io::Result<Self> {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -309,4 +336,75 @@ impl Drop for PrivateDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
     }
+}
+
+/// Checks that `path` is a directory only root may change: not a symbolic
+/// link, owned by root, and writable by no group or other user. Entries in
+/// it cannot then be added, removed or replaced by anyone else.
+pub(crate) fn trusted_parent(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path)?;
+    let trusted =
+        metadata.file_type().is_dir() && metadata.uid() == 0 && metadata.mode() & 0o022 == 0;
+    if trusted {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{}: not a directory that root owns and only root may write",
+            path.display()
+        )))
+    }
+}
+
+/// A 64-bit little-endian ELF core image: a header, `segments` program
+/// headers (each a 16-byte segment after the table), and, with
+/// `extended`, the program header count in a section header at the end
+/// (`e_phnum` = `PN_XNUM`, 0xffff), as Linux writes it for many segments.
+#[cfg(test)]
+fn core_image(segments: u16, extended: bool) -> Vec<u8> {
+    let table = 64_usize;
+    let entry = 56_usize;
+    let data = table + entry * usize::from(segments);
+    let mut image = vec![0_u8; data + 16 * usize::from(segments)];
+    image[..6].copy_from_slice(b"\x7fELF\x02\x01");
+    image[16..18].copy_from_slice(&4_u16.to_le_bytes());
+    image[0x20..0x28].copy_from_slice(&u64::try_from(table).unwrap().to_le_bytes());
+    image[0x36..0x38].copy_from_slice(&u16::try_from(entry).unwrap().to_le_bytes());
+    let count = if extended { 0xffff } else { segments };
+    image[0x38..0x3a].copy_from_slice(&count.to_le_bytes());
+    for index in 0..usize::from(segments) {
+        let header = table + entry * index;
+        let offset = u64::try_from(data + 16 * index).unwrap();
+        image[header + 8..header + 16].copy_from_slice(&offset.to_le_bytes());
+        image[header + 0x20..header + 0x28].copy_from_slice(&16_u64.to_le_bytes());
+    }
+    if extended {
+        let section = image.len();
+        image.extend_from_slice(&[0_u8; 64]);
+        image[0x28..0x30].copy_from_slice(&u64::try_from(section).unwrap().to_le_bytes());
+        image[0x3a..0x3c].copy_from_slice(&64_u16.to_le_bytes());
+        image[0x3c..0x3e].copy_from_slice(&1_u16.to_le_bytes());
+        image[section + 0x2c..section + 0x30].copy_from_slice(&u32::from(segments).to_le_bytes());
+    }
+    image
+}
+
+#[test]
+fn elf_core_end_is_the_end_of_the_last_segment() {
+    let image = core_image(3, false);
+    assert_eq!(elf_core_end(&image), Some(image.len()));
+}
+
+#[test]
+fn elf_core_end_counts_an_extended_numbering_section_header() {
+    let image = core_image(3, true);
+    assert_eq!(elf_core_end(&image), Some(image.len()));
+}
+
+#[test]
+fn elf_core_end_refuses_what_is_not_an_elf_core() {
+    let mut image = core_image(1, false);
+    image[16] = 2;
+    assert_eq!(elf_core_end(&image), None);
+    assert_eq!(elf_core_end(b"\x7fELF"), None);
 }

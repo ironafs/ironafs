@@ -16,7 +16,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use super::super::{disable_dumps, dumpable};
 use crate::dump::harness::{
     Collector, PrivateDir, Run, command, command_at, contains, core_limits, marker, plant, role,
-    run,
+    run, trusted_parent,
 };
 
 /// This file's entry test, which a child runs.
@@ -30,6 +30,16 @@ const SALT: u8 = 11;
 
 /// An unprivileged user and group to change to.
 const NOBODY: u32 = 65_534;
+
+/// The user and group id the set-id exec test runs its grandchild under:
+/// one that no account or group of the machine has (checked before use), so
+/// no other process can run the set-user-id copy, which only this group
+/// may execute.
+const SET_ID_TEST_ID: u32 = 64_210;
+
+/// The directory, which only root may change, that the set-user-id copy's
+/// own directory is made in.
+const SET_ID_PARENT: &str = "/run";
 
 /// The entry test a child runs; it does nothing without a role.
 #[test]
@@ -71,8 +81,14 @@ fn child() {
                 }
                 _ => command(ENTRY, "report-then-disable"),
             };
-            if role != "disable-then-exec" {
-                command.uid(NOBODY).gid(NOBODY);
+            match role.as_str() {
+                "disable-then-exec-as-nobody" => {
+                    command.uid(NOBODY).gid(NOBODY);
+                }
+                "disable-then-exec-set-id" => {
+                    command.uid(SET_ID_TEST_ID).gid(SET_ID_TEST_ID);
+                }
+                _ => {}
             }
             let grandchild = run(&mut command);
             assert!(grandchild.status.success(), "{grandchild:?}");
@@ -94,14 +110,21 @@ fn child() {
 }
 
 /// A copy of this test binary, owned by root and set-user-id, that only
-/// `nobody`'s group may run: in a new private directory (refused if its
-/// path exists), which root owns and that group may only enter. The copy is
-/// created new, never over an existing file, and the directory is removed,
-/// with it, when the returned guard is dropped, on every path.
+/// the group [`SET_ID_TEST_ID`], which no account or group of the machine
+/// has, may run. It is made in a new directory (refused if its path exists)
+/// in `/run`, which only root may change (checked); root owns the directory
+/// and only that group may enter it. The copy is created new, never over an
+/// existing file, and the directory is removed, with it, when the returned
+/// guard is dropped, on every path that unwinds.
 fn set_id_copy() -> (PrivateDir, std::path::PathBuf) {
     use std::os::unix::fs::{OpenOptionsExt, chown};
-    let dir = PrivateDir::create("ironafs-os-set-id").unwrap();
-    chown(dir.path(), Some(0), Some(NOBODY)).unwrap();
+    assert!(
+        unused_id(SET_ID_TEST_ID),
+        "{SET_ID_TEST_ID} belongs to an account or group here: choose another"
+    );
+    let dir =
+        PrivateDir::create_in(std::path::Path::new(SET_ID_PARENT), "ironafs-os-set-id").unwrap();
+    chown(dir.path(), Some(0), Some(SET_ID_TEST_ID)).unwrap();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o710)).unwrap();
     let copy = dir.path().join("set-id-child");
     let mut source = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
@@ -113,9 +136,20 @@ fn set_id_copy() -> (PrivateDir, std::path::PathBuf) {
         .unwrap();
     std::io::copy(&mut source, &mut target).unwrap();
     drop(target);
-    chown(&copy, Some(0), Some(NOBODY)).unwrap();
+    chown(&copy, Some(0), Some(SET_ID_TEST_ID)).unwrap();
     std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o4710)).unwrap();
     (dir, copy)
+}
+
+/// Whether `id` is in neither `/etc/passwd` nor `/etc/group`.
+fn unused_id(id: u32) -> bool {
+    let named = |file: &str| {
+        std::fs::read_to_string(file)
+            .unwrap()
+            .lines()
+            .any(|line| line.split(':').nth(2) == Some(id.to_string().as_str()))
+    };
+    !named("/etc/passwd") && !named("/etc/group")
 }
 
 /// The value `/proc/sys/fs/suid_dumpable` holds: what the kernel resets
@@ -143,6 +177,27 @@ fn assert_reset_then_restored(run: &Run, reset_to: &str) {
     assert_eq!(run.value("self"), Some("0"), "{run:?}");
     assert_eq!(run.value("before"), Some(reset_to), "{run:?}");
     assert_eq!(run.value("after"), Some("0"), "{run:?}");
+}
+
+#[test]
+fn a_trusted_parent_is_a_root_owned_directory_only_root_may_change() {
+    // `/run` is root's, mode 0755, on Linux and in the guest's containers.
+    trusted_parent(std::path::Path::new("/run")).unwrap();
+    // The temporary directory lets any user add entries.
+    let shared = std::path::Path::new("/tmp");
+    assert!(trusted_parent(shared).is_err(), "{}", shared.display());
+    // A symbolic link is never followed.
+    let own = PrivateDir::create("ironafs-os-test").unwrap();
+    let link = own.path().join("link");
+    std::os::unix::fs::symlink("/run", &link).unwrap();
+    assert!(trusted_parent(&link).is_err());
+}
+
+#[test]
+fn the_set_id_test_s_id_belongs_to_no_account_or_group() {
+    assert!(unused_id(SET_ID_TEST_ID), "{SET_ID_TEST_ID}");
+    // Root's id is in use, as a control.
+    assert!(!unused_id(0));
 }
 
 #[test]
