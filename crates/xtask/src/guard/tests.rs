@@ -312,6 +312,66 @@ fn guard_sees_through_wrappers_shells_and_paths() {
 }
 
 #[test]
+fn guard_sees_assignments_after_shell_keywords() {
+    for command in [
+        "if GIT_DIR=/repo/main/.git git commit -m 'x' -m 'Assisted-by: none'; then :; fi",
+        "! GIT_DIR=/repo/main/.git git commit -m 'x' -m 'Assisted-by: none'",
+        "time GIT_DIR=/repo/main/.git git commit -m 'x' -m 'Assisted-by: none'",
+    ] {
+        blocked(command, ON_MAIN);
+    }
+}
+
+#[test]
+fn guard_blocks_wrappers_it_cannot_read() {
+    for command in [
+        "sudo FOO=1 git push origin main",
+        "sudo --user me git push origin main",
+        "sudo --frobnicate git push origin main",
+        "nice --adjustment 5 git push origin main",
+        "nice --wobble 5 git push origin main",
+        "exec FOO=1 git push origin main",
+        "nohup FOO=1 git push origin main",
+        "timeout --frobnicate 5 git push origin main",
+        "time --frobnicate git push origin main",
+        "command FOO=1 git push origin main",
+        "env --frobnicate git push origin main",
+        "xargs --max-args 1 git push origin main",
+        "stdbuf -oL FOO=1 git push origin main",
+    ] {
+        let fixes = evaluate(command, Path::new(FEATURE), &Fake::default());
+        assert!(
+            fixes
+                .iter()
+                .any(|fix| fix.contains(TO_MAIN) || fix.contains("wrapper")),
+            "{command:?} gave {fixes:?}"
+        );
+    }
+    for command in [
+        "sudo --user=me git push origin main",
+        "sudo -Eu me git push origin main",
+        "nice --adjustment=5 git push origin main",
+        "nice -5 git push origin main",
+        "timeout --signal=KILL 5 git push origin main",
+        "timeout -k 2 5 git push origin main",
+        "exec -a name git push origin main",
+        "stdbuf -oL git push origin main",
+        "stdbuf --output=L git push origin main",
+        "setsid git push origin main",
+        "caffeinate -i git push origin main",
+        "coproc git push origin main",
+        "coproc P { git push origin main; }",
+        "xargs -0 -n 1 git push origin main",
+    ] {
+        blocked(command, TO_MAIN);
+    }
+    blocked(&format!("sudo -D /repo/main {COMMIT_OK}"), ON_MAIN);
+    allowed("sudo -u me git status");
+    allowed("nice -n 5 cargo build");
+    allowed("timeout 60 cargo nextest run");
+}
+
+#[test]
 fn guard_expands_git_aliases() {
     let repo = Fake {
         git_aliases: vec![("ci", "commit -v"), ("pm", "!git push origin main")],

@@ -289,6 +289,18 @@ impl<R: Repo> Guard<'_, R> {
 
     fn command(&mut self, words: &[Word], stdin: &Stdin, scope: &mut Scope, depth: usize) {
         let mut env = Vec::new();
+        self.assigned(words, stdin, scope, &mut env, depth);
+    }
+
+    /// Runs `words` after the `NAME=value` assignments that lead them.
+    fn assigned(
+        &mut self,
+        words: &[Word],
+        stdin: &Stdin,
+        scope: &mut Scope,
+        env: &mut Vec<(String, Option<String>)>,
+        depth: usize,
+    ) {
         let mut rest = words;
         while let Some((first, tail)) = rest.split_first() {
             let Some((name, value)) = assignment(first) else {
@@ -299,7 +311,52 @@ impl<R: Repo> Guard<'_, R> {
             }
             rest = tail;
         }
-        self.run(rest, stdin, scope, &mut env, depth);
+        self.run(rest, stdin, scope, env, depth);
+    }
+
+    /// Runs the command a wrapper such as `sudo` or `nice` runs, after its
+    /// options. An option it does not know, or an assignment where the
+    /// command should be, is blocked: the guard cannot tell what runs.
+    fn wrapped(
+        &mut self,
+        name: &str,
+        args: &[Word],
+        stdin: &Stdin,
+        scope: &mut Scope,
+        env: &mut Vec<(String, Option<String>)>,
+        depth: usize,
+    ) {
+        let Some(wrapper) = WRAPPERS.iter().find(|wrapper| wrapper.name == name) else {
+            return;
+        };
+        let (options, rest) = match wrapper.options(args) {
+            Ok(found) => found,
+            Err(fix) => {
+                self.block(fix);
+                return;
+            }
+        };
+        let rest = rest.get(wrapper.operands..).unwrap_or(&[]);
+        let mut local = scope.clone();
+        for (option, value) in options {
+            if wrapper.chdir.contains(&option) {
+                local.cwd = match (local.cwd, value) {
+                    (Some(cwd), Some(dir)) => Some(normalize(&cwd.join(dir))),
+                    _ => None,
+                };
+            }
+        }
+        if wrapper.keyword {
+            self.assigned(rest, stdin, &mut local, env, depth);
+        } else if rest.first().and_then(assignment).is_some() {
+            self.block(format!(
+                "write {name} without a NAME=value before its command: the guard reads only the command's own wrapper; set the variable with env, or before {name}"
+            ));
+            return;
+        } else {
+            self.run(rest, stdin, &mut local, env, depth);
+        }
+        scope.branch_changed |= local.branch_changed;
     }
 
     fn run(
@@ -320,37 +377,37 @@ impl<R: Repo> Guard<'_, R> {
         let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
         let base = base.strip_suffix(".exe").unwrap_or(base);
         match base {
+            // Shell keywords: the words after them are a command, which may
+            // start with assignments.
             "{" | "}" | "!" | "if" | "then" | "else" | "elif" | "fi" | "do" | "done" | "while"
-            | "until" | "builtin" | "exec" | "nohup" => self.run(args, stdin, scope, env, depth),
-            "time" => self.run(skip_flags(args, &[]), stdin, scope, env, depth),
-            "command" => {
-                if !matches!(args.first().and_then(Word::literal), Some("-v" | "-V")) {
-                    self.run(skip_flags(args, &[]), stdin, scope, env, depth);
-                }
+            | "until" => self.assigned(args, stdin, scope, env, depth),
+            "coproc" => {
+                // `coproc NAME { …; }` names the coprocess; `coproc cmd` does not.
+                let body = match args.get(1).and_then(Word::literal) {
+                    Some("{") => args.get(1..).unwrap_or(&[]),
+                    _ => args,
+                };
+                self.assigned(body, stdin, scope, env, depth);
             }
-            "nice" => self.run(skip_flags(args, &["-n"]), stdin, scope, env, depth),
-            "sudo" => self.run(
-                skip_flags(
-                    args,
-                    &["-u", "-g", "-h", "-p", "-C", "-D", "-U", "-T", "-r", "-t"],
-                ),
-                stdin,
-                scope,
-                env,
-                depth,
-            ),
-            "timeout" => {
-                let rest = skip_flags(args, &["-s", "-k", "--signal", "--kill-after"]);
-                self.run(rest.get(1..).unwrap_or(&[]), stdin, scope, env, depth);
-            }
+            "command" if matches!(args.first().and_then(Word::literal), Some("-v" | "-V")) => (),
             "xargs" => {
                 // xargs appends words read at run time to its command.
-                let mut rest =
-                    skip_flags(args, &["-n", "-I", "-L", "-P", "-s", "-E", "-d", "-a"]).to_vec();
-                if !rest.is_empty() {
-                    rest.push(Word::Dynamic(String::new()));
+                let Some(wrapper) = WRAPPERS.iter().find(|wrapper| wrapper.name == "xargs") else {
+                    return;
+                };
+                match wrapper.options(args) {
+                    Ok((_, rest)) => {
+                        let mut rest = rest.to_vec();
+                        if !rest.is_empty() {
+                            rest.push(Word::Dynamic(String::new()));
+                        }
+                        self.wrapped("command", &rest, stdin, scope, env, depth);
+                    }
+                    Err(fix) => self.block(fix),
                 }
-                self.run(&rest, stdin, scope, env, depth);
+            }
+            _ if WRAPPERS.iter().any(|wrapper| wrapper.name == base) => {
+                self.wrapped(base, args, stdin, scope, env, depth);
             }
             "env" => self.env(args, stdin, scope, env, depth),
             "sh" | "bash" | "zsh" | "dash" | "ksh" => self.shell(args, stdin, scope, depth),
@@ -402,6 +459,12 @@ impl<R: Repo> Guard<'_, R> {
                     self.block(
                         "env -S hides the command from the guard: write the command directly",
                     );
+                    return;
+                }
+                Some(option) if option.len() > 1 && option.starts_with('-') => {
+                    self.block(format!(
+                        "env {option}: the guard does not know this wrapper option, so it cannot tell which command runs; write the command without it"
+                    ));
                     return;
                 }
                 _ => match assignment(word) {
@@ -510,23 +573,264 @@ fn assignment(word: &Word) -> Option<(&str, Option<String>)> {
     valid.then(|| (name, (!dynamic).then(|| value.to_owned())))
 }
 
-/// Skips leading options, and the value after each option in `with_value`.
-fn skip_flags<'w>(args: &'w [Word], with_value: &[&str]) -> &'w [Word] {
-    let mut index = 0;
-    while let Some(option) = args.get(index).and_then(Word::literal) {
-        if option == "--" {
-            index += 1;
-            break;
-        }
-        if option.len() < 2 || !option.starts_with('-') {
-            break;
-        }
-        if with_value.contains(&option) {
-            index += 1;
-        }
-        index += 1;
+/// A command that runs another command given after its options.
+struct Wrapper {
+    name: &'static str,
+    /// Options that take no value.
+    switches: &'static [&'static str],
+    /// Options whose value is attached (`-n5`, `--user=me`) or the next word.
+    valued: &'static [&'static str],
+    /// Options that change the directory the command runs in.
+    chdir: &'static [&'static str],
+    /// Operands before the command, such as `timeout`'s duration.
+    operands: usize,
+    /// Whether `-<digits>` is an option, as in `nice -5`.
+    numeric: bool,
+    /// A shell keyword: assignments may follow it, as after `time`.
+    keyword: bool,
+}
+
+const fn wrapper(
+    name: &'static str,
+    switches: &'static [&'static str],
+    valued: &'static [&'static str],
+) -> Wrapper {
+    Wrapper {
+        name,
+        switches,
+        valued,
+        chdir: &[],
+        operands: 0,
+        numeric: false,
+        keyword: false,
     }
-    args.get(index..).unwrap_or(&[])
+}
+
+/// The wrappers the guard reads through, with every option it knows. Any
+/// other option is blocked, rather than guessing which word is the command.
+const WRAPPERS: &[Wrapper] = &[
+    wrapper("builtin", &[], &[]),
+    wrapper("nohup", &[], &[]),
+    wrapper(
+        "setsid",
+        &["-c", "-f", "-w", "--ctty", "--fork", "--wait"],
+        &[],
+    ),
+    wrapper("command", &["-p"], &[]),
+    wrapper("exec", &["-c", "-l"], &["-a"]),
+    wrapper("caffeinate", &["-d", "-i", "-m", "-s", "-u"], &["-t", "-w"]),
+    wrapper(
+        "stdbuf",
+        &[],
+        &["-i", "-o", "-e", "--input", "--output", "--error"],
+    ),
+    Wrapper {
+        keyword: true,
+        ..wrapper(
+            "time",
+            &[
+                "-p",
+                "-a",
+                "-v",
+                "-q",
+                "--append",
+                "--verbose",
+                "--quiet",
+                "--portability",
+            ],
+            &["-o", "-f", "--output", "--format"],
+        )
+    },
+    Wrapper {
+        numeric: true,
+        ..wrapper("nice", &[], &["-n", "--adjustment"])
+    },
+    Wrapper {
+        operands: 1,
+        ..wrapper(
+            "timeout",
+            &["-v", "--verbose", "--preserve-status", "--foreground"],
+            &["-s", "-k", "--signal", "--kill-after"],
+        )
+    },
+    Wrapper {
+        chdir: &["-D", "--chdir"],
+        ..wrapper(
+            "sudo",
+            &[
+                "-A",
+                "-b",
+                "-B",
+                "-E",
+                "-H",
+                "-i",
+                "-k",
+                "-n",
+                "-P",
+                "-s",
+                "-S",
+                "--askpass",
+                "--background",
+                "--bell",
+                "--preserve-env",
+                "--set-home",
+                "--login",
+                "--reset-timestamp",
+                "--non-interactive",
+                "--preserve-groups",
+                "--shell",
+                "--stdin",
+            ],
+            &[
+                "-u",
+                "-g",
+                "-h",
+                "-p",
+                "-C",
+                "-D",
+                "-U",
+                "-T",
+                "-r",
+                "-t",
+                "-R",
+                "--user",
+                "--group",
+                "--host",
+                "--prompt",
+                "--close-from",
+                "--chdir",
+                "--other-user",
+                "--command-timeout",
+                "--role",
+                "--type",
+                "--chroot",
+            ],
+        )
+    },
+    Wrapper {
+        chdir: &["-C"],
+        ..wrapper("doas", &["-n", "-s"], &["-u", "-C"])
+    },
+    wrapper(
+        "xargs",
+        &[
+            "-0",
+            "-o",
+            "-p",
+            "-r",
+            "-t",
+            "-x",
+            "--null",
+            "--open-tty",
+            "--interactive",
+            "--no-run-if-empty",
+            "--verbose",
+            "--exit",
+        ],
+        &[
+            "-n",
+            "-I",
+            "-L",
+            "-P",
+            "-s",
+            "-E",
+            "-d",
+            "-a",
+            "--max-args",
+            "--max-lines",
+            "--max-procs",
+            "--max-chars",
+            "--delimiter",
+            "--arg-file",
+            "--eof",
+            "--replace",
+            "--process-slot-var",
+        ],
+    ),
+];
+
+impl Wrapper {
+    /// The options before the command, with their values, and the words
+    /// from the command on; or the fix for an option it does not know.
+    fn options<'w>(
+        &self,
+        args: &'w [Word],
+    ) -> Result<(Vec<(&'w str, Option<&'w str>)>, &'w [Word]), String> {
+        let unknown = |option: &str| {
+            format!(
+                "{} {option}: the guard does not know this wrapper option, so it cannot tell which command runs; write the command without it",
+                self.name
+            )
+        };
+        let mut found = Vec::new();
+        let mut index = 0;
+        while let Some(word) = args.get(index) {
+            let Some(option) = word.literal() else {
+                if word_is_option(word) {
+                    return Err(format!(
+                        "write the options of {} literally so the guard can tell which command runs",
+                        self.name
+                    ));
+                }
+                break;
+            };
+            if option == "--" {
+                index += 1;
+                break;
+            }
+            if option.len() < 2 || !option.starts_with('-') {
+                break;
+            }
+            index += 1;
+            if let Some(long) = option.strip_prefix("--") {
+                let (name, attached) = match long.split_once('=') {
+                    Some((name, attached)) => (name, Some(attached)),
+                    None => (long, None),
+                };
+                let name = option.get(..name.len() + 2).unwrap_or(option);
+                if self.valued.contains(&name) {
+                    let value = attached.or_else(|| {
+                        index += 1;
+                        args.get(index - 1).and_then(Word::literal)
+                    });
+                    found.push((name, value));
+                } else if self.switches.contains(&name) {
+                    found.push((name, None));
+                } else {
+                    return Err(unknown(option));
+                }
+                continue;
+            }
+            let cluster = option.get(1..).unwrap_or("");
+            if self.numeric && cluster.chars().all(|ch| ch.is_ascii_digit()) {
+                continue;
+            }
+            for (offset, flag) in cluster.char_indices() {
+                let flag = format!("-{flag}");
+                if let Some(known) = self.valued.iter().find(|known| **known == flag) {
+                    let tail = cluster.get(offset + flag.len() - 1..).unwrap_or("");
+                    let value = if tail.is_empty() {
+                        index += 1;
+                        args.get(index - 1).and_then(Word::literal)
+                    } else {
+                        Some(tail)
+                    };
+                    found.push((*known, value));
+                    break;
+                } else if let Some(known) = self.switches.iter().find(|known| **known == flag) {
+                    found.push((*known, None));
+                } else {
+                    return Err(unknown(option));
+                }
+            }
+        }
+        Ok((found, args.get(index..).unwrap_or(&[])))
+    }
+}
+
+/// Whether a word that expands at run time starts like an option.
+fn word_is_option(word: &Word) -> bool {
+    matches!(word, Word::Dynamic(prefix) if prefix.starts_with('-'))
 }
 
 /// Resolves `.` and `..` without touching the file system.
