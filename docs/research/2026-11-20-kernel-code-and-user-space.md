@@ -210,10 +210,10 @@
     differ.
 - **FSKit (macOS)** [24]. In a forum thread about a minimal FSKit file
   system on macOS 15.5 whose `getdirentries` call averaged 121 µs,
-  Apple's engineer replied: "that's about where things stand at the moment", "most of
-  this is overhead of repeated XPC traffic, which probably could be
-  avoided", and "the performance is definitely being looked at"
-  (RELAYED: a forum post, not documentation).
+  Apple's engineer replied: "that's about where things stand at the
+  moment", "most of this is overhead of repeated XPC traffic, which
+  probably could be avoided", and "the performance is definitely being
+  looked at" (RELAYED: a forum post, not documentation).
 - **Windows loopback SMB.** This search found no current measurement.
 
 ### How the gap is closing on Linux
@@ -223,8 +223,10 @@
     I/O operations": reads, writes, `splice` and `mmap` on a FUSE file
     "bypass the userspace daemon".
   - It needs `CAP_SYS_ADMIN` [25].
-  - It arrived in Linux 6.9, per the repository's earlier research
-    ([driverless clients note](2026-11-18-driverless-afs-clients.md)).
+  - It arrived in Linux 6.9, released on 12 May 2024: "This release adds
+    a passthrough mode for regular file I/O", "without incurring the
+    overhead of roundtrips to userspace"; "For now this is only allowed
+    to privileged servers" (RELAYED: a release summary) [31].
 - **io_uring.**
   - Linux 6.14 "adds FUSE support for io-uring communication between
     kernel and userspace, with the purpose of increasing FUSE
@@ -257,9 +259,9 @@
 - In the FAST 2017 tests, FUSE cost the most on metadata-heavy
   workloads such as file creation [22]. Lookups, attribute reads and
   creates are much of the work in `ls -l` on a large directory, a build
-  or `find` (INFERRED), so those are the workloads to measure. How much of FUSE's cost a network
-  client hides depends on the workload and the server; this note has no
-  measurement of it.
+  or `find` (INFERRED), so those are the workloads to measure. How much
+  of FUSE's cost a network client hides depends on the workload and the
+  server; this note has no measurement of it.
 - On Linux, IronAFS plans to start with zero entry and attribute
   timeouts and direct I/O (ADR 0004, L5). With zero timeouts the kernel
   does not reuse a cached lookup or attribute result, so it asks the
@@ -270,7 +272,8 @@
   - Each relaxation needs acceptance evidence for isolation and callback
     freshness. The FUSE writeback cache is never enabled (L4).
 - No IronAFS numbers exist. ADR 0004, O49 plans counting benchmarks in
-  CI and timed benchmarks on fixed hardware.
+  CI and timed benchmarks on fixed hardware; no timed workloads are
+  named yet.
 
 ## References
 
@@ -362,3 +365,4 @@ All accessed 2026-11-20.
     <https://github.com/awslabs/mountpoint-s3>
 30. Google Cloud. "gcsfuse." GitHub README.
     <https://github.com/GoogleCloudPlatform/gcsfuse>
+31. "Linux 6.9." Kernel Newbies. <https://kernelnewbies.org/Linux_6.9>
