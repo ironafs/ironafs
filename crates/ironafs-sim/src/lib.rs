@@ -11,6 +11,7 @@
 compile_error!("ironafs-sim needs unwinding panics: build it without panic = \"abort\"");
 
 pub mod child;
+pub mod model;
 pub mod replay;
 pub mod scenario;
 pub mod sched;

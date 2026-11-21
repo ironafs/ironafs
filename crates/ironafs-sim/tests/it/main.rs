@@ -7,6 +7,7 @@
 //! process under the supervisor.
 
 mod golden;
+mod models;
 mod replay;
 mod support;
 mod witness;

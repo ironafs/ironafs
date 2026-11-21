@@ -56,7 +56,7 @@ fn one_task_runs_to_its_end() {
     assert_eq!(outcome.failure, None);
     assert_eq!(
         outcome.trace,
-        "ironafs-sim trace 1\n\
+        "ironafs-sim trace 2\n\
          d0 sched run one seed=5 incarnation=0 plants=-\n\
          d0 sched spawn t0 only\n\
          d0 sched decide [t0] pick=0 drawn draws=1 at="
@@ -322,6 +322,29 @@ fn a_call_whose_deadline_passes_first_gets_no_reply() {
     assert_eq!(outcome.failure, None);
     assert_eq!(*replies.lock().unwrap(), vec![Err(Waited::DeadlinePassed)]);
     assert!(!outcome.trace.contains(" world reply "));
+}
+
+#[test]
+fn a_dropped_reply_ends_the_call_at_its_deadline() {
+    let replies = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&replies);
+    let outcome = run_with(&Config::new("drop", 3), move |setup| {
+        setup.server_may_drop(|request: &[u8]| (request != [9]).then(|| request.to_vec()));
+        setup.task("caller", move |cx: &TaskCx| {
+            for request in [[9], [7]] {
+                let reply = cx.call(&request, boot_in(cx, Duration::from_millis(50)));
+                record.lock().unwrap().push(reply);
+            }
+        });
+    });
+    assert_eq!(outcome.failure, None);
+    assert_eq!(
+        *replies.lock().unwrap(),
+        vec![Err(Waited::DeadlinePassed), Ok(vec![7])]
+    );
+    assert!(outcome.trace.contains(" world drop c0\n"));
+    assert!(!outcome.trace.contains(" world reply c0 "));
+    assert!(outcome.trace.contains(" world reply c1 07\n"));
 }
 
 #[test]

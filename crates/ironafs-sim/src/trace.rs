@@ -25,7 +25,7 @@ mod tests;
 /// The first line of every trace: the trace format's version. A change to
 /// what a trace says, or how, moves it, and the golden fixtures are
 /// regenerated in the same commit.
-pub const VERSION_LINE: &str = "ironafs-sim trace 1";
+pub const VERSION_LINE: &str = "ironafs-sim trace 2";
 
 /// The most bytes a golden fixture may hold (specification, 5.6, point
 /// 11; section 13, Q15).

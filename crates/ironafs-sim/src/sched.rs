@@ -50,8 +50,9 @@ pub type Body = Box<dyn FnOnce(&TaskCx) + Send>;
 /// names the invariant that broke.
 pub type Check = Box<dyn FnMut() -> Result<(), &'static str> + Send>;
 
-/// A server model: the reply to one request's bytes.
-pub type Server = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
+/// A server model: the reply to one request's bytes, or `None` for a
+/// request it drops, as a server that is down or unreachable would.
+pub type Server = Box<dyn FnMut(&[u8]) -> Option<Vec<u8>> + Send>;
 
 /// A deadline on one of the two monotonic clocks. No wait counts on wall
 /// time (ADR 0004, C37, point 1).
@@ -289,7 +290,16 @@ impl Setup {
     }
 
     /// Sets the server model that answers every [`TaskCx::call`].
-    pub fn server(&mut self, server: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static) {
+    pub fn server(&mut self, mut server: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static) {
+        self.server = Some(Box::new(move |request: &[u8]| Some(server(request))));
+    }
+
+    /// Sets a server model that answers a call, or drops it: a dropped
+    /// call gets no reply, and its caller's wait ends at its deadline.
+    pub fn server_may_drop(
+        &mut self,
+        server: impl FnMut(&[u8]) -> Option<Vec<u8>> + Send + 'static,
+    ) {
         self.server = Some(Box::new(server));
     }
 
@@ -380,7 +390,8 @@ struct Pending {
     action: Delivery,
 }
 
-/// A delivery: the server model's reply to a call, put in its slot.
+/// A delivery: the server model's reply to a call, put in its slot, or
+/// the call dropped.
 struct Delivery {
     call: u64,
     signal: SignalId,
@@ -856,8 +867,12 @@ impl Run {
         let reply = state
             .server
             .as_mut()
-            .map_or_else(Vec::new, |server| server(&request));
+            .map_or_else(|| Some(Vec::new()), |server| server(&request));
         let decision = state.decision;
+        let Some(reply) = reply else {
+            state.emit(format!("d{decision} world drop c{call}"));
+            return;
+        };
         state.emit(format!("d{decision} world reply c{call} {}", hex(&reply)));
         state.replies.insert(call, reply);
         state.signals.insert(signal, true);
