@@ -124,9 +124,23 @@ as it is.
 
 ## Review
 
-To be filled by the controller: the two seats' verdicts, with range, seat,
-served model, effort and findings.
+Class P: one review by a family that wrote none of the change, plus a second family; both read-only, on 2026-11-22. Gemini did not review its own admission. Quota headroom: not reported by either lane.
 
 | Round | Range | Seat | Served model | Effort | Verdict |
 |---|---|---|---|---|---|
-| 1, review | | | | | |
+| 1, review | `fad7ace..a456674` | GLM | `glm-5.3` | high | FAIL: 1 major, 2 minor |
+| 1, review | `fad7ace..a456674` | GPT read-only | `gpt-6.2-sol` | high | FAIL: 1 major, 2 minor |
+| 2, verification | `a456674..1457534` | GLM | `glm-5.3` | high | PASS, no findings |
+| 2, verification | `a456674..1457534` | GPT read-only | `gpt-6.2-sol` | high | PASS, 1 minor |
+
+Round 1 findings, each `origin: pre-existing` (in the first commit), fixed in `1457534`:
+
+- GLM 1 (major, kind consistency between parts): `AI.md`'s judgement line said the seat always uses the family's strongest model, false for Gemini's security-dispute seat. Fixed: the line points to §2's "Model routing" and its "Precedence" rule.
+- GPT 1 (major, kind contract): the judgement seat's filter checked availability at the family's strongest tier, not at the seat's pin. Fixed in `docs/workflow.md` and the skill: availability at the pin "Model routing" assigns to the seat.
+- GLM 2 and GPT 2 (minor, kind consistency): `AI.md`'s routing summary and the skill's "Class S and R reviews" column read as universal. Fixed: the summary points to the "Precedence" rule; the column is "Ordinary class S and R reviews".
+- GLM 3 (minor, kind consistency): the same column, the same fix.
+- GPT 3 (minor, kind other): the record's benchmark claim. Fixed: cost information, the baselines, what was run and the owner's part are stated.
+
+Round 2: GPT's one minor (`origin: introduced by fix round 1`, kind consistency): the routing introductions in `docs/workflow.md` and the skill said the pin is looked up after the family is chosen, while the judgement seat now checks each candidate's pin first. Fixed in the commit after `1457534` and recorded here, with no further round under the stop rule.
+
+Uncalibrated on IronAFS for this kind of change: both seats' verdicts (the #48 calibration covers code review, not process text).

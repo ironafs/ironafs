@@ -224,8 +224,10 @@ Disagreements are settled on evidence, never by counting.
 above: who wrote the work, the first-reviewer order, the security-review
 families (GPT read-only, a Claude seat, GLM, Gemini Carbon; never DeepSeek),
 embargoed work (Anthropic and OpenAI only) and the judgement seat's order.
-Only then does this table give the model and effort. It governs over every
-other model pin in this file, `AI.md` and the skills.
+Only then does this table give the model and effort; the one exception
+is the judgement seat, whose filters check each candidate family's
+availability at the pin this table assigns to that seat. It governs over
+every other model pin in this file, `AI.md` and the skills.
 
 | Seat | GPT | Claude | Gemini | GLM | DeepSeek |
 |---|---|---|---|---|---|

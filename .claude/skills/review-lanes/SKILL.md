@@ -36,8 +36,9 @@ self-check, never a required seat.
 ## Model pins and effort
 
 The model and effort for every seat come from the routing table in
-`docs/workflow.md` §2, "Model routing", after the seat's family is chosen.
-In short:
+`docs/workflow.md` §2, "Model routing", after the seat's family is chosen
+(the judgement seat checks each candidate's availability at that pin
+first, step 1 below). In short:
 
 | Lane | Light | Standard | Ordinary class S and R reviews | Strongest |
 |---|---|---|---|---|
