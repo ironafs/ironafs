@@ -18,6 +18,7 @@ written from the specification, and tests check the code against it.
 | [Rx transport and the null security class](rx.md) | protocol | S | draft (2026-11-21) | ADR 0004, C3 point 1, C4 points 1, 3 and 4, C5 point 1, C6 points 1 and 4, C19 point 1, C24 point 7, C30 points 1 and 2, C31, C32 points 1 and 5, C39 point 3, N5 point 2, N6 point 3, N7 point 5, N31 points 1 and 2, N45; constraint 4; ADR 0006, decisions 1 and 2 and specification items 1 to 10 |
 | [Test strategy](testing.md) | procedure | P | draft (2026-11-21) | ADR 0004, constraint 4, C3 points 2 and 6, C4 point 7, O22, O45 points 3 and 6, O46 points 1 and 3, O47 points 1 to 3, O48 point 5, O49 points 1 to 3; coding standards rules 7 and 15 |
 | [Volume location and file-service reads, and operation grants](vl-fs-read.md) | protocol | S | draft (2026-11-21) | ADR 0004, constraint 4; A8; C6 points 1 and 4, C22 points 1 to 3, C46 points 3 and 4, N5 points 2 and 3, N20, N28 points 1 to 4, N31, N38 points 1 to 3, O40 point 1; ADR 0006, decision 1, points 5 and 6 |
+| [Wire time fields](wire-time.md) | protocol | S | draft (2026-11-21) | ADR 0004, C6 points 3 and 4, C26 point 2, C37 points 1 and 6, C38 points 1 to 5, C46 points 1 and 4, N31 points 1 and 2, O40 point 2; constraint 4 |
 | [XDR profile](xdr.md) | protocol | S | draft (2026-11-20) | ADR 0004, C3 point 1, C4 points 1 and 4, C6 points 1, 2 and 4, N31 points 1 and 2, O47 points 2 to 4; constraint 4 |
 
 ## Frozen formats
