@@ -7,7 +7,21 @@ name = "ironafs-cli"
 version = "0.0.0"
 
 [[package]]
+name = "ironafs-crypto"
+version = "0.0.0"
+dependencies = [
+ "ironafs-time",
+]
+
+[[package]]
 name = "ironafs-test-support"
+version = "0.0.0"
+dependencies = [
+ "ironafs-time",
+]
+
+[[package]]
+name = "ironafs-time"
 version = "0.0.0"
 
 [[package]]

@@ -16,29 +16,39 @@
 //! native library or feature, and its source holds the rules the build
 //! cannot. The build proves only the cfgs it compiles, so each source rule
 //! holds for every cfg: the library root starts with an unconditional
-//! `#![no_std]`, and no file of the library names `std`, another `no_std`,
-//! `unsafe`, assembly, an `extern` other than `extern crate alloc;` with no
-//! attribute, or a way to read source from elsewhere (`include!`,
-//! `#[path]`, a symbolic link). The names of the macros that read files or
-//! write assembly are refused anywhere, and so is a `#` that does not open
-//! an attribute, since a macro can join either to the rest from a fragment.
+//! `#![no_std]`, carries `extern crate alloc;` unconditionally at its top
+//! level and has no crate-level `#![cfg(...)]`, and no file of the library
+//! names `std`, another `no_std`, `unsafe`, assembly, `core::arch`, an
+//! `extern` other than `extern crate alloc;` with no attribute, or a way to
+//! read source from elsewhere (`include!`, `#[path]`, a symbolic link).
+//! The names of the macros that read files or write assembly are refused
+//! anywhere, and so is a `#` that does not open an attribute, since a macro
+//! can join either to the rest from a fragment.
 //! Like `extern`, the names of the macros that read files are refused in
 //! the raw text of every file of the package too, so a token the reader
 //! misreads cannot hide one.
+//!
+//! The build's result is checked by identity too (`matrix`): the triples
+//! of crate, target and profile the compiler's own outputs show it
+//! compiled must be exactly those expected.
 
+mod matrix;
 mod self_test;
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
-use crate::Error;
 use crate::deps::{self, Kind};
+use crate::json;
 use crate::metadata::{self, Member, Package, Workspace};
 use crate::rust_source::{self, Token, TokenKind, ident, punct};
+use crate::{Command, Error};
+use matrix::{Built, Gap, Triple};
 
 #[cfg(test)]
 mod tests;
@@ -81,6 +91,9 @@ const IN_TEXT: &str = "no file of a pure package names a macro that reads files,
                        point 1)";
 const FRAGMENT: &str = "an attribute or macro call built from a macro fragment can hide \
                         `#[path]` or `include!` from this check";
+const ARCH: &str = "the processor's own interfaces are out of a pure crate's reach under every \
+                    cfg: `core::arch` holds safe functions, such as `__cpuid`, whose result \
+                    depends on the machine the code runs on";
 const HASH: &str = "a `#` not directly followed by `[` or `![` can open an attribute whose \
                     brackets come from a macro fragment, such as `#[path]`, out of this \
                     check's sight";
@@ -119,7 +132,7 @@ const SYSROOT_LIBRARIES: &[&str] = &[
 
 /// Environment variables that would change the compiler or its flags behind
 /// this check's back; each is removed from the build's environment.
-const CLEARED_ENVIRONMENT: &[&str] = &[
+pub(crate) const CLEARED_ENVIRONMENT: &[&str] = &[
     "RUSTFLAGS",
     "CARGO_BUILD_RUSTFLAGS",
     "RUSTC",
@@ -150,6 +163,11 @@ pub(crate) enum Violation {
         lib_root: PathBuf,
     },
     NotNoStd(PathBuf),
+    NoAlloc(PathBuf),
+    RootCfg {
+        file: PathBuf,
+        line: usize,
+    },
     Extern {
         file: PathBuf,
         line: usize,
@@ -192,6 +210,7 @@ pub(crate) enum Violation {
         profile: &'static str,
         error: String,
     },
+    Matrix(Gap),
 }
 
 impl fmt::Display for Violation {
@@ -226,6 +245,19 @@ impl fmt::Display for Violation {
                 formatter,
                 "{}: a pure crate's library root starts with `#![no_std]`, unconditionally \
                  (ADR 0004, C4, point 1)",
+                file.display()
+            ),
+            Self::NoAlloc(file) => write!(
+                formatter,
+                "{}: a pure crate's library root carries the line `{EXTERN_ALLOWED}` at its top \
+                 level, with no attribute, so every pure crate has the same form (ADR 0004, C4, \
+                 point 1)",
+                file.display()
+            ),
+            Self::RootCfg { file, line } => write!(
+                formatter,
+                "{}:{line}: a crate-level `#![cfg(...)]` can empty a pure crate for the builds \
+                 that would show what it names (ADR 0004, C4, point 1)",
                 file.display()
             ),
             Self::Source {
@@ -301,6 +333,7 @@ impl fmt::Display for Violation {
                 "{name} does not build in the {profile} profile against core and alloc alone \
                  with unsafe code forbidden: {error} (ADR 0004, C3, point 1, and C4, point 1)"
             ),
+            Self::Matrix(gap) => write!(formatter, "{gap} (ADR 0004, C4, point 1)"),
         }
     }
 }
@@ -521,9 +554,60 @@ pub(crate) fn root_no_std(tokens: &[Token]) -> Option<usize> {
         .map(|range| range.start)
 }
 
+/// Whether the library root holds `extern crate alloc;` at its top level,
+/// outside every brace, with no outer attribute and no visibility before it.
+/// Comments and strings are not tokens, so text in them never counts.
+pub(crate) fn root_alloc(tokens: &[Token]) -> bool {
+    let inner_end = inner_attributes(tokens).last().map(|range| range.end);
+    let mut depth = 0_usize;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::Punct('{') => depth += 1,
+            TokenKind::Punct('}') => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        let line = depth == 0
+            && !token.raw
+            && ident(Some(token)) == Some("extern")
+            && ident(tokens.get(index + 1)) == Some("crate")
+            && ident(tokens.get(index + 2)) == Some("alloc")
+            && punct(tokens.get(index + 3)) == Some(';');
+        let before = index.checked_sub(1);
+        let unconditional = match before.and_then(|before| tokens.get(before)) {
+            None => true,
+            Some(token) => match token.kind {
+                TokenKind::Punct(';' | '}') => true,
+                // The `]` of the last of the file's leading inner attributes.
+                TokenKind::Punct(']') => before == inner_end,
+                _ => false,
+            },
+        };
+        if line && unconditional {
+            return true;
+        }
+    }
+    false
+}
+
+/// The lines of the library root's leading inner attributes that name
+/// `cfg`, whether as `#![cfg(...)]` or inside a `cfg_attr`: either can
+/// leave the crate empty under some cfg.
+pub(crate) fn root_cfg_lines(tokens: &[Token]) -> Vec<usize> {
+    inner_attributes(tokens)
+        .into_iter()
+        .filter(|range| {
+            range
+                .clone()
+                .any(|index| ident(tokens.get(index)) == Some("cfg"))
+        })
+        .filter_map(|range| tokens.get(range.start).map(|token| token.line))
+        .collect()
+}
+
 /// What a pure library's source names that it may not, under any cfg:
-/// `std`; `no_std` other than at the token `allowed_no_std`; `unsafe`; the
-/// names of assembly and of the macros that read files, anywhere; a macro
+/// `std`; `no_std` other than at the token `allowed_no_std`; `unsafe`;
+/// `arch`, the module of the processor's own interfaces; the names of
+/// assembly and of the macros that read files, anywhere; a macro
 /// called through a fragment; `#[path]` or a fragment in an attribute; a
 /// `#` not directly followed by `[` or `![`; and `extern` other than an
 /// `extern crate alloc;` with no outer attribute. A raw identifier such as
@@ -585,6 +669,8 @@ pub(crate) fn library_names(
                 let is_macro = punct(after) == Some('!');
                 if word == "std" {
                     found.push((line, word.clone(), STD));
+                } else if word == "arch" {
+                    found.push((line, word.clone(), ARCH));
                 } else if word == "no_std" && allowed_no_std != Some(index) {
                     found.push((line, word.clone(), NO_STD));
                 } else if !token.raw && word == "unsafe" {
@@ -757,6 +843,15 @@ fn source_violations(workspace: &Workspace, member: &Member) -> Result<Vec<Viola
                     if allowed.is_none() {
                         violations.push(Violation::NotNoStd(shown(workspace, lib_root)));
                     }
+                    if !root_alloc(&tokens) {
+                        violations.push(Violation::NoAlloc(shown(workspace, lib_root)));
+                    }
+                    for line in root_cfg_lines(&tokens) {
+                        violations.push(Violation::RootCfg {
+                            file: shown(workspace, lib_root),
+                            line,
+                        });
+                    }
                     allowed
                 } else {
                     None
@@ -907,7 +1002,7 @@ pub(crate) fn core_sysroot(toolchain: &Path, targets: &[String], dir: &Path) -> 
 }
 
 /// The first line of cargo's error output that says what failed.
-fn first_error(stderr: &[u8]) -> String {
+pub(crate) fn first_error(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
     let mut lines = text.lines().map(str::trim);
     let first = lines
@@ -919,48 +1014,127 @@ fn first_error(stderr: &[u8]) -> String {
         .to_owned()
 }
 
-/// Checks each pure library for every target, in each profile, against the
-/// sysroot at `sysroot`, with `unsafe_code` forbidden. Builds go to
-/// `build_dir`, apart from the workspace's own, so the changed flags do not
-/// rebuild everything else.
+/// What the build compiles: each crate, for each target, in each profile.
+/// The check builds the full plan of the pure crates present and compares
+/// what was compiled with that plan's triples; the self-test builds changed
+/// plans to prove a gap is caught.
+pub(crate) struct Plan<'a> {
+    pub(crate) members: Vec<&'a Member>,
+    pub(crate) targets: Vec<String>,
+    pub(crate) profiles: Vec<&'static str>,
+}
+
+impl<'a> Plan<'a> {
+    /// Every pure crate of `workspace` that has a library, every target and
+    /// both profiles.
+    pub(crate) fn full(workspace: &'a Workspace, targets: &[String]) -> Self {
+        Self {
+            members: pure_members(workspace)
+                .into_iter()
+                .filter(|member| member.lib_root.is_some())
+                .collect(),
+            targets: targets.to_vec(),
+            profiles: PROFILES.to_vec(),
+        }
+    }
+
+    /// The triples the plan builds.
+    pub(crate) fn expected(&self) -> BTreeSet<Triple> {
+        let names: Vec<&str> = self
+            .members
+            .iter()
+            .map(|member| member.name.as_str())
+            .collect();
+        matrix::expected(&names, &self.targets, &self.profiles)
+    }
+}
+
+/// What a build found: the rules it broke, and the triples the compiler's
+/// outputs show it compiled.
+pub(crate) struct BuildResult {
+    pub(crate) violations: Vec<Violation>,
+    pub(crate) compiled: BTreeSet<Triple>,
+}
+
+/// What cargo reported while building a plan, before the dependency-info
+/// files are read: the failed builds, each library it reported, and each
+/// crate and profile whose build failed.
+pub(crate) struct Compiled {
+    pub(crate) violations: Vec<Violation>,
+    pub(crate) reported: Vec<Built>,
+    failed: Vec<(String, &'static str)>,
+}
+
+/// Checks each library of `plan` for its targets, in its profiles, against
+/// the sysroot at `sysroot`, with `unsafe_code` forbidden, and requires the
+/// triples compiled to be exactly `expected`.
 ///
 /// # Errors
 ///
-/// Returns an error if cargo cannot be started.
+/// Returns an error if cargo cannot be started or a dependency-info file
+/// cannot be read for a reason other than its absence.
 pub(crate) fn build_violations(
     workspace: &Workspace,
     cargo: &Cargo<'_>,
     sysroot: &Path,
-    targets: &[String],
+    plan: &Plan<'_>,
+    expected: &BTreeSet<Triple>,
     build_dir: &Path,
-) -> Result<Vec<Violation>, Error> {
+) -> Result<BuildResult, Error> {
+    let compiled = compile(workspace, cargo, sysroot, plan, build_dir)?;
+    judge(workspace, compiled, expected)
+}
+
+/// Builds each library of `plan` and collects what cargo reports. Builds go
+/// to `build_dir`, apart from the workspace's own, so the changed flags do
+/// not rebuild everything else.
+///
+/// # Errors
+///
+/// Returns an error if cargo cannot be started.
+pub(crate) fn compile(
+    workspace: &Workspace,
+    cargo: &Cargo<'_>,
+    sysroot: &Path,
+    plan: &Plan<'_>,
+    build_dir: &Path,
+) -> Result<Compiled, Error> {
     let mut flags = std::ffi::OsString::from("--sysroot=");
     flags.push(sysroot);
     flags.push("\u{1f}-Funsafe_code");
     let mut violations = Vec::new();
-    for member in pure_members(workspace) {
-        if member.lib_root.is_none() {
-            continue;
-        }
-        for profile in PROFILES {
+    let mut reported: Vec<Built> = Vec::new();
+    let mut failed = Vec::new();
+    for member in &plan.members {
+        for profile in &plan.profiles {
             let mut command = cargo.command(&workspace.root, "check");
             command
                 .args(["--lib", "--quiet", "--package", &member.name])
+                .args(["--message-format", "json-render-diagnostics"])
                 .arg("--target-dir")
                 .arg(build_dir)
-                .env("CARGO_ENCODED_RUSTFLAGS", &flags)
-                .stdout(Stdio::null());
+                .env("CARGO_ENCODED_RUSTFLAGS", &flags);
             for name in CLEARED_ENVIRONMENT {
                 command.env_remove(name);
             }
-            for target in targets {
+            for target in &plan.targets {
                 command.args(["--target", target]);
             }
             if *profile == "release" {
                 command.arg("--release");
             }
             let output = command.output().map_err(Error::io("cargo check"))?;
+            let messages = String::from_utf8_lossy(&output.stdout);
+            for line in messages.lines() {
+                if let Ok(message) = json::parse(line)
+                    && let Some(found) = matrix::built(&message, workspace, build_dir)
+                    && !reported.contains(&found)
+                {
+                    reported.push(found);
+                }
+            }
             if !output.status.success() {
+                failed.push((member.name.clone(), *profile));
                 violations.push(Violation::Build {
                     name: member.name.clone(),
                     profile,
@@ -969,7 +1143,66 @@ pub(crate) fn build_violations(
             }
         }
     }
-    Ok(violations)
+    Ok(Compiled {
+        violations,
+        reported,
+        failed,
+    })
+}
+
+/// Reads each reported library's dependency-info file, which must list its
+/// library root, and compares the triples compiled with `expected`. A crate
+/// and profile whose build failed is left out of the comparison: its
+/// failure is reported.
+///
+/// # Errors
+///
+/// Returns an error if a dependency-info file cannot be read for a reason
+/// other than its absence.
+pub(crate) fn judge(
+    workspace: &Workspace,
+    compiled: Compiled,
+    expected: &BTreeSet<Triple>,
+) -> Result<BuildResult, Error> {
+    let Compiled {
+        mut violations,
+        reported,
+        failed,
+    } = compiled;
+    let mut triples = BTreeSet::new();
+    for found in reported {
+        let text = match fs::read_to_string(&found.dep_info) {
+            Ok(text) => Some(text),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(Error::PathIo {
+                    operation: "read dependency-info file",
+                    path: found.dep_info,
+                    source: error,
+                });
+            }
+        };
+        if let Some(gap) = matrix::read_gap(&found, text.as_deref(), &workspace.root) {
+            violations.push(Violation::Matrix(gap));
+        }
+        triples.insert(found.triple);
+    }
+    let compared = |triple: &&Triple| {
+        !failed
+            .iter()
+            .any(|(name, profile)| *name == triple.name && *profile == triple.profile)
+    };
+    let want: BTreeSet<Triple> = expected.iter().filter(compared).cloned().collect();
+    let got: BTreeSet<Triple> = triples.iter().filter(compared).cloned().collect();
+    violations.extend(
+        matrix::compare(&want, &got)
+            .into_iter()
+            .map(Violation::Matrix),
+    );
+    Ok(BuildResult {
+        violations,
+        compiled: triples,
+    })
 }
 
 /// Checks this repository's pure crates, or with `self_test` proves on
@@ -990,11 +1223,9 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         return self_test::run(&workspace.target_dir, &sysroot, &targets, output);
     }
     let (mut violations, configs) = static_violations(&workspace)?;
-    let pure: Vec<&str> = pure_members(&workspace)
-        .iter()
-        .map(|member| member.name.as_str())
-        .collect();
-    if !pure.is_empty() {
+    let plan = Plan::full(&workspace, &targets);
+    let mut compiled = BTreeSet::new();
+    if !plan.members.is_empty() {
         let dir = workspace.target_dir.join("xtask-pure");
         let sysroot = dir.join("sysroot");
         core_sysroot(&toolchain_sysroot(&workspace.root)?, &targets, &sysroot)?;
@@ -1002,13 +1233,16 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
             manifest: None,
             config: &[],
         };
-        violations.extend(build_violations(
+        let built = build_violations(
             &workspace,
             &cargo,
             &sysroot,
-            &targets,
+            &plan,
+            &plan.expected(),
             &dir.join("build"),
-        )?);
+        )?;
+        violations.extend(built.violations);
+        compiled = built.compiled;
     }
     if !violations.is_empty() {
         return Err(Error::Rules {
@@ -1016,20 +1250,42 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
             violations: violations.iter().map(ToString::to_string).collect(),
         });
     }
-    let built = if pure.is_empty() {
-        "no pure crates yet".to_owned()
-    } else {
-        format!(
-            "{} pure crates ({}) built for {} targets in dev and release against core and alloc \
-             alone",
-            pure.len(),
-            pure.join(", "),
-            targets.len()
-        )
-    };
-    writeln!(
-        output,
-        "check-pure: {configs} cargo configuration files read; {built}"
-    )
-    .map_err(Error::io("report check-pure"))
+    report(&workspace, configs, targets.len(), &compiled, output)
+}
+
+/// Prints what a passing run checked: the exact matrix compiled, and the
+/// pure crates of the list not yet in the workspace, each checked from the
+/// commit that adds it.
+///
+/// # Errors
+///
+/// Returns an error if the output cannot be written.
+pub(crate) fn report(
+    workspace: &Workspace,
+    configs: usize,
+    targets: usize,
+    compiled: &BTreeSet<Triple>,
+    output: &mut dyn Write,
+) -> Result<(), Error> {
+    let mut write =
+        |line: String| writeln!(output, "{line}").map_err(Error::io("report check-pure"));
+    let crates: BTreeSet<&str> = compiled.iter().map(|triple| triple.name.as_str()).collect();
+    write(format!(
+        "check-pure: {configs} cargo configuration files read; {} pure crates built for {targets} \
+         targets in dev and release against core and alloc alone, {} (crate, target, profile) \
+         triples, exactly as expected",
+        crates.len(),
+        compiled.len()
+    ))?;
+    for line in matrix::matrix_lines(compiled) {
+        write(format!("  compiled: {line}"))?;
+    }
+    let absent: Vec<&str> = matrix::pure_list()
+        .into_iter()
+        .filter(|name| !workspace.members.iter().any(|member| member.name == *name))
+        .collect();
+    if !absent.is_empty() {
+        write(format!("  not yet present: {}", absent.join(", ")))?;
+    }
+    Ok(())
 }

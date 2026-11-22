@@ -1232,10 +1232,10 @@ This specification's own choices are reopened if:
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| I1 | DOCUMENTATION | OpenAFS reference pages `vos_create(1)` (the `-id` option and the ids it allocates) and `vos_examine(1)` ("OUTPUT": the version ids, the site flags, the creation, copy and last update dates), register of editions row E8 ([README](README.md)). A lead only (rules 11 and 14) | 2, 5.1.1, 5.7 |
-| I2 | DOCUMENTATION | OpenAFS reference pages `vos_restore(1)`, `vos_release(1)`, `vos_move(1)` and `vos_backup(1)`, register of editions row E14: "DESCRIPTION" and "OPTIONS" of each. A lead only | 5.1.1, 5.7 |
-| I3 | DOCUMENTATION | OpenAFS Administration Guide, "Dumping and Restoring Volumes" (HDRWQ240), section "About Restoring Volumes", register of editions row E15. A lead only | 5.1.1, 5.7 |
-| I4 | DOCUMENTATION | J. Altman, "AFS Dump Stream Format", last updated 4 August 2024, AFS Assigned Numbers Registry, register of editions row E16: "Summary", "Volume ID", "Volume Name", "Volume IDs", "Volume Timestamps", "Volume Next Uniquifier", "Full vs Incremental Volume dumps", "Vnode Data Version". A lead only | 5.1.1, 5.7 |
+| I1 | DOCUMENTATION | OpenAFS reference pages `vos_create(1)` (the `-id` option and the ids it allocates) and `vos_examine(1)` ("OUTPUT": the version ids, the site flags, the creation, copy and last update dates), register of editions row E10 ([README](README.md)). A lead only (rules 11 and 14) | 2, 5.1.1, 5.7 |
+| I2 | DOCUMENTATION | OpenAFS reference pages `vos_restore(1)`, `vos_release(1)`, `vos_move(1)` and `vos_backup(1)`, register of editions row E10: "DESCRIPTION" and "OPTIONS" of each. A lead only | 5.1.1, 5.7 |
+| I3 | DOCUMENTATION | OpenAFS Administration Guide, "Dumping and Restoring Volumes" (HDRWQ240), section "About Restoring Volumes", register of editions row E11. A lead only | 5.1.1, 5.7 |
+| I4 | DOCUMENTATION | J. Altman, "AFS Dump Stream Format", last updated 4 August 2024, AFS Assigned Numbers Registry, register of editions row E55: "Summary", "Volume ID", "Volume Name", "Volume IDs", "Volume Timestamps", "Volume Next Uniquifier", "Full vs Incremental Volume dumps", "Vnode Data Version". A lead only | 5.1.1, 5.7 |
 | C | DECISION | [Claim record](../reviews/2026-11-20-adr-0004-claims.md) rows `[ADR-008]` and `[DES-057]`, re-read on 2026-11-21 (section 12.2) | 12.2 |
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C6, C11, C16, C18, C20, C21, C24, C25, C26, C27, C28, C29, C33, C37, C40 ([part 1](../adr/0004-architecture-1-core.md)); O13, O42, O45, O50 ([part 3](../adr/0004-architecture-3-operations.md)); N5, N27, N38, N39 ([part 4](../adr/0004-architecture-4-negotiation.md)) | 1, 2, 5, 8, 9, 11 |
 | D2 | DECISION | [ADR 0006](../adr/0006-rx-unprotected-packets.md), decision 1, points 5 and 6 | 1, 5.6, 8, 9 |
@@ -1272,7 +1272,7 @@ evidence label EXECUTED. The restore experiment against the test cell
 The claim record has no row on volume incarnation or restore behaviour;
 the two rows this specification leans on were re-read at their sources.
 `[ADR-008]`: the Administration Guide's "About Volumes" page (served with
-the hash register row E9 records) still says each version of a volume has
+the hash register row E11 records) still says each version of a volume has
 its own id. `[DES-057]`: as [vl-fs-read.md](vl-fs-read.md), 12.2 records
 on the same date; it bears on the width of the data version, not on
 incarnation. No contradiction with ADR 0004 C25 or C26 was found. One

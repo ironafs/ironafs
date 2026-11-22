@@ -408,7 +408,7 @@ taken up in #53. The owner may override it.
 No source code, test data or interface definition of any AFS or Rx
 implementation was read for this change. The community Rx draft was not
 opened. The public documents used are listed in the register of editions
-(rows E8 and E14 to E16) with their hashes:
+(rows E10, E11 and E55) with their hashes:
 
 - reference pages and an Administration Guide page, published under the
   IBM Public License or with no licence stated;
@@ -459,3 +459,48 @@ asked to open any excluded section.
 - At the commit with the scoped round on the alignment: `cargo xtask
   check` passes (EXECUTED, macOS, 2026-11-22 UTC). Not verified by any
   lane.
+
+## Landing
+
+This change was brought up to date with `main` (`dde6ea4`) on
+2026-11-22. Its branch was cut before the XDR, Rx, directory format,
+seams, VL and FS read, DNS client and test strategy specifications and
+ADR 0006 landed, and it carried older copies of `xdr.md`, `rx.md`,
+`template.md`, `vl-fs-read.md` and their review records. Every file
+starts as `main` has it; this change's own files are
+`volume-incarnation.md` and this record. Three files were combined by
+hand, keeping all of `main`'s text:
+
+- `docs/specs/vl-fs-read.md` takes this change's one amendment (the
+  second-family round's F10: `site.partition`'s use column names this
+  specification) on `main`'s copy, which differs from the branch's
+  older copy only in its register ids and that line;
+- `docs/reviews/README.md` gains this record's row;
+- `docs/specs/README.md` gains the specification's index row, in the
+  index's title order, and this change's register rows.
+
+The register rows were merged or renumbered, because `main` already
+registers two of the three documents. This branch's E8 and E9 are
+`main`'s E10 and E11. E10 keeps this change's addition (the facts of
+`vos_create(1)` and `vos_examine(1)` that this specification uses, its
+Q1 and Q9, and `volume-incarnation.md` in "Cited by"). Row E14 (four
+more reference pages of the same set) was merged into E10: E10 gained
+the pages `vos_restore(1)`, `vos_release(1)`, `vos_move(1)` and
+`vos_backup(1)` with their SHA-256 values, row E14's corroboration
+text and the sections used. Row E15 (another page of the same
+Administration Guide edition) was merged into E11: E11 gained the page
+"Dumping and Restoring Volumes" with its SHA-256 value, row E15's
+corroboration text, the section used and `volume-incarnation.md` in
+"Cited by". Row E16 (the dump stream format document) became E55, a
+new row; its "as row E5" became "as row E7", `main`'s id for the
+registry. Ids were renamed in `volume-incarnation.md` (section 12 and
+12.2) and in this record's "Clean-room note"; "The change", "Findings"
+and "Second-family pass" above still describe the rows as they were
+reviewed (E8, E14 to E16). Nothing else in the reviewed text changed.
+
+Its citations of `vl-fs-read.md` (sections 1, 5, 7, 12.2 and 13) and of
+the callback specification were re-read against `main`'s copy and the
+callback branch at `e9eee07`: neither renumbered nor reworded a cited
+section (`main`'s `vl-fs-read.md` and the callback specification differ
+from the copies this change was aligned with only in register ids). It
+cites no section of `rx.md` or `xdr.md`.

@@ -322,7 +322,7 @@ Section 9 shows where each is kept and which test fails if it is broken.
 #### 5.1.2 The procedures M2a uses
 
 Numbers are from the registry's procedure-number tables. The registry is
-registered (row E5) but no passage of it is allowlisted yet (section 13,
+registered (row E7) but no passage of it is allowlisted yet (section 13,
 Q2), so every number is UNVERIFIED until a capture shows it. None is
 taken from an interface definition or a generated definition (ADR 0004,
 N31, point 2). The "Registry source" column is the registry's own note of
@@ -1289,15 +1289,15 @@ This specification's own choices are reopened if:
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| X1 | SPECIFICATION | "Rx protocol specification draft", N. Zeldovich, updated by J. Altman, 24 July 2026, register of editions row E3 ([README](README.md)). Cited by heading: "RPC Layer", "Rx Connections". Read only as the mechanically excerpted copy; its section "Historical Implementation Notes" was not read and is not cited (README, "Sources and provenance", rule 12). A lead only: every fact from it is UNVERIFIED (rule 14) | 3, 4, 5.1.1 |
-| V1 | DOCUMENTATION | AFS Assigned Numbers Registry, register of editions row E5: procedure-number tables `rx/VL.txt` and `rx/RXAFS.txt`, the Rx service list `rxservice.txt`, the error tables `errors.html` and `et/VL.html`, the fileserver capability list `cap/viced.txt`, retrieved 2026-11-21. A lead until a passage is allowlisted (section 13, Q2) | 5.1.1, 5.1.2, 5.8, 5.9 |
-| V2 | SPECIFICATION | T. Keiser et al., "AFS-3 Protocol Capabilities Query Mechanism", draft-keiser-afs3-capabilities-00, register of editions row E7: §3, §3.1, §3.2 and §4 prose only. Appendices A and B are excluded by name. A lead only | 5.1.2, 5.1.4, 5.8 |
+| X1 | SPECIFICATION | "Rx protocol specification draft", N. Zeldovich, updated by J. Altman, 24 July 2026, register of editions row E5 ([README](README.md)). Cited by heading: "RPC Layer", "Rx Connections". Read only as the mechanically excerpted copy; its section "Historical Implementation Notes" was not read and is not cited (README, "Sources and provenance", rule 12). A lead only: every fact from it is UNVERIFIED (rule 14) | 3, 4, 5.1.1 |
+| V1 | DOCUMENTATION | AFS Assigned Numbers Registry, register of editions row E7: procedure-number tables `rx/VL.txt` and `rx/RXAFS.txt`, the Rx service list `rxservice.txt`, the error tables `errors.html` and `et/VL.html`, the fileserver capability list `cap/viced.txt`, retrieved 2026-11-21. A lead until a passage is allowlisted (section 13, Q2) | 5.1.1, 5.1.2, 5.8, 5.9 |
+| V2 | SPECIFICATION | T. Keiser et al., "AFS-3 Protocol Capabilities Query Mechanism", draft-keiser-afs3-capabilities-00, register of editions row E9: §3, §3.1, §3.2 and §4 prose only. Appendices A and B are excluded by name. A lead only | 5.1.2, 5.1.4, 5.8 |
 | V3 | SPECIFICATION | as V2, §4, on the insert right named by one capability flag, and on error translation | 5.1.3, 5.9 |
-| V4 | SPECIFICATION | T. Keiser and A. Deason (ed.), "AFS-3 Rx RPC XDR Primitive Type Definitions", draft-keiser-afs3-xdr-primitive-types-01, register of editions row E6: §3, §4.1 and §4.2 prose only; the structure shown in §4 is excluded by name. A lead only | 5.1.3 |
-| V5 | DOCUMENTATION | OpenAFS 1.8.1 release notes, register of editions row E10. A lead only | 5.1.4 |
-| V6 | DOCUMENTATION | OpenAFS reference page `fs_setacl(1)`, sections on the `-acl` option and "DROPBOXES", register of editions row E8. A lead only (rule 11) | 5.7 |
-| V7 | DOCUMENTATION | OpenAFS reference pages `vos_examine(1)` ("OUTPUT") and `vos_create(1)` (the name length), register of editions row E8. A lead only | 5.1.3, 5.1.4, 5.2, 5.4 |
-| V8 | DOCUMENTATION | OpenAFS Administration Guide, "How AFS Interprets the UNIX Mode Bits" (HDRWQ580) and "About Volumes" (HDRWQ177), register of editions row E9. A lead only | 5.7 |
+| V4 | SPECIFICATION | T. Keiser and A. Deason (ed.), "AFS-3 Rx RPC XDR Primitive Type Definitions", draft-keiser-afs3-xdr-primitive-types-01, register of editions row E8: §3, §4.1 and §4.2 prose only; the structure shown in §4 is excluded by name. A lead only | 5.1.3 |
+| V5 | DOCUMENTATION | OpenAFS 1.8.1 release notes, register of editions row E12. A lead only | 5.1.4 |
+| V6 | DOCUMENTATION | OpenAFS reference page `fs_setacl(1)`, sections on the `-acl` option and "DROPBOXES", register of editions row E10. A lead only (rule 11) | 5.7 |
+| V7 | DOCUMENTATION | OpenAFS reference pages `vos_examine(1)` ("OUTPUT") and `vos_create(1)` (the name length), register of editions row E10. A lead only | 5.1.3, 5.1.4, 5.2, 5.4 |
+| V8 | DOCUMENTATION | OpenAFS Administration Guide, "How AFS Interprets the UNIX Mode Bits" (HDRWQ580) and "About Volumes" (HDRWQ177), register of editions row E11. A lead only | 5.7 |
 | C | DECISION | [Claim record](../reviews/2026-11-20-adr-0004-claims.md) rows `[DES-011]`, `[DES-052]`, `[DES-055]`, `[DES-057]`, `[DES-058]`, `[DES-076]`, `[ADR-008]`, `[ADR-017]`, re-read against their sources on 2026-11-21, except `[DES-058]` (section 12.2) | 5 |
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; A8, A13; C6, C7, C11, C16, C19, C20, C22, C23, C25, C33, C37, C38, C46 ([part 1](../adr/0004-architecture-1-core.md)); O23, O40, O50 ([part 3](../adr/0004-architecture-3-operations.md)); N5, N6, N20, N27, N28, N29, N31, N38 ([part 4](../adr/0004-architecture-4-negotiation.md)) | 1, 2, 5, 8, 9, 11 |
 | D2 | DECISION | [ADR 0006](../adr/0006-rx-unprotected-packets.md), decision 1, points 5 and 6 | 1, 5.6, 5.9, 8 |
@@ -1337,26 +1337,26 @@ independent source or capture that would confirm the fact, and its state.
 
 | Item | Fact | Source and register | Corroboration | Label |
 |---|---|---|---|---|
-| Framing | procedure number, then XDR arguments; XDR results | X1 "RPC Layer", E3 | stage C capture of any call (Q1) | UNVERIFIED |
-| Framing | server errors positive, Rx errors negative | V1 errors.html, E5; `[DES-055]` | stage C error scenarios (Q10) | UNVERIFIED |
-| Services | file service 1 at 7000, VL service 52 at 7003 | V1 rxservice.txt, E5; `[DES-011]` | stage C capture | UNVERIFIED |
-| Numbers | 526, 527, 533 (VL); 130, 132, 149, 155, 65536, 65537 (file service) | V1 rx/VL.txt, rx/RXAFS.txt, E5 | stage C capture of each call; Q2 | UNVERIFIED |
-| Number | −455, "unknown procedure" | V1 errors.html, E5 | a stage C call of an unassigned number (Q10) | UNVERIFIED |
-| Abort codes | every other code in 5.9 (Rx −1, −3, −5, −100; rxgen −450 to −457; volume 101 to 120; VL 363 520 to 363 552; system 1, 2, 13) | V1 errors.html and et/VL.html, E5; `[DES-055]` | stage C error scenarios (Q10) | UNVERIFIED |
-| 64-bit fetch | the 64-bit fetch exists beside the 32-bit one, with 64-bit offsets | V1 rx/RXAFS.txt, E5; V2 §4, E7 | stage C capture of both calls (Q3) | UNVERIFIED |
+| Framing | procedure number, then XDR arguments; XDR results | X1 "RPC Layer", E5 | stage C capture of any call (Q1) | UNVERIFIED |
+| Framing | server errors positive, Rx errors negative | V1 errors.html, E7; `[DES-055]` | stage C error scenarios (Q10) | UNVERIFIED |
+| Services | file service 1 at 7000, VL service 52 at 7003 | V1 rxservice.txt, E7; `[DES-011]` | stage C capture | UNVERIFIED |
+| Numbers | 526, 527, 533 (VL); 130, 132, 149, 155, 65536, 65537 (file service) | V1 rx/VL.txt, rx/RXAFS.txt, E7 | stage C capture of each call; Q2 | UNVERIFIED |
+| Number | −455, "unknown procedure" | V1 errors.html, E7 | a stage C call of an unassigned number (Q10) | UNVERIFIED |
+| Abort codes | every other code in 5.9 (Rx −1, −3, −5, −100; rxgen −450 to −457; volume 101 to 120; VL 363 520 to 363 552; system 1, 2, 13) | V1 errors.html and et/VL.html, E7; `[DES-055]` | stage C error scenarios (Q10) | UNVERIFIED |
+| 64-bit fetch | the 64-bit fetch exists beside the 32-bit one, with 64-bit offsets | V1 rx/RXAFS.txt, E7; V2 §4, E9 | stage C capture of both calls (Q3) | UNVERIFIED |
 | File id | three unsigned 32-bit values | D1, N38.2 (decision); layout MISSING | Q1, Q6 | MISSING |
 | Status record | every field of 5.1.3, point 2 | none admissible | Q1, Q4, Q6, Q7 | MISSING |
 | Data version | 64-bit | D1, N38.1 (decision). `[DES-057]` is cited through the claim record only: its source draft is not cited for any fact here, so it has no register row | Q4 | UNVERIFIED (wire) |
 | Callback promise, volume sync | fixed-size records | none admissible | Q1 | MISSING |
-| VL entry | the roles of 5.1.3, point 5; a 0 id means no version | V7 vos_examine(1), E8; `[ADR-008]` | Q1, Q8 | UNVERIFIED (roles); MISSING (layout) |
-| Volume name | at most 22 characters for a read/write volume | V7 vos_create(1), E8 | not load-bearing: the cap is IronAFS's own | UNVERIFIED |
-| UUID | eleven XDR integers with range checks | V4 §4.1, §4.2, E6 | Q8 | UNVERIFIED |
+| VL entry | the roles of 5.1.3, point 5; a 0 id means no version | V7 vos_examine(1), E10; `[ADR-008]` | Q1, Q8 | UNVERIFIED (roles); MISSING (layout) |
+| Volume name | at most 22 characters for a read/write volume | V7 vos_create(1), E10 | not load-bearing: the cap is IronAFS's own | UNVERIFIED |
+| UUID | eleven XDR integers with range checks | V4 §4.1, §4.2, E8 | Q8 | UNVERIFIED |
 | Address | four-octet IPv4 | `[DES-058]`, through the claim record only (a mailing-list post, rule 13; not re-read for this version, so no register row) | Q1 | UNVERIFIED (wire) |
-| Bulk calls | both exist; inline preferred; per-item checks | V1, E5; `[DES-076]`; V5, E10 | Q5 | UNVERIFIED |
-| Rights letters | the meanings of `r l i d w k a`, and `A` to `H` | V6 fs_setacl(1), E8; `[DES-052]` | Q7 | UNVERIFIED (meaning); MISSING (bits) |
-| Mode rule | owner bits only; read needs `r`, `l` and the owner read bit | V8 HDRWQ580, E9; `[ADR-017]` | Q7 | UNVERIFIED |
-| Dropbox reads | an owner may read a file without `r` | V6 "DROPBOXES", E8 | Q7 | UNVERIFIED |
-| Volume status | quota, usage, partition sizes, name, messages | V7 (the reference pages' displays), E8 | Q9 | MISSING (layout) |
+| Bulk calls | both exist; inline preferred; per-item checks | V1, E7; `[DES-076]`; V5, E12 | Q5 | UNVERIFIED |
+| Rights letters | the meanings of `r l i d w k a`, and `A` to `H` | V6 fs_setacl(1), E10; `[DES-052]` | Q7 | UNVERIFIED (meaning); MISSING (bits) |
+| Mode rule | owner bits only; read needs `r`, `l` and the owner read bit | V8 HDRWQ580, E11; `[ADR-017]` | Q7 | UNVERIFIED |
+| Dropbox reads | an owner may read a file without `r` | V6 "DROPBOXES", E10 | Q7 | UNVERIFIED |
+| Volume status | quota, usage, partition sizes, name, messages | V7 (the reference pages' displays), E10 | Q9 | MISSING (layout) |
 
 **Re-check of the cited claims (2026-11-21).** `[DES-011]`, `[DES-055]`
 and `[DES-076]` were re-read at their sources (the registry's service
@@ -1384,7 +1384,7 @@ otherwise. Q1 blocks all code written from this specification.
   Every field more than one reading fits stays open. Until then no
   codec for these procedures merges, and #65 stays open (its "Order"
   paragraph). Recommendation: run it as one campaign with Q3 to Q10.
-- **Q2. Allowlisting the registry.** The registry (E5) is a published
+- **Q2. Allowlisting the registry.** The registry (E7) is a published
   list of assigned numbers, kept apart from any implementation's
   repository, and the issue's failure case names "a published source"
   as acceptable for procedure numbers. But some of its rows name an

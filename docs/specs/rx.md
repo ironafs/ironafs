@@ -461,8 +461,8 @@ here changes by a pull request of class S.
 | `rx.in.reply_deadline` | 60 s | the time an incoming call is kept after its request is complete, until every reply packet is acknowledged | a genuine initiator acknowledges within a few retransmission timeouts (`rx.rto_max` is 10 s); a peer that withholds its ACKs cannot hold reply state longer (5.7, point 14) |
 | `rx.in.conn_charge` | 512 bytes | the charge for one incoming connection's record | an upper bound on the record's size; a test asserts the record fits (10.5, A22) |
 | `rx.in.call_charge` | 512 bytes | the charge for one incoming call's record, besides its buffered bytes | as above |
-| `rx.in.peer_bytes` | 131 072 bytes | all charges for one peer address | room for several concurrent breaks from one server, far below the total |
-| `rx.in.total_bytes` | 8 388 608 bytes | all charges of the acceptor role, the held allowance included | bounds the whole callback service's memory in Rx |
+| `rx.in.peer_bytes` | 262 144 bytes | all charges for one peer address | at least one call at both ceilings with its records (65 536 + 65 536 + 512 + 512 = 132 096 bytes), with room for several concurrent small breaks from one server; far below the total |
+| `rx.in.total_bytes` | 8 388 608 bytes | all charges of the acceptor role, the held allowance included; every charge other than a held datagram's must fit `rx.in.total_bytes` less `rx.in.held_bytes` (5.10, point 2) | bounds the whole callback service's memory in Rx, and keeps the held allowance free inside it |
 | `rx.in.held_bytes` | 524 288 bytes | datagrams held until their overload event is confirmed, counted inside `rx.in.total_bytes` | 5.10, point 5 |
 | `rx.in.overloads_max` | 64 events | unconfirmed overload events at once | a fixed table; beyond it, one "unknown source" event (5.10, point 4) |
 | `rx.in.conns_per_peer_max` | 16 connections | incoming connections from one peer address | stops one source fragmenting its charge into many small records |
@@ -473,6 +473,7 @@ here changes by a pull request of class S.
 | `rx.unmatched_rate` | 100 packets per second per source | unmatched packets from one source counted as ordinary drops; beyond it they are counted as `over_rate` (ADR 0006, item 7) | separates a flood from stray traffic in diagnostics without extra work per packet |
 | `rx.drop_report_interval` | 60 s | how often the drop counts are handed to the user | one event per interval, never one per packet |
 | `rx.icmp_table_entries` | 64 peers | the per-peer ICMP and socket-error counter table (5.9, point 9) | a fixed table; an aggregate counter beyond it |
+| `rx.event_queue_bytes` | 262 144 bytes | events waiting for the user, beyond the reserved slots (5.11, "The event queue") | a fixed bound however fast a peer can make events; an event that does not fit is counted, never queued |
 | `rx.icmp_hint_interval` | 1 s | the least time between two `IcmpHint` events for one peer, or for the aggregate | a hint stays prompt, while an error stream costs at most one event per peer per second |
 | `rx.read_batch` | 64 datagrams | datagrams the driver reads before it runs timers and sends | unmatched traffic cannot starve live calls of the thread (5.9, point 4) |
 | `rx.identity_bound` | 4096 pairs | live outgoing connections plus reserved retired identities (ADR 0006, item 8) | 5.6, point 1 |
@@ -497,10 +498,15 @@ Derived values:
 - The receive buffer of one call is at most `rx.recv_window` ×
   `rx.payload_max` bytes; the user's per-call caps bound what it is
   handed in total.
-- The incoming connections Rx can hold are at most `rx.in.total_bytes` ÷
-  `rx.in.conn_charge` = 16 384; the outgoing ones at most
-  `rx.identity_bound`. These, the two tables and the overload events
-  bound the keys of the event queue (5.11), so its size in bytes.
+- The incoming connections Rx can hold are at most (`rx.in.total_bytes`
+  − `rx.in.held_bytes`) ÷ `rx.in.conn_charge` = 15 360.
+- The event queue holds at most `rx.event_queue_bytes` plus its reserved
+  slots, each one fixed-size event that merging never grows: one per
+  pending overload event (at most `rx.in.overloads_max` + 1), one per
+  address family for its pause state, one for the overflow summary, and
+  for each outgoing connection live or reserved, one for an `AbortHint`
+  and one for an `AbortReceived` (at most 2 × `rx.identity_bound`)
+  (5.11, "The event queue").
 
 ### 5.3 Versions
 
@@ -618,11 +624,12 @@ unplaceable packet costs only bounded counting (ADR 0006 D1.4: Firm).
     dropped (`empty_data`) `[OWN]`: an empty packet in the middle of a
     call carries nothing and would let a peer spend a window slot for no
     byte.
-16. **No allocation per dropped packet.** Every check of points 1 to 15
-    runs on the received buffer without allocating; the buffer is reused
-    (ADR 0006 D1.4: Firm). A class's open (5.8, point 5) runs only on a
-    DATA packet that matched a live call or opens one, and its own work
-    is bounded by its specification.
+16. **No allocation per dropped packet.** Every check of points 1 to
+    14, and point 15 under the null class, runs on the received buffer
+    without allocating; the buffer is reused (ADR 0006 D1.4: Firm).
+    Another class's open (5.8, point 5) runs only on a DATA packet that
+    matched a live call or opens one; whether it allocates, and how much,
+    is bounded by its own specification.
 
 ### 5.5 Encoding
 
@@ -714,8 +721,10 @@ unplaceable packet costs only bounded counting (ADR 0006 D1.4: Firm).
 2. **Retirement.** An outgoing connection retires when its user closes
    it, or when it has had no live call for the time its user set when
    opening it. On retirement its epoch and connection id pair is
-   reserved for R (5.2), measured on the monotonic clock (C37); its
-   connection id alone is not reserved, so it may be drawn again at once
+   reserved for R (5.2), measured on the monotonic clock (C37), and
+   longer while an ABORT event of the connection waits untaken in its
+   reserved slot (5.11, "The event queue"); its connection id alone is
+   not reserved, so it may be drawn again at once
    under another epoch (ADR 0006 D2.1). A packet for a retired identity
    matches nothing and is dropped as `unmatched`.
 3. **Channels and call numbers** `[X1 "Rx Connections": UNVERIFIED]`:
@@ -782,8 +791,12 @@ unplaceable packet costs only bounded counting (ADR 0006 D1.4: Firm).
    T (`rx.idle_timeout`), a deadline on the monotonic clock no later
    than `rx.call.deadline_max` from now, and whether it is a keepalive
    call. Rx picks a free channel; if none is free, the start waits
-   inside its deadline. A call starts by sending DATA with sequence 1
-   `[X1 "Call Layer": UNVERIFIED]`.
+   inside its deadline. A keepalive call is the exception (5.6, point
+   3): it takes only a channel that has carried no call on its
+   connection, which is always free, and if the connection has none it
+   is refused at once with `StartRefused`, never left waiting. A call
+   starts by sending DATA with sequence 1 `[X1 "Call Layer":
+   UNVERIFIED]`.
 2. **Request.** DATA packets carry the request in order, sequence 1, 2,
    and so on; the last carries the last-packet flag, and no request
    DATA follows it `[X1 "Call Layer", "RPC Layer": UNVERIFIED]`.
@@ -917,7 +930,9 @@ wire fact, since it governs only what IronAFS sends.
       deadline it fails with `DeadlineExceeded`, whatever is heard.
 13. **Rx never retries a call** `[OWN]`, from N45, point 4, and ADR 0006
     D1.5. A failed call reports `sent_any`: whether any request DATA
-    packet of it was handed to the driver. Whether a call may be retried
+    packet of it was handed to the driver; a packet the call-end purge
+    removed before the driver performed it (5.12, point 4) was not
+    handed. Whether a call may be retried
     is the user's decision. Rx's part of ADR 0006, item 8: a call that
     ended by `Timeout` or `DeadlineExceeded`, including after a call-0
     hint, is retried by the user, through N7, only on a connection opened
@@ -939,8 +954,11 @@ wire fact, since it governs only what IronAFS sends.
     whole; Rx takes it only if it is at most the service's reply cap and
     its bytes can be charged (5.10, point 2), and otherwise refuses the
     submission, counts it (`reply_refused`), sends no reply DATA, and
-    leaves the call to end as below `[OWN]`. The reply is sent as DATA
-    with the last-packet flag on its final packet. The call completes
+    leaves the call to end as below `[OWN]`. A reply submitted after the
+    call ended (by the deadline below or by an ABORT, 5.9, point 6) is
+    refused the same way, and the service is told the call had ended.
+    The reply is sent as DATA with the last-packet flag on its final
+    packet. The call completes
     when the peer acknowledges every reply packet, or when the peer
     starts a higher call number on the channel, which acknowledges the
     previous call `[OWN]`. It fails at `rx.in.request_deadline` for an
@@ -1090,9 +1108,11 @@ points 2 and 3 (Working). Each point names the ADR point it keeps.
    - per source address, in a table of `rx.drop_table_entries` entries
      fixed at start; once the table is full, a source not in it is
      counted in one aggregate counter;
-   - the table is never cleared by traffic. At each report (5.11), an
-     entry with a non-zero count in the interval is zeroed and kept for
-     its source; only an entry whose counts stayed zero for the whole
+   - the table is never cleared by traffic. At each report (5.11) whose
+     `DropCounts` is queued, an entry with a non-zero count in the
+     interval is zeroed and kept for its source; a report the queue
+     cannot take zeroes nothing, and its counts go out with the next one
+     that is queued; only an entry whose counts stayed zero for the whole
      interval is freed for a new source. So a flood that names many
      sources cannot evict a source that is still sending, and a table
      filled once is not full forever: a source that stops sending frees
@@ -1102,8 +1122,8 @@ points 2 and 3 (Working). Each point names the ADR point it keeps.
      from that source beyond `rx.unmatched_rate` in a second are counted
      as `over_rate`, and the source is marked as flooding in the next
      report; the packets are dropped either way, with the same work;
-   - no log line is written per packet; Rx hands the user the counts
-     once per `rx.drop_report_interval`, as one `DropCounts` event;
+   - no log line is written per packet; Rx hands the user the counts at
+     most once per `rx.drop_report_interval`, as one `DropCounts` event;
    - the driver reads at most `rx.read_batch` datagrams before it runs
      the machine's timers and sends (5.12, point 3), so unmatched traffic
      cannot stop live calls' retransmissions, ACKs and timeouts. The
@@ -1150,12 +1170,19 @@ points 2 and 3 (Working). Each point names the ADR point it keeps.
    machine as a hint, with the peer endpoint if the system reports one
    and "unattributed" otherwise. The machine counts it by family and
    kind, per peer address in a table of `rx.icmp_table_entries` entries
-   fixed at start, kept and freed as point 4's table is, with one
-   aggregate entry for unattributed errors and for peers not in the
-   table. It hands the user an `IcmpHint` event for an entry at most once
-   per `rx.icmp_hint_interval`, carrying the counts since that entry's
-   last event, so an error stream at packet rate costs counting and at
-   most one event per entry per interval `[OWN]`. It never ends a call,
+   fixed at start, with one aggregate entry for unattributed errors and
+   for peers not in the table. It hands the user an `IcmpHint` event for
+   an entry at most once per `rx.icmp_hint_interval`, carrying the counts
+   since that entry's last event; an entry's counts are zeroed only when
+   its own `IcmpHint` is queued and carries them, never by point 4's
+   report. An `IcmpHint` the queue cannot take (5.11, "The event queue")
+   zeroes nothing: its counts stay in the entry and go out with that
+   entry's next `IcmpHint` that is queued. An entry
+   is freed for a new peer only when it has had no error and holds no
+   count for a whole `rx.drop_report_interval`; traffic never clears the
+   table. So an error stream at packet rate costs counting and at most
+   one event per entry per interval, and every error is carried by
+   exactly one `IcmpHint` `[OWN]`. It never ends a call,
    never closes or rebinds the socket, never changes the local endpoint
    generation, and never changes the network generation, a fence or a
    trust state. The driver keeps reading after it. Path MTU signals are
@@ -1192,19 +1219,25 @@ callbacks (C4, point 4).
    length. Every charge but a held datagram's is made to the peer
    address (its normalised address, any port) and to the total; a held
    datagram's is made to `rx.in.held_bytes` and the total only (point
-   5). Each is made before the state is created or grown, with checked
-   arithmetic, and is released when the state is freed. A reply whose
-   charge does not fit is refused at submission (5.7, point 14); it is
-   not an overload, since no received datagram waits on it.
+   5). A charge to the total other than a held datagram's must fit
+   `rx.in.total_bytes` less `rx.in.held_bytes`, so the held allowance is
+   always free inside the total and a datagram that fits
+   `rx.in.held_bytes` always fits the total. Each charge is made before
+   the state is created or grown, with checked arithmetic, and is
+   released when the state is freed. A reply whose charge does not fit
+   is refused at submission (5.7, point 14); it is not an overload, since
+   no received datagram waits on it. `rx.in.peer_bytes` covers one call
+   at both ceilings with its records (5.2), so a service registered at
+   both ceilings can complete its largest call from one peer.
 3. **Admission.** A DATA packet with sequence 1 and the client-initiated
    flag that matches no connection opens an incoming connection, and one
    that matches an incoming connection but no live call on its channel
    opens a call there (5.6, point 3), only if all of these hold: the
    service is registered and accepts the index (point 1); the peer has
    fewer than `rx.in.conns_per_peer_max` incoming connections; the
-   charges fit `rx.in.peer_bytes` and `rx.in.total_bytes`. A later DATA
-   packet of an admitted call is admitted only if its payload's charge
-   fits both caps and the service's request cap.
+   charges fit `rx.in.peer_bytes` and the total as point 2 says. A later
+   DATA packet of an admitted call is admitted only if its payload's
+   charge fits both and the service's request cap.
 4. **At a cap: the overload event** (C31, the rate-limit row). A packet
    that point 3 refuses only because of a cap, a per-peer connection
    limit or the service's request cap is an **overload**. Rx records the
@@ -1221,17 +1254,20 @@ callbacks (C4, point 4).
    `[OWN]`: it was held because a cap refused it, often that peer's own,
    and charging it there could only refuse it again. So one source can
    fill the held allowance and cause point 6's pause; the cost is the
-   fence that pause raises for every server on the socket, never a
-   dropped break (section 8). Nothing held is processed,
-   acknowledged or answered. When the user **confirms** an event (the
-   callback service confirms only after the suspect epoch of the affected
-   servers has advanced, under its own specification), every datagram
-   held under it is dropped and counted (`overload_dropped`), and its
+   fence that pause raises for every server on the socket. While paused,
+   the kernel may drop any server's datagrams, but none before that
+   server's suspect epoch has moved (point 6; section 8). Nothing held
+   is processed, acknowledged or answered. When the user **confirms** an
+   event (the callback service confirms only after the suspect epoch of
+   the affected servers has advanced, under its own specification),
+   every datagram held under it is dropped and counted (`overload_dropped`), and its
    charge released. So the epoch moves before any work is dropped or
    acknowledged (C31, the rate-limit row). A datagram that would not fit
-   `rx.in.held_bytes` is not held: it is point 6's.
+   `rx.in.held_bytes` is not held: it is point 6's. One that does fit
+   `rx.in.held_bytes` always fits the total too, since the held
+   allowance is kept free inside the total (point 2).
 6. **Pause** (the issue's fence; C30, point 1; C31, the rate-limit row).
-   When the held allowance cannot take a datagram, the machine tells the
+   When a datagram cannot be held (point 5), the machine tells the
    driver to pause the socket it arrived on, and that datagram joins the
    "unknown source" event of point 4. The driver then:
    - raises that socket's pause generation by 1, itself, with no lock and
@@ -1262,9 +1298,12 @@ callbacks (C4, point 4).
      opens nothing is dropped (5.4, point 7).
    - To the peer of an incoming connection that is not yet verified: in
      total, at most `rx.unverified_factor` times the bytes received from
-     it on that connection, counting every header. Packets that do not
-     fit wait, at most until the call's `rx.in.reply_deadline` (5.7,
-     point 14); ACKs that do not fit are skipped.
+     it on that connection, counting every header. Reply DATA and PINGs
+     that do not fit wait, at most until the call's
+     `rx.in.reply_deadline` (5.7, point 14), and are dropped with the
+     call (5.12, point 4); ACK, BUSY and ABORT packets that do not fit
+     are skipped, never queued `[OWN]`, so nothing outlives the call or
+     connection it answers.
    - **The reachability test** `[X1 "Introduction": UNVERIFIED]`: X1
      recommends a PING and PING-RESPONSE exchange before any response
      larger than the request. When a reply waits on the budget, Rx sends
@@ -1286,8 +1325,8 @@ callbacks (C4, point 4).
    dropped with its charge released, and counted (`request_expired`); no
    ABORT is sent (5.7, point 15).
 10. **Retirement.** An incoming connection with no live call for
-    `rx.in.conn_idle` is retired and its charge released. A packet for it
-    then matches nothing.
+    `rx.in.conn_idle` is retired, every queued send on it is dropped, and
+    its charge released. A packet for it then matches nothing.
 
 ### 5.11 Counters and events
 
@@ -1300,32 +1339,74 @@ ABORT's, or any key material.
 | Event | Carries | When |
 |---|---|---|
 | `DropCounts` | per-source counts by reason, and the aggregate | at a fixed interval, if any count is non-zero |
-| `AbortReceived` | connection, call, code, `eligible`, `sent_any` | a matching call-level ABORT (5.9, points 1 and 6) |
-| `AbortHint` | connection, code, `eligible` | a matching call-0 ABORT on an outgoing connection (5.9, point 2) |
-| `BusyDeferred` | connection, call, total deferral | an accepted BUSY (5.9, point 7) |
+| `AbortReceived` | connection, call, first code, last code, `eligible`, `sent_any`, repeat count | a matching call-level ABORT (5.9, points 1 and 6) |
+| `AbortHint` | connection, first code, last code, `eligible`, repeat count | a matching call-0 ABORT on an outgoing connection (5.9, point 2) |
+| `BusyDeferred` | connection, latest call, its total deferral, repeat count | an accepted BUSY (5.9, point 7) |
 | `ChallengeReceived` | connection | a CHALLENGE that passed 5.9, point 3's checks up to and including the class's RESPONSE; never on a null-class connection, whose class refuses every CHALLENGE |
-| `RekeyRequested` | connection | 5.8, point 6 |
-| `IcmpHint` | family, peer address or "unattributed", counts by kind since the entry's last event | 5.9, point 9, at most once per `rx.icmp_hint_interval` per entry |
-| `Overload` | event id, source or "unknown" | 5.10, point 4 |
-| `Pause`, `Resume` | socket (family and local endpoint generation) | 5.10, point 6 |
-| `IdentityExhausted` | the reason: redraws or bound | 5.6, point 1 |
-| `Diagnostic` | connection, `service_mismatch` or `security_index_mismatch` | 5.4, point 8, counted, at most once per connection per interval |
+| `RekeyRequested` | connection, repeat count | 5.8, point 6 |
+| `IcmpHint` | family, peer address or "unattributed", counts by kind since the entry's last queued event | 5.9, point 9, at most once per `rx.icmp_hint_interval` per entry |
+| `EventsDropped` | per kind, the events not queued because the queue was full, and the `DropCounts` and `IcmpHint` events deferred | 5.11, "The event queue" |
+| `Overload` | event id, source or "unknown", count of overloads under it | 5.10, point 4 |
+| `Pause`, `Resume` | address family, the latest local endpoint generation, the latest of the two, the number of each since the user last took the slot | 5.10, point 6 |
+| `IdentityExhausted` | the reason: redraws or bound; repeat count | 5.6, point 1 |
+| `Diagnostic` | connection, `service_mismatch` or `security_index_mismatch`, repeat count | 5.4, point 8, counted, at most once per connection per interval |
+
+A repeat count is the number of events merged into the first, 0 when
+none was.
 
 Every drop reason named in 5.4, 5.5, 5.7, 5.9 and 5.10 is a counter, per
 source where a source is known.
 
 **The event queue** (C39, point 3) `[OWN]`. Events wait for the user in
-one queue. An event whose kind and key (its connection, call, peer
-address, table entry or event id) match one already queued is merged
-into it, adding its counts, so the queue holds at most one event per kind
-and key. The keys are bounded: connections and calls by the caps and the
-identity bound (5.2, "Derived values"), peers by the two fixed tables,
-overload events by `rx.in.overloads_max` plus one, and pauses by the two
-sockets. So the queue's size in bytes is bounded by the number of keys
-times the largest event, and a stream of matching packets of one kind,
-such as call-0 ABORTs, grows a count, not the queue. A merged event keeps
-the place of the first; an `Overload` event is never merged into another
-id's.
+one queue, bounded in bytes however fast a peer can make events. Call
+outcomes (section 7) never pass through it: each is returned with its
+call, so an event the queue does not hold never loses an outcome.
+
+1. **Reserved slots**, never refused and outside
+   `rx.event_queue_bytes`: one per pending overload event id (at most
+   `rx.in.overloads_max` + 1, 5.10, point 4); one per address family for
+   its pause state; one for `EventsDropped`; and, for each outgoing
+   connection, one for its `AbortHint` and one for its `AbortReceived`.
+   Those two carry the `eligible` flag on which ADR 0006 D1.6's move to
+   bounded revalidation depends (5.9, points 1 and 2), so neither is
+   ever lost. An outgoing connection whose ABORT event waits untaken
+   keeps its identity reserved, counted against `rx.identity_bound`,
+   until the user takes it (5.6, point 2), so these slots are at most
+   2 × `rx.identity_bound`; a user that never takes them makes new opens
+   fail with `IdentityExhausted`, never an unbounded queue.
+2. **Merging.** An event is merged into one already queued of the same
+   kind and key, as the table below says; a merged event keeps the place
+   of the first. The key of a call-level event is its connection, never
+   its call, because a peer chooses call numbers and can open and end
+   calls cheaply.
+3. **Capacity.** Every other queued event counts its size against
+   `rx.event_queue_bytes`; a merge changes values in place and never
+   adds to the size. An event that would pass the bound is not queued:
+   it is counted under its kind in the `EventsDropped` slot. A
+   `DropCounts` or `IcmpHint` is not lost that way: its counts stay in
+   their table and go out with the next one that is queued (5.9, points
+   4 and 9), and `EventsDropped` counts the deferral. An `AbortReceived`
+   on an incoming connection is ordinary: it changes nothing but
+   counters (5.9, point 6). Rx never waits on the user and never
+   allocates past the bound for an event.
+4. **Failing closed.** An event not queued never makes Rx send anything.
+   A `ChallengeReceived` not queued means no RESPONSE is sent for that
+   CHALLENGE (5.9, point 3); the peer challenges again.
+
+| Kind | Key | Merge |
+|---|---|---|
+| `DropCounts` | none | counts added per source; a source not in the queued event goes to its aggregate |
+| `AbortReceived` | connection (a reserved slot on an outgoing connection) | the first event's call, code, `eligible` and `sent_any` are kept; a repeat count rises by 1, and the last code is kept beside the first |
+| `AbortHint` | connection (a reserved slot) | the first code is kept; a repeat count rises by 1, and the last code is kept beside the first |
+| `BusyDeferred` | connection | the latest call and its total deferral replace the earlier; a repeat count rises by 1 |
+| `ChallengeReceived` | connection | one per connection; Rx keeps only the latest CHALLENGE's RESPONSE for it, so the user's one answer covers it |
+| `RekeyRequested` | connection | one per connection; a repeat count rises by 1 |
+| `IcmpHint` | family and peer address, or "unattributed" | counts added by kind |
+| `Overload` | event id (reserved slot) | never merged into another id's; a further overload under the same id adds to its count (5.10, point 4) |
+| `Pause`, `Resume` | address family (reserved slot) | the slot keeps the latest of the two, its local endpoint generation, and the number of each since the user last took it |
+| `IdentityExhausted` | the reason | a repeat count rises by 1 |
+| `Diagnostic` | connection and reason | a repeat count rises by 1 |
+| `EventsDropped` | none (reserved slot) | counts added by kind |
 
 ### 5.12 The machine and the driver
 
@@ -1342,9 +1423,10 @@ id's.
    timer; hand each to the machine; run the machine's timers; perform
    the machine's actions. It takes no cache lock (C30, point 2).
 4. **Sends and the permit generation** (N7, point 5). Every send action
-   names its connection and that connection's permit generation when the
-   machine built it. The user raises a connection's permit generation,
-   as an atomic value the driver can read, when it fences or closes the
+   names its connection, its call where the packet belongs to one, and
+   that connection's permit generation when the machine built it. The
+   user raises a connection's permit generation, as an atomic value the
+   driver can read, when it fences or closes the
    connection, and whenever the credential generation or a fence that
    N7's predicate applies to the connection changes (N7, points 2 and 5;
    ADR 0006 D1.3: Firm). Immediately before each send system call, the
@@ -1460,8 +1542,8 @@ anyone who can forge a source address (off the path) or see the traffic
 | Exhausting memory with new connections or calls | per-peer and total byte caps, a per-peer connection limit, all checked before state is made (5.10, points 2 and 3); the identity bound (5.6, point 1) |
 | Exhausting memory with large requests or replies | the per-call request and reply caps and the receive window (5.2; 5.7, points 5 and 8); on incoming calls, the service's caps under `rx.in.request_ceiling` and `rx.in.reply_ceiling`, every request and reply byte charged to the peer and the total (5.10, points 1 and 2), and a refused reply when its charge does not fit (5.7, point 14) |
 | Holding reply state by withholding ACKs | `rx.in.reply_deadline` ends the call, drops its queued sends and releases its charge (5.7, point 14; 5.12, point 4) |
-| Filling the held allowance from one source | not stopped: held datagrams are charged to the held allowance and the total, not to their peer (5.10, point 5), so one source can cause a pause. The cost is the pause's fence for every server on the socket, which the callback service sees and revalidates; no break is dropped unrecorded (5.10, point 6) |
-| Flooding the user with events | one queued event per kind and key, merged counts, bounded keys (5.11, "The event queue"); ICMP and socket errors at most one event per entry per `rx.icmp_hint_interval` (5.9, point 9) |
+| Filling the held allowance from one source | not stopped: held datagrams are charged to the held allowance and the total, not to their peer (5.10, point 5), so one source can cause a pause. The cost is the pause's fence for every server on the socket, which the callback service sees and revalidates. While paused the kernel may drop any server's datagrams, undetected by Rx (the row below), but none before that server's suspect epoch has moved, because the pause generation rises before reading stops (5.10, point 6) |
+| Flooding the user with events | a queue bounded by `rx.event_queue_bytes` plus fixed reserved slots; call-level events keyed by connection, not call; events past the bound counted, never queued (5.11, "The event queue"); ICMP and socket errors at most one event per entry per `rx.icmp_hint_interval` (5.9, point 9) |
 | Hiding dropped breaks from the callback service | the overload event and hold until confirmation (5.10, points 4 and 5); the pause generation, raised before reading stops (5.10, point 6) |
 | Breaks lost in the kernel during a flood, without a pause | not detected by Rx in this version: the operating system's own drop counters are not read (section 13, Q6). C32 bounds the effect: trust lapses when keepalive replies stop arriving |
 | Starving live calls with unmatched traffic | bounded work per packet, no allocation, bounded reads per loop (5.9, point 4; 5.12, point 3) |
@@ -1494,7 +1576,7 @@ anyone who can forge a source address (off the path) or see the traffic
 | ADR 0006 D1.2: call-0 ABORT is a hint | 5.9, point 2 | A6 |
 | ADR 0006 D1.3: CHALLENGE rules | 5.9, point 3 | A8 |
 | ADR 0006 D1.4: unmatched dropped, bounded, counted | 5.4; 5.9, point 4 | A1, A10; fuzz target `ironafs-rx_machine` |
-| ADR 0006 D1.6 and D1.9: trust lowered only on eligible connections | 5.9, points 1 and 2 (`eligible` flag) | A3 |
+| ADR 0006 D1.6 and D1.9: trust lowered only on eligible connections | 5.9, points 1 and 2 (`eligible` flag); 5.11, "The event queue", point 1 (outgoing ABORT events in reserved slots, never lost) | A3; A26 |
 | ADR 0006 D1.7: BUSY | 5.9, point 7 | A7 |
 | ADR 0006 D1.8, D2.3: incoming ABORT and BUSY | 5.9, points 6 and 8; 5.12, point 4 | A15 |
 | ADR 0006 D2.1: identity, reservation, bound, redraws | 5.6, points 1 and 2 | A9 |
@@ -1607,7 +1689,9 @@ In `crates/ironafs-rx/tests/it/` (one module per subject) and, where
 the case involves the callback service, in that service's tests. Each
 case: start state, events in order, result. "Matching" means the full
 lookup of the section cited. ADR 0006's tests 1 to 13 are carried by the
-cases named; test 14 is the test cell's (section 13, Q1).
+cases named, except test 3's hold and its exit (ADR 0006 D2.5), which
+the callback service's tests carry (#66); A3 carries Rx's part of test
+3. Test 14 is the test cell's (section 13, Q1).
 
 - **A1 Guessed identities** (ADR 0006, test 1). Live outgoing calls; an
   attacker knowing peer address, client port, start time and earlier
@@ -1668,9 +1752,10 @@ cases named; test 14 is the test cell's (section 13, Q1).
 - **A9 Identity generation** (test 9). Over many seeded connections each
   epoch and connection id is the `Rng`'s output except where redrawn,
   and the ignore-source flag is clear. With `rx.identity_redraws` at
-  least five and a fixture `Rng` returning a live identity, a live
-  connection id under another epoch, a 0 epoch, a 0 connection id, then
-  a reserved pair inside R: each is redrawn; past R the same pair is
+  least six (five unusable draws, then a usable one) and a fixture `Rng`
+  returning a live identity, a live connection id under another epoch, a
+  0 epoch, a 0 connection id, then a reserved pair inside R: each is
+  redrawn; past R the same pair is
   accepted; a retired connection id under a new epoch inside R is
   accepted.
   - Delayed packets: on the same local endpoint, a packet for a retired
@@ -1708,13 +1793,16 @@ cases named; test 14 is the test cell's (section 13, Q1).
 - **A11 Caps per peer and in total.** One peer opens connections and
   calls until `rx.in.peer_bytes` and `rx.in.conns_per_peer_max`; the
   next is an overload naming that peer. Many peers together reach
-  `rx.in.total_bytes`; the next is an overload. Charges are released
+  `rx.in.total_bytes` less `rx.in.held_bytes` (7 864 320 bytes, 5.10,
+  point 2); the next is an overload. Charges are released
   when calls complete and connections retire.
 - **A12 Hold until confirmed.** At a cap, the datagram is held and an
   `Overload` event handed; until the user confirms it, the held datagram
   is neither processed, acknowledged nor answered; on confirmation it is
   dropped and counted, its charge released. With `rx.in.overloads_max`
-  events pending, the next overload joins one "unknown" event.
+  events pending, the next overload joins one "unknown" event. With the
+  other charges at `rx.in.total_bytes` less `rx.in.held_bytes`, an
+  overload datagram is still held and charged to the total.
 - **A13 Pause and resume.** The held allowance fills: the machine asks
   for a pause; the driver raises the socket's pause generation, then
   stops reading; the generation is odd. A thread that never handles the
@@ -1745,7 +1833,8 @@ cases named; test 14 is the test cell's (section 13, Q1).
   user holds and which is asserted unchanged. An error stream at packet
   rate from one peer, and from more peers than `rx.icmp_table_entries`,
   yields at most one `IcmpHint` per entry per `rx.icmp_hint_interval`,
-  whose counts add up to the errors sent.
+  whose counts add up to the errors sent, across at least one
+  `rx.drop_report_interval` boundary (5.9, point 9).
 - **A17 Class reported.** Every outcome on a null-class connection
   reports index 0 and level "none".
 - **A18 Keepalive identity.** A call marked keepalive has a call number
@@ -1753,8 +1842,10 @@ cases named; test 14 is the test cell's (section 13, Q1).
   connection drawn by 5.6, point 1; its outcome carries the receiving
   local endpoint; a reply with the right epoch and connection id but
   another call number does not complete it. A keepalive start on a
-  connection whose four channels have all carried a call is refused with
-  `StartRefused` and sends nothing; on a new connection it starts.
+  connection whose four channels have all carried a call is refused at
+  once with `StartRefused` and sends nothing, both when all four are
+  free and when some carry live calls; on a new connection it starts on
+  a channel with no previous call.
 - **A19 Key exhausted.** A fixture class returns `KeyExhausted` on a
   connection with one call that has sent DATA and one that has not: both
   fail `KeyExhausted`, with `sent_any` true and false; nothing more is
@@ -1793,12 +1884,39 @@ cases named; test 14 is the test cell's (section 13, Q1).
   reply cap above `rx.in.reply_ceiling`, or a request cap above
   `rx.in.request_ceiling`, is refused. A reply above the service's reply
   cap, and a reply whose charge does not fit `rx.in.peer_bytes` or
-  `rx.in.total_bytes`, is refused at submission (`reply_refused`), sends
-  no reply DATA, and is not an `Overload`; a reply that fits is charged
-  to the peer and the total and released when acknowledged. A stream of
-  matching call-0 ABORTs on one connection, and of BUSYs, leaves one
-  queued event per kind and key whose count equals the packets; the
-  queue's size stays within the bound of 5.11 under the A10 flood.
+  the total as 5.10, point 2, says, is refused at submission
+  (`reply_refused`), sends no reply DATA, and is not an `Overload`; a
+  reply submitted after its call ended is refused too. With the service
+  at both ceilings, one peer's call with a 65 536-byte request and a
+  65 536-byte reply completes. A reply that fits is charged to the peer
+  and the total and released when acknowledged.
+  The event queue, with the user taking no event: (a) an admitted peer
+  cycles call numbers on one incoming connection, each call opened by a
+  complete one-packet request, which a fixture service accepts and
+  answers with nothing, and ended by a matching ABORT, for 10 000
+  calls: the queue holds one `AbortReceived` for that connection, its
+  repeat count 9 999; (b) streams of matching call-0 ABORTs and accepted
+  BUSYs on one outgoing connection leave one event of each kind whose
+  repeat count equals the packets less one, keeping the first and last
+  codes; (c) many connections and peers making events until the queue
+  is full: the queue's bytes outside the reserved slots never pass
+  `rx.event_queue_bytes`, the excess is counted in `EventsDropped` by
+  kind, a later `Overload` is still queued in its slot, the socket's
+  pause slot shows the latest of `Pause` and `Resume` with the number of
+  each, a matching call-0 ABORT and a matching call-level ABORT on an
+  outgoing connection are still queued as `AbortHint` and
+  `AbortReceived` with `eligible`, a `DropCounts` and an `IcmpHint`
+  refused for room zero no count and are counted as deferred in
+  `EventsDropped`, and a `ChallengeReceived` not queued sends no
+  RESPONSE. Then the user takes the queued events, which frees room:
+  the next `DropCounts` and `IcmpHint` are queued, and with the earlier
+  ones their counts add up to the packets and errors sent. Every call
+  outcome in the run is returned with its call.
+  (d) With the user never taking events and outgoing connections
+  retiring with an ABORT event each: their identities stay reserved,
+  and opens fail with `IdentityExhausted` once `rx.identity_bound` is
+  reached; after the user takes the events, the reservations run out
+  their R and opens succeed again.
 
 ### 10.6 Gaps
 
@@ -1865,14 +1983,14 @@ This specification's own choices:
   after IronAFS ended it (section 13, Q3);
 - the callback service's tests show the caps of 5.2 drop genuine breaks
   in normal operation;
-- X1 is revised (register row E3).
+- X1 is revised (register row E5).
 
 ## 12. Sources
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| X1 | SPECIFICATION | "Rx protocol specification draft", Nickolai Zeldovich, updated by Jeffrey Altman, 24 July 2026, register of editions row E3 ([README](README.md)), AFS Assigned Numbers Registry. Cited by heading: "Introduction", "Rx Connections", "Packet Types", "Call Layer" (with its parts "Round-trip time computation", "Packet retransmission", "Keepalive and Timeout" and "Flow Control"), "Jumbograms", "RPC Layer", "Packet Formats and Protocol Constants". Its section "Historical Implementation Notes" was not read and is not cited; it is excluded by name (README, "Sources and provenance", rule 12). The "Debugging" section's references to another implementation's files and structures, and the "References" entries that point at an implementation's source, are not used. A lead only (rule 14): every fact from it is UNVERIFIED. Also claim record rows `[DRV-084]`, `[DES-056]`, `[ADR-002]` and `[ADR-006]` ([claim record](../reviews/2026-11-20-adr-0004-claims.md)), re-read against this edition. | 3, 4, 5, 6, 10 |
-| X2 | SPECIFICATION | RFC 4291, "IP Version 6 Addressing Architecture", R. Hinden and S. Deering, February 2006, register of editions row E4 ([README](README.md)), <https://www.rfc-editor.org/rfc/rfc4291>: §2.5.5.2, "IPv4-Mapped IPv6 Address" | 5.4 |
+| X1 | SPECIFICATION | "Rx protocol specification draft", Nickolai Zeldovich, updated by Jeffrey Altman, 24 July 2026, register of editions row E5 ([README](README.md)), AFS Assigned Numbers Registry. Cited by heading: "Introduction", "Rx Connections", "Packet Types", "Call Layer" (with its parts "Round-trip time computation", "Packet retransmission", "Keepalive and Timeout" and "Flow Control"), "Jumbograms", "RPC Layer", "Packet Formats and Protocol Constants". Its section "Historical Implementation Notes" was not read and is not cited; it is excluded by name (README, "Sources and provenance", rule 12). The "Debugging" section's references to another implementation's files and structures, and the "References" entries that point at an implementation's source, are not used. A lead only (rule 14): every fact from it is UNVERIFIED. Also claim record rows `[DRV-084]`, `[DES-056]`, `[ADR-002]` and `[ADR-006]` ([claim record](../reviews/2026-11-20-adr-0004-claims.md)), re-read against this edition. | 3, 4, 5, 6, 10 |
+| X2 | SPECIFICATION | RFC 4291, "IP Version 6 Addressing Architecture", R. Hinden and S. Deering, February 2006, register of editions row E6 ([README](README.md)), <https://www.rfc-editor.org/rfc/rfc4291>: §2.5.5.2, "IPv4-Mapped IPv6 Address" | 5.4 |
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C3, C4, C5, C6, C19, C20, C24, C28, C30, C31, C32, C34, C37, C39, C46 ([part 1](../adr/0004-architecture-1-core.md)); O1, O12, O15, O23, O47 ([part 3](../adr/0004-architecture-3-operations.md)); N5, N6, N7, N31, N45 ([part 4](../adr/0004-architecture-4-negotiation.md)); A12, A14 | 1, 2, 5, 8, 9, 11 |
 | D2 | DECISION | [ADR 0006](../adr/0006-rx-unprotected-packets.md), accepted 2026-11-21: decisions 1 and 2, "Specification items for the Rx specification" and its tests 1 to 14 | 1, 3, 5.6, 5.9, 5.10, 8, 9, 10, 11 |
 | D3 | DECISION | [ADR 0001](../adr/0001-licence-and-dont-copy.md), "Don't copy" and "Test tools and test data" | 10, 12 |
@@ -1883,7 +2001,7 @@ This specification's own choices:
 No other implementation's source, test data or interface definitions
 were read for this specification, and none are cited. It describes Rx in
 IronAFS's own words and quotes no text of X1, which carries no licence
-notice (register row E3). The field names and values in 5.1 are
+notice (register row E5). The field names and values in 5.1 are
 functional facts. The test values of section 10 are IronAFS's own.
 
 ### 12.1 Observed behaviour
@@ -1943,4 +2061,6 @@ here (section 13, Q1).
 
 ## 14. Review
 
-Not yet reviewed. The record will be in `docs/reviews/`.
+Reviewed by GLM and DeepSeek in three rounds on 2026-11-21, and by GLM
+in a fourth check of the third round's fixes; the record is
+[2026-11-21-m2a-55-rx](../reviews/2026-11-21-m2a-55-rx.md).
