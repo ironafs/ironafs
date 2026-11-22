@@ -39,7 +39,7 @@ pub(super) const SCM_RIGHTS: c_int = 1;
 /// `SCM_PIDFD`: a control message of the peer's pidfd, which the kernel
 /// installs on a socket with `SO_PASSPIDFD` set (Linux 6.5). glibc 2.39
 /// and later name it under `_GNU_SOURCE`; musl's headers do not, so the
-/// ABI check withholds the row on a target whose headers lack it
+/// row is withheld on musl and this site is compiled for glibc only
 /// (ADR 0005, sheet 14).
 pub(super) const SCM_PIDFD: c_int = 4;
 

@@ -26,11 +26,16 @@
 //! instructions as `untouched_dead` (its stores are gone). If `wipe` is not
 //! inlined, or the control keeps its stores, the dead-buffer case shows
 //! nothing on that target and it fails. A target whose standard library is
-//! not installed is reported MISSING: `mem-wipe` does not ship there. The
-//! harness is built under the root manifest's `[profile.release]` table
-//! only: a manifest with any `[profile.release.*]` table, which would
-//! change the shipping profile beside it, is refused rather than copied in
-//! part.
+//! not installed is reported MISSING: `mem-wipe` does not ship there.
+//!
+//! **The profile, as compiled.** Copying the table is not trusted on its
+//! own: TOML can set release settings elsewhere (a `[profile.release.*]`
+//! table, spaced or dotted keys) that a copy of one table would drop. So
+//! on each target the check also builds `ironafs-os` in the workspace
+//! itself under `--release`, reads the codegen options (`-C`) cargo passes
+//! to rustc there, and requires the harness's build to pass exactly those,
+//! both to `ironafs-os` and to the harness crate that `wipe` is inlined
+//! into. Any setting the copy dropped or changed fails the target.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -112,16 +117,10 @@ impl Arch {
     }
 }
 
-/// The `[profile.release]` table of a manifest, up to the next table;
-/// `None` if there is none, or if any `[profile.release.*]` table (a
-/// per-package or build-override setting) changes the profile beside it.
+/// The `[profile.release]` table of a manifest, up to the next table.
+/// What it misses is caught by comparing the compiled options
+/// ([`profile_departures`]).
 pub(crate) fn profile_table(manifest: &str) -> Option<String> {
-    if manifest
-        .lines()
-        .any(|line| line.trim_start().starts_with("[profile.release."))
-    {
-        return None;
-    }
     let mut lines = manifest.lines();
     lines
         .by_ref()
@@ -288,18 +287,108 @@ pub(crate) fn judge(asm: &str, arch: Arch) -> Result<(), Vec<String>> {
     }
 }
 
-/// Builds the harness for `target` and returns its assembly, or why it
-/// could not be built.
-fn assembly(
+/// The codegen options (`-C`) of the rustc call cargo's verbose output
+/// shows for the crate `name`, sorted, without those that only name the
+/// build (`metadata`, `extra-filename`, `incremental`); `None` if no call
+/// for it is shown.
+pub(crate) fn codegen(log: &str, name: &str) -> Option<Vec<String>> {
+    let marker = format!("--crate-name {name} ");
+    let line = log
+        .lines()
+        .find(|line| line.contains("Running `") && line.contains(&marker))?;
+    let mut words = line.split_whitespace();
+    let mut options = Vec::new();
+    while let Some(word) = words.next() {
+        let value = if word == "-C" {
+            words.next()
+        } else {
+            word.strip_prefix("-C")
+        };
+        if let Some(value) = value.filter(|value| !value.is_empty()) {
+            let value = value.trim_end_matches('`');
+            if !["metadata=", "extra-filename=", "incremental="]
+                .iter()
+                .any(|prefix| value.starts_with(prefix))
+            {
+                options.push(value.to_owned());
+            }
+        }
+    }
+    options.sort();
+    Some(options)
+}
+
+/// How the harness build departs from the shipping profile: the options
+/// cargo passed to `ironafs-os` in the workspace's own release build
+/// (`shipped`) against those it passed, in the harness build (`harness`),
+/// to `ironafs-os` and to the harness crate.
+pub(crate) fn profile_departures(shipped: &str, harness: &str) -> Vec<String> {
+    let Some(expected) = codegen(shipped, "ironafs_os") else {
+        return vec!["the workspace's release build of ironafs-os showed no rustc call".to_owned()];
+    };
+    let mut problems = Vec::new();
+    for name in ["ironafs_os", HARNESS] {
+        match codegen(harness, name) {
+            Some(found) if found == expected => {}
+            Some(found) => problems.push(format!(
+                "the harness build passes {name} the codegen options {found:?}, where the \
+                 workspace's release build passes ironafs-os {expected:?}: the harness is not \
+                 built under the shipping profile"
+            )),
+            None => problems.push(format!("the harness build showed no rustc call for {name}")),
+        }
+    }
+    problems
+}
+
+/// Builds `ironafs-os` in the workspace itself, under its release profile,
+/// for `target` in a fresh `build_dir`; returns cargo's verbose output, or
+/// why it did not build.
+fn shipped_build(
     workspace: &Workspace,
-    harness: &Path,
     build_dir: &Path,
     target: &str,
 ) -> Result<Result<String, String>, Error> {
     let mut command = Command::new("cargo");
     command
         .current_dir(&workspace.root)
-        .args(["rustc", "--release", "--lib", "--offline", "--quiet"])
+        .args([
+            "build",
+            "--release",
+            "--lib",
+            "--offline",
+            "--verbose",
+            "-p",
+            os::CRATE,
+        ])
+        .args(["--target", target])
+        .arg("--target-dir")
+        .arg(build_dir);
+    for name in CLEARED_ENVIRONMENT {
+        command.env_remove(name);
+    }
+    let output = command.output().map_err(Error::io("cargo build"))?;
+    if !output.status.success() {
+        return Ok(Err(format!(
+            "ironafs-os did not build under the workspace's release profile: {}",
+            first_error(&output.stderr)
+        )));
+    }
+    Ok(Ok(String::from_utf8_lossy(&output.stderr).into_owned()))
+}
+
+/// Builds the harness for `target` and returns its assembly and cargo's
+/// verbose output, or why it could not be built.
+fn assembly(
+    workspace: &Workspace,
+    harness: &Path,
+    build_dir: &Path,
+    target: &str,
+) -> Result<Result<(String, String), String>, Error> {
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(&workspace.root)
+        .args(["rustc", "--release", "--lib", "--offline", "--verbose"])
         .arg("--manifest-path")
         .arg(harness.join("Cargo.toml"))
         .args(["--target", target])
@@ -316,11 +405,12 @@ fn assembly(
             first_error(&output.stderr)
         )));
     }
+    let log = String::from_utf8_lossy(&output.stderr).into_owned();
     let mut found = Vec::new();
     find_assembly(&build_dir.join(target), &mut found)?;
     match found.as_slice() {
         [file] => fs::read_to_string(file)
-            .map(Ok)
+            .map(|asm| Ok((asm, log)))
             .map_err(Error::path_io("read assembly", file)),
         _ => Ok(Err(format!(
             "expected one assembly file of the harness, found {}",
@@ -391,8 +481,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     let manifest = fs::read_to_string(&manifest_path)
         .map_err(Error::path_io("read manifest", &manifest_path))?;
     let profile = profile_table(&manifest).ok_or(Error::UnexpectedOutput(
-        "Cargo.toml: no [profile.release] table, or a [profile.release.*] table beside it, \
-         which the harness would not copy",
+        "Cargo.toml: no [profile.release] table",
     ))?;
     let dir = crate::fixture::fresh_dir(&workspace.target_dir, CHECK)?;
     let result = check_targets(&workspace, &crate_dir, &profile, &dir, output);
@@ -435,19 +524,36 @@ fn check_targets(
             ))?;
             continue;
         }
-        let asm = match assembly(workspace, &harness, &dir.join("target"), target)? {
-            Ok(asm) => asm,
+        let (asm, log) = match assembly(workspace, &harness, &dir.join("target"), target)? {
+            Ok(built) => built,
             Err(error) => {
                 violations.push(format!("{target}: {error}"));
                 continue;
             }
         };
+        let shipped = match shipped_build(workspace, &dir.join("shipped"), target)? {
+            Ok(shipped) => shipped,
+            Err(error) => {
+                violations.push(format!("{target}: {error}"));
+                continue;
+            }
+        };
+        let departures = profile_departures(&shipped, &log);
+        if !departures.is_empty() {
+            violations.extend(
+                departures
+                    .into_iter()
+                    .map(|problem| format!("{target}: {problem}")),
+            );
+            continue;
+        }
         match judge(&asm, arch) {
             Ok(()) => {
                 passed += 1;
                 report(format!(
                     "{target}: passed: wipe inlined in both cases, at least {LENGTH} zero byte \
-                     stores in each, and the control's plain overwrite (the fence kept) removed"
+                     stores in each, the control's plain overwrite (the fence kept) removed, \
+                     and the harness built with the workspace's release options"
                 ))?;
             }
             Err(problems) => violations.extend(

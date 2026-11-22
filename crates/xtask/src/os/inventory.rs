@@ -324,12 +324,13 @@ fn parse_code(code: &Value) -> Result<Code, String> {
     };
     let stand_in = parse_stand_in(code)?;
     let constants = names("constants")?;
+    let expressions = expressions(code)?;
     Ok(Code {
         module: text(code, "module")?.to_owned(),
         headers: strings("headers")?,
         defines: defines(code)?,
-        expressions: expressions(code)?,
-        qualified: qualified(code, &constants)?,
+        qualified: qualified(code, &constants, &expressions)?,
+        expressions,
         extern_blocks,
         blocks,
         impls,
@@ -361,8 +362,14 @@ fn defines(code: &Value) -> Result<Vec<String>, String> {
 }
 
 /// The constants a target's headers may not name (`qualified`, optional):
-/// each one of the row's recorded constants.
-fn qualified(code: &Value, constants: &[String]) -> Result<Vec<String>, String> {
+/// each one of the row's recorded constants, and none mapped to an
+/// expression, so `check-abi` compares each with its C name, the name the
+/// probe found.
+fn qualified(
+    code: &Value,
+    constants: &[String],
+    expressions: &[(String, String)],
+) -> Result<Vec<String>, String> {
     let Some(qualified) = code.get("qualified") else {
         return Ok(Vec::new());
     };
@@ -371,6 +378,10 @@ fn qualified(code: &Value, constants: &[String]) -> Result<Vec<String>, String> 
         .ok_or("`qualified` is not an array")?
         .iter()
         .map(|value| match value.as_str() {
+            Some(name) if expressions.iter().any(|(mapped, _)| mapped == name) => Err(format!(
+                "`qualified` holds {name:?}, which `expressions` maps to a C expression: a \
+                 qualified constant is compared with its own C name"
+            )),
             Some(name) if constants.iter().any(|constant| constant == name) => Ok(name.to_owned()),
             _ => Err(format!(
                 "`qualified` holds {value:?}, which is not one of the row's constants"
@@ -546,6 +557,26 @@ pub(crate) fn problems(inventory: &Inventory, adr: &str) -> Vec<String> {
     found
 }
 
+/// Each musl target and the glibc target of its architecture.
+const MUSL_GNU: [(&str, &str); 2] = [
+    ("x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"),
+    ("aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"),
+];
+
+/// Whether a row is withheld on musl (ADR 0005, sheet 14): it has
+/// qualified constants, and is implemented on each glibc target and only
+/// approved on each musl one. The crate root's glibc-only gate then leaves
+/// its module out of a musl build (`check-os` holds the two equal).
+pub(crate) fn withheld_on_musl(row: &Row) -> bool {
+    row.code
+        .as_ref()
+        .is_some_and(|code| !code.qualified.is_empty())
+        && MUSL_GNU.iter().all(|(musl, gnu)| {
+            row.status.get(*gnu) == Some(&Status::Implemented)
+                && row.status.get(*musl) == Some(&Status::Approved)
+        })
+}
+
 /// One row's departures from the copy's rules.
 fn row_problems(row: &Row) -> Vec<String> {
     let mut found = Vec::new();
@@ -557,13 +588,12 @@ fn row_problems(row: &Row) -> Vec<String> {
             ));
         }
     }
-    for (musl, gnu) in [
-        ("x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"),
-        ("aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"),
-    ] {
-        if row.status.get(musl) != row.status.get(gnu) {
+    for (musl, gnu) in MUSL_GNU {
+        if row.status.get(musl) != row.status.get(gnu) && !withheld_on_musl(row) {
             found.push(format!(
-                "{id}: {musl} and {gnu} differ; a musl build compiles the glibc build's code"
+                "{id}: {musl} and {gnu} differ; a musl build compiles the glibc build's code, \
+                 unless the row is implemented on glibc and only approved on musl because its \
+                 qualified constants withhold it there"
             ));
         }
     }

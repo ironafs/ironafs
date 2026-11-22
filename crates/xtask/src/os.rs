@@ -19,11 +19,14 @@
 //! - **Targets.** Every allowlisted target the toolchain names builds; any
 //!   other target the toolchain names fails with the crate's allowlist
 //!   error. The musl targets are not built here: the copy gives them the
-//!   glibc targets' statuses, and the crate names `target_env` only in its
-//!   allowlist and in the gates of a row's per-library declaration files,
-//!   which hold no site, so a musl build compiles the glibc build's sites
-//!   (`scan`). `check-abi` proves each library's declarations on its own
-//!   target.
+//!   glibc targets' statuses, except a row withheld on musl (implemented on
+//!   glibc, only approved on musl, for a qualified constant musl's headers
+//!   lack), and the crate names `target_env` only in its allowlist, in the
+//!   gates of a row's per-library declaration files, which hold no site,
+//!   and in the crate root's glibc-only gates, which must leave out exactly
+//!   the withheld rows' modules. So a musl build compiles the glibc build's
+//!   sites less the withheld rows (`scan`). `check-abi` proves each
+//!   library's declarations on its own target.
 
 mod allowlist;
 pub(crate) mod inventory;
@@ -279,6 +282,7 @@ pub(crate) fn compare(
         violations.extend(site_violations(inventory, file, compiled_somewhere));
     }
     violations.extend(stand_in_mismatches(inventory, files));
+    violations.extend(glibc_only_mismatch(inventory, files));
     let scanned: BTreeSet<&PathBuf> = files.iter().map(|file| &file.path).collect();
     for (target, read) in compiled {
         for path in read.iter().filter(|path| !scanned.contains(path)) {
@@ -322,6 +326,42 @@ pub(crate) fn compare(
         }
     }
     violations
+}
+
+/// Why the crate root's glibc-only gates differ from the copy.
+pub(crate) const GLIBC_ONLY: &str = "the crate root's glibc-only gates (`#[cfg(all(target_os = \
+                                     \"linux\", target_env = \"gnu\"))] mod ...;`) must gate \
+                                     exactly the modules of the rows sites.json implements on \
+                                     glibc and only approves on musl, so a musl build holds \
+                                     what the copy says (ADR 0005, sheet 14)";
+
+/// The crate root's glibc-only gated modules, against the modules of the
+/// rows the copy implements on glibc and only approves on musl: the musl
+/// build, which `check-os` does not compile, leaves out exactly those.
+fn glibc_only_mismatch(inventory: &Inventory, files: &[CrateFile]) -> Vec<Violation> {
+    let root = Path::new("src").join("lib.rs");
+    let mut gated: Vec<&str> = files
+        .iter()
+        .filter(|file| file.path == root)
+        .flat_map(|file| file.scan.glibc_only.iter().map(String::as_str))
+        .collect();
+    gated.sort_unstable();
+    let mut withheld: Vec<&str> = inventory
+        .rows
+        .iter()
+        .filter(|row| inventory::withheld_on_musl(row))
+        .filter_map(|row| row.code.as_ref().map(|code| code.module.as_str()))
+        .collect();
+    withheld.sort_unstable();
+    if gated == withheld {
+        Vec::new()
+    } else {
+        vec![Violation::Rule {
+            file: root,
+            line: 0,
+            what: GLIBC_ONLY,
+        }]
+    }
 }
 
 /// The rules each site of one file must meet on its own: a name, a known

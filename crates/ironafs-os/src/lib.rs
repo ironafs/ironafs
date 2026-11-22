@@ -68,6 +68,9 @@ compile_error!(
 
 mod clock;
 mod dump;
+// The descriptor-passing checks, used by `linux_fdpass` and by their tests
+// on every target.
+#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 mod fdpass;
 mod peer;
 mod random;
@@ -76,7 +79,9 @@ mod random;
 mod linux_clock;
 #[cfg(target_os = "linux")]
 mod linux_dontdump;
-#[cfg(target_os = "linux")]
+// Withheld on musl: its headers do not name `SCM_PIDFD`, so `check-abi`
+// has no evidence there and the site is not compiled (ADR 0005, sheet 14).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod linux_fdpass;
 #[cfg(target_os = "linux")]
 mod linux_peercred;
@@ -88,12 +93,13 @@ mod unix_nodump;
 
 pub use clock::{ClockError, OsClock};
 pub use dump::DumpError;
+#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 pub use fdpass::FdPassError;
 #[cfg(target_os = "linux")]
 pub use linux_clock::read_clock;
 #[cfg(target_os = "linux")]
 pub use linux_dontdump::SecretBuffer;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use linux_fdpass::{receive_fd, send_fd};
 #[cfg(target_os = "linux")]
 pub use linux_peercred::peer_credentials;

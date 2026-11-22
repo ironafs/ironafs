@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use super::inventory::Inventory;
 use super::scan::{self, BLOCK_BODY, CFG, TARGET_ENV};
-use super::{CrateFile, Violation, compare, outside_violations, rust_files};
+use super::{CrateFile, GLIBC_ONLY, Violation, compare, outside_violations, rust_files};
 use crate::rust_source::tokens_with_strings;
 use crate::{Error, fixture};
 
@@ -302,6 +302,24 @@ const CASES: &[Case] = &[
             "#[cfg(target_arch = \"aarch64\")]\nmod aarch64;\n#[cfg(target_env = \"musl\")]\nmod musl;",
         )],
         expect: &[|found| rule(found, TARGET_ENV)],
+    },
+    Case {
+        name: "a row withheld on musl left in the musl build",
+        edits: &[replace(
+            "src/lib.rs",
+            "#[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\nmod linux_fdpass;",
+            "#[cfg(target_os = \"linux\")]\nmod linux_fdpass;",
+        )],
+        expect: &[|found| rule(found, GLIBC_ONLY)],
+    },
+    Case {
+        name: "a row implemented on musl left out of the musl build",
+        edits: &[replace(
+            "src/lib.rs",
+            "#[cfg(target_os = \"linux\")]\nmod linux_peercred;",
+            "#[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\nmod linux_peercred;",
+        )],
+        expect: &[|found| rule(found, GLIBC_ONLY)],
     },
 ];
 

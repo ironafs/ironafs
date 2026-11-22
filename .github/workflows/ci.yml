@@ -187,9 +187,9 @@ jobs:
     # check-abi must have proved, and the native tests that must have run;
     # check-abi also checks that $CC is that target's compiler (its
     # architecture and C library). A lane's withheld sites are those whose
-    # qualified constants its headers do not name (ADR 0005, sheet 14):
-    # check-abi must report each withheld, MISSING evidence, so it does not
-    # ship on that target.
+    # qualified constants its headers do not name (ADR 0005, sheet 14): the
+    # crate does not compile them for that target, so the lane checks that
+    # neither their tests nor check-abi's report name them.
     strategy:
       fail-fast: false
       matrix:
@@ -289,9 +289,16 @@ jobs:
           cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked > nextest.log 2>&1
           cat nextest.log
           for test in $NATIVE_TESTS; do
-            grep -Eq "PASS .* ironafs-os $test\$" nextest.log
+            module="${test%%::*}"
+            if [[ " $WITHHELD " == *" ${module//_/-} "* ]]; then
+              # `set -e` ignores a negated command, so fail explicitly.
+              if grep -Eq "ironafs-os $module::" nextest.log; then exit 1; fi
+            else
+              grep -Eq "PASS .* ironafs-os $test\$" nextest.log
+            fi
           done
       - name: Close a pidfd the kernel installs, where it offers SO_PASSPIDFD
+        if: ${{ !contains(matrix.withheld, 'linux-fdpass') }}
         # Linux 6.5 or later, which every runner of this matrix has; python3
         # sets the option, since no site of ADR 0005 does.
         run: |
@@ -317,7 +324,7 @@ jobs:
           grep -q "^check-abi: $TARGET: the system's C compiler accepted " check-abi.log
           for site in $SITES; do
             case " $WITHHELD " in
-              *" $site "*) grep -q "^check-abi: $TARGET: withheld $site: " check-abi.log ;;
+              *" $site "*) if grep -q "$site" check-abi.log; then exit 1; fi ;;
               *) grep -q "$site (" check-abi.log ;;
             esac
           done

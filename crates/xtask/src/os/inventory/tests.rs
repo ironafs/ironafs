@@ -162,6 +162,18 @@ fn parse_reads_a_row_s_qualified_constants_and_refuses_any_it_does_not_record() 
         clock(&parse(&with("[\"CLOCK_BOOTTIME\"]")).unwrap()).qualified,
         ["CLOCK_BOOTTIME"]
     );
+    // A qualified constant proved through an expression would not be
+    // compared with the name the probe found.
+    let both = with("[\"CLOCK_BOOTTIME\"]").replacen(
+        "\"module\": \"linux_clock\",",
+        "\"module\": \"linux_clock\",\n      \"expressions\": {\"CLOCK_BOOTTIME\": \"CLOCK_MONOTONIC + 6\"},",
+        1,
+    );
+    let refused = parse(&both).unwrap_err();
+    assert!(
+        refused.contains("compared with its own C name"),
+        "{refused}"
+    );
     let refused = parse(&with("[\"SCM_PIDFD\"]")).unwrap_err();
     assert!(
         refused.contains("not one of the row's constants"),

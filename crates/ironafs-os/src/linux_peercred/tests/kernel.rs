@@ -128,18 +128,29 @@ fn peer_credentials_refuse_a_listener_wrapped_as_a_stream() {
     );
 }
 
+/// `SOCK_DGRAM`, the type a datagram socket reports.
+const SOCK_DGRAM: i32 = 2;
+
 #[test]
-fn peer_credentials_refuse_sockets_with_no_peer_credentials() {
+fn peer_credentials_refuse_sockets_that_are_not_connected_unix_streams() {
     // A connected datagram socket, an unconnected one and a UDP socket,
-    // each wrapped as a stream: the kernel answers -1 for the ids, or the
-    // socket has no Unix peer.
+    // each wrapped as a stream: the first has a Unix peer but is no
+    // stream, the others have no Unix peer. None reaches the credential
+    // read, so the refusal of ids of -1 is driven through the stand-in
+    // (`stand_in`), not here: every connected Unix stream has peer
+    // credentials.
     let dir = PrivateDir::create("ironafs-peercred").unwrap();
     let ours = UnixDatagram::bind(dir.path().join("ours")).unwrap();
     let _theirs = UnixDatagram::bind(dir.path().join("theirs")).unwrap();
     ours.connect(dir.path().join("theirs")).unwrap();
+    let wrapped = UnixStream::from(OwnedFd::from(ours));
+    let found = peer_credentials(&wrapped);
+    assert!(
+        matches!(found, Err(PeerError::NotStream(SOCK_DGRAM))),
+        "a connected datagram socket: {found:?}"
+    );
     let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     for (case, descriptor) in [
-        ("a connected datagram socket", OwnedFd::from(ours)),
         (
             "an unconnected datagram socket",
             OwnedFd::from(UnixDatagram::unbound().unwrap()),
@@ -149,19 +160,11 @@ fn peer_credentials_refuse_sockets_with_no_peer_credentials() {
         let wrapped = UnixStream::from(descriptor);
         let found = peer_credentials(&wrapped);
         assert!(
-            matches!(
-                found,
-                Err(PeerError::NotConnected(_)
-                    | PeerError::NotStream(_)
-                    | PeerError::NoCredentials)
-            ),
+            matches!(found, Err(PeerError::NotConnected(_))),
             "{case}: {found:?}"
         );
     }
 }
-
-/// `SOCK_DGRAM`, the type a datagram socket reports.
-const SOCK_DGRAM: i32 = 2;
 
 #[test]
 fn peer_credentials_refuse_a_reconnected_datagram_socket_of_a_pair() {

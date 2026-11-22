@@ -510,7 +510,7 @@
     {
       "row": 14,
       "id": "linux-fdpass",
-      "targets": "Linux",
+      "targets": "Linux, glibc (withheld on musl, sheet 14)",
       "foreign_item": "`ssize_t sendmsg(int, const struct msghdr *, int)` and `ssize_t recvmsg(int, struct msghdr *, int)` carrying exactly one `SCM_RIGHTS` descriptor and one data byte, with `MSG_NOSIGNAL` on send and `MSG_CMSG_CLOEXEC` on receive; each received descriptor becomes an `OwnedFd` at once (L7, point 1), a pidfd the kernel installed with `SCM_PIDFD` included, which is then closed (sheet 14)",
       "linked_from": "the C library",
       "declared": "`unsafe fn`",
@@ -519,8 +519,8 @@
       "status": {
         "x86_64-unknown-linux-gnu": "implemented",
         "aarch64-unknown-linux-gnu": "implemented",
-        "x86_64-unknown-linux-musl": "implemented",
-        "aarch64-unknown-linux-musl": "implemented"
+        "x86_64-unknown-linux-musl": "approved",
+        "aarch64-unknown-linux-musl": "approved"
       },
       "code": {
         "module": "linux_fdpass",

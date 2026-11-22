@@ -455,7 +455,7 @@ are in its sheet below the table, under the same number.
 | 11 | `unix-nodump` | Linux, macOS | `int setrlimit(int, const struct rlimit *)` with `RLIMIT_CORE` and `{0, 0}` only; on Linux also `int prctl(int, ...)` with `PR_SET_DUMPABLE` and 0 only, and `PR_GET_DUMPABLE` for the read-back | the C library; libSystem | `unsafe fn` | one per call: one on macOS (`setrlimit`), three on Linux (`setrlimit`, and `prctl` to set and to read back) |
 | 12 | `linux-dontdump` | Linux | `int madvise(void *, size_t, int)` with `MADV_DONTDUMP` only, on the crate's own secret buffers, allocated in safe Rust with 64 KiB alignment and size (sheet 12) | the C library | `unsafe fn` | one |
 | 13 | `linux-peercred` | Linux | `int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_SOCKET` and `SO_TYPE` (into an `int`, which must be `SOCK_STREAM`), then `SOL_SOCKET` and `SO_PEERCRED` (into a `struct ucred`), only, on a borrowed `UnixStream` | the C library | `unsafe fn` | two (one per option) |
-| 14 | `linux-fdpass` | Linux | `ssize_t sendmsg(int, const struct msghdr *, int)` and `ssize_t recvmsg(int, struct msghdr *, int)` carrying exactly one `SCM_RIGHTS` descriptor and one data byte, with `MSG_NOSIGNAL` on send and `MSG_CMSG_CLOEXEC` on receive; each received descriptor becomes an `OwnedFd` at once (L7, point 1), a pidfd the kernel installed with `SCM_PIDFD` included, which is then closed (sheet 14) | the C library | `unsafe fn` | one per call (two), and one that adopts a received descriptor (`OwnedFd::from_raw_fd`) |
+| 14 | `linux-fdpass` | Linux, glibc (withheld on musl, sheet 14) | `ssize_t sendmsg(int, const struct msghdr *, int)` and `ssize_t recvmsg(int, struct msghdr *, int)` carrying exactly one `SCM_RIGHTS` descriptor and one data byte, with `MSG_NOSIGNAL` on send and `MSG_CMSG_CLOEXEC` on receive; each received descriptor becomes an `OwnedFd` at once (L7, point 1), a pidfd the kernel installed with `SCM_PIDFD` included, which is then closed (sheet 14) | the C library | `unsafe fn` | one per call (two), and one that adopts a received descriptor (`OwnedFd::from_raw_fd`) |
 | 15 | `linux-mount` | Linux | `int mount(const char *, const char *, const char *, unsigned long, const void *)` for type `fuse` with `MS_NOSUID` and `MS_NODEV`, and the options `fd=`, `rootmode=`, `user_id=`, `group_id=` and `allow_other` (L7, point 1) | the C library | `unsafe fn` | one |
 | 16 | `darwin-peercred` | macOS | `int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_LOCAL` and `LOCAL_PEERCRED` only, on a borrowed `UnixStream`, into a `struct xucred` (C43, point 4; control endpoint) | libSystem | `unsafe fn` | one |
 | 17 | `windows-pipe-create` | Windows | `CreateNamedPipeW` for the one control pipe, with a `SECURITY_ATTRIBUTES` naming a self-relative security descriptor built in safe Rust; the returned handle adopted as an `OwnedHandle` (C43, point 4) | see point 5.4 | `unsafe fn` | one for the call; one that adopts the handle (`OwnedHandle::from_raw_handle`) |
@@ -669,15 +669,17 @@ are in its sheet below the table, under the same number.
       family do not have;
     - the socket's type, read with `SO_TYPE` into a zero-initialised
       local `int`, with a local length set to `sizeof(int)`, both passed
-      by exclusive pointer for the call. A non-zero return, a returned
-      length other than `sizeof(int)`, or a type other than
-      `SOCK_STREAM` is an error ("not a Unix stream"). This refuses a
-      datagram socket, a pair's included: a datagram socket of a pair can
-      be connected to another peer without the kernel replacing the
-      pair's credentials, which would otherwise be reported as the new
-      peer's;
-    - ids of −1, which the kernel reports for a socket with no peer
-      credentials, are an error.
+      by exclusive pointer for the call. Each of three outcomes is its
+      own error: a non-zero return (the call failed, with its errno), a
+      returned length other than `sizeof(int)` (a length error), and a
+      type other than `SOCK_STREAM` ("not a Unix stream", with the type
+      read). The last refuses a datagram socket, a pair's included: a
+      datagram socket of a pair can be connected to another peer without
+      the kernel replacing the pair's credentials, which would otherwise
+      be reported as the new peer's;
+    - a `uid` or `gid` of −1 in the credentials read, which the kernel
+      reports for a socket with no peer credentials, is an error (the
+      `pid` is not checked).
     *Obligations:* the `ucred` is a zero-initialised local and the length
     a local set to its size, both passed by exclusive pointer for the
     call; the descriptor is borrowed from the stream for the call. A
@@ -726,19 +728,20 @@ are in its sheet below the table, under the same number.
       socket with `SO_PASSPIDFD` set (on it, or inherited from the
       listener it was accepted from; no site sets it, but a socket unit's
       `PassPIDFD=` or foreign code in the process can) gets an
-      `SCM_PIDFD` control message, and the kernel installs that pidfd in
-      the receiver, whenever the receive delivers no `SCM_RIGHTS` message
-      and leaves room for it. A header of level `SOL_SOCKET`, type
-      `SCM_PIDFD` and length exactly `CMSG_LEN` of one `int`, within the
-      returned control length, holds one descriptor. Its value is checked
-      (non-negative) before it is adopted as an `OwnedFd`, like a
-      delivered descriptor, whatever else the receive reported (the end
-      of the stream, `MSG_CTRUNC`, a wrong data byte); the message is then
-      refused ("the peer's pidfd arrived instead of a descriptor"), which
-      closes it. The buffer has room for one control message of one
-      descriptor: whichever the kernel writes first is checked as above,
-      and for what does not fit it sets `MSG_CTRUNC` (the refusal of a
-      truncated message). *Safety, for the
+      `SCM_PIDFD` control message, and the kernel can install that pidfd
+      in the receiver; which control message the kernel writes first, and
+      so which one a receive returns, is left open. The buffer holds at
+      most one descriptor-bearing header, and only the first header is
+      read; for what does not fit the kernel sets `MSG_CTRUNC`. A first
+      header of level `SOL_SOCKET`, type `SCM_PIDFD` and length exactly
+      `CMSG_LEN` of one `int`, within the returned control length, holds
+      one descriptor. Its value is checked (non-negative) before it is
+      adopted as an `OwnedFd`, like a delivered descriptor, whatever else
+      the receive reported. Then the message is refused, which closes it:
+      at the end of the stream as the end of the stream, with
+      `MSG_CTRUNC` as a truncated message, and otherwise (a wrong data
+      byte included) as "the peer's pidfd arrived instead of a
+      descriptor". *Safety, for the
       adoption:* the kernel installed the pidfd in this process for this
       receive, after writing its control message, and no other code has
       seen it, so the `OwnedFd` is its only owner, as for `SCM_RIGHTS`.
@@ -790,12 +793,19 @@ are in its sheet below the table, under the same number.
     later in `<bits/socket.h>`, only under `_GNU_SOURCE`, which the row's
     check defines; older glibc headers and musl's (1.2.5 included) do not
     name it, and no installed user-space header does. It is proved by name
-    on each target, against that target's own headers, never by a value
-    taken from another target or library. On a target whose headers do
-    not name it the check has no evidence, so it reports the row withheld
-    there: MISSING under point 5.6, and the site does not ship on that
-    target. That is every musl target today. `SO_TYPE` (3) and
-    `SOCK_STREAM` (1), of row 13, are named by both libraries.
+    on each target of point 5.3 (a target triple), against the headers of
+    that target's ABI check (point 5.6), never by a value taken from
+    another target or library, and never through a C expression. On a
+    target whose headers do not declare it the check has no evidence, so
+    it reports the row withheld there: MISSING under point 5.6, and the
+    site does not ship on that target. The musl targets are such targets
+    today, so there the row is only approved, not implemented: the crate
+    does not compile the site for musl (its module is gated to glibc),
+    and `check-os` holds that gate to the copy's statuses. A glibc build
+    on a host with older headers is the same target as one with newer
+    headers: the constant is the kernel's value and the target's evidence
+    is its ABI check's. `SO_TYPE` (3) and `SOCK_STREAM` (1), of row 13,
+    are named by both libraries.
     *Revisit if* musl's headers name `SCM_PIDFD`, or a site sets
     `SO_PASSPIDFD`.
 15. **`linux-mount`.**

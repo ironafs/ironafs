@@ -113,10 +113,6 @@ impl Error for FdPassError {
 
 /// The C facts the checks compare with, from the site's declarations.
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(
-    all(not(target_os = "linux"), not(test)),
-    expect(dead_code, reason = "used by the Linux site")
-)]
 pub(crate) struct Rules {
     /// `SOL_SOCKET`.
     pub(crate) level: i32,
@@ -142,10 +138,6 @@ pub(crate) struct Rules {
 /// value, straight to [`accept`], which adopts or drops what it holds.
 #[derive(Debug, Default, PartialEq, Eq)]
 #[cfg_attr(test, derive(Clone, Copy))]
-#[cfg_attr(
-    all(not(target_os = "linux"), not(test)),
-    expect(dead_code, reason = "used by the Linux site")
-)]
 pub(crate) struct Received {
     /// The data bytes received: 0 at the end of the stream.
     pub(crate) count: usize,
@@ -175,10 +167,6 @@ pub(crate) struct Received {
 /// [`FdPassError::BadControl`], [`FdPassError::BadDescriptor`],
 /// [`FdPassError::TooMany`] or [`FdPassError::BadData`], in that order of
 /// precedence.
-#[cfg_attr(
-    all(not(target_os = "linux"), not(test)),
-    expect(dead_code, reason = "used by the Linux site")
-)]
 #[cfg_attr(
     not(test),
     expect(
@@ -281,10 +269,6 @@ fn delivered(rules: &Rules, received: &Received) -> Message {
 /// # Errors
 ///
 /// [`FdPassError::ShortSend`] for any count but 1.
-#[cfg_attr(
-    all(not(target_os = "linux"), not(test)),
-    expect(dead_code, reason = "used by the Linux site")
-)]
 pub(crate) fn sent(count: usize) -> Result<(), FdPassError> {
     if count == 1 {
         Ok(())
@@ -298,10 +282,6 @@ pub(crate) fn sent(count: usize) -> Result<(), FdPassError> {
 /// # Errors
 ///
 /// The first error that is not an interruption.
-#[cfg_attr(
-    all(not(target_os = "linux"), not(test)),
-    expect(dead_code, reason = "used by the Linux site")
-)]
 pub(crate) fn retried(mut call: impl FnMut() -> io::Result<usize>) -> io::Result<usize> {
     loop {
         match call() {

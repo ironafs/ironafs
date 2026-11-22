@@ -690,14 +690,14 @@ fn prelude(row: &str, defines: &[String], headers: &[String], model: DataModel) 
     source
 }
 
-/// The error a probe of an unnamed constant raises, which no compiler
-/// writes of its own accord.
-const UNNAMED: &str = "ironafs-check-abi: not named by these headers";
-
 /// Which of `names` the row's headers, with its feature macros, do not
-/// name on the target the compiler (with `identity`'s checks) is for: one
-/// probe each, compiled as the row's file is. `Err` for a probe that
-/// failed for any other reason.
+/// declare on the target the compiler is for. First the headers alone,
+/// with `identity`'s checks that the compiler is the target's, must
+/// compile; then one probe each uses the name as a C expression, so a
+/// macro and an enumeration constant both count, and a probe that fails
+/// only because the name is undeclared marks it unnamed. `Err` for a
+/// failure of the headers or the identity checks, or a probe that failed
+/// for any other reason.
 ///
 /// # Errors
 ///
@@ -711,15 +711,24 @@ pub(crate) fn unnamed(
     identity: &str,
     dir: &Path,
 ) -> Result<Result<Vec<String>, String>, Error> {
+    let base = format!("{}{identity}", prelude(row, defines, headers, model));
+    if names.is_empty() {
+        return Ok(Ok(Vec::new()));
+    }
+    if let Err(error) = compile(&base, &dir.join(format!("{row}-headers.c")))? {
+        return Ok(Err(error));
+    }
     let mut absent = Vec::new();
     for name in names {
-        let source = format!(
-            "{}#ifndef {name}\n#error \"{UNNAMED}\"\n#endif\n{identity}",
-            prelude(row, defines, headers, model)
-        );
+        let source =
+            format!("{base}_Static_assert(sizeof({name}) > 0, \"{row}: {name} is declared\");\n");
         match compile(&source, &dir.join(format!("{row}-{name}.c")))? {
             Ok(()) => {}
-            Err(error) if error.contains(UNNAMED) => absent.push(name.clone()),
+            // GCC: "'NAME' undeclared"; Clang: "use of undeclared
+            // identifier 'NAME'".
+            Err(error) if error.contains("undeclared") && error.contains(name.as_str()) => {
+                absent.push(name.clone());
+            }
             Err(error) => return Ok(Err(error)),
         }
     }

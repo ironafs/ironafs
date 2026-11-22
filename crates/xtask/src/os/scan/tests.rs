@@ -277,6 +277,35 @@ fn scan_allows_target_env_only_in_the_crate_root_allowlist() {
 }
 
 #[test]
+fn scan_reads_the_crate_root_s_glibc_only_gates_and_no_other_target_env() {
+    let gates = "#[cfg(any(test, all(target_os = \"linux\", target_env = \"gnu\")))]\nmod checks;\n\
+                 #[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\nmod linux_fdpass;\n\
+                 #[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\npub use linux_fdpass::send_fd;\n";
+    let root = read(gates, true);
+    assert_eq!(root.problems, []);
+    assert_eq!(root.glibc_only, ["linux_fdpass"]);
+    // Not in the crate root; another library; a renaming import.
+    assert_eq!(read(gates, false).problems.len(), 3);
+    for refused in [
+        "#[cfg(all(target_os = \"linux\", target_env = \"musl\"))]\nmod linux_fdpass;\n",
+        "#[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\npub use linux_fdpass::send_fd as s;\n",
+        "#[cfg(all(target_env = \"gnu\", target_os = \"linux\"))]\nmod linux_fdpass;\n",
+    ] {
+        let found = read(refused, true);
+        assert_eq!(
+            found
+                .problems
+                .iter()
+                .map(|problem| problem.what)
+                .collect::<Vec<_>>(),
+            [TARGET_ENV],
+            "{refused}"
+        );
+        assert!(found.glibc_only.is_empty(), "{refused}");
+    }
+}
+
+#[test]
 fn outside_crate_finds_unsafe_foreign_blocks_and_link_attributes_only() {
     let found = |source: &str| -> Vec<(usize, &'static str)> {
         outside_crate(&tokens_with_strings(source).unwrap())
