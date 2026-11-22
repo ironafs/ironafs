@@ -8,7 +8,7 @@
 //! edition, and every target is in the edition the source checks' token
 //! reader follows.
 
-mod pure_source;
+pub(crate) mod pure_source;
 mod self_test;
 
 use std::fmt;

@@ -3,11 +3,22 @@
 version = 4
 
 [[package]]
+name = "ironafs-cache"
+version = "0.0.0"
+
+[[package]]
 name = "ironafs-cli"
 version = "0.0.0"
 
 [[package]]
 name = "ironafs-crypto"
+version = "0.0.0"
+dependencies = [
+ "ironafs-time",
+]
+
+[[package]]
+name = "ironafs-rx"
 version = "0.0.0"
 dependencies = [
  "ironafs-time",

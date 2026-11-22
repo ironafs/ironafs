@@ -16,6 +16,7 @@ mod json;
 mod metadata;
 mod pure;
 mod rust_source;
+mod seams;
 mod trailers;
 
 use std::ffi::OsString;
@@ -165,6 +166,7 @@ fn run_task(
         args::Task::CheckDeps { self_test } => deps::run(self_test, output),
         args::Task::CheckGrants { self_test } => grants::run(self_test, output),
         args::Task::CheckPure { self_test } => pure::run(self_test, output),
+        args::Task::CheckSeams { self_test } => seams::run(self_test, output),
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
         args::Task::Trailers(mode) => trailers::run(mode, output),

@@ -17,6 +17,7 @@ pub(super) enum Task {
     CheckDeps { self_test: bool },
     CheckGrants { self_test: bool },
     CheckPure { self_test: bool },
+    CheckSeams { self_test: bool },
     InstallHook { force: bool },
     UninstallHook,
     Trailers(TrailerMode),
@@ -77,7 +78,7 @@ impl fmt::Display for UsageError {
         }?;
         write!(
             formatter,
-            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file] | cell pin"
+            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | check-seams [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file] | cell pin"
         )
     }
 }
@@ -101,6 +102,9 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
             self_test: parse_self_test(&mut arguments)?,
         },
         Some("check-pure") => Task::CheckPure {
+            self_test: parse_self_test(&mut arguments)?,
+        },
+        Some("check-seams") => Task::CheckSeams {
             self_test: parse_self_test(&mut arguments)?,
         },
         Some("hooks") => parse_hooks(&mut arguments)?,

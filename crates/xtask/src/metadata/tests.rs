@@ -86,6 +86,7 @@ fn member(name: &str, lib: Option<&str>, target_kinds: &[&str]) -> Member {
         lib_root: lib.map(|file| PathBuf::from(format!("/w/crates/{name}/{file}"))),
         target_kinds: target_kinds.iter().map(|kind| (*kind).into()).collect(),
         editions: target_kinds.iter().map(|_| "2024".into()).collect(),
+        renamed: Vec::new(),
     }
 }
 
@@ -99,7 +100,11 @@ fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
             root: PathBuf::from("/w"),
             target_dir: PathBuf::from("/w/target"),
             members: vec![
-                member("ironafs-a", Some("src/lib.rs"), &["lib"]),
+                // `bee` is ironafs-b under another name.
+                Member {
+                    renamed: vec!["bee".into()],
+                    ..member("ironafs-a", Some("src/lib.rs"), &["lib"])
+                },
                 member("ironafs-b", Some("src/lib.rs"), &["lib"]),
                 member("ironafs-c", None, &["bin"]),
                 Member {

@@ -36,6 +36,11 @@ pub(crate) struct Member {
     pub(crate) target_kinds: Vec<String>,
     /// The edition of each target, in the order of `target_kinds`' targets.
     pub(crate) editions: Vec<String>,
+    /// The names the member's source gives dependencies (of every kind)
+    /// that are not the dependency's package name with `-` as `_`: a
+    /// rename in a manifest, whatever its TOML spelling, or a library
+    /// target named otherwise.
+    pub(crate) renamed: Vec<String>,
 }
 
 impl Member {
@@ -143,11 +148,13 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
                 target_kinds.push(kind.to_owned());
             }
         }
-        // Every member must be in the resolved graph.
-        nodes
+        // Every member must be in the resolved graph. A dependency whose
+        // name there is not its package's name is a rename.
+        let node = nodes
             .iter()
             .find(|node| string(node, "id").is_ok_and(|candidate| candidate == *id))
             .ok_or_else(unexpected)?;
+        let renamed = renamed(node, packages)?;
         members.push(Member {
             name: string(package, "name")?.to_owned(),
             id: (*id).to_owned(),
@@ -155,6 +162,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             lib_root,
             target_kinds,
             editions,
+            renamed,
         });
     }
 
@@ -204,6 +212,24 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
         members,
         packages: resolved,
     })
+}
+
+/// The names a resolved node gives its dependencies that are not their
+/// package's name with `-` as `_`.
+fn renamed(node: &Value, packages: &[Value]) -> Result<Vec<String>, Error> {
+    let mut renamed = Vec::new();
+    for dependency in array(node, "deps")? {
+        let name = string(dependency, "name")?;
+        let id = string(dependency, "pkg")?;
+        let package = packages
+            .iter()
+            .find(|package| string(package, "id").is_ok_and(|candidate| candidate == id))
+            .ok_or(Error::UnexpectedOutput(COMMAND))?;
+        if name != string(package, "name")?.replace('-', "_") {
+            renamed.push(name.to_owned());
+        }
+    }
+    Ok(renamed)
 }
 
 /// The kinds of a package's targets.
