@@ -59,6 +59,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-14-xdr](2026-11-21-m2a-14-xdr.md) | Issue #59: `ironafs-xdr`, the XDR codec with caps, and `check-bans`' configuration checks |
 | [2026-11-21-m2a-45-fuzz](2026-11-21-m2a-45-fuzz.md) | Issue #45: the excluded `fuzz/` crate, its pinned tooling, the deny-file and replay checks, and the XDR decode target |
 | [2026-11-21-m2a-81-keepalive](2026-11-21-m2a-81-keepalive.md) | Issue #81: the keepalive, callback trust and server time specification, first version from documents only, with the callback specification's lowering count |
+| [2026-11-22-gemini-security-seat](2026-11-22-gemini-security-seat.md) | The owner's decision: Gemini Carbon may hold the security seat, at `gemini-4-carbon-medium` |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
