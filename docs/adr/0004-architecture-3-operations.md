@@ -3,7 +3,7 @@
 
 # 0004, part 3: Operations, security and lifecycle
 
-Status: accepted (2026-11-20). Part of ADR 0004 ([overview](0004-architecture.md)); raised in issue #20.
+Status: accepted (2026-11-20). Part of ADR 0004 ([overview](0004-architecture.md)); raised in issue #20. Partly superseded by ADR 0006 (O23), 2026-11-21.
 
 This part decides how IronAFS is observed, managed, secured, upgraded,
 tested and phased. The core is in part 1, the OS layers and the
@@ -824,6 +824,10 @@ The model names who the client defends against, with what, and what
 remains. The defences are decided in the parts cited. Changing who is in
 scope needs a superseding ADR.
 
+(Partly superseded by ADR 0006: the residual of a network attacker at
+every security class, from unprotected Rx control packets, is stated
+there.)
+
 | Adversary | Defences | What remains |
 |---|---|---|
 | A hostile or compromised fileserver | Bounded decoding (O22.7); byte caps per queue; per-server budgets; deadlines; callback rate limits that mark a server's callbacks suspect and never drop a break (C31, C32); loop bounds; `nosuid,nodev` mounts (L3, L7) `[DES-035]` | It can serve wrong data for the files it hosts, because an AFS client trusts its cell's servers. Where a cell's servers share keys, IronAFS treats the whole cell as the compromise domain |
@@ -1202,6 +1206,11 @@ prove unclear to users in testing.
    revalidation (C32, point 2): data is served only if its status was
    validated within the last T seconds, and is otherwise validated before
    delivery. A request that cannot be validated fails at its deadline.
+
+   (Read with ADR 0006, decision 2, point 5: while a connection to the
+   server fails its decision 1, point 9's condition the server is held
+   in bounded revalidation, and after that hold its promises stay
+   suspended until revalidated by a call sent after it.)
 2. **Planned, opt-in read-only stale mode** (O51):
    - entered only by the user's explicit command, for that user's one
      credential context, and only for cells or volumes a machine policy

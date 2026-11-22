@@ -5,7 +5,6 @@
 //! target directory and removed afterwards.
 
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::Error;
@@ -354,10 +353,5 @@ pub(crate) fn fresh_dir(target_dir: &Path, check: &str) -> Result<PathBuf, Error
 ///
 /// Returns an error if the directory exists and cannot be removed.
 pub(crate) fn remove_dir(dir: &Path) -> Result<(), Error> {
-    match fs::remove_dir_all(dir) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => {
-            Err(Error::path_io("remove fixture directory", dir)(error))
-        }
-        _ => Ok(()),
-    }
+    crate::files::remove_dir(dir, Error::path_io("remove fixture directory", dir))
 }
