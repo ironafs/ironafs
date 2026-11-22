@@ -372,7 +372,7 @@ const WRITES_CARGO_CONFIG: &str = "let dir = std::env::var(\"CARGO_MANIFEST_DIR\
 /// builds the workspace, and returns what it found.
 fn build_planted(dir: &Path, body: &str, toolchain_toml: &str) -> Result<Vec<Found>, Error> {
     build_script_crate(dir, body, toolchain_toml)?;
-    unchanged_by(dir, &[dir.to_path_buf()], || {
+    unchanged_by(dir, &[dir.to_path_buf()], &[dir.to_path_buf()], || {
         check_build_scripts(dir, &dir.join("target"))
     })
 }

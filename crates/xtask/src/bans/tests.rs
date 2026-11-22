@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use std::ffi::OsStr;
 
+use super::snapshot as snapshot_of;
 use super::{
     BANS, Ban, CONF_DIR, Found, Lint, Snapshot, Violation, build_overrides, cargo_warnings,
     changed, config_files, fired_violations, line_breaks, listed, outside_root, overridden,
@@ -884,4 +885,24 @@ fn outside_root_refuses_a_member_outside_the_root() {
         ),
         "{found:?}"
     );
+}
+
+#[test]
+fn snapshot_covers_the_cargo_configurations_of_every_directory_it_is_given() {
+    let root = std::env::temp_dir().join(format!("ironafs-xtask-snapshot-{}", std::process::id()));
+    let fixtures = root.join("target").join("fixtures");
+    let config = fixtures.join(".cargo").join("config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "").unwrap();
+    let held = |dirs: &[PathBuf]| {
+        snapshot_of(&root, &[], dirs)
+            .unwrap()
+            .iter()
+            .any(|(file, _)| *file == config)
+    };
+    let with = held(&[root.clone(), fixtures.clone()]);
+    let without = held(std::slice::from_ref(&root));
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(with, "the fixtures' chain is snapshot");
+    assert!(!without, "only the directories given are");
 }

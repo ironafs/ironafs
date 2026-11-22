@@ -54,7 +54,9 @@
 //! (a `clippy.toml`, a build script), and no crate may depend on it, as a
 //! development dependency either. The lint also turns off any compiler
 //! wrapper (`no_wrapper`), so none can run plain rustc for another member
-//! while the canary is linted with clippy. The canary proves the lint ran
+//! while the canary is linted with clippy, and builds into a fresh, empty
+//! directory (`isolated_build`), so no artifact an earlier run built
+//! without clippy is reused. The canary proves the lint ran
 //! with the root configuration's bans on one member;
 //! a member's own configuration is proved by the fixture, and a change
 //! that reaches only some members' compilation (a build script's variable
@@ -926,17 +928,22 @@ pub(crate) fn changed(before: &Snapshot, after: &Snapshot) -> Vec<Found> {
 
 /// Each configuration clippy can read for a member crate in `member_dirs`
 /// of the workspace at `root` (`config_files`), and each cargo
-/// configuration cargo run in the root reads (`cargo_env::candidates`),
+/// configuration cargo run in any of `cargo_dirs` reads
+/// (`cargo_env::candidates`): the directories the preflight scanned. Each
 /// with its bytes now.
 ///
 /// # Errors
 ///
 /// Returns an error if a configuration cannot be read.
-pub(crate) fn snapshot(root: &Path, member_dirs: &[PathBuf]) -> Result<Snapshot, Error> {
+pub(crate) fn snapshot(
+    root: &Path,
+    member_dirs: &[PathBuf],
+    cargo_dirs: &[PathBuf],
+) -> Result<Snapshot, Error> {
     // With no home known, the root's own `.cargo` stands in: check-bans
     // refuses to run without one (`cargo_env::check`).
     let home = cargo_env::cargo_home().unwrap_or_else(|| root.join(".cargo"));
-    let cargo_configs = cargo_env::candidates(&[root.to_path_buf()], &home)
+    let cargo_configs = cargo_env::candidates(cargo_dirs, &home)
         .into_iter()
         .filter(|path| path.symlink_metadata().is_ok());
     config_files(root, member_dirs, Path::is_file)
@@ -953,7 +960,8 @@ pub(crate) fn snapshot(root: &Path, member_dirs: &[PathBuf]) -> Result<Snapshot,
 
 /// Runs `build`, which builds the workspace at `root` whose members are in
 /// `member_dirs`, and adds to what it found each configuration a build
-/// script added, removed or rewrote while it ran (`changed`).
+/// script added, removed or rewrote while it ran (`changed`): clippy's,
+/// and cargo's for runs in any of `cargo_dirs`.
 ///
 /// Cargo runs a build script before compiling its crate, so one that
 /// writes a configuration changes what clippy lints that crate, and those
@@ -969,11 +977,12 @@ pub(crate) fn snapshot(root: &Path, member_dirs: &[PathBuf]) -> Result<Snapshot,
 pub(crate) fn unchanged_by(
     root: &Path,
     member_dirs: &[PathBuf],
+    cargo_dirs: &[PathBuf],
     build: impl FnOnce() -> Result<Vec<Found>, Error>,
 ) -> Result<Vec<Found>, Error> {
-    let before = snapshot(root, member_dirs)?;
+    let before = snapshot(root, member_dirs, cargo_dirs)?;
     let mut found = build()?;
-    found.extend(changed(&before, &snapshot(root, member_dirs)?));
+    found.extend(changed(&before, &snapshot(root, member_dirs, cargo_dirs)?));
     Ok(found)
 }
 
@@ -998,7 +1007,8 @@ fn canary_state(workspace: &Workspace) -> Result<(Vec<Violation>, Option<String>
             None,
         ));
     };
-    let mut found = canary::tampered(&canary::files(&workspace.root)?);
+    let mut found = canary::elsewhere(&workspace.root, &member.dir);
+    found.extend(canary::tampered(&canary::files(&workspace.root)?));
     found.extend(canary::depended_on(&workspace.packages, &member.id));
     Ok((found, Some(member.id.clone())))
 }
@@ -1034,7 +1044,11 @@ pub(crate) fn lint(
     // error are printed, each on its own line, in plain text.
     plain_terminal(&mut command);
     no_wrapper(&mut command);
-    let output = command.output().map_err(Error::io("cargo clippy"))?;
+    let build = crate::fixture::fresh_dir(&workspace.target_dir, LINT_BUILD)?;
+    isolated_build(&mut command, &build);
+    let output = command.output().map_err(Error::io("cargo clippy"));
+    crate::fixture::remove_dir(&build)?;
+    let output = output?;
     let messages = String::from_utf8_lossy(&output.stdout);
     violations.extend(build_overrides(&messages));
     violations.extend(cargo_warnings(&String::from_utf8_lossy(&output.stderr)));
@@ -1110,6 +1124,23 @@ fn no_wrapper(command: &mut Command) {
     command.env("RUSTC_WRAPPER", "");
 }
 
+/// The directory, under the workspace's target directory, that the
+/// workspace's lint builds into, fresh for each run.
+const LINT_BUILD: &str = "check-bans-lint";
+
+/// Builds into `dir`, which is fresh and empty, for both cargo's target
+/// directory and its build directory (`build.build-dir`, which a cargo
+/// configuration can point elsewhere). Cargo reuses an artifact whose key
+/// matches, and no compiler wrapper is part of that key: an artifact an
+/// earlier run built without clippy, under a wrapper, would be reused and
+/// its crate never linted. Set over anything the caller set.
+fn isolated_build(command: &mut Command, dir: &Path) {
+    command
+        .arg("--target-dir")
+        .arg(dir)
+        .env("CARGO_BUILD_BUILD_DIR", dir);
+}
+
 /// A refusal for each of `paths` that holds a line break.
 /// Cargo prints package paths in its text output, where a line break
 /// would let a path read as a warning of its own, or hide one.
@@ -1155,17 +1186,25 @@ fn member_dirs(workspace: &Workspace) -> Vec<PathBuf> {
         .collect()
 }
 
-/// `cargo xtask check`'s lint: the workspace's lint (`lint`), refusing a
-/// configuration a build script changed while it ran (`unchanged_by`).
+/// `cargo xtask check`'s lint: the workspace's lint (`lint`), after the
+/// same refusal of cargo configurations as check-bans makes for the root
+/// (`cargo_env::check`), refusing a configuration a build script changed
+/// while it ran (`unchanged_by`).
 ///
 /// # Errors
 ///
 /// Returns the violations, or why the lint could not run.
 pub(crate) fn lint_workspace() -> Result<(), Error> {
     let workspace = metadata::load(None, &[])?;
-    let found = unchanged_by(&workspace.root, &member_dirs(&workspace), || {
-        lint(&workspace, |_| {})
-    })?;
+    let roots = [workspace.root.clone()];
+    let cargo = cargo_env::check(&roots, cargo_env::cargo_home().as_deref());
+    let found = if cargo.is_empty() {
+        unchanged_by(&workspace.root, &member_dirs(&workspace), &roots, || {
+            lint(&workspace, |_| {})
+        })?
+    } else {
+        cargo
+    };
     if found.is_empty() {
         Ok(())
     } else {
@@ -1247,13 +1286,17 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         &[workspace.root.clone(), dir.clone()],
         cargo_env::cargo_home().as_deref(),
     );
+    // The snapshot below covers the same directories.
     if !cargo.is_empty() {
         return Err(refuse(&cargo));
     }
     // The workspace's lint runs first, so the configurations proved are
     // the ones left after its build scripts, and one they changed is
     // refused.
-    let linted = unchanged_by(&workspace.root, &member_dirs, || lint(&workspace, |_| {}))?;
+    let scanned = [workspace.root.clone(), dir.clone()];
+    let linted = unchanged_by(&workspace.root, &member_dirs, &scanned, || {
+        lint(&workspace, |_| {})
+    })?;
     let result = check_tree(
         &workspace.root,
         &member_dirs,

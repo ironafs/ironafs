@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use super::super::{Found, Violation, canary, line_keys, lint};
+use super::super::{Found, Violation, canary, line_keys, lint, workspace_clippy};
 use super::failure;
 use crate::fixture::write_file;
 use crate::{Command, Error, metadata};
@@ -215,6 +215,38 @@ const CASES: &[Case] = &[
     },
 ];
 
+/// An artifact left by an earlier clippy run of the workspace under a
+/// wrapper that ran plain rustc for the second member, in the workspace's
+/// own target directory, then in a build directory a cargo configuration
+/// names: cargo's key for it holds no wrapper, so a lint that built there
+/// would reuse it and never lint that member.
+const PRIMED: &[Case] = &[
+    Case {
+        name: "a second member's artifact left by an earlier clippy run under a wrapper",
+        files: &[
+            ("wrap.sh", WRAPPER),
+            ("crates/planted/Cargo.toml", PLANTED_MANIFEST),
+            BANNED_CALL,
+        ],
+        env: &[("RUSTC_WRAPPER", "{root}/wrap.sh")],
+        needs: banned_call_linted,
+    },
+    Case {
+        name: "the same artifact in a build directory a cargo configuration names",
+        files: &[
+            ("wrap.sh", WRAPPER),
+            (
+                ".cargo/config.toml",
+                "[build]\nbuild-dir = \"{root}/shared\"\n",
+            ),
+            ("crates/planted/Cargo.toml", PLANTED_MANIFEST),
+            BANNED_CALL,
+        ],
+        env: &[("RUSTC_WRAPPER", "{root}/wrap.sh")],
+        needs: banned_call_linted,
+    },
+];
+
 /// `manifest` without its `[workspace.dependencies]` table, whose crates
 /// the canary's workspace does not hold: cargo would warn of each.
 fn without_dependencies(manifest: &str) -> String {
@@ -235,12 +267,16 @@ fn without_dependencies(manifest: &str) -> String {
 
 /// Writes a workspace under `dir` holding only the canary, with the
 /// repository's `root_manifest`, `clippy_toml` and `toolchain_toml`, then
-/// `files`, and lints it as the real workspace is, with `env` set.
+/// `files`, and lints it as the real workspace is, with `env` set. With
+/// `prime`, it first runs clippy on it as the lint does, into the
+/// workspace's own target directory, with `env` set and nothing else
+/// adjusted, and then lints it with no variable set.
 fn lint_planted(
     dir: &Path,
     texts: (&str, &str, &str),
     files: &[(&str, &str)],
     env: &[(&str, &str)],
+    prime: bool,
 ) -> Result<Vec<Found>, Error> {
     let (root_manifest, clippy_toml, toolchain_toml) = texts;
     let root = dir.to_string_lossy().into_owned();
@@ -261,11 +297,24 @@ fn lint_planted(
         executable(&path)?;
     }
     let workspace = metadata::load(Some(&dir.join("Cargo.toml")), &[])?;
-    lint(&workspace, |command: &mut Command| {
+    let set = |command: &mut Command| {
         for (name, value) in env {
             command.env(name, value.replace("{root}", &root));
         }
-    })
+    };
+    if prime {
+        let mut command = workspace_clippy();
+        command.current_dir(dir);
+        set(&mut command);
+        let status = command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(Error::io("cargo clippy"))?;
+        Error::check_status("cargo clippy, priming the planted workspace", status)?;
+        return lint(&workspace, |_| {});
+    }
+    lint(&workspace, set)
 }
 
 /// Makes a planted script runnable.
@@ -289,12 +338,14 @@ pub(super) fn run(
     report: &mut impl FnMut(String) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let clean = "a workspace whose lint draws every canary warning";
-    let found = lint_planted(&dir.join("clean"), texts, &[], &[])?;
+    let found = lint_planted(&dir.join("clean"), texts, &[], &[], false)?;
     if !found.is_empty() {
         return Err(failure(clean, &found));
     }
     report(format!("passed: {clean}"))?;
-    for (index, case) in CASES.iter().enumerate() {
+    let cases = CASES.iter().map(|case| (case, false));
+    let primed = PRIMED.iter().map(|case| (case, true));
+    for (index, (case, prime)) in cases.chain(primed).enumerate() {
         if cfg!(not(unix)) && case.files.iter().any(|(file, _)| *file == "wrap.sh") {
             report(format!("not run here: {}", case.name))?;
             continue;
@@ -304,6 +355,7 @@ pub(super) fn run(
             texts,
             case.files,
             case.env,
+            prime,
         )?;
         if !found.iter().any(|found| (case.needs)(&found.violation)) {
             return Err(failure(case.name, &found));

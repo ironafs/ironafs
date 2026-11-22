@@ -3,7 +3,7 @@
 
 //! Tests for the canary's text and for reading the lint run it is in.
 
-use super::{depended_on, line, manifest, source, tampered, verdict};
+use super::{DIR, depended_on, elsewhere, line, manifest, source, tampered, verdict};
 use crate::bans::{BANS, Lint, Violation};
 use crate::metadata::Package;
 
@@ -300,5 +300,45 @@ fn depended_on_reports_a_package_that_depends_on_the_canary() {
     assert_eq!(
         depended_on(&[package(CANARY, &[]), dev], CANARY),
         [Violation::Canary(format!("{OTHER} depends on the canary"))]
+    );
+}
+
+#[test]
+fn elsewhere_refuses_a_canary_member_outside_its_directory() {
+    let root = std::path::Path::new("/w");
+    assert_eq!(elsewhere(root, &root.join(DIR)), []);
+    let found = elsewhere(root, &root.join("crates/other"));
+    assert!(
+        matches!(found.as_slice(), [Violation::Canary(text)] if text.contains("crates/other")),
+        "{found:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn files_does_not_follow_a_link_and_tampered_refuses_it() {
+    use super::files;
+
+    let root = std::env::temp_dir().join(format!("ironafs-xtask-canary-{}", std::process::id()));
+    let dir = root.join(DIR);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("Cargo.toml"), manifest()).unwrap();
+    let elsewhere_file = root.join("lib.rs");
+    std::fs::write(&elsewhere_file, source()).unwrap();
+    std::os::unix::fs::symlink(&elsewhere_file, dir.join("src/lib.rs")).unwrap();
+    let read = files(&root).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let found = tampered(&read);
+    assert!(
+        found.contains(&Violation::Canary(format!(
+            "{DIR}/src/lib.rs is missing: restore it"
+        ))),
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|violation| matches!(violation, Violation::Canary(text) if text.contains("not a regular file"))),
+        "{found:?}"
     );
 }

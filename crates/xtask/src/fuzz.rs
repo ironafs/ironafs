@@ -112,7 +112,8 @@ impl fmt::Display for Violation {
 /// It reads `name = "…"` or `name = '…'`, with an optional trailing
 /// comment, and refuses every other way of declaring a target: a name it
 /// cannot read, a `[[bin]]` table without exactly one name, a `bin` key,
-/// a spaced or quoted `[[ "bin" ]]` header, and any multi-line string,
+/// a spaced or quoted `[[ "bin" ]]` header, a header or key with an
+/// escape (which could spell either), and any multi-line string,
 /// whose lines it could not tell from keys and headers. A target it
 /// skipped would never be replayed while the step still reported green.
 ///
@@ -141,14 +142,16 @@ pub(crate) fn targets(manifest: &str) -> Result<Vec<String>, Violation> {
                 .collect();
             if header == "[[bin]]" {
                 bin = Some((line, None));
-            } else if bare == "[[bin]]" || bare == "[bin]" {
+            } else if bare == "[[bin]]" || bare == "[bin]" || header.contains('\\') {
                 return Err(refused);
             }
             continue;
         }
         let key = text.split('=').next().unwrap_or_default().trim();
         let unquoted = key.trim_matches(|c| c == '"' || c == '\'');
-        if unquoted == "bin" {
+        // An escape could spell `bin` or `name`; this reader does not
+        // decode escapes, so it refuses every key that has one.
+        if unquoted == "bin" || key.contains('\\') {
             return Err(refused);
         }
         let Some((_, name)) = &mut bin else {

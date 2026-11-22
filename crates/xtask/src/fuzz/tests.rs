@@ -87,7 +87,14 @@ fn targets_refuses_a_bin_table_without_a_name_or_bins_in_another_form() {
         targets("[[ bin ]]\nname = \"one_a\"\n"),
         Err(Violation::UnreadableTarget { line: 1 })
     );
-    for header in ["[[\"bin\"]]", "[['bin']]", "[[ \"bin\" ]]", "[\"bin\"]"] {
+    for header in [
+        "[[\"bin\"]]",
+        "[['bin']]",
+        "[[ \"bin\" ]]",
+        "[\"bin\"]",
+        "[[\"\\u0062in\"]]",
+        "[[\"b\\u0069n\"]]",
+    ] {
         assert_eq!(
             targets(&format!("{header}\nname = \"one_a\"\n")),
             Err(Violation::UnreadableTarget { line: 1 }),
@@ -275,4 +282,21 @@ fn seed_list_refuses_a_stray_entry_or_a_tracked_entry_that_is_no_regular_file() 
         seed_list("t", unmerged.as_bytes(), b""),
         refused("seeds/t/c")
     );
+}
+
+#[test]
+fn targets_refuses_a_key_with_an_escape() {
+    // At the top level, an escape could spell `bin`; in a [[bin]] table,
+    // `name`.
+    for (manifest, line) in [
+        ("[package]\n\"\\u0062in\" = [{ name = \"one_a\" }]\n", 2),
+        ("[[bin]]\n\"\\u006eame\" = \"one_a\"\n", 2),
+        ("[[bin]]\nname = \"one_a\"\n\"pa\\u0074h\" = \"a.rs\"\n", 3),
+    ] {
+        assert_eq!(
+            targets(manifest),
+            Err(Violation::UnreadableTarget { line }),
+            "{manifest}"
+        );
+    }
 }

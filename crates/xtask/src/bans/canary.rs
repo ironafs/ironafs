@@ -118,8 +118,27 @@ pub(crate) fn tampered(files: &[(String, Vec<u8>)]) -> Vec<Violation> {
     found
 }
 
+/// A refusal if the member cargo selected as the canary, by its name, is
+/// not in `DIR` below `root`, the directory `files` reads.
+pub(crate) fn elsewhere(root: &Path, member_dir: &Path) -> Vec<Violation> {
+    if member_dir == root.join(DIR) {
+        Vec::new()
+    } else {
+        vec![Violation::Canary(format!(
+            "the member named {NAME} is at {}, not {DIR}: the canary is checked there",
+            member_dir.display()
+        ))]
+    }
+}
+
+/// What `files` records for an entry that is neither a directory nor a
+/// regular file, such as a link: a name `tampered` never expects.
+const NOT_A_FILE: &str = " (not a regular file)";
+
 /// Reads every file under the canary's directory below `root`, as
-/// `tampered` takes them.
+/// `tampered` takes them. A link, the directory itself included, is not
+/// followed: it is recorded under its name with `NOT_A_FILE` added, which
+/// `tampered` refuses.
 ///
 /// # Errors
 ///
@@ -127,6 +146,11 @@ pub(crate) fn tampered(files: &[(String, Vec<u8>)]) -> Vec<Violation> {
 pub(crate) fn files(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Error> {
     let dir = root.join(DIR);
     let mut found = Vec::new();
+    let kind = fs::symlink_metadata(&dir).map_err(Error::path_io("read file type", &dir))?;
+    if !kind.is_dir() {
+        found.push((format!(".{NOT_A_FILE}"), Vec::new()));
+        return Ok(found);
+    }
     let mut pending = vec![dir.clone()];
     while let Some(next) = pending.pop() {
         let entries = fs::read_dir(&next).map_err(Error::path_io("list directory", &next))?;
@@ -136,16 +160,19 @@ pub(crate) fn files(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Error> {
                 .path();
             let kind =
                 fs::symlink_metadata(&path).map_err(Error::path_io("read file type", &path))?;
+            let relative = path.strip_prefix(&dir).unwrap_or(&path);
+            let name: Vec<String> = relative
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            let name = name.join("/");
             if kind.is_dir() {
                 pending.push(path);
-            } else {
+            } else if kind.is_file() {
                 let bytes = fs::read(&path).map_err(Error::path_io("read", &path))?;
-                let relative = path.strip_prefix(&dir).unwrap_or(&path);
-                let name: Vec<String> = relative
-                    .components()
-                    .map(|part| part.as_os_str().to_string_lossy().into_owned())
-                    .collect();
-                found.push((name.join("/"), bytes));
+                found.push((name, bytes));
+            } else {
+                found.push((format!("{name}{NOT_A_FILE}"), Vec::new()));
             }
         }
     }
