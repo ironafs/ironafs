@@ -5,7 +5,8 @@
 
 Status: accepted (2026-11-21), by the owner, after the review rounds
 recorded below. Raised in issue #43; the ADR 0004 amendment it needs
-is issue #49, in the same pull request (#101).
+is issue #49, in the same pull request (#101). Amended 2026-11-22
+(#TBD): row 23 and its sheet, the route sockets' bounded wait.
 
 ## Context
 
@@ -203,6 +204,8 @@ is issue #49, in the same pull request (#101).
   | `RLIMIT_CORE` (Linux) | a limit of zero prevents a dump, "However, RLIMIT_CORE will be ignored if the system is configured to pipe core dumps to a program" | [core(5)](https://man7.org/linux/man-pages/man5/core.5.html); CONFIRMED 2026-11-20 |
   | `MADV_DONTDUMP` | since Linux 3.4: "Exclude from a core dump those pages in the range"; "addr must be page-aligned" (`EINVAL` otherwise) | [madvise(2)](https://man7.org/linux/man-pages/man2/madvise.2.html); CONFIRMED 2026-11-20 |
   | `RLIMIT_CORE` (macOS) | "The maximum size of a core file is limited by setrlimit(2). Files which would be larger than the limit are not created"; "Core dumps are disabled by default"; "To disable core dumps, set the limit to 0". macOS has no `PR_SET_DUMPABLE` | core(5) and setrlimit(2) in the macOS 27.2 manual; CONFIRMED 2026-11-20 |
+  | `poll` (Linux) | `int poll(struct pollfd *fds, nfds_t nfds, int timeout)`; `struct pollfd` is `int fd; short events; short revents`; "Specifying a negative value in timeout means an infinite timeout", zero returns at once, and the interval "will be rounded up to the system clock granularity" and "may overrun by a small amount"; 0 means the call "timed out before any file descriptors became ready"; `EINTR`: "A signal occurred before any requested event"; `POLLERR`, `POLLHUP` and `POLLNVAL` are "only returned in revents; ignored in events" | [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html); CONFIRMED 2026-11-22. The width of `nfds_t` in glibc and musl is not on the page: UNVERIFIED until point 5.6's check |
+  | `eventfd` | `int eventfd(unsigned int initval, int flags)`; `EFD_CLOEXEC` and `EFD_NONBLOCK` since Linux 2.6.27; the wrapper since glibc 2.8. A read of fewer than 8 bytes fails with `EINVAL`; a read of a non-zero counter returns it and "the counter's value is reset to zero"; a zero counter fails a non-blocking read with `EAGAIN`; a write adds its 8-byte value, and one that would pass 0xfffffffffffffffe fails a non-blocking write with `EAGAIN`; the descriptor is readable "if the counter has a value greater than 0"; an overflowed counter makes `poll` return `POLLERR` | [eventfd(2)](https://man7.org/linux/man-pages/man2/eventfd.2.html); CONFIRMED 2026-11-22 |
   | `clock_gettime` in glibc 2.17 | "The `clock_*' suite of functions ... is now available directly in the main C library. Previously it was necessary to link with -lrt" (2.17) | glibc `NEWS`, 2.17 entry; CONFIRMED 2026-11-20 |
 
 - **What the operating systems document: the control endpoint.** The
@@ -309,7 +312,8 @@ Revisit point 6 if: C33 is revisited.
    receives one descriptor, makes one mount call, creates and serves one
    named pipe, reads what a pipe's caller or server token says, creates
    one IPv6-only UDP socket, reads one filesystem's free space, opens,
-   writes to and reads from one route-notification socket, and overwrites
+   writes to and reads from one route-notification socket, waits for it
+   or a wake with a finite timeout, and overwrites
    one byte buffer with zeros in a way the compiler keeps.
    Which caller is an administrator, and which server is the daemon, is
    decided by its callers. What a clock jump means (C37, points 4 and 5),
@@ -462,7 +466,7 @@ are in its sheet below the table, under the same number.
 | 20 | `windows-pipe-server` | Windows (in `afs`, the session agents and any token sender) | `GetNamedPipeServerProcessId` (twice), `OpenProcess` with `PROCESS_QUERY_LIMITED_INFORMATION` only, `OpenProcessToken` with `TOKEN_QUERY` only, `GetTokenInformation` (`TokenUser` only) (C43, points 1, 2 and 4) | see point 5.4 | `unsafe fn` | one per call; one per adopted handle (two); one bounded SID read |
 | 21 | `linux-udp6` | Linux, glibc and musl | `int socket(int, int, int)` with `AF_INET6`, `SOCK_DGRAM \| SOCK_CLOEXEC` and 0 only; `int setsockopt(int, int, int, const void *, socklen_t)` with `IPPROTO_IPV6`, `IPV6_V6ONLY` and the value 1 only; `int bind(int, const struct sockaddr *, socklen_t)` with a wrapper-built `struct sockaddr_in6`; the descriptor adopted as an `OwnedFd` and returned as a `std::net::UdpSocket` (C30, point 1; C34, point 2) | the C library | `unsafe fn` | one per call (three); one that adopts the descriptor (`OwnedFd::from_raw_fd`) |
 | 22 | `linux-statvfs` | Linux, glibc and musl | `int fstatvfs(int, struct statvfs *)` on a borrowed descriptor of the chunk store's directory (C27, point 3) | the C library | `unsafe fn` | one |
-| 23 | `linux-rtnetlink` | Linux, glibc and musl | `socket` with `AF_NETLINK`, `SOCK_RAW \| SOCK_CLOEXEC` and `NETLINK_ROUTE` only; `bind` with a wrapper-built `struct sockaddr_nl` (the fixed group set on the notify socket, none on the request socket); `ssize_t sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t)` to the kernel's address only; `ssize_t recvmsg(int, struct msghdr *, int)` with a `struct sockaddr_nl` for the sender and `MSG_TRUNC` checked; each descriptor adopted as an `OwnedFd` (C23, point 2) | the C library | `unsafe fn` | one per call (four); one that adopts the descriptor |
+| 23 | `linux-rtnetlink` | Linux, glibc and musl | `socket` with `AF_NETLINK`, `SOCK_RAW \| SOCK_CLOEXEC` and `NETLINK_ROUTE` only; `bind` with a wrapper-built `struct sockaddr_nl` (the fixed group set on the notify socket, none on the request socket); `ssize_t sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t)` to the kernel's address only, with `MSG_DONTWAIT` only; `ssize_t recvmsg(int, struct msghdr *, int)` with `MSG_DONTWAIT` only, a `struct sockaddr_nl` for the sender and `MSG_TRUNC` checked; `int eventfd(unsigned int, int)` with 0 and `EFD_CLOEXEC \| EFD_NONBLOCK` only, for the wake descriptor; `int poll(struct pollfd *, nfds_t, int)` on exactly two entries, one route socket and its wake descriptor, `POLLIN` requested on each, with a timeout of 0 or more only; each descriptor adopted as an `OwnedFd` (C23, point 2; amended 2026-11-22) | the C library | `unsafe fn` | one per call (six); one that adopts a descriptor, a route socket's or the wake descriptor's (one private function) |
 | 24 | `mem-wipe` | every target | none: no foreign call. `core::ptr::write_volatile` of a zero byte through each `&mut u8` of the caller's slice, then `core::sync::atomic::compiler_fence(SeqCst)` (O28, point 2) | none | none | one (the volatile write, in a loop of safe code) |
 
 - **The boot clock** is `CLOCK_BOOTTIME`, `CLOCK_MONOTONIC_RAW` and
@@ -1051,13 +1055,20 @@ are in its sheet below the table, under the same number.
     C20).
     *Test:* a tmpfs of known size, empty and full (a value under the
     floor); a descriptor on another filesystem measures that one.
-23. **`linux-rtnetlink`.**
+23. **`linux-rtnetlink`.** Amended 2026-11-22: the bounded wait, the
+    wake descriptor and non-blocking sends and receives.
     *Interface:* open a notify socket subscribed to a fixed group set
     (links, the addresses and routes of both families, and the policy
     rules of both families), or a request socket with no groups; send
-    one request to the kernel; receive one datagram into a caller's
-    buffer, returning its length, or a typed error that tells overflow
-    (`ENOBUFS`), truncation and a sender other than the kernel apart.
+    one request to the kernel, without waiting; receive one datagram
+    into a caller's buffer, without waiting, returning its length,
+    "nothing queued", or a typed error that tells overflow (`ENOBUFS`),
+    truncation and a sender other than the kernel apart; make a wake
+    (one `eventfd`), signal it from any thread, and clear it; and wait
+    on one route socket and one wake together for at most a given
+    `Duration`, returning which of the two is ready, "timed out" or
+    "interrupted". No call of this site blocks except that wait, and
+    the wait always has a finite timeout.
     The bytes are not decoded here: the netlink messages go to a pure,
     fuzzed decoder outside this crate (Decision 1, point 3; rules 1 and
     9).
@@ -1069,14 +1080,52 @@ are in its sheet below the table, under the same number.
       sheet 21.
     - `sendto` always names the kernel (port id 0, no groups): that a
       plain write reaches the kernel is UNVERIFIED across the candidate
-      kernels. A short send is an error. `EINTR` is retried.
-    - `recvmsg` uses one `iovec` over the caller's slice and a
-      `sockaddr_nl` for the sender. `MSG_TRUNC` in the returned flags is
+      kernels. It passes `MSG_DONTWAIT`, so it never waits for buffer
+      space; `EAGAIN` is a distinct "would block" error, never retried
+      here. Whether a send to the kernel can still wait inside the
+      kernel (for a lock the kernel's own handler takes) is not stated
+      by netlink(7): UNVERIFIED, and the reason the caller never sends
+      under its state lock (below). A short send is an error. `EINTR` is
+      retried.
+    - `recvmsg` passes `MSG_DONTWAIT` and uses one `iovec` over the
+      caller's slice and a `sockaddr_nl` for the sender. `EAGAIN` is
+      "nothing queued", not an error: a ready report from the wait does
+      not promise a datagram, and the receive never blocks to find one.
+      `MSG_TRUNC` in the returned flags is
       the truncation error. The returned `msg_namelen` must equal the size
       of `struct sockaddr_nl` and its family must be `AF_NETLINK`, both
       checked before the port id is read; then a sender whose port id is
       not 0 is an error. On any of these the datagram is not returned.
-      `ENOBUFS` is the overflow error.
+      `ENOBUFS` is the overflow error. `EINTR` is retried.
+    - **The wake** is one `eventfd` made with an initial value of 0 and
+      `EFD_CLOEXEC | EFD_NONBLOCK`, adopted as an `OwnedFd` as soon as the
+      call returns a non-negative value, then held as a `std::fs::File`.
+      Signalling and clearing are safe `std` I/O on that file, as sheet
+      21's socket I/O is, so they need no foreign item: a signal writes
+      the 8-byte value 1 in native byte order, and `EAGAIN` (the counter
+      at its maximum) means already signalled and is success; a clear
+      reads 8 bytes, and `EAGAIN` means not signalled. Any other error,
+      and a transfer of other than 8 bytes, is an error. The wake is
+      `Send` and `Sync`: any thread may signal it. A signal made before
+      the wait starts is kept by the counter, so it is never lost.
+    - **The wait** calls `poll` on a wrapper-owned array of two
+      zero-initialised `struct pollfd`, the route socket's and the
+      wake's descriptor, each borrowed for the call, with `POLLIN`
+      requested on both. The `Duration` becomes milliseconds rounded up,
+      so a remainder below one millisecond never becomes 0, and is
+      clamped at `i32::MAX`; a negative (infinite) timeout is never
+      passed. A return of 0 is "timed out". `EINTR` is returned as
+      "interrupted" and **not retried here**: the time left is the
+      caller's to recompute from its deadline, through the clock seam
+      (below). Any other failure is an error. On a positive return, each
+      entry's `revents` is checked: on the route socket, `POLLIN`,
+      `POLLERR` or `POLLHUP` mark it ready (the following receive reports
+      what it is, an overflow's `ENOBUFS` included); on the wake,
+      `POLLIN` marks it woken. `POLLNVAL` on either, any other bit on
+      the wake (an overflowed counter's `POLLERR` included), or a bit
+      outside those named, is an error. Both may be ready at once, and
+      both are reported. The wait clears nothing: the caller clears the
+      wake.
     - Policy is the caller's (owner, 2026-11-20; the network-change monitor): subscribe before the first
       snapshot and reconcile notifications received during it; on
       overflow, truncation, an interrupted dump or a monitor failure,
@@ -1084,12 +1133,70 @@ are in its sheet below the table, under the same number.
       before reusing state; ignore only lifetime refreshes that leave an
       address's usability unchanged. The daemon's unit allows
       `AF_NETLINK` (the Linux units).
+    - **What the caller must do with the wait** (owner, 2026-11-22; the
+      network-change monitor; amended 2026-11-22). These are
+      requirements on the caller's design, reviewed with its code under
+      point 6.6:
+      - **One wake per blocked worker.** Each thread that waits on a
+        route socket has its own wake, and no other thread waits on it.
+        A stop, and anything else that must make a worker look again, is
+        decided under the caller's state lock and then signals that
+        worker's wake. The wake replaces any netlink message sent only to
+        end a receive.
+      - **A finite timeout from an awake-clock deadline.** Each wait's
+        timeout is the time left to the worker's earliest outstanding
+        deadline on the awake clock, taken through the clock seam (ADR
+        0004, C37; coding standards rule 7), and never more than a named
+        horizon constant, `ROUTE_WAIT_HORIZON` (proposed: 1 second,
+        confirmed by the owner with this amendment). With nothing due,
+        the worker waits to the horizon and looks again.
+      - **The time left is recomputed after every `EINTR`.** After an
+        "interrupted" return, and after any other early return, the next
+        wait's timeout is computed again from the deadline and a fresh
+        clock sample; an earlier timeout is never passed again.
+      - **Sends are non-blocking and never under the state lock.** Every
+        send on a route socket (a dump request, a barrier) is made with
+        the caller's state lock released. A send that fails, "would
+        block" included, is a failed attempt of the request it carries.
+      - **An expiry is bound to its attempt.** Each outstanding dump or
+        barrier attempt carries its sequence number and its own
+        deadline. When the deadline passes, the attempt and its sequence
+        are retired under the state lock before any later datagram is
+        applied; whichever of the expiry and the answer takes the lock
+        first decides the attempt, once. An answer that carries a retired
+        sequence is never accepted, so a late acknowledgement cannot
+        publish.
+      - **Each expired attempt is counted once** as a failed snapshot
+        under the eight-failure policy, however many waits observe it.
+      - **Clock failure** (C37, point 5). A failed clock sample expires
+        every outstanding attempt (each counted once, as above), and no
+        new deadline is set until a valid sample returns. Meanwhile each
+        wait takes `ROUTE_WAIT_HORIZON` as its timeout, the bounded
+        fallback horizon, so a worker still sees its wake, its stop and
+        the clock's return at least once per horizon.
+      - **Deterministic tests.** The caller's design tests, through a
+        seam over this site and a test clock, a lost wake, repeated
+        interruption, a dump that is never answered, a late
+        acknowledgement after its expiry, and a clock that fails and
+        returns.
     *Test:* in a network namespace, an address, a route and a rule added
     and removed, each seen on the notify socket; a dump answered on the
-    request socket; an overflow provoked with a small receive buffer; a
+    request socket; an overflow provoked with a small receive buffer,
+    where the wait reports the socket ready and the receive returns the
+    overflow error; a
     truncated read; a datagram from a non-kernel sender, where the kernel
     lets one be sent; the stand-in returns a short sender address and a
-    wrong family.
+    wrong family. For the wait: a wait with nothing ready returns "timed
+    out"; a wake signalled from another thread ends a blocked wait; a
+    wake signalled before the wait starts ends it at once; two signals
+    are cleared by one clear; a receive with nothing queued returns
+    "nothing queued" without blocking; a timeout below one millisecond is
+    not passed as 0. "Interrupted" and the `POLLNVAL` and wake-`POLLERR`
+    errors are tested through the stand-in (point 6.5), which returns
+    them on demand; on the OS, delivering a signal to the waiting thread
+    needs a handler that the crate does not install (Decision 1, point
+    2), so that path is UNVERIFIED on the OS unless a test can do it
+    without a new site.
 24. **`mem-wipe`.** Owner, 2026-11-20 (the cryptography decision).
     *Interface:* `wipe(&mut [u8])`, safe, returning nothing. It writes
     zero to every byte with `core::ptr::write_volatile`, one byte per
@@ -1722,7 +1829,9 @@ decision and a change to this point (point 7).
    target included (318 on x86_64, 278 on aarch64; Context). `struct
    msghdr` and `struct cmsghdr` are declared per C library: glibc and musl
    give the same sizes and offsets on these targets but different field
-   types and musl's padding fields (Context), which the wrapper zeroes. No
+   types and musl's padding fields (Context), which the wrapper zeroes.
+   `struct pollfd` and `nfds_t` are declared per OS (row 7 on macOS,
+   row 23 on Linux), since `nfds_t` is a different type on each. No
    upstream crate's tests stand behind them.
 3. **A target allowlist.** The crate compiles for these targets only, all
    64-bit, and any other target is a `compile_error!`:
@@ -1782,10 +1891,12 @@ decision and a change to this point (point 7).
    "unavailable or filtered" with the real errno, and a call that blocks
    early in boot is waited for under the unit's start timeout (sheet 8;
    owner, 2026-11-20). Rows 21 to 23 use `socket`, `setsockopt`, `bind`, `sendto`,
-   `recvmsg` and `fstatvfs`; `fstatvfs` was in the x86-64 glibc ABI
-   before 2.17 (CONFIRMED, Context item 8), and the others are older
-   POSIX and BSD socket calls (UNVERIFIED at a glibc 2.17 source; the
-   run on 2.17 settles it).
+   `recvmsg`, `poll`, `eventfd` and `fstatvfs`; `fstatvfs` was in the
+   x86-64 glibc ABI before 2.17 (CONFIRMED, Context item 8), `eventfd`
+   is in glibc from 2.8 (CONFIRMED, Context), and the others are older
+   POSIX and BSD calls (UNVERIFIED at a glibc 2.17 source; the
+   run on 2.17 settles it). That musl offers `eventfd` with the same
+   flags is UNVERIFIED; the musl run settles it.
 6. **An ABI check per target, in CI.** For each site with a foreign item
    (a site with none, `mem-wipe`, is gated by sheet 24's release-assembly
    check instead, under the same MISSING rule), a small C file is
@@ -1990,8 +2101,10 @@ decision and a change to this point (point 7).
   the oldest supported Linux kernel); the dump marker test of O26,
   point 5, on Linux and macOS; on macOS, the stalled DNS reply of point
   3.3; on Linux, rows 21 to 23's runs in a network namespace (both
-  `bindv6only` values; a netlink overflow and truncation; whether a plain
-  write reaches the kernel, which the site does not rely on); and before
+  `bindv6only` values; a netlink overflow and truncation, and the wait's
+  report of an overflow; whether a plain write reaches the kernel, which
+  the site does not rely on; whether a send to the kernel can wait inside
+  the kernel despite `MSG_DONTWAIT`); and before
   the control pipe ships on Windows, the gates of sheets
   17 to 20 (a pre-created pipe name, the 1368 answer before the prefix
   read, revert on every path, a disconnect and reconnect between the
@@ -2176,6 +2289,20 @@ no macOS or Windows component's status: that is the owner's (below).
   It would remove the Windows half of point 5.2's upkeep, and is the
   fallback there for the same reason `libc` is on Unix.
 - **The `cc` crate for the shim.** See point 4.
+- **`SO_RCVTIMEO` on the route sockets** for row 23's bounded receive
+  (one `setsockopt` and `struct timeval`, a fixed period such as one
+  second). Not taken (owner, 2026-11-22): it bounds one receive call
+  only, so a retried `EINTR` or a send outside the receive is not
+  bounded by it; every worker wakes once per period while idle; a stop
+  waits up to a period instead of ending the wait at once; and the
+  period is a constant rather than the caller's deadline. `poll` with a
+  wake ends a wait exactly when it must, from the deadline or the wake,
+  for two more foreign items.
+- **A row of its own for the wake** (`eventfd`, and `poll` with it).
+  Not taken: the wake serves only the wait on a route socket, and row 7
+  keeps its `poll` in the row whose descriptor it waits on. A second
+  user of the wake is a change to the list (point 7), which can split
+  it into its own row then.
 - **A Swift relay process for macOS logging.** The daemon would send each
   event over local IPC to a small Swift program that calls the logging API
   natively. Not taken: entries would be attributed to the relay, not the
@@ -2351,3 +2478,9 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
   wording, round 15's sweep entry in the record, and round 1's
   undescribed minor), fixed in the next commit and recorded; under the
   stop rule, no further round.
+- **Amendment, 2026-11-22 (#TBD): row 23 and sheet 23, the route
+  sockets' bounded wait.** Row 23 gains `poll` on a route socket and a
+  wake descriptor, and `eventfd` for the wake; its sends and receives
+  become non-blocking. Sheet 23 states the caller's requirements for the
+  wait. Evidence, review rounds and the supersession sweep: to be
+  recorded here before the owner's acceptance.
