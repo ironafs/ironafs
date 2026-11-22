@@ -296,14 +296,17 @@ commit on top of `aa4fc26` that adds this section:
 **Raised for the callback specification and the fence code, not
 changed here:**
 
-- A request with no evidence record has no epoch copy: an unrecorded
-  volume (5.2, point 5) and an unauthenticated context (5.4, point 1;
-  AC13) take none. By the callback specification, 5.6, point 3, every
-  fetch such a request sends records no epoch and fails its check, and
-  no adoption can rescue it, so C16, point 2, ends it with `Stale`
-  instead of the uncached read this specification and C20, point 1,
-  describe. Whether a reply that is never cached is fenced on the other
-  five values only is the callback specification's to state.
+- A request on an unrecorded volume (5.2, point 5) or from an
+  unauthenticated context (5.4, point 1; AC13) makes no observation that
+  writes an epoch. By the callback specification, 5.6, point 3, at
+  `63313e5`, a fetch such a request sends while its context holds no
+  copy records no epoch and fails its check, and adoption cannot rescue
+  it, since its own observation writes none (adoption does rescue the
+  first fetch of a volume, whose "new" outcome writes the epoch). So
+  C16, point 2, would end it with `Stale` instead of the uncached read
+  this specification and C20, point 1, describe. Whether a reply that is
+  never cached is fenced on the other five values only is the callback
+  specification's to state.
 - The callback specification, 5.6, point 3, has the copy written when
   the epoch is set or changed; the fence code writes it on "confirmed"
   too. That write is needed: without it, once the table evicts a copy
@@ -314,21 +317,22 @@ changed here:**
   copy of its abandoned epoch in place. That is safe, because a chunk
   under the abandoned epoch is unreachable by its key, but it costs one
   failed install after the next "new" outcome, and the callback
-  specification does not say so.
+  specification at `63313e5` did not say so.
 
 ### Alignment with the callback specification at `35ad5cb`
 
-The callback specification took up the first two items raised above
-(its 5.6, point 3: the write on "confirmed"; "A reply that is never
-cached"). A reviewer of it also found the adoption rule's proof false:
-an epoch can be written with no ambiguity and no volume break (an
-outcome "new" after the evidence record was evicted), so the counter
-condition does not show which observation wrote the epoch adopted. That
-argument, which this specification repeated, is withdrawn. Changed here,
-in the commit on top of `e19011f` that adds this subsection:
+The callback specification took up all three items raised above (its
+5.6, point 3: the write on "confirmed"; an evicted evidence record's
+last copy; "A reply that is never cached"). A reviewer of it also found
+the adoption rule's proof false: an epoch can be written with no
+ambiguity and no volume break (an outcome "new" after the evidence
+record was evicted), so the counter condition does not show which
+observation wrote the epoch adopted. That argument, which this
+specification repeated, is withdrawn. Changed here, in the commit on top
+of `e19011f` that adds this subsection:
 
 - 5.6, point 1: the paragraph on the fence table's copy is split into
-  its write, its adoption and the case with no copy:
+  its write, its adoption and the reply that is never cached:
   - every outcome that sets, confirms or changes the epoch writes the
     copy, in the same step, under the volume's lock, the table's lock
     inside;
@@ -352,6 +356,25 @@ in the commit on top of `e19011f` that adds this subsection:
 
 Section 4 already listed the epoch among wide suspicions. **Not
 reviewed.**
+
+In the list above, the bullet "an unrecorded volume and an
+unauthenticated context hold no copy" described the text of `374d924`,
+which the scoped round below corrects.
+
+### Scoped round on the alignment
+
+The alignment (`aa4fc26..374d924`) was verified: `glm-5.3` (high)
+passed with one minor; `deepseek-flash` failed with one major and one
+minor. Each was checked against the callback specification at
+`35ad5cb`, 5.6, point 3, and the fence code of #91 first; all three
+hold. They are fixed in the commit on top of `374d924` that adds this
+subsection; **not reviewed.**
+
+| Item | Severity | Disposition | Origin | Kind |
+|---|---|---|---|---|
+| D1 (DeepSeek): 5.6, point 3, step 3, failed every fetch in flight on an epoch change, and 5.6, point 1, grounded the five-value rule in "holds no copy", which is false when an evicted record's last copy remains; the callback specification grounds it in the reply never being cached | major | fixed: step 3 now fails, on an epoch change, the fetches whose reply is to be cached, and says a reply that is never cached is checked on the other five values; 5.6, point 1's bullet is now "A reply that is never cached", grounded in that, whether or not the context holds a copy; 5.2, point 5, and 5.4, point 1, cite it | introduced by an earlier fix round (`374d924`) | consistency between parts |
+| D2 (DeepSeek): this record said no adoption can rescue a request with no evidence record, said the callback specification did not cover an evicted record's last copy, and said it took up two items | minor | fixed: the raised item names requests whose own observation writes no epoch, notes that adoption rescues a volume's first fetch, and dates the statements to `63313e5`; the alignment says all three items were taken up | introduced by an earlier fix round (`e19011f`, `374d924`) | other (record) |
+| G1 (GLM): "hold no record, so no copy" contradicted the "Write" bullet's lingering copy | minor | fixed with D1 | introduced by an earlier fix round (`374d924`) | consistency between parts |
 
 ## Q10: the server reset
 
@@ -433,3 +456,6 @@ asked to open any excluded section.
 - At the commit aligning it with the callback specification at
   `35ad5cb`: `cargo xtask check` passes (EXECUTED, macOS, 2026-11-22
   UTC). Not verified by any lane.
+- At the commit with the scoped round on the alignment: `cargo xtask
+  check` passes (EXECUTED, macOS, 2026-11-22 UTC). Not verified by any
+  lane.
