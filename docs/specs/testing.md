@@ -1129,7 +1129,7 @@ arithmetic, which D7 tests.
 | O47, point 3 | 5.2.1, D9; 5.5, point 5 | the fuzz manifest check on a decoder or target without its pair |
 | O48, point 5 | 5.2.5, L3 and L4 | a gate result with no venue named is missing evidence |
 | O49, point 1 | 5.6, point 1 | a planted skip of work changes a count |
-| O49, points 2 and 3 | 5.5 table and point 11; 5.6, points 3 and 5 | point 3: the pull-request workflow check, on a runner label not in the hosted list or a timed benchmark in a pull-request workflow. Point 2: no check yet, since timed benchmarks run by hand until fixed hardware exists (owner's decision 7); its check comes with that hardware (section 11) |
+| O49, points 2 and 3 | 5.5 table and point 11; 5.6, points 3 and 5 | point 3: the pull-request workflow check, on a runner label not in the hosted list or a timed benchmark in a pull-request workflow. Point 2: no check yet, since timed benchmarks run by hand until fixed hardware exists (owner's decision 7); a gap, tracked in #38, whose check comes with that hardware (section 11) |
 | Rule 7, no retries | 5.4, point 6 | the retries check on a profile or command with retries above zero |
 | Rule 15, printed seeds | 5.4, point 9; 5.5, point 2 | a property failure report with no seed, in the generator's own tests |
 
