@@ -182,10 +182,16 @@ The invariants this page must keep, word for word:
   (5.8, point 4).
 - **Completion owner:** the loop that completes a request at its deadline
   independently of the worker serving it (5.8, point 6).
-- **Ticket:** what a fetch recorded when it was sent: the break counters
-  of object, volume and server, the overload record's counter, and the
-  credential and rights generations (the seams specification, 5.8,
-  point 2).
+- **Ticket:** what a reply carries to submission: the recorded fence
+  tuple of each object it carries state of (the callback specification,
+  issue #66, section 4 and 5.6, points 2 and 3: the object's and the
+  volume's break counters, the server's suspect epoch, the pause
+  generation, the resume generation and the context's local volume
+  epoch), the credential and rights generations, and the grant (C16,
+  point 3).
+- **Fence table:** the cache's table that holds each context's break
+  counters and local volume epoch copies and the resume generation, behind
+  one lock (the callback specification, 5.6, point 2).
 - **Submission:** the step that checks a reply's ticket and claims its
   request's entry; a reply whose submission succeeded counts as delivered
   (C16, point 3).
@@ -749,7 +755,7 @@ C13.2, C13.3: Firm].
 This is how a binding in the daemon's process makes C16, point 3's check
 and the write one serialised step without holding a core lock across the
 write [ADR 0004 C16.3: Firm; C39.4: Working]. A binding in its own process
-makes it with the fence epoch of C16, point 6, under S1.
+makes it with the fence epoch of C16, point 6, under S1 (point 7).
 
 1. **The lock set.** A reply depends on every node whose state it carries
    or whose cache entry it lets the kernel fill. Its **lock set** is the
@@ -773,14 +779,20 @@ makes it with the fence epoch of C16, point 6, under S1.
 2. **The submission step.** `Binding::submit(request, Fenced<Reply>)`
    does, in order, with no yield from step 1 to step 5:
    1. **register:** take the binding's next **submission sequence number**
-      by an atomic fetch-and-add. The advance itself puts the number in
+      by one atomic compare-and-swap that rises by 1 and refuses to pass
+      `u64::MAX` (6, point 4). The advance itself puts the number in
       flight: every number below the counter is in flight until step 7
       marks it done, with no separate step that could be missed;
    2. take the lock set (point 1);
-   3. **check:** compare the clocks (C32, point 5); compare the ticket with
-      the current break counters of object, volume and server, the
-      overload record (the seams specification, 5.4, point 7), and the
-      credential and rights generations; check that the handle or caller
+   3. **check:** run the fence check of the callback specification, 5.6,
+      point 2, on each recorded tuple of the ticket, under the fence
+      table's lock (point 3): it compares the clocks first (C32, point 5),
+      then every value of the tuple (for a reply that is never cached,
+      every value but the local volume epoch, its point 3), looked up
+      with the request's current context and credential generation, so a
+      credential change finds no record and fails it; then compare the
+      ticket's credential and rights generations with the current ones;
+      check that the handle or caller
       is still live, that no node of the lock set has a gate in this
       binding for the state the reply needs (point 5), and that the
       binding has no overflow pending;
@@ -803,22 +815,39 @@ makes it with the fence epoch of C16, point 6, under S1.
    does so in the core before any event is queued (C16, point 1), and in
    the same step, under the locks it records under, it sets the gate of
    each affected binding's slot (or the binding's overflow) **before** it
-   queues the event. The sequence counter's fetch-and-add and load, every
-   write of a counter, generation, gate or overflow flag that step 3 reads,
-   and step 3's reads of them, are sequentially consistent atomic
-   operations [OWN]. Then, for any submission and any recorded change:
+   queues the event. The sequence counter's compare-and-swap and load are
+   sequentially consistent atomic operations. Every write of a counter,
+   generation, gate or overflow flag that step 3 reads is either made
+   under a lock that step 3 holds while it reads the value, or is a
+   sequentially consistent atomic store that step 3 reads with a
+   sequentially consistent load [OWN]. The fence table's values (the
+   break counters, the local volume epoch copies, the resume generation)
+   and the suspect epoch are of the first kind, written and read under the
+   fence table's lock; the pause generation is of the second, stored by
+   Rx's driver with no lock and loaded by the fence check (the callback
+   specification, 5.6, points 1 and 2; the Rx specification, 5.12, point 5).
+   **The fence table's lock is a leaf** in C39, point 4's order: step 3
+   takes it after the lock set, holds it for the fence check and no
+   longer, and takes no lock while it holds it [OWN, within ADR 0004
+   C39.4: Working; the callback specification, 5.6, point 2]. The check
+   needs the table held exclusively, so no submission can check without
+   it. Then, for any submission and any recorded change:
    - if the submission's registration comes before the notifier's read of
      the sequence counter for that change's event (point 4), the drain
      waits for it;
    - otherwise its registration comes after that read, which comes after
      the change was recorded, so its check (step 3) reads the change and
-     fails.
+     fails: for a value written under a lock, step 3 takes that lock after
+     the recorder released it (had it taken it first, its registration
+     would come before the change, and so before the notifier's read); for
+     an atomic value, its load follows the store in the single order of
+     sequentially consistent operations.
 
    A change recorded under a node's object lock is also ordered by that
    lock against every submission whose lock set holds the node. A change
    recorded after step 5 finds the reply submitted, which counts as
-   delivered (C16, point 3). Steps 2 to 5 hold the lock set only, never
-   across a wait or a write.
+   delivered (C16, point 3). Steps 2 to 5 hold the lock set, and step 3
+   the fence table's lock within it, never across a wait or a write.
 4. **The drain.** When the notifier takes an event for a binding, it reads
    the binding's sequence counter, then waits with `Clock::wait`, bounded
    by the event's deadline (5.10, point 8), until every sequence number
@@ -844,6 +873,29 @@ makes it with the fence epoch of C16, point 6, under S1.
    break storm can cause; the seams specification's `fence_retries`]. A
    fenced mutation reply is never retried: its outcome is read back (C28,
    point 4).
+7. **Out of process, the fence epoch carries the fence tuple** [ADR 0004
+   C16.6: Firm]. A binding in its own process cannot run step 3's fence
+   check, so this page owns telling it that a value of the check changed
+   (the callback specification, 5.6, point 2, "What is not in the tuple").
+   The daemon advances an out-of-process binding's fence epoch, and pushes
+   it on the binding's ordered stream, after it records (C16, point 1)
+   any change that could fail a reply of that binding at step 3:
+   - every advance of the suspect epoch of a server key the binding holds
+     data from;
+   - every raise of a pause generation, for every binding holding data
+     from a server on that family's socket, and every raise of the resume
+     generation, for every binding;
+   - every raise of an object's or a volume's break counter in a context
+     the binding serves;
+   - every change of a context's local volume epoch for a volume the
+     binding holds data from;
+   - every change of a credential or rights generation, and every
+     revocation, as C16, point 6, already says.
+
+   This is a duty, not a mechanism: which task observes each change and
+   pushes the advance, how the daemon knows which bindings hold data from
+   a server key, and how a raise made with no event behind it reaches the
+   push are open (section 13, Q9).
 
 ### 5.10 The invalidation stream and its acknowledgements
 
@@ -1160,8 +1212,10 @@ report of point 5 [ADR 0004 C17: Working; N47.3: Firm].
    overflow with checked addition. A binding whose counter would overflow is
    torn down [OWN: unreachable in practice, and never a wrap that would let
    an old acknowledgement clear a new effect].
-4. Submission sequence numbers: `u64`, raised by one per registration,
-   never wrapping; reaching `u64::MAX` tears the binding down [OWN].
+4. Submission sequence numbers: `u64`, raised by one per registration by
+   a compare-and-swap that refuses to pass `u64::MAX` (5.9, point 2,
+   step 1), never wrapping; a registration it refuses tears the binding
+   down [OWN].
 5. `forget` counts: subtraction saturating at zero, with the excess counted
    (5.6, point 4).
 6. Extension list totals: checked addition against `MAX_EXTENSION_BYTES`
@@ -1387,7 +1441,10 @@ acknowledgement deadline (5.10, point 8) fires on a healthy layer.
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
 | ADR 0004 | DECISION | [ADR 0004](../adr/0004-architecture.md), parts 1 to 4, accepted 2026-11-20: the decisions of section 1, and S1, S2 | throughout |
-| Seams | DECISION | [The seams specification](seams-and-scheduling.md), draft (2026-11-21): 4, 5.3, 5.4 points 2 and 7, 5.6 points 6 and 7, 5.7 point 4, 5.8, section 13 Q3 | 5.8, 5.9, 5.12 point 7 |
+| Seams | DECISION | [The seams specification](seams-and-scheduling.md), draft (2026-11-21): 4, 5.3, 5.4 point 2, 5.6 points 6 and 7, 5.7 point 4, 5.8, section 13 Q3 | 5.8, 5.9, 5.12 point 7 |
+| Callbacks | DECISION | The callback service specification, draft, issue #66 (pull request #119): section 4's terms "Fence tuple", "Fence table" and "Ticket"; 5.6, points 1 to 3 and row P1 of point 9 | 4, 5.9 points 2, 3 and 7, 13 Q9 |
+| Rx | DECISION | The Rx specification, issue #55: 5.12, point 5 (the pause generation) | 5.9 point 3 |
+| Incarnation | DECISION | The volume incarnation specification, draft, issue #78 (pull request #125): 5.6, points 1 and 3 (the local volume epoch and its copy in the fence table) | 5.9 point 7, 13 Q9 |
 | IPC | DECISION | The local IPC specification, draft, issue #62: its request cap and its numbering of contract errors | 2, 5.2 |
 | E61 | DOCUMENTATION | errno(3), Linux man-pages 6.19, page dated 2026-05-28; register row E61 | 5.12 |
 | E62 | DOCUMENTATION | fuse(4), Linux man-pages 6.19, page dated 2026-02-08; register row E62: DESCRIPTION, the request and reply headers, FUSE_INTERRUPT | 5.3, 5.6, 5.8 |
@@ -1472,6 +1529,25 @@ entry (5.10, point 4) is to be observed with the FUSE codec (issue #92).
   table is [OWN]. **Recommendation:** the FUSE codec's review (issue #92)
   re-checks the Linux column against each operation's documented errors;
   S2 fixes the Windows column.
+- **Q9. Who pushes a fence-epoch advance out of process** (5.9, point 7;
+  C16, point 6). The callback specification records suspect-epoch
+  advances and object and volume breaks in the core, and counts its
+  `Pause` and `Resume` events for diagnostics only (its 5.6, point 9,
+  row P1); the incarnation specification writes local volume epoch
+  changes; Rx's driver raises the pause generation with no lock; and the
+  fence check raises the resume generation only when a check runs, so a
+  resume with no check behind it raises nothing. Open: which task turns
+  each kind of change into an advance and pushes it (the callback
+  service's task, the notifier, or the housekeeping loop running the
+  clock comparison after a resume); how the daemon finds the bindings
+  holding data from a server key, or whether it advances every
+  out-of-process binding; and how advances are coalesced so that a
+  break storm stays within the stream's bounds (5.10, point 9). The
+  push must follow the record (C16, point 1) and must never let a reply
+  produced before the change be written after the binding applied the
+  advance. **Recommendation:** settle it with S1 (the adapter endpoint),
+  before the first out-of-process binding is built. Blocks: every
+  out-of-process binding; nothing in the daemon's process.
 
 ## 14. Review
 
