@@ -833,6 +833,8 @@ fn imports_from_home(tokens: &[Token], index: usize, home: &str) -> bool {
         at = before;
         match kind(tokens, at) {
             Some(TokenKind::Ident(word)) if word == "use" => break at,
+            // The name is a rename's target (`x as Name`), not the trait.
+            Some(TokenKind::Ident(word)) if word == "as" => return false,
             Some(TokenKind::Ident(_) | TokenKind::PathSep | TokenKind::Punct('{' | ',')) => {}
             _ => return false,
         }

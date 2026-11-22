@@ -628,6 +628,30 @@ const CASES: &[Case] = &[
         at: Some("Source"),
     },
     Case {
+        name: "the production `Rng`'s crate gives another item the seam's name on import",
+        files: || {
+            with_pure(pure(
+                "ironafs-crypto",
+                "src/source.rs",
+                "use ironafs_time::{Clock as Rng};\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Rng", .. }),
+        at: Some("use"),
+    },
+    Case {
+        name: "the production `Rng`'s crate gives its seam's home crate the seam's name",
+        files: || {
+            with_pure(pure(
+                "ironafs-crypto",
+                "src/source.rs",
+                "use ironafs_time as Rng;\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Rng", .. }),
+        at: Some("use"),
+    },
+    Case {
         name: "the production `Rng`'s crate re-exports the seam",
         files: || {
             with_pure(pure(
