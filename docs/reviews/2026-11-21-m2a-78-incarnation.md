@@ -316,6 +316,43 @@ changed here:**
   failed install after the next "new" outcome, and the callback
   specification does not say so.
 
+### Alignment with the callback specification at `35ad5cb`
+
+The callback specification took up the first two items raised above
+(its 5.6, point 3: the write on "confirmed"; "A reply that is never
+cached"). A reviewer of it also found the adoption rule's proof false:
+an epoch can be written with no ambiguity and no volume break (an
+outcome "new" after the evidence record was evicted), so the counter
+condition does not show which observation wrote the epoch adopted. That
+argument, which this specification repeated, is withdrawn. Changed here,
+in the commit on top of `e19011f` that adds this subsection:
+
+- 5.6, point 1: the paragraph on the fence table's copy is split into
+  its write, its adoption and the case with no copy:
+  - every outcome that sets, confirms or changes the epoch writes the
+    copy, in the same step, under the volume's lock, the table's lock
+    inside;
+  - a write is refused only when the fence table is exhausted, when
+    every check already fails;
+  - an evicted record's last copy stays until the next "new" outcome
+    replaces it, at the cost of one failed install;
+  - the install whose own observation wrote or confirmed the epoch
+    makes that write and the adoption one step under the volume's lock,
+    citing the callback specification's 5.6, point 3, and its section
+    13, Q11 (the table does not check which epoch it adopts);
+  - an unrecorded volume and an unauthenticated context hold no copy;
+    their replies are never cached and are fenced on the other five
+    values.
+- 5.2, point 5: the one-request epoch an unrecorded volume took is
+  removed. It existed only in this specification and not in the fence
+  code. The unrecorded request takes no epoch and is fenced as above.
+  5.4, point 1, says the same of an unauthenticated call.
+- 5.6, point 3, step 3: an epoch changed for any cause, a record made
+  again after eviction among them, fails the fetches in flight.
+
+Section 4 already listed the epoch among wide suspicions. **Not
+reviewed.**
+
 ## Q10: the server reset
 
 C25, point 3 (Working), asks the observing context to take a fresh
@@ -393,3 +430,6 @@ asked to open any excluded section.
   lane.
 - At the commit with the decision 29 amendment: `cargo xtask check`
   passes (EXECUTED, macOS, 2026-11-22 UTC). Not verified by any lane.
+- At the commit aligning it with the callback specification at
+  `35ad5cb`: `cargo xtask check` passes (EXECUTED, macOS, 2026-11-22
+  UTC). Not verified by any lane.

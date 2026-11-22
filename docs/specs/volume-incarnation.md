@@ -466,27 +466,27 @@ Eviction and the full table `[OWN]`:
    journal records are detached from it first (C18, point 9), and from
    then on their recorded incarnation is treated as 5.8, point 3, treats
    a record from an earlier run: unconfirmed, and kept quarantined.
-5. **Unrecorded.** A context reaches it only when the shared part is
-   full or it is at its own cap, every record it holds is pinned (it
-   holds a holder on each volume it has a record for), and no idle
-   context's shared-part record can be reclaimed. The
-   observation's values are compared with nothing, a fresh `epoch` is
-   taken from the counter for that one request and held only by it, and
-   nothing the request fetches is cached, as C20, point 1, treats
-   unauthenticated data. A request that would make a holder on an
+5. **Unrecorded.** A context reaches it only when the shared part is full
+   or it is at its own cap, every record it holds is pinned (it holds a
+   holder on each volume it has a record for), and no idle context's
+   shared-part record can be reclaimed. The observation's values are
+   compared with nothing, no `epoch` is taken, and nothing the request
+   fetches is cached, as C20, point 1, treats unauthenticated data; its
+   replies are fenced on the fence tuple's other five values (5.6, point
+   1, "No copy at all"). A request that would make a holder on an
    unrecorded volume (an open, a directory snapshot, a journal record) is
    refused with the retryable busy error, as a pin over budget is (C11,
-   point 10), because a holder needs a record to pin. **Bound:** the
-   state ends as soon as the context releases one holder, or another
-   context's shared-part records go idle for
-   `inc.records.idle_reclaim_after`; a context with a floor that holds
-   holders on fewer than `inc.records.floor_per_context` volumes never
-   reaches it. The cost falls on that context alone. **Residual:** an
-   active context is never reclaimed, so other contexts that keep using
-   their records can hold the shared part full indefinitely; a context
-   is then limited to its floor, and a context without a floor (more
-   than `inc.records.floors_max` contexts in use) can be left with no
-   record at all, reading uncached and refused busy for holders.
+   point 10), because a holder needs a record to pin. **Bound:** the state
+   ends as soon as the context releases one holder, or another context's
+   shared-part records go idle for `inc.records.idle_reclaim_after`; a
+   context with a floor that holds holders on fewer than
+   `inc.records.floor_per_context` volumes never reaches it. The cost
+   falls on that context alone. **Residual:** an active context is never
+   reclaimed, so other contexts that keep using their records can hold the
+   shared part full indefinitely; a context is then limited to its floor,
+   and a context without a floor (more than `inc.records.floors_max`
+   contexts in use) can be left with no record at all, reading uncached
+   and refused busy for holders.
 6. **Holders.** `holders` is a `u32`. Adding a holder that would overflow
    it is refused with the retryable busy error, and the count is never
    wrapped (section 6, A2). Each holder's own owner bounds how many
@@ -518,7 +518,9 @@ in this order `[OWN]`:
    the observing context's own connection that passed every check of
    vl-fs-read.md, 5.4. An unauthenticated call is not an observation for
    cached data, because its data is never cached (C20, point 1); its
-   values are compared with nothing and kept nowhere.
+   values are compared with nothing and kept nowhere, and its replies are
+   fenced on the fence tuple's other five values (5.6, point 1, "No copy
+   at all").
 2. **Lookup.** The record of (context and generation, cell, volume id).
    If none exists, the outcome is **new** if 5.2 lets a record be made,
    and **unrecorded** otherwise (5.2, point 5); points 3, 5 and 6 do not
@@ -617,24 +619,34 @@ Not applicable: nothing is encoded or sent.
    **The fence table's copy of the epoch** `[OWN, under ADR 0004 C25.3:
    Working]`. The local volume epoch is the sixth value of the fence
    tuple (the callback specification, 5.6, point 2), compared from a copy
-   the fence table keeps per context and volume (its 5.6, point 3). Each
-   outcome that leaves a record writes the record's `epoch` into that
-   copy, in the same step, under the volume's lock, taking the fence
-   table's lock inside it (the table's lock is a leaf in C39, point 4's
-   order, the callback specification, 5.6, point 2): "new" its first
-   epoch; "confirmed" the same epoch, which restores a copy the table
-   evicted; "ambiguous" the new one (point 3, step 3). A call sent while
-   its context holds no copy for the volume records no epoch, and its
-   tuple fails its check, save at the install whose own observation wrote
-   the epoch: that install adopts the epoch into the recorded tuple only
-   if the fence table has never evicted a record holding a copy (once it
-   has, a latch refuses every later adoption) and the context's volume
-   record still has the recorded tuple's volume break counter, unbroken
-   since the call was sent (the callback specification, 5.6, point 3).
-   An epoch written meanwhile by anything but this install's own
-   observation would have needed ambiguity, which raises that counter
-   (point 3, step 2). A refused adoption fails the fence, C16, point 2,
-   applies, and the retry records the epoch the observation wrote.
+   the fence table keeps per context and volume (its 5.6, point 3):
+   - **Write.** Each outcome that sets, confirms or changes the epoch
+     writes the record's `epoch` into that copy, in the same step, under
+     the volume's lock, taking the fence table's lock inside it (the
+     table's lock is a leaf in C39, point 4's order; the callback
+     specification, 5.6, point 2): "new" its first epoch; "confirmed"
+     the same epoch, which puts back a copy the table evicted while the
+     record lived; "ambiguous" the new one (point 3, step 3). A write is
+     refused only when the fence table is exhausted, and then every check
+     already fails (the callback specification, 5.6, point 3); nothing
+     more is done here. An evicted record (5.2, point 4) leaves its last
+     copy in the table; the next "new" outcome replaces it, at the cost
+     of one failed install of a fetch recorded under the old copy.
+   - **Adoption.** A call sent while its context holds no copy for the
+     volume records no epoch, and its tuple fails its check, save at the
+     install whose own observation wrote or confirmed the epoch, which
+     may adopt it as the callback specification, 5.6, point 3, says.
+     That install makes its observation's write and the adoption one
+     step under the volume's lock, with no other write between: the
+     table does not check that the epoch it adopts is the one this
+     install wrote (the callback specification, section 13, Q11). A
+     refused adoption fails the fence, C16, point 2, applies, and the
+     retry records the epoch the observation wrote.
+   - **No copy at all.** An unrecorded volume (5.2, point 5) and an
+     unauthenticated context (5.4, point 1) hold no record, so no copy.
+     Their replies are never cached, and are fenced on the other five
+     values only (the callback specification, 5.6, point 3, "A reply
+     that is never cached").
 2. **Triggers of ambiguity,** each the observing context's own
    observation. Each is C25, point 3's ambiguity for that context
    `[ADR 0004 C25.3: Working]` unless it says `[OWN]`:
@@ -672,7 +684,9 @@ Not applicable: nothing is encoded or sent.
       value of the fence tuple (the callback specification, 5.6, point
       2), so every fetch of the context in flight for the volume, which
       recorded the old one, fails its fence when its reply is installed
-      (its 5.6, point 3), and C16, point 2, applies. The one exception is
+      (its 5.6, point 3), and C16, point 2, applies. So does an epoch
+      changed for any other cause, a record made again after eviction
+      among them (point 1, "Write"). The one exception is
       the reply whose own check caused the change (T7 or T8, points 6 and
       8): it passed its fence check in this same step (points 6 and 8),
       so no value moved while it was in flight. If it carried data, its
