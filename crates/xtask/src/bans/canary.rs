@@ -136,8 +136,8 @@ pub(crate) fn elsewhere(root: &Path, member_dir: &Path) -> Vec<Violation> {
 const NOT_A_FILE: &str = " (not a regular file)";
 
 /// Reads every file under the canary's directory below `root`, as
-/// `tampered` takes them. A link, the directory itself included, is not
-/// followed: it is recorded under its name with `NOT_A_FILE` added, which
+/// `tampered` takes them. A link, the directory itself or one above it
+/// below `root` included, is not followed: it is recorded under its name with `NOT_A_FILE` added, which
 /// `tampered` refuses.
 ///
 /// # Errors
@@ -146,10 +146,16 @@ const NOT_A_FILE: &str = " (not a regular file)";
 pub(crate) fn files(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Error> {
     let dir = root.join(DIR);
     let mut found = Vec::new();
-    let kind = fs::symlink_metadata(&dir).map_err(Error::path_io("read file type", &dir))?;
-    if !kind.is_dir() {
-        found.push((format!(".{NOT_A_FILE}"), Vec::new()));
-        return Ok(found);
+    // Each directory from the root down, `crates` included, without
+    // following a link.
+    let mut step = root.to_path_buf();
+    for part in Path::new(DIR).components() {
+        step.push(part);
+        let kind = fs::symlink_metadata(&step).map_err(Error::path_io("read file type", &step))?;
+        if !kind.is_dir() {
+            found.push((format!(".{NOT_A_FILE}"), Vec::new()));
+            return Ok(found);
+        }
     }
     let mut pending = vec![dir.clone()];
     while let Some(next) = pending.pop() {

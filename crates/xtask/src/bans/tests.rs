@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::ffi::OsStr;
 
 use super::snapshot as snapshot_of;
+use super::template;
 use super::{
     BANS, Ban, CONF_DIR, Found, Lint, Snapshot, Violation, build_overrides, cargo_warnings,
     changed, config_files, fired_violations, line_breaks, listed, outside_root, overridden,
@@ -861,7 +862,7 @@ fn line_breaks_refuses_a_path_holding_one() {
 fn workspace_clippy_lints_every_feature() {
     // Code behind a feature no build enables would otherwise never be
     // compiled, so no ban could fire on it.
-    let command = workspace_clippy();
+    let command = workspace_clippy(Path::new("clippy-driver"));
     assert!(
         command.get_args().any(|arg| arg == "--all-features"),
         "{:?}",
@@ -905,4 +906,32 @@ fn snapshot_covers_the_cargo_configurations_of_every_directory_it_is_given() {
     std::fs::remove_dir_all(&root).unwrap();
     assert!(with, "the fixtures' chain is snapshot");
     assert!(!without, "only the directories given are");
+}
+
+#[test]
+fn template_refuses_a_build_directory_with_template_syntax() {
+    assert_eq!(template(Path::new("/w/target/check-bans-lint-1")), None);
+    for path in ["/w/{workspace-root}/target", "/w/a}b/target"] {
+        assert!(
+            matches!(template(Path::new(path)), Some(Violation::Unbuilt(text)) if text.contains("template")),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn workspace_clippy_is_cargo_check_with_clippy_s_driver() {
+    let command = workspace_clippy(Path::new("/t/bin/clippy-driver"));
+    assert_eq!(command.get_args().next(), Some(OsStr::new("check")));
+    let set = |name: &str| {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new(name))
+            .and_then(|(_, value)| value)
+    };
+    assert_eq!(
+        set("RUSTC_WORKSPACE_WRAPPER"),
+        Some(OsStr::new("/t/bin/clippy-driver"))
+    );
+    assert_eq!(set("CLIPPY_ARGS"), Some(OsStr::new("")));
 }

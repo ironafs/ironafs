@@ -56,7 +56,9 @@
 //! wrapper (`no_wrapper`), so none can run plain rustc for another member
 //! while the canary is linted with clippy, and builds into a fresh, empty
 //! directory (`isolated_build`), so no artifact an earlier run built
-//! without clippy is reused. The canary proves the lint ran
+//! without clippy is reused. It runs clippy as `cargo check` with clippy's
+//! driver (`clippy_json`), as `cargo clippy` does inside, so no cargo
+//! alias is read. The canary proves the lint ran
 //! with the root configuration's bans on one member;
 //! a member's own configuration is proved by the fixture, and a change
 //! that reaches only some members' compilation (a build script's variable
@@ -717,7 +719,10 @@ pub(crate) fn fired_violations(output: &str) -> Vec<Violation> {
 
 /// Checks the bans in `clippy_toml`: each listed, each firing on its
 /// planted lines in a fixture under `dir` linted with that file and the
-/// toolchain file `toolchain_toml`, and none unresolved.
+/// toolchain file `toolchain_toml`, and none unresolved. `dir` is emptied
+/// first, so no cargo configuration left in it (by a build script of the
+/// workspace's lint, say) is read: the preflight scans only the
+/// directories above it.
 ///
 /// # Errors
 ///
@@ -728,6 +733,7 @@ pub(crate) fn check(
     toolchain_toml: &str,
     dir: &Path,
 ) -> Result<Vec<Violation>, Error> {
+    crate::fixture::remove_dir(dir)?;
     let mut violations: Vec<Violation> = BANS
         .iter()
         .filter(|ban| !listed(clippy_toml, ban.path))
@@ -877,14 +883,49 @@ fn cargo() -> Command {
 
 /// Clippy on every target, with cargo's JSON messages, and without an
 /// inherited `CLIPPY_CONF_DIR`, which would put one other file in place of
-/// the configurations this check proves.
-fn clippy_json() -> Command {
+/// the configurations this check proves. It runs clippy as `cargo clippy`
+/// does inside: `cargo check` with `driver`, the toolchain's
+/// `clippy-driver` (`clippy_driver`), as the workspace wrapper
+/// (`as_clippy`). `check` is built into cargo, which ignores an alias of
+/// that name, so no alias, of `clippy` or any other, is consulted.
+fn clippy_json(driver: &Path) -> Command {
     let mut command = cargo();
     command
-        .args(["clippy", "--all-targets", "--message-format", "json"])
+        .args(["check", "--all-targets", "--message-format", "json"])
         .env_remove(CONF_DIR)
         .env_remove("CARGO_BUILD_WARNINGS");
+    as_clippy(&mut command, driver);
     command
+}
+
+/// The toolchain's `clippy-driver`, beside the `rustc` that cargo run in
+/// `root` uses, where `cargo clippy` finds it.
+///
+/// # Errors
+///
+/// Returns an error if the toolchain's sysroot cannot be read or holds no
+/// `clippy-driver`.
+pub(crate) fn clippy_driver(root: &Path) -> Result<PathBuf, Error> {
+    let driver = crate::pure::toolchain_sysroot(root)?
+        .join("bin")
+        .join(format!("clippy-driver{}", std::env::consts::EXE_SUFFIX));
+    if driver.is_file() {
+        Ok(driver)
+    } else {
+        Err(Error::UnexpectedOutput(
+            "rustc --print sysroot (no clippy-driver)",
+        ))
+    }
+}
+
+/// What `cargo clippy` sets on the `cargo check` it runs: `driver` as the
+/// workspace wrapper, which the environment variable sets over any
+/// configuration, and no extra clippy arguments. Set over anything the
+/// caller set.
+fn as_clippy(command: &mut Command, driver: &Path) {
+    command
+        .env("RUSTC_WORKSPACE_WRAPPER", driver)
+        .env("CLIPPY_ARGS", "");
 }
 
 /// The workspace's lint, the one `cargo xtask check` gates on: clippy on
@@ -895,8 +936,8 @@ fn clippy_json() -> Command {
 /// builds may combine; one that cannot build with the others fails the
 /// lint, which is the safe side. Its warnings are not denied by cargo,
 /// since the canary's must appear; `lint` denies every other one.
-pub(crate) fn workspace_clippy() -> Command {
-    let mut command = clippy_json();
+pub(crate) fn workspace_clippy(driver: &Path) -> Command {
+    let mut command = clippy_json(driver);
     command.args(["--workspace", "--all-features"]);
     command
 }
@@ -1035,7 +1076,8 @@ pub(crate) fn lint(
         .collect();
     violations.extend(line_breaks(&paths));
     violations.extend(outside_root(&workspace.root, &member_dirs(workspace)));
-    let mut command = workspace_clippy();
+    let driver = clippy_driver(&workspace.root)?;
+    let mut command = workspace_clippy(&driver);
     // Cargo reads its configuration from the directory it runs in up, so
     // it runs in the root, whose configuration check-bans reads.
     command.current_dir(&workspace.root);
@@ -1044,7 +1086,12 @@ pub(crate) fn lint(
     // error are printed, each on its own line, in plain text.
     plain_terminal(&mut command);
     no_wrapper(&mut command);
+    as_clippy(&mut command, &driver);
     let build = crate::fixture::fresh_dir(&workspace.target_dir, LINT_BUILD)?;
+    if let Some(refusal) = template(&build) {
+        violations.push(refusal);
+        return Ok(found_in_lint(violations));
+    }
     isolated_build(&mut command, &build);
     let output = command.output().map_err(Error::io("cargo clippy"));
     crate::fixture::remove_dir(&build)?;
@@ -1065,13 +1112,30 @@ pub(crate) fn lint(
     if !output.status.success() {
         violations.push(Violation::Unbuilt(first_error(&output.stderr)));
     }
-    Ok(violations
+    Ok(found_in_lint(violations))
+}
+
+/// `violations`, each as found in the workspace's lint.
+fn found_in_lint(violations: Vec<Violation>) -> Vec<Found> {
+    violations
         .into_iter()
         .map(|violation| Found {
             file: LINT.to_owned(),
             violation,
         })
-        .collect())
+        .collect()
+}
+
+/// A refusal if `dir` holds `{` or `}`: cargo reads its build directory
+/// as a template, so such a path would name another directory.
+fn template(dir: &Path) -> Option<Violation> {
+    dir.to_string_lossy().contains(['{', '}']).then(|| {
+        Violation::Unbuilt(format!(
+            "the path \"{}\" holds {{ or }}, which cargo reads in a build directory as a \
+             template: move the workspace",
+            dir.to_string_lossy().escape_debug()
+        ))
+    })
 }
 
 /// Each warning or error cargo printed on its standard error, `stderr`,
@@ -1107,19 +1171,21 @@ pub(crate) const TERMINAL: &[(&str, &str)] = &[
     ("CARGO_TERM_COLOR", "never"),
 ];
 
-/// Sets `TERMINAL` on `command`.
+/// Sets `TERMINAL` on `command`, and removes `CLICOLOR_FORCE`, which
+/// colours a warning cargo prints before it reads `CARGO_TERM_COLOR`.
 pub(crate) fn plain_terminal(command: &mut Command) {
     for (name, value) in TERMINAL {
         command.env(name, value);
     }
+    command.env_remove("CLICOLOR_FORCE");
 }
 
 /// Runs cargo with no compiler wrapper around clippy's. An empty
 /// `RUSTC_WRAPPER` turns off one set by the environment
 /// (`CARGO_BUILD_RUSTC_WRAPPER` too) or by any cargo configuration, and
-/// `cargo clippy` sets the workspace wrapper to its own driver over one
-/// set either way; so no wrapper can run plain rustc for some members
-/// while the canary is linted. Set over anything the caller set.
+/// `as_clippy` sets the workspace wrapper to clippy's driver over one set
+/// either way; so no wrapper can run plain rustc for some members while
+/// the canary is linted. Set over anything the caller set.
 fn no_wrapper(command: &mut Command) {
     command.env("RUSTC_WRAPPER", "");
 }
@@ -1227,7 +1293,7 @@ const BUILD_SCRIPTS: &str = "build scripts";
 ///
 /// Returns an error if cargo cannot be started.
 pub(crate) fn check_build_scripts(root: &Path, target_dir: &Path) -> Result<Vec<Found>, Error> {
-    let mut command = clippy_json();
+    let mut command = clippy_json(&clippy_driver(root)?);
     command
         .current_dir(root)
         .arg("--target-dir")

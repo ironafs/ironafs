@@ -342,3 +342,26 @@ fn files_does_not_follow_a_link_and_tampered_refuses_it() {
         "{found:?}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn files_does_not_follow_a_linked_directory_above_the_canary() {
+    use super::files;
+
+    let root = std::env::temp_dir().join(format!("ironafs-xtask-canary-up-{}", std::process::id()));
+    let linked = root.join("linked");
+    let dir = linked.join("ironafs-bans-canary");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("Cargo.toml"), manifest()).unwrap();
+    std::fs::write(dir.join("src/lib.rs"), source()).unwrap();
+    std::os::unix::fs::symlink(&linked, root.join("crates")).unwrap();
+    let read = files(&root).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let found = tampered(&read);
+    assert!(
+        found.contains(&Violation::Canary(format!(
+            "{DIR}/src/lib.rs is missing: restore it"
+        ))),
+        "{found:?}"
+    );
+}

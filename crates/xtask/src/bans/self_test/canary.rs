@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use super::super::{Found, Violation, canary, line_keys, lint, workspace_clippy};
+use super::super::{Found, Violation, canary, clippy_driver, line_keys, lint, workspace_clippy};
 use super::failure;
 use crate::fixture::write_file;
 use crate::{Command, Error, metadata};
@@ -27,6 +27,10 @@ struct Case {
 
 fn silent(violation: &Violation) -> bool {
     matches!(violation, Violation::CanaryMissing { .. })
+}
+
+fn alias_ignored(violation: &Violation) -> bool {
+    matches!(violation, Violation::Lint(line) if line.starts_with("warning: user-defined alias"))
 }
 
 fn tampered(violation: &Violation) -> bool {
@@ -142,16 +146,30 @@ const CASES: &[Case] = &[
         needs: script_warning,
     },
     Case {
+        // The lint runs `cargo check`, so no alias of `clippy` is read: the
+        // second member's banned call is linted whatever the alias says.
         name: "a cargo alias that makes clippy a plain check",
-        files: &[(".cargo/config.toml", "[alias]\nclippy = \"check\"\n")],
+        files: &[
+            (".cargo/config.toml", "[alias]\nclippy = \"check\"\n"),
+            ("crates/planted/Cargo.toml", PLANTED_MANIFEST),
+            BANNED_CALL,
+        ],
         env: &[],
-        needs: silent,
+        needs: banned_call_linted,
     },
     Case {
         name: "CARGO_ALIAS_CLIPPY making clippy a plain check",
-        files: &[],
+        files: &[("crates/planted/Cargo.toml", PLANTED_MANIFEST), BANNED_CALL],
         env: &[("CARGO_ALIAS_CLIPPY", "check")],
-        needs: silent,
+        needs: banned_call_linted,
+    },
+    Case {
+        // Cargo ignores an alias of a built-in, with a warning it prints
+        // before it reads CARGO_TERM_COLOR: coloured, under CLICOLOR_FORCE.
+        name: "a cargo alias of check, under the caller's CLICOLOR_FORCE",
+        files: &[(".cargo/config.toml", "[alias]\ncheck = \"build\"\n")],
+        env: &[("CLICOLOR_FORCE", "1")],
+        needs: alias_ignored,
     },
     Case {
         name: "RUSTFLAGS allowing the bans' lints",
@@ -245,6 +263,25 @@ const PRIMED: &[Case] = &[
         env: &[("RUSTC_WRAPPER", "{root}/wrap.sh")],
         needs: banned_call_linted,
     },
+    Case {
+        // An alias's `--config` comes before every variable the lint sets;
+        // the lint runs `cargo check`, so no alias of `clippy` is read.
+        name: "the same artifact in a build directory a clippy alias names",
+        files: &[
+            ("wrap.sh", WRAPPER),
+            (
+                ".cargo/config.toml",
+                "[alias]\nclippy = [\"check\", \"--config\", \"build.build-dir='{root}/shared'\"]\n",
+            ),
+            ("crates/planted/Cargo.toml", PLANTED_MANIFEST),
+            BANNED_CALL,
+        ],
+        env: &[
+            ("RUSTC_WRAPPER", "{root}/wrap.sh"),
+            ("CARGO_BUILD_BUILD_DIR", "{root}/shared"),
+        ],
+        needs: banned_call_linted,
+    },
 ];
 
 /// `manifest` without its `[workspace.dependencies]` table, whose crates
@@ -303,7 +340,7 @@ fn lint_planted(
         }
     };
     if prime {
-        let mut command = workspace_clippy();
+        let mut command = workspace_clippy(&clippy_driver(dir)?);
         command.current_dir(dir);
         set(&mut command);
         let status = command
