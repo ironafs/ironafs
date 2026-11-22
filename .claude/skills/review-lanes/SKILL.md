@@ -39,7 +39,7 @@ The model and effort for every seat come from the routing table in
 `docs/workflow.md` §2, "Model routing", after the seat's family is chosen.
 In short:
 
-| Lane | Light | Standard | Class S and R reviews | Strongest |
+| Lane | Light | Standard | Ordinary class S and R reviews | Strongest |
 |---|---|---|---|---|
 | codex (GPT) | `gpt-6.2-sol` medium | `gpt-6.2-sol` high | `gpt-6.2-sol` xhigh | `gpt-6.2-astra` xhigh |
 | gemini | `gemini-3.8-flash-medium` (helpers), `gemini-4-argon-medium` (gathering) | `gemini-4-carbon-medium` | `gemini-4-carbon-high` | `gemini-4-carbon-high`; `gemini-4-carbon-medium` for security reviews and security disputes |
@@ -73,8 +73,9 @@ it concerns, both quoted from their sources, never written by you.
 
 1. **Choose the seat.** Exclude the work's authors, both disputing
    families, any family that took a side, and the controller's family if
-   the controller argued a position, and any family unavailable at its
-   strongest tier. Security disputes: only GPT read-only, Claude, GLM or
+   the controller argued a position, and any family unavailable at the
+   pin `docs/workflow.md` §2, "Model routing", assigns to this seat.
+   Security disputes: only GPT read-only, Claude, GLM or
    Gemini Carbon (at `gemini-4-carbon-medium`).
    Embargoed work: only Anthropic and OpenAI, and nothing about the dispute
    goes elsewhere. Then take the first remaining in the order GLM, GPT

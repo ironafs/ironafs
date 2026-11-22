@@ -52,7 +52,8 @@ required review of its own family's work.
 Which model and effort each seat uses is set by the routing table in
 [docs/workflow.md](docs/workflow.md) §2, "Model routing": light models only
 for helpers and research gathering, standard tiers for required reviews,
-the strongest tiers for the named seats.
+the strongest tiers for the named seats, except where that section's
+"Precedence" rule says otherwise.
 
 Model versions change. A trailer always records the model that actually
 served the request, read from the lane's own log, not the one asked for. When
@@ -121,7 +122,9 @@ its exact commit message, and nothing lands without their approval.
 | DeepSeek V4.1 Flash (DeepSeek) | | | research | yes, second family, off-peak (paid) | |
 
 When two seats disagree and the evidence does not settle it, a third
-family rules on the evidence, using its strongest model (the judgement seat,
+family rules on the evidence, using the model that §2's "Model routing"
+assigns to the seat, its strongest except where that section's
+"Precedence" rule says otherwise (the judgement seat,
 [docs/workflow.md](docs/workflow.md) §2).
 
 The authoritative rules are in [docs/workflow.md](docs/workflow.md) §1 and

@@ -62,8 +62,21 @@ Executed by the controller on 2026-11-22.
   PASS); 12,262; 19,314; 24,094; 20,132.
 
 This is the recorded benchmark that "Changing a pin" in
-[docs/workflow.md](../workflow.md) §2 requires: known defects and a clean
-case, misses, false findings, refusals, a pass threshold, and a comparison.
+[docs/workflow.md](../workflow.md) §2 asks for, item by item:
+
+- **Known defects, a clean case, misses, false findings, refusals and a
+  pass threshold:** as above.
+- **Cost:** the agy envelope reports tokens, not cost, so the thinking
+  tokens above are the cost information available. No cost figures are
+  published per change ([AI.md](../../AI.md)).
+- **Comparison with the current pin:** Gemini had no earlier security pin;
+  `gemini-4-carbon-medium` is a newly eligible pin for these seats. The
+  neutral-brief runs of 2026-11-21 (Gemini and GLM, above) are its
+  baselines.
+- **What the runs exercised:** `gemini-4-carbon-medium` on security-review
+  briefs. No judgement-seat brief was run. Gemini's eligibility for the
+  judgement seat in security disputes, at the same pin, is the owner's
+  decision.
 
 ## The sweep
 
@@ -95,6 +108,7 @@ Every hit of `grep -rn -i "gemini"` over `docs/`, `AI.md`, `AGENTS.md`,
 | `AI.md`, class S row (no Gemini hit before) | security review by GPT, Claude or GLM | changed: "GPT, Claude, GLM or Gemini" |
 | `AI.md`, "What each model can do here", Gemini row | Security review: "no: it declined security-framed briefs in our runs" | changed: "yes, at `gemini-4-carbon-medium`, when it wrote neither the design nor the code", linked to this record |
 | `AI.md`, trailer example | `gemini` agent id | unchanged |
+| `AI.md`, routing summary and judgement-seat line (no Gemini hit) | "the strongest tiers for the named seats"; a third family rules "using its strongest model" | changed in fix round 1: both point to §2's "Model routing" and its "Precedence" rule |
 | `.claude/skills/review-lanes/SKILL.md`, description and the global skills list | Gemini via agy, `gemini-review` | unchanged |
 | `.claude/skills/review-lanes/SKILL.md`, "Which seat, by class" | "never to Gemini" | changed: Gemini Carbon at `gemini-4-carbon-medium` added; never DeepSeek |
 | `.claude/skills/review-lanes/SKILL.md`, pins table, gemini row | strongest `gemini-4-carbon-high` | changed: adds `gemini-4-carbon-medium` for security reviews and security disputes |

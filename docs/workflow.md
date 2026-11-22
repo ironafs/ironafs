@@ -174,7 +174,8 @@ Disagreements are settled on evidence, never by counting.
   controller's family is excluded when the controller argued a position.
   Filter every family first, then take the first that remains in this
   order: GLM, GPT read-only, DeepSeek, Gemini, a Claude seat. The filters
-  are independence (above), availability at its strongest tier, and:
+  are independence (above), availability at the pin "Model routing"
+  assigns to this seat, and:
   - **Security disputes** (whether a security finding holds, or anything
     that would overturn part of a security review): only the
     security-review families (GPT read-only, a Claude seat, GLM, Gemini
