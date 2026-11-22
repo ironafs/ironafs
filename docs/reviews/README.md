@@ -50,6 +50,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-55-rx](2026-11-21-m2a-55-rx.md) | Issue #55: the Rx transport and null class specification, first version from documents only |
 | [2026-11-21-m2a-65-vl-fs-read](2026-11-21-m2a-65-vl-fs-read.md) | Issue #65: volume location and file-service reads and operation grants, the version from documents only |
 | [2026-11-21-m2a-60-dns-client](2026-11-21-m2a-60-dns-client.md) | Issue #60: the first-party DNS client for Linux and Unix builds |
+| [2026-11-21-m2a-63-testing](2026-11-21-m2a-63-testing.md) | Issue #63: the test strategy |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
