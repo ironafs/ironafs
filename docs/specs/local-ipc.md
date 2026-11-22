@@ -1804,12 +1804,12 @@ cap in force:
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
 | X1 | SPECIFICATION | RFC 4506, register row E1, through the XDR profile (D3) | 5.1 |
-| H1 | SPECIFICATION | FIPS 180-4, Secure Hash Standard, August 2015, register row E8: section 1, Figure 1 (SHA-256's message digest is 256 bits) | 5.6.1 |
-| P1 | DOCUMENTATION | Microsoft Learn, `CreateNamedPipeW`, register row E3: parameters `dwPipeMode`, `nMaxInstances`; Remarks | 5.1.1, 5.2 |
-| P2 | DOCUMENTATION | Microsoft Learn, `ImpersonateNamedPipeClient`, register row E4: Remarks | 5.4 |
-| P3 | DOCUMENTATION | Microsoft Learn, System Error Codes 1300 to 1699, register row E5: error 1368 | 5.4 |
-| P4 | DOCUMENTATION | Linux man-pages 6.19, unix(7), register row E6: socket option `SO_PEERCRED` | 5.1.1, 5.6.3 |
-| P5 | DOCUMENTATION | unix(4), macOS 26.7, register row E7: `LOCAL_PEERCRED` and the supported socket types | 5.1.1, 5.6.3 |
+| H1 | SPECIFICATION | FIPS 180-4, Secure Hash Standard, August 2015, register row E53: section 1, Figure 1 (SHA-256's message digest is 256 bits) | 5.6.1 |
+| P1 | DOCUMENTATION | Microsoft Learn, `CreateNamedPipeW`, register row E48: parameters `dwPipeMode`, `nMaxInstances`; Remarks | 5.1.1, 5.2 |
+| P2 | DOCUMENTATION | Microsoft Learn, `ImpersonateNamedPipeClient`, register row E49: Remarks | 5.4 |
+| P3 | DOCUMENTATION | Microsoft Learn, System Error Codes 1300 to 1699, register row E50: error 1368 | 5.4 |
+| P4 | DOCUMENTATION | Linux man-pages 6.19, unix(7), register row E51: socket option `SO_PEERCRED` | 5.1.1, 5.6.3 |
+| P5 | DOCUMENTATION | unix(4), macOS 26.7, register row E52: `LOCAL_PEERCRED` and the supported socket types | 5.1.1, 5.6.3 |
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C4, C5, C9, C16, C37, C39, C41 to C46 ([part 1](../adr/0004-architecture-1-core.md)); L35 ([part 2](../adr/0004-architecture-2-os-layers.md)); O16, O23, O28, O47 ([part 3](../adr/0004-architecture-3-operations.md)); N41 ([part 4](../adr/0004-architecture-4-negotiation.md)); S1 | all |
 | D2 | DECISION | [ADR 0005](../adr/0005-ironafs-os.md), accepted 2026-11-21: sheets 13 and 16 to 20; Consequences (the amendment of C5, point 5) | 1, 5.1.1, 5.2, 5.4, 5.5, 5.6.2, 8, 10.5 |
 | D3 | DECISION | [The XDR profile](xdr.md) | 5.1, 5.2, 5.4, 5.5, 5.6.1, 6, 7 |
@@ -1820,7 +1820,7 @@ cap in force:
 No other implementation's source, test data or interface definitions
 were read for this specification, and none are cited. The outside
 documents are cited for facts only, in IronAFS's own words, and none is
-quoted (register rows E3 to E8, "Licence status"). They are platform
+quoted (register rows E48 to E53, "Licence status"). They are platform
 facts and a hash's output length, not AFS wire facts. The vectors of
 10.1 are IronAFS's own.
 
