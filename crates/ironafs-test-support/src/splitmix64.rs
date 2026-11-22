@@ -5,10 +5,17 @@
 //!
 //! Written from its published description: Guy L. Steele Jr., Doug Lea and
 //! Christine H. Flood, "Fast Splittable Pseudorandom Number Generators",
-//! OOPSLA 2014, with the 64-bit output mix that Sebastiano Vigna's public
-//! domain reference `splitmix64.c` uses (David Stafford's "Mix13" constants,
-//! <https://prng.di.unimi.it/>). The unit tests check the first outputs for
-//! seed zero against that reference.
+//! OOPSLA 2014 (<https://doi.org/10.1145/2714064.2660195>), as the
+//! fixed-increment form in Sebastiano Vigna's public domain reference
+//! `splitmix.c` (<https://prng.di.unimi.it/splitmix.c>), whose increment,
+//! multipliers and shifts this file uses.
+//!
+//! The known-answer test checks the first five outputs for seed zero.
+//! A published list of those outputs: UNVERIFIED. The reference file
+//! prints none, and the paper has not been checked for any. The expected
+//! values were checked by compiling the reference `splitmix.c`
+//! unchanged and running it from seed zero (Apple clang 21, macOS,
+//! 2026-11-21).
 
 #[cfg(test)]
 mod tests;

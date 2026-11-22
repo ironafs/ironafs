@@ -191,6 +191,8 @@ Locks remain an open question for the spike.
   [fuse_file_info](https://libfuse.github.io/doxygen/structfuse__file__info.html)).
   Authorisation through deferred I/O is a design question for the
   architecture ADR, and writeback stays off until it is answered.
+  (Update, 2026-11-21: answered by ADR 0004, L4: the FUSE writeback cache is
+  never enabled.)
 
 ## 4. Earlier FUSE work for AFS
 

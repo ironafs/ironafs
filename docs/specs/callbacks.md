@@ -1706,16 +1706,16 @@ This specification's own choices:
 - Rx gains an action that discards an incoming call at once (5.7, point
   3; Q8);
 - the registry, the capabilities draft or the extended-callback draft is
-  revised (register rows E11 to E13).
+  revised (register rows E7, E9 and E54).
 
 ## 12. Sources
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| K1 | DOCUMENTATION | AFS Assigned Numbers Registry, register of editions row E11 ([README](README.md)): the procedure table `rx/RXAFSCB.txt`, the client capability list `cap/client.txt`, the Rx service list `rxservice.txt` and the error tables `errors.html` ("Rx RPC error codes", "rxgen error codes"), retrieved 2026-11-21. Rows whose source column names an implementation's change history are not used. A lead until a passage is allowlisted (section 13, Q3) | 5.1, 5.5, 5.7 |
-| K2 | SPECIFICATION | T. Keiser et al., "AFS-3 Protocol Capabilities Query Mechanism", draft-keiser-afs3-capabilities-00, register of editions row E12: §1 to §10 prose. Its appendices A, B and C are excluded by name. A lead only | 5.1, 5.5, 5.7, 5.8 |
-| K3 | SPECIFICATION | M. Benjamin, "AFS Callback Extensions", draft-benjamin-extendedcallbackinfo-02, register of editions row E13: §1, §2, §3 (3.1 and 3.2), §4.1, §4.2.1, §4.5's prose before §4.5.1, and §5 to §7. Excluded by name: §4.2.2 to §4.4, §4.5.1, §4.5.2 and Appendix A (the draft's type definitions and constants). A lead only | 5.1, 5.8 |
-| X1 | SPECIFICATION | "Rx protocol specification draft", N. Zeldovich, updated by J. Altman, 24 July 2026, register of editions row E3. Cited by heading: "RPC Layer"; also read: "Introduction". Read only as the mechanically excerpted copy; its section "Historical Implementation Notes" was not read and is not cited (README, "Sources and provenance", rule 12). A lead only | 5.1.1, 5.8 |
+| K1 | DOCUMENTATION | AFS Assigned Numbers Registry, register of editions row E7 ([README](README.md)): the procedure table `rx/RXAFSCB.txt`, the client capability list `cap/client.txt`, the Rx service list `rxservice.txt` and the error tables `errors.html` ("Rx RPC error codes", "rxgen error codes"), retrieved 2026-11-21. Rows whose source column names an implementation's change history are not used. A lead until a passage is allowlisted (section 13, Q3) | 5.1, 5.5, 5.7 |
+| K2 | SPECIFICATION | T. Keiser et al., "AFS-3 Protocol Capabilities Query Mechanism", draft-keiser-afs3-capabilities-00, register of editions row E9: §1 to §10 prose. Its appendices A, B and C are excluded by name. A lead only | 5.1, 5.5, 5.7, 5.8 |
+| K3 | SPECIFICATION | M. Benjamin, "AFS Callback Extensions", draft-benjamin-extendedcallbackinfo-02, register of editions row E54: §1, §2, §3 (3.1 and 3.2), §4.1, §4.2.1, §4.5's prose before §4.5.1, and §5 to §7. Excluded by name: §4.2.2 to §4.4, §4.5.1, §4.5.2 and Appendix A (the draft's type definitions and constants). A lead only | 5.1, 5.8 |
+| X1 | SPECIFICATION | "Rx protocol specification draft", N. Zeldovich, updated by J. Altman, 24 July 2026, register of editions row E5. Cited by heading: "RPC Layer"; also read: "Introduction". Read only as the mechanically excerpted copy; its section "Historical Implementation Notes" was not read and is not cited (README, "Sources and provenance", rule 12). A lead only | 5.1.1, 5.8 |
 | C | DECISION | [Claim record](../reviews/2026-11-20-adr-0004-claims.md) rows `[DES-011]` and `[DES-058]`, re-read against their sources' rows on 2026-11-21 (the service list, and the VL database's addresses) | 5.1, 5.4 |
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; A11, A14; C4, C6, C16, C17, C23, C24, C25, C26, C30, C31, C32, C34, C37, C38, C39, C46 ([part 1](../adr/0004-architecture-1-core.md)); O1, O12, O15, O23, O42 ([part 3](../adr/0004-architecture-3-operations.md)); N5, N21, N22, N23, N29, N31, N38 ([part 4](../adr/0004-architecture-4-negotiation.md)) | 1, 2, 5, 8, 9, 11 |
 | D2 | DECISION | [ADR 0006](../adr/0006-rx-unprotected-packets.md): decision 1, points 5, 6, 8 and 9; decision 2, points 3 and 5; tests 3 and 10 | 1, 5.6, 8, 9, 10 |
@@ -1769,7 +1769,7 @@ evidence label EXECUTED.
   then ProbeUuid's row is pending, and every "listed" row rests on leads.
   Recommendation: run TC1 first, since it settles whether the allowlist
   lacks anything; the issue closes only when both revisions are accepted.
-- **Q3. Allowlisting the registry and the drafts.** The registry (E11) is
+- **Q3. Allowlisting the registry and the drafts.** The registry (E7) is
   a published list of assigned numbers kept apart from any
   implementation's repository, and K2 and K3 are published
   Internet-Drafts; none is allowlisted, so every number and every code
