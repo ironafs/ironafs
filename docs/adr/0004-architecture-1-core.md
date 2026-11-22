@@ -532,12 +532,10 @@ on. Point 3 is our own addition.
 1. A handle is bound to its credential context (C40) and that context's
    credential generation, the node, the open mode, the binding, the rights
    at open, and the volume's incarnation (C25).
-2. Where the front end can identify the open, every handle operation
-   (C7, point 3: read, write, read directory, commit, lock, get and set
-   information, disposition and rename) checks that the handle is live and
-   takes the intersection of the rights at open with the current effective
-   rights. A right that was lost is refused; rights that remain keep
-   working.
+2. Where the front end can identify the open, every handle operation of
+   C7, point 3, checks that the handle is live and takes the intersection
+   of the rights at open with the current effective rights. A right that
+   was lost is refused; rights that remain keep working.
 3. Where the front end cannot tell opens apart (FSKit), each operation
    checks only liveness, and any reduction of rights revokes the handle.
    It must be reopened.
