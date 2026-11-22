@@ -26,8 +26,9 @@ All four outside families are approved for IronAFS source (owner,
 Use "Seats by class" in `docs/workflow.md` §2; it is authoritative, and
 `AI.md` explains it. Required seats always come from a family that did
 not write the change, as §2 defines it (any of its text or code, or the
-design it was built from), counting outside contributors' declared tools. Security reviews go to GPT read-only, a Claude seat or GLM, whichever
-wrote neither the design nor the code, never to Gemini. Embargoed security
+design it was built from), counting outside contributors' declared tools. Security reviews go to GPT read-only, a Claude seat, GLM or Gemini
+Carbon (at `gemini-4-carbon-medium`), whichever wrote neither the design
+nor the code, never to DeepSeek. Embargoed security
 work goes only to the Anthropic and OpenAI lanes until disclosure
 (`docs/workflow.md` §2). A same-family review is an extra
 self-check, never a required seat.
@@ -41,7 +42,7 @@ In short:
 | Lane | Light | Standard | Class S and R reviews | Strongest |
 |---|---|---|---|---|
 | codex (GPT) | `gpt-6.2-sol` medium | `gpt-6.2-sol` high | `gpt-6.2-sol` xhigh | `gpt-6.2-astra` xhigh |
-| gemini | `gemini-3.8-flash-medium` (helpers), `gemini-4-argon-medium` (gathering) | `gemini-4-carbon-medium` | `gemini-4-carbon-high` | `gemini-4-carbon-high` |
+| gemini | `gemini-3.8-flash-medium` (helpers), `gemini-4-argon-medium` (gathering) | `gemini-4-carbon-medium` | `gemini-4-carbon-high` | `gemini-4-carbon-high`; `gemini-4-carbon-medium` for security reviews and security disputes |
 | glm | `glm-5.3-flash` | `glm-5.3` high | `glm-5.3` high | `glm-5.3` max |
 | deepseek | `deepseek-flash` default | `deepseek-flash` default | `deepseek-flash` default | `deepseek-flash` max |
 | Claude | Haiku (helpers), Sonnet (gathering) | Opus 5.5 | Opus 5.5 | Mythos 5.2 (`fable` alias, serves `claude-mythos-5-2`) |
@@ -73,7 +74,8 @@ it concerns, both quoted from their sources, never written by you.
 1. **Choose the seat.** Exclude the work's authors, both disputing
    families, any family that took a side, and the controller's family if
    the controller argued a position, and any family unavailable at its
-   strongest tier. Security disputes: only GPT read-only, Claude or GLM.
+   strongest tier. Security disputes: only GPT read-only, Claude, GLM or
+   Gemini Carbon (at `gemini-4-carbon-medium`).
    Embargoed work: only Anthropic and OpenAI, and nothing about the dispute
    goes elsewhere. Then take the first remaining in the order GLM, GPT
    read-only, DeepSeek, Gemini, Claude. None left: the change waits and the

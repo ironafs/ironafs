@@ -118,10 +118,12 @@ read-only or a Claude seat whose family did not write the change and is not
 already the first reviewer.
 
 **Security review** (class S and R): GPT read-only, a Claude seat (always
-Mythos 5.2), or GLM,
+Mythos 5.2), GLM, or Gemini Carbon (always `gemini-4-carbon-medium`),
 whichever family wrote neither the design nor the code. Choose it when the
-design is assigned, so that one stays free. Never Gemini, which declined
-security-framed briefs in our runs.
+design is assigned, so that one stays free. Gemini gets the artefact
+inlined, without tools, like every Gemini seat; it holds this seat on the
+evidence of its security-framed calibration runs
+([record](reviews/2026-11-22-gemini-security-seat.md)).
 
 **Embargoed security fixes.** Until a vulnerability is disclosed, its report,
 design, fix, tests and review records go only to the Anthropic and OpenAI
@@ -175,8 +177,8 @@ Disagreements are settled on evidence, never by counting.
   are independence (above), availability at its strongest tier, and:
   - **Security disputes** (whether a security finding holds, or anything
     that would overturn part of a security review): only the
-    security-review families (GPT read-only, a Claude seat, GLM), never
-    Gemini or DeepSeek.
+    security-review families (GPT read-only, a Claude seat, GLM, Gemini
+    Carbon at `gemini-4-carbon-medium`), never DeepSeek.
   - **Embargoed work:** only the Anthropic and OpenAI lanes, and nothing
     about the dispute leaves them (brief, source lookups, record).
 
@@ -219,7 +221,7 @@ Disagreements are settled on evidence, never by counting.
 
 **Seat first, then model.** The family for a seat comes from the rules
 above: who wrote the work, the first-reviewer order, the security-review
-families (GPT read-only, a Claude seat, GLM; never Gemini or DeepSeek),
+families (GPT read-only, a Claude seat, GLM, Gemini Carbon; never DeepSeek),
 embargoed work (Anthropic and OpenAI only) and the judgement seat's order.
 Only then does this table give the model and effort. It governs over every
 other model pin in this file, `AI.md` and the skills.
@@ -232,11 +234,14 @@ other model pin in this file, `AI.md` and the skills.
 | Class I and P required reviews, P contracts, refutations and verifications on I and P work, research synthesis that is not load-bearing | `gpt-6.2-sol`, high | Opus (`claude-opus-5-5`) | `gemini-4-carbon-medium` | `glm-5.3`, high | `deepseek-flash`, default |
 | Class S and R implementation | `gpt-6.2-sol`, high (extra capacity) | Opus (`claude-opus-5-5`), the default implementer | `gemini-4-carbon-high` (when codex is out of quota) | — | — |
 | Ordinary class S and R reviews, S design review before code, refutations on S and R work, reproduction, the consistency pass | `gpt-6.2-sol`, xhigh | Opus (`claude-opus-5-5`) | `gemini-4-carbon-high` | `glm-5.3`, high | `deepseek-flash`, default |
-| **Strongest:** the judgement seat, security reviews, class R designs, format freezes, architecture ADRs, promoted implementation, synthesis of a load-bearing research question | `gpt-6.2-astra`, xhigh | Mythos 5.2 (`claude-mythos-5-2`) | `gemini-4-carbon-high`, where eligible | `glm-5.3`, max | `deepseek-flash`, max, where eligible |
+| **Strongest:** the judgement seat, security reviews, class R designs, format freezes, architecture ADRs, promoted implementation, synthesis of a load-bearing research question | `gpt-6.2-astra`, xhigh | Mythos 5.2 (`claude-mythos-5-2`) | `gemini-4-carbon-high`, where eligible; `gemini-4-carbon-medium` for security reviews and security disputes | `glm-5.3`, max | `deepseek-flash`, max, where eligible |
 
 - **Precedence.** A seat in the strongest row never runs on a lower tier; if
   no eligible family is available at that tier, the change waits (the stop
-  rule). Every required review starts at the standard tier or above. Light
+  rule). The one exception is Gemini's security seats (security reviews
+  and the judgement seat in security disputes): they run at
+  `gemini-4-carbon-medium`, the pin their calibration covers. Every
+  required review starts at the standard tier or above. Light
   models only take optional helper seats and research gathering.
 - **Fix verification** runs at the pin of the seat whose finding it
   verifies, scoped to the fix's diff.
