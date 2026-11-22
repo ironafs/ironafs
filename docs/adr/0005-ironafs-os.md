@@ -5,7 +5,9 @@
 
 Status: accepted (2026-11-21), by the owner, after the review rounds
 recorded below. Raised in issue #43; the ADR 0004 amendment it needs
-is issue #49, in the same pull request (#101).
+is issue #49, in the same pull request (#101). Amended 2026-11-21
+(#57): rows 13 and 14 and sheets 13 and 14 (the socket type, `SCM_PIDFD`,
+and where a received descriptor is an integer).
 
 ## Context
 
@@ -452,8 +454,8 @@ are in its sheet below the table, under the same number.
 | 10 | `windows-random` | Windows | `NTSTATUS BCryptGenRandom(BCRYPT_ALG_HANDLE, PUCHAR, ULONG, ULONG)` with a NULL handle and `BCRYPT_USE_SYSTEM_PREFERRED_RNG` only | Bcrypt.dll | `unsafe fn` | one |
 | 11 | `unix-nodump` | Linux, macOS | `int setrlimit(int, const struct rlimit *)` with `RLIMIT_CORE` and `{0, 0}` only; on Linux also `int prctl(int, ...)` with `PR_SET_DUMPABLE` and 0 only, and `PR_GET_DUMPABLE` for the read-back | the C library; libSystem | `unsafe fn` | one per call: one on macOS (`setrlimit`), three on Linux (`setrlimit`, and `prctl` to set and to read back) |
 | 12 | `linux-dontdump` | Linux | `int madvise(void *, size_t, int)` with `MADV_DONTDUMP` only, on the crate's own secret buffers, allocated in safe Rust with 64 KiB alignment and size (sheet 12) | the C library | `unsafe fn` | one |
-| 13 | `linux-peercred` | Linux | `int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_SOCKET` and `SO_PEERCRED` only, on a borrowed `UnixStream`, into a `struct ucred` | the C library | `unsafe fn` | one |
-| 14 | `linux-fdpass` | Linux | `ssize_t sendmsg(int, const struct msghdr *, int)` and `ssize_t recvmsg(int, struct msghdr *, int)` carrying exactly one `SCM_RIGHTS` descriptor and one data byte, with `MSG_NOSIGNAL` on send and `MSG_CMSG_CLOEXEC` on receive; each received descriptor becomes an `OwnedFd` at once (L7, point 1) | the C library | `unsafe fn` | one per call (two), and one that adopts a received descriptor (`OwnedFd::from_raw_fd`) |
+| 13 | `linux-peercred` | Linux | `int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_SOCKET` and `SO_TYPE` (into an `int`, which must be `SOCK_STREAM`), then `SOL_SOCKET` and `SO_PEERCRED` (into a `struct ucred`), only, on a borrowed `UnixStream` | the C library | `unsafe fn` | two (one per option) |
+| 14 | `linux-fdpass` | Linux | `ssize_t sendmsg(int, const struct msghdr *, int)` and `ssize_t recvmsg(int, struct msghdr *, int)` carrying exactly one `SCM_RIGHTS` descriptor and one data byte, with `MSG_NOSIGNAL` on send and `MSG_CMSG_CLOEXEC` on receive; each received descriptor becomes an `OwnedFd` at once (L7, point 1), a pidfd the kernel installed with `SCM_PIDFD` included, which is then closed (sheet 14) | the C library | `unsafe fn` | one per call (two), and one that adopts a received descriptor (`OwnedFd::from_raw_fd`) |
 | 15 | `linux-mount` | Linux | `int mount(const char *, const char *, const char *, unsigned long, const void *)` for type `fuse` with `MS_NOSUID` and `MS_NODEV`, and the options `fd=`, `rootmode=`, `user_id=`, `group_id=` and `allow_other` (L7, point 1) | the C library | `unsafe fn` | one |
 | 16 | `darwin-peercred` | macOS | `int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_LOCAL` and `LOCAL_PEERCRED` only, on a borrowed `UnixStream`, into a `struct xucred` (C43, point 4; control endpoint) | libSystem | `unsafe fn` | one |
 | 17 | `windows-pipe-create` | Windows | `CreateNamedPipeW` for the one control pipe, with a `SECURITY_ATTRIBUTES` naming a self-relative security descriptor built in safe Rust; the returned handle adopted as an `OwnedHandle` (C43, point 4) | see point 5.4 | `unsafe fn` | one for the call; one that adopts the handle (`OwnedHandle::from_raw_handle`) |
@@ -659,19 +661,40 @@ are in its sheet below the table, under the same number.
     O26, point 5, with the first layer switched off in a test build.
 13. **`linux-peercred`.**
     *Interface:* given a borrowed `UnixStream`, the peer's `pid`, `uid`
-    and `gid` as IronAFS's own types, or an error. It takes no other
-    descriptor type, so the option always applies to the socket.
+    and `gid` as IronAFS's own types, or an error. Safe Rust can wrap any
+    descriptor as a `UnixStream`, so the wrapper checks what it was given
+    before it reads the credentials:
+    - the peer's address, through the standard library (`getpeername`),
+      which a listener, an unconnected socket and a socket of another
+      family do not have;
+    - the socket's type, read with `SO_TYPE` into a zero-initialised
+      local `int`, with a local length set to `sizeof(int)`, both passed
+      by exclusive pointer for the call. A non-zero return, a returned
+      length other than `sizeof(int)`, or a type other than
+      `SOCK_STREAM` is an error ("not a Unix stream"). This refuses a
+      datagram socket, a pair's included: a datagram socket of a pair can
+      be connected to another peer without the kernel replacing the
+      pair's credentials, which would otherwise be reported as the new
+      peer's;
+    - ids of −1, which the kernel reports for a socket with no peer
+      credentials, are an error.
     *Obligations:* the `ucred` is a zero-initialised local and the length
     a local set to its size, both passed by exclusive pointer for the
     call; the descriptor is borrowed from the stream for the call. A
     non-zero return, or a returned length other than the size of
-    `struct ucred`, is an error. The values are those "in effect at the
+    `struct ucred`, is an error. The type read's safety argument is the
+    same, for one `int`: the kernel writes at most `*optlen` bytes and
+    the length. The values are those "in effect at the
     time of the call to connect(2), listen(2), or socketpair(2)"
     (unix(7)), not the peer's current ones. Policy
     (which uid may send a token, C43, point 4) is the caller's.
-    *Test:* a socket pair in one process; a peer under another uid; the
-    stand-in returns a short length and an over-long length, each an
-    error.
+    *Test:* a socket pair in one process; a peer under another uid; a
+    listener, and a reconnected datagram socket of a pair, each wrapped
+    as a stream and refused; the stand-in returns a short length and an
+    over-long length for each read, and a type other than
+    `SOCK_STREAM`, each an error.
+    *Revisit if* a site adds another descriptor type that carries peer
+    credentials.
 14. **`linux-fdpass`.**
     *Interface:* send one borrowed descriptor over a borrowed
     `UnixStream`; receive exactly one as an `OwnedFd`. `ironafs-fuse`
@@ -699,6 +722,26 @@ are in its sheet below the table, under the same number.
       `OwnedFd`, before it rejects anything for `MSG_CTRUNC`, for a
       second descriptor or for the data byte, so a delivered descriptor
       is never leaked.
+    - **A pidfd is the second descriptor-carrying type.** A receiving
+      socket with `SO_PASSPIDFD` set (on it, or inherited from the
+      listener it was accepted from; no site sets it, but a socket unit's
+      `PassPIDFD=` or foreign code in the process can) gets an
+      `SCM_PIDFD` control message, and the kernel installs that pidfd in
+      the receiver, whenever the receive delivers no `SCM_RIGHTS` message
+      and leaves room for it. A header of level `SOL_SOCKET`, type
+      `SCM_PIDFD` and length exactly `CMSG_LEN` of one `int`, within the
+      returned control length, holds one descriptor. Its value is checked
+      (non-negative) before it is adopted as an `OwnedFd`, like a
+      delivered descriptor, whatever else the receive reported (the end
+      of the stream, `MSG_CTRUNC`, a wrong data byte); the message is then
+      refused ("the peer's pidfd arrived instead of a descriptor"), which
+      closes it. The buffer has room for one control message of one
+      descriptor: whichever the kernel writes first is checked as above,
+      and for what does not fit it sets `MSG_CTRUNC` (the refusal of a
+      truncated message). *Safety, for the
+      adoption:* the kernel installed the pidfd in this process for this
+      receive, after writing its control message, and no other code has
+      seen it, so the `OwnedFd` is its only owner, as for `SCM_RIGHTS`.
     - `sendmsg` uses `MSG_NOSIGNAL`, so a closed peer is an error and not
       a signal. `recvmsg` uses `MSG_CMSG_CLOEXEC`. `EINTR` is retried on
       both. A return of 0 (end of stream), a short send, `MSG_CTRUNC`, no
@@ -707,7 +750,11 @@ are in its sheet below the table, under the same number.
       error path the adopted descriptors are dropped, which closes them; a
       negative value is never adopted (`OwnedFd`'s precondition).
     - A descriptor exists as a raw integer only between the checked read
-      of the control buffer and its adoption, in one private function.
+      of the control buffer and its adoption: the receive, and the checks
+      it hands what it read to by value, with no fallible step or early
+      return between them. The checks are a safe function over owned
+      values, so that the tests, and a fuzz target once the fuzzing
+      engine is decided (point 6.5), reach every branch without a socket.
     - The wrapper says nothing about what the descriptor refers to, nor
       who receives it. The receiving caller checks the sender (sheet 13)
       and the object. The sending caller checks the recipient **before it
@@ -734,7 +781,23 @@ are in its sheet below the table, under the same number.
     service account connects on the stream the mount step uses; the
     peer's receive returns no descriptor (end of stream, nothing in its
     `/proc/self/fd` from the step), and the step's own descriptor count
-    shows both its copies closed.
+    shows both its copies closed. The checks over an `SCM_PIDFD` header
+    adopt and close its descriptor; and, where the kernel offers
+    `SO_PASSPIDFD` (Linux 6.5 and later), a live receive on a socket on
+    which a helper process has set the option (no site sets it) closes
+    the pidfd the kernel installed, counted in `/proc/self/fd`.
+    *Constants, per target:* `SCM_PIDFD` (4) is named by glibc 2.39 and
+    later in `<bits/socket.h>`, only under `_GNU_SOURCE`, which the row's
+    check defines; older glibc headers and musl's (1.2.5 included) do not
+    name it, and no installed user-space header does. It is proved by name
+    on each target, against that target's own headers, never by a value
+    taken from another target or library. On a target whose headers do
+    not name it the check has no evidence, so it reports the row withheld
+    there: MISSING under point 5.6, and the site does not ship on that
+    target. That is every musl target today. `SO_TYPE` (3) and
+    `SOCK_STREAM` (1), of row 13, are named by both libraries.
+    *Revisit if* musl's headers name `SCM_PIDFD`, or a site sets
+    `SO_PASSPIDFD`.
 15. **`linux-mount`.**
     *Interface:* mount the FUSE filesystem at a path, given the FUSE
     device as a borrowed descriptor, the root mode and the numeric ids.
@@ -2351,3 +2414,19 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
   wording, round 15's sweep entry in the record, and round 1's
   undescribed minor), fixed in the next commit and recorded; under the
   stop rule, no further round.
+- **Amendment of 2026-11-21 (#57; rows 13 and 14, sheets 13 and 14).**
+  The class S review of #57's parts B and C (GPT, two rounds; then a
+  second-family pass, Gemini and DeepSeek) found two exposures that the
+  closed list did not allow closing: a datagram socket of a pair,
+  reconnected and wrapped as a stream, passed sheet 13's checks with the
+  pair's stale credentials; and a pidfd installed with `SCM_PIDFD` was
+  refused without adoption, so it stayed open. It also recorded that
+  sheet 14's raw-descriptor span crosses two functions. The owner
+  accepted the new constants `SO_TYPE`, `SOCK_STREAM` and `SCM_PIDFD`
+  under point 7.1 (2026-11-21), with `SCM_PIDFD` qualified per target
+  (sheet 14, *Constants, per target*). No foreign function, library,
+  target or flag is added; row 13 gains a second block. Sweep: ADR 0004
+  C43, point 4, and L7, point 1, cite these sheets for the checks only,
+  and stand. The amendment is reviewed with #57's pull request, on the
+  strongest row; its rounds are in that change's review record,
+  `docs/reviews/2026-11-21-m2a-57-os-parts-bc.md`.
