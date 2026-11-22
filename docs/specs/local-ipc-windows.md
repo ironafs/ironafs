@@ -194,7 +194,8 @@ on Windows. Its rule, in full:
      or a passed handshake deadline before then, whether a read is
      outstanding or the capture is running, moves the connection to
      `Draining`, and the transition's return is its terminal completion
-     (5.6.2).
+     (5.6.2). A failed revert ends the daemon process in either state
+     (ADR 0005, sheet 19).
    - The 4 bytes are not decoded, compared or answered in this state.
      When all 4 are read, the caller is captured at once (impersonate,
      open the thread token, revert; ADR 0005, sheet 19). A result is
@@ -259,7 +260,7 @@ The Windows rows of the table in local-ipc.md, 5.6.2:
 | `PreAttestation` | the transition fails, or admission's second step fails | Closed | no reply; nothing more read; a failed revert ends the daemon process (ADR 0005, sheet 19) |
 | `PreAttestation` | the handshake deadline passes, or a close, with the transition outstanding (its read, or the capture after it) | `Draining` | the driver requests the read's cancellation if a read is outstanding; no reply |
 | `PreAttestation` | a transition result tagged with another generation | `PreAttestation` | discarded, buffer zeroed, bound to nothing |
-| `Draining` (from `PreAttestation`) | the transition's return, for this generation | released | its result discarded, the prefix buffer zeroed, bound to nothing; the transition was the one operation outstanding, so its return is the last terminal completion (row below) |
+| `Draining` (from `PreAttestation`) | the transition's return, for this generation | released | its result discarded, the prefix buffer zeroed, bound to nothing; the transition was the one operation outstanding, so its return is the last terminal completion (row below). A transition whose revert failed ends the daemon process instead, as in `PreAttestation` (ADR 0005, sheet 19) |
 | Closed (Windows) | an operation is still outstanding | `Draining` | the instance is not disconnected, reused or closed (ADR 0005, sheet 18) |
 | `Draining` (Windows) | the last terminal completion | released | buffers zeroed, then the instance is disconnected and may listen again |
 

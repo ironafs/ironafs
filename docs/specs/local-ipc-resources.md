@@ -150,10 +150,10 @@ local-ipc-windows.md.
    - closing deadline ≤ write deadline;
    - on Windows, point 10.
 
-   On a reload these rules are checked with A the larger of the running
-   and the new allowance, since a connection keeps the allowance and the
-   request table it was admitted with until its release (5.2.1,
-   rule 1).
+   On a reload these rules are checked with A the largest of the new
+   allowance and every allowance a connection not yet released holds,
+   since a connection keeps the allowance and the request table it was
+   admitted with until its release (5.2.1, rule 1).
 
 #### 5.2.1 Reservation before allocation
 
@@ -1137,7 +1137,8 @@ gated too.
   Gated until then: 5.4, points 19 and 20, as B3 gates them.
 
 - **B7. The client's space for mandatory events, and the client's
-  minimum budgets.** Parts: local-ipc-resources.md, 5.4, point 19.
+  minimum budgets.** Parts: local-ipc-resources.md, 5.4, points 19
+  and 20.
   Quoted from the second-family review, without its label:
 
   > Defect: the daemon reserves M per connection outside
@@ -1165,7 +1166,8 @@ gated too.
   staging budget and request deadline. The adapter endpoint's own rules
   stay with Q6 of local-ipc.md.
   Gated until then: the client's receive path for mandatory events, and
-  so any client of an endpoint with a mandatory event row.
+  so any client of an endpoint with a mandatory event row; and the
+  client's request deadline (5.4, point 20).
 
 - **B8. The largest single-request charge R and the handler's working
   set.** Parts: local-ipc-resources.md, 5.2, point 9 and 5.2.1,
@@ -1201,7 +1203,8 @@ gated too.
   Gated until then: 5.2, point 9's per-caller rule and 5.2.1, rule 3.
 
 - **M3. The heap requests of M.** Parts: local-ipc-resources.md, 5.2.1,
-  rules 1 and 4; 5.5, point 7.
+  rules 1 and 4; 5.5, point 7; local-ipc.md, 5.6.1, point 3 (the
+  generator's computation of M).
   Quoted from the second-family review, without its label:
 
   > Defect: rule 1 (180-182) caps the allowance at
