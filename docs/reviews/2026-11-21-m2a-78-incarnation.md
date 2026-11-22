@@ -260,6 +260,62 @@ recorded, with no further full round, in the commit on top of
 | S6: section 8 and Q11 bounded the shared epoch by "its next own VL observation", but a refresh naming the site the record holds confirms it | minor | fixed: both bound it by an own observation that shows a different site, and say a refresh naming the held site leaves the sharing in place for as long as the record lasts | introduced by an earlier fix round (`f0c735a`) | correctness |
 | S7: a record made from a file-service observation holds `site_release` "not observed", which 5.4, point 4, read as not "none", so the volume would stay uncached until the context's next VL observation | minor | fixed, a narrower fix than the finding's framing: 5.4, point 4's rule now applies to a release flag only; "not observed" caches as "none" does, which is safe because the context's next own VL observation is ambiguity whatever it shows (5.4, point 3), so nothing cached under that epoch outlives it. The comparison property and a new AC6 variant say so | introduced by an earlier fix round (`f0c735a`) | correctness |
 
+## Decision 29 amendment
+
+The controller's decision 29 (2026-11-21) set the cache fence: the
+callback specification's five values and the local volume epoch as the
+sixth; the credential and rights generations in the request's ticket
+only; the fence table's lock a leaf in ADR 0004 C39, point 4's order.
+The callback specification carries it (#119, its 5.6, points 2 and 3,
+read at `63313e5`), and so does the fence code of #91 (read on its
+branch). This specification was brought into line with both, in the
+commit on top of `aa4fc26` that adds this section:
+
+- section 4: the local volume epoch is a value of the fence tuple, and
+  its change counts among wide suspicions; a chunk recorded under
+  another epoch is also unreachable by its key, so it is fetched anew,
+  not verified by refetch;
+- 5.6, point 1: a new paragraph on the fence table's copy of the epoch:
+  every outcome that leaves a record ("new", "confirmed" and
+  "ambiguous") writes it, in the same step, under the volume's lock,
+  with the fence table's lock taken inside; the adoption rule at the
+  install whose own observation wrote the epoch, with the eviction latch
+  and the volume break counter condition, as the callback specification,
+  5.6, point 3, states them;
+- 5.6, point 3, step 3: the in-flight fetches fail through the epoch's
+  place in the tuple, not through a separate record; the T7 or T8 reply
+  is installed with its send-time tuple in which the volume's break
+  counter and the epoch take their new values;
+- 5.6, point 6: the refetch's fence check names the epoch as one value
+  of the tuple, and the fence table's lock as taken inside the volume's;
+- section 2 says which of the callback specification's duties are
+  restated here.
+
+**Not reviewed.** No lane has read this amendment.
+
+**Raised for the callback specification and the fence code, not
+changed here:**
+
+- A request with no evidence record has no epoch copy: an unrecorded
+  volume (5.2, point 5) and an unauthenticated context (5.4, point 1;
+  AC13) take none. By the callback specification, 5.6, point 3, every
+  fetch such a request sends records no epoch and fails its check, and
+  no adoption can rescue it, so C16, point 2, ends it with `Stale`
+  instead of the uncached read this specification and C20, point 1,
+  describe. Whether a reply that is never cached is fenced on the other
+  five values only is the callback specification's to state.
+- The callback specification, 5.6, point 3, has the copy written when
+  the epoch is set or changed; the fence code writes it on "confirmed"
+  too. That write is needed: without it, once the table evicts a copy
+  while the record lives, the context records no epoch until the next
+  epoch change, and every fetch fails. This specification follows the
+  code.
+- Evicting an evidence record (5.2, point 4) leaves the fence table's
+  copy of its abandoned epoch in place. That is safe, because a chunk
+  under the abandoned epoch is unreachable by its key, but it costs one
+  failed install after the next "new" outcome, and the callback
+  specification does not say so.
+
 ## Q10: the server reset
 
 C25, point 3 (Working), asks the observing context to take a fresh
@@ -335,3 +391,5 @@ asked to open any excluded section.
 - At the commit with the scoped round's minor fixes: `cargo xtask
   check` passes (EXECUTED, macOS, 2026-11-22 UTC). Not verified by any
   lane.
+- At the commit with the decision 29 amendment: `cargo xtask check`
+  passes (EXECUTED, macOS, 2026-11-22 UTC). Not verified by any lane.

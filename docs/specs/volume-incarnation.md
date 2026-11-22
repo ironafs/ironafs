@@ -175,7 +175,8 @@ Section 9 shows where each is kept and which test fails if it is broken.
      whose 5.1.3, point 4, hands the volume sync record here unread;
    - the callback service, the callback state record, the suspect epoch
      and the fence tuple: the callback specification (#66), whose 5.6,
-     points 1 to 5, this specification reads and never restates;
+     points 1 to 5, this specification reads, restating only the duties
+     its 5.6, point 3, places on this one (5.6, point 1, here);
    - the node table, the chunk store and its keys, entry validation and
      the serve path: the cache (C16, C26, C27; #91 and the chunk store
      task). This specification states what the cache must compare and
@@ -274,8 +275,9 @@ Section 9 shows where each is kept and which test fails if it is broken.
 - **Evidence record:** the per-context, per-volume record of 5.1.2.
 - **Local volume epoch:** the value of the record's `epoch` field. It is
   the incarnation component of N38, point 8, as that context sees the
-  volume, and the "volume and its incarnation" part of a chunk's key
-  (C27, point 1).
+  volume, the "volume and its incarnation" part of a chunk's key (C27,
+  point 1), and the sixth value of the fence tuple (the callback
+  specification, 5.6, point 2).
 - **Outcome:** the result of comparing an observation with the record:
   **confirmed**, **ambiguous**, **new** or **unrecorded** (5.4).
 - **Incarnation change:** what ambiguity causes in the observing context:
@@ -285,11 +287,15 @@ Section 9 shows where each is kept and which test fails if it is broken.
   observation: another context's observation, anything the callback
   service receives (C24, point 2), and an Rx abort (ADR 0006).
 - **Wide suspicion:** a change, since a chunk was validated, in any
-  shared value of its fence tuple: its volume's break counter (raised by
-  the callback service, or by another context's ambiguity, 5.6, point 4),
-  the server's suspect epoch, the pause generation or the resume
-  generation (the callback specification, 5.6, point 2). A change in the
-  object's own break counter alone is **narrow**.
+  value of its fence tuple but the object's own break counter: its
+  volume's break counter (raised by the callback service, or by another
+  context's ambiguity, 5.6, point 4), the server's suspect epoch, the
+  pause generation, the resume generation, or the context's local volume
+  epoch (the callback specification, 5.6, point 2; 5.6, point 1, here).
+  A chunk recorded under another local volume epoch is also unreachable
+  by its key (C27, point 1), so that change is never revalidated by
+  refetch: the chunk is fetched anew. A change in the object's own break
+  counter alone is **narrow**.
 - **Holder:** a handle, a directory snapshot or a journal record that the
   context holds for the volume; a record with a holder is **pinned**
   (5.2).
@@ -607,6 +613,28 @@ Not applicable: nothing is encoded or sent.
      while they are, so the replacement never makes a held volume
      evictable (5.2, point 1);
    - **unrecorded:** 5.2, point 5.
+
+   **The fence table's copy of the epoch** `[OWN, under ADR 0004 C25.3:
+   Working]`. The local volume epoch is the sixth value of the fence
+   tuple (the callback specification, 5.6, point 2), compared from a copy
+   the fence table keeps per context and volume (its 5.6, point 3). Each
+   outcome that leaves a record writes the record's `epoch` into that
+   copy, in the same step, under the volume's lock, taking the fence
+   table's lock inside it (the table's lock is a leaf in C39, point 4's
+   order, the callback specification, 5.6, point 2): "new" its first
+   epoch; "confirmed" the same epoch, which restores a copy the table
+   evicted; "ambiguous" the new one (point 3, step 3). A call sent while
+   its context holds no copy for the volume records no epoch, and its
+   tuple fails its check, save at the install whose own observation wrote
+   the epoch: that install adopts the epoch into the recorded tuple only
+   if the fence table has never evicted a record holding a copy (once it
+   has, a latch refuses every later adoption) and the context's volume
+   record still has the recorded tuple's volume break counter, unbroken
+   since the call was sent (the callback specification, 5.6, point 3).
+   An epoch written meanwhile by anything but this install's own
+   observation would have needed ambiguity, which raises that counter
+   (point 3, step 2). A refused adoption fails the fence, C16, point 2,
+   applies, and the retry records the epoch the observation wrote.
 2. **Triggers of ambiguity,** each the observing context's own
    observation. Each is C25, point 3's ambiguity for that context
    `[ADR 0004 C25.3: Working]` unless it says `[OWN]`:
@@ -638,18 +666,20 @@ Not applicable: nothing is encoded or sent.
       evict by its own policy);
    2. the volume's break counter is raised, which is the weak input every
       other context gets (point 4);
-   3. every fetch of the context in flight for the volume fails its
-      fence: the cache records the local volume epoch in the fetch when
-      it is sent and compares it when the reply is installed, as it
-      compares the fence tuple (the callback specification, 5.6,
-      point 3), and C16, point 2, applies to a reply that fails. The one
-      exception is the reply whose own check caused the change (T7 or
-      T8, points 6 and 8): it passed its fence check in this same step
-      (points 6 and 8), so no counter moved while it was in flight. If it
-      carried data, its bytes are installed under the new epoch as part
-      of this step, with the fence tuple they were sent under, in which
-      only the volume's break counter takes the value step 2 gave it,
-      and are not fetched again;
+   3. the fence table's copy of the context's epoch for the volume takes
+      the new value, taking the fence table's lock inside the volume's
+      (point 1, "The fence table's copy of the epoch"). The epoch is a
+      value of the fence tuple (the callback specification, 5.6, point
+      2), so every fetch of the context in flight for the volume, which
+      recorded the old one, fails its fence when its reply is installed
+      (its 5.6, point 3), and C16, point 2, applies. The one exception is
+      the reply whose own check caused the change (T7 or T8, points 6 and
+      8): it passed its fence check in this same step (points 6 and 8),
+      so no value moved while it was in flight. If it carried data, its
+      bytes are installed under the new epoch as part of this step, with
+      the fence tuple they were sent under, in which only the volume's
+      break counter and the local volume epoch take the values steps 1
+      and 2 gave them, and are not fetched again;
    4. the incarnation change event names the context, its generation,
       the cell and the volume id, and is queued to the context's
       handles, directory snapshots and Windows identities, and to its
@@ -685,14 +715,15 @@ Not applicable: nothing is encoded or sent.
    - the reader fetches the chunk's byte range again, in its own context,
      with a status in the same reply (vl-fs-read.md, 5.1.4, point 6), and
      the reply passes vl-fs-read.md, 5.4, point 9;
-   - before any branch below, the reply is checked against the local
-     volume epoch and the fence tuple recorded when the refetch was sent,
-     as any fetch is (point 3, step 3; the callback specification, 5.6,
-     point 3). If either changed while it was in flight, it fails its
-     fence (C16, point 2): no branch below applies, it triggers nothing,
-     and the refetch is retried. The check and the branch it leads to
-     are one step under the core's lock for the volume, so nothing
-     changes between them;
+   - before any branch below, the reply is checked against the fence
+     tuple recorded when the refetch was sent, the local volume epoch
+     among its values, as any fetch is (the callback specification, 5.6,
+     points 2 and 3). If any value changed while it was in flight, it
+     fails its fence (C16, point 2): no branch below applies, it triggers
+     nothing, and the refetch is retried. The check and the branch it
+     leads to are one step under the core's lock for the volume, the
+     fence table's lock taken inside it for the check, so nothing changes
+     between them;
    - if the reply's data version is higher than the chunk's, the chunk is
      stale: the new bytes are installed under the new version, as for any
      changed file;
