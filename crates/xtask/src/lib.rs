@@ -5,8 +5,10 @@
 
 mod args;
 mod bans;
+mod cell;
 mod check;
 mod deps;
+mod files;
 mod fixture;
 mod grants;
 mod hooks;
@@ -54,6 +56,8 @@ enum Error {
         source: io::Error,
     },
     Trailer(trailers::Violation),
+    /// A test cell command failed.
+    Cell(cell::Failure),
     /// A rule check found violations, each written out.
     Rules {
         check: &'static str,
@@ -131,6 +135,7 @@ impl fmt::Display for Error {
                 write!(formatter, "{operation} at {}: {source}", path.display())
             }
             Self::Trailer(violation) => write!(formatter, "{violation}"),
+            Self::Cell(failure) => write!(formatter, "cell: {failure}"),
             Self::Rules { check, violations } => {
                 write!(formatter, "{check} found {} violations:", violations.len())?;
                 violations
@@ -165,6 +170,7 @@ fn run_task(
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
         args::Task::Trailers(mode) => trailers::run(mode, output),
+        args::Task::Cell(command) => cell::run(command, output),
     }
 }
 
