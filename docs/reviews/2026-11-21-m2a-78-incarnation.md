@@ -22,7 +22,7 @@ Class S. Issue #78 (plan id M2a-06).
   - verify by refetch after a server-wide or volume-wide event;
   - the restart rule;
   - the arithmetic, errors, threats, acceptance cases, and open
-    questions Q1 to Q10.
+    questions Q1 to Q11.
 - `docs/specs/README.md`: register of editions rows E14 to E16, an
   addition to row E8, and the index row.
 - **Written by** `claude-code:claude-opus-5-5` (drafting, and the fixes
@@ -228,6 +228,26 @@ section; **they have not been reviewed.**
 | F12: the threat row said a forged value costs the observing context only a refetch | minor | fixed: it names the incarnation change's effects on that context's handles, snapshots and journal records, and their explicit recovery | pre-existing (`67ee757`) | other (security analysis) |
 | F13: "new" and "confirmed" did not set `last_outcome`, and "new" did not set `last_used` | minor | fixed in 5.6, point 1 | introduced by an earlier fix round (`7daee8f`) | correctness |
 
+### Scoped round
+
+The fixes above were committed as `de31e4d` and verified on
+`11cec86..de31e4d`: `glm-5.3` (high) passed F7's disposition as a
+specification item; `deepseek-flash` found every F item fixed, and four
+new findings in F4's fix. Each was checked against the text first; all
+four hold. They share one cause: F4's fix took a file-service reply's
+site from the VL entry the call was routed by, an interface
+vl-fs-read.md does not define. Rather than define it here (a new
+mechanism), the site part of F4's fix is withdrawn and the failover
+case becomes section 13, Q11. The fixes are in the commit on top of
+`de31e4d` that adds this subsection; **they have not been reviewed.**
+
+| Item | Severity | Disposition | Origin | Kind |
+|---|---|---|---|---|
+| S1: the file-service site's partition and release state came from the routing VL entry, which the location cache may hold from another context, against 5.1.2's "no value read from another context" | major | fixed: a file-service observation carries no compared value (5.4, point 3); a record made "new" from one holds every compared value "not observed" (`site_server`'s tag and `site_release` gain that state; still 234 bytes) | introduced by an earlier fix round (`de31e4d`, F4) | correctness |
+| S2: the file-service site's server was the connection's address, while a VL entry may name the same server by identity, which 5.4, point 3, reads as a difference: a spurious T2 on every refresh | major | fixed by S1's withdrawal: no server is taken from a file-service reply | introduced by an earlier fix round (`de31e4d`, F4) | correctness |
+| S3: one provenance entry covered the VL values and the file-service site, which could not both be recorded | minor | fixed by S1's withdrawal: a file-service observation sets only the `volsync` provenance entry; 5.4, point 2, says a provenance entry none of whose values the observation carries is "none" | introduced by an earlier fix round (`de31e4d`, F4) | consistency between parts |
+| S4: vl-fs-read.md, 5.6, point 3, was cited for routing a call by a site of an entry, which it does not define | minor | fixed by S1's withdrawal; the missing routing and attribution interface is section 13, Q11, and the failover with no new VL reply is a stated residual (5.1.1, reason 3; T2; 5.6, point 7; section 8; 10.6). The AC3 failover variant is removed | introduced by an earlier fix round (`de31e4d`, F4) | missing mechanism |
+
 ## Q10: the server reset
 
 C25, point 3 (Working), asks the observing context to take a fresh
@@ -297,3 +317,6 @@ asked to open any excluded section.
 - At the commit with the second-family fixes: `cargo xtask check`
   passes (EXECUTED, macOS, 2026-11-21 UTC). Those fixes were not
   verified by any lane; see "Second-family pass".
+- At the commit with the scoped round's fixes: `cargo xtask check`
+  passes (EXECUTED, macOS, 2026-11-21 UTC). Not verified by any lane;
+  see "Scoped round".

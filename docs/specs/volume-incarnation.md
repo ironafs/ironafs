@@ -264,7 +264,7 @@ Section 9 shows where each is kept and which test fails if it is broken.
   own connections, that carries evidence values for a volume: a VL entry
   ([vl-fs-read.md](vl-fs-read.md), 5.1.4, points 1 and 2) or a
   file-service reply with a volume sync record (its 5.1.4, points 4 to
-  6), with the serving site its call was sent to (5.4, point 3). Only a
+  6). Only a
   reply that passed every check of vl-fs-read.md, 5.4, is an
   observation.
 - **Observing context:** the credential context that owns the connection
@@ -341,7 +341,9 @@ event as before it.
    names a move). A switch between replica sites of one release is
    ambiguity too, though it may be the same incarnation: no value read
    here shows that two sites hold one release (Q6). The cost is a refetch
-   of that volume's data in that context after a replica failover.
+   of that volume's data in that context after a replica switch its own
+   VL entry shows. A failover to another site of an entry already held,
+   with no new VL reply, is not seen by this version (Q11).
 4. **A release flag on the serving site makes the volume uncached, and
    any change of it is ambiguity.** C25, point 3, names a release; the
    flags are the release as the VL entry shows it. A flag that appears,
@@ -374,9 +376,9 @@ in the size bound of 5.2:
 | `epoch` | `u64` | 8 | the local volume epoch, from N38, point 8's counter |
 | `vl_ids` | four optional `u32` (read/write, read-only, backup, release clone), each a state octet (absent, present, or not observed: 5.4, point 2) and a value | 20 | 5.1.1, row 2 |
 | `volume_type` | closed enumeration: read/write, read-only, backup, not observed (5.4, point 2) | 1 | 5.1.1, row 5 |
-| `site_server` | tagged: a server identity (16 octets) or an IPv4 address (4 octets), one tag octet | 17 | 5.1.1, row 3 |
+| `site_server` | tagged: a server identity (16 octets) or an IPv4 address (4 octets), one tag octet; a third tag, "not observed" (5.4, point 2), covers `site_partition` too | 17 | 5.1.1, row 3 |
 | `site_partition` | `u32` | 4 | 5.1.1, row 3 |
-| `site_release` | closed enumeration: none, new release, old release, not released | 1 | 5.1.1, row 4 |
+| `site_release` | closed enumeration: none, new release, old release, not released, not observed (5.4, point 2) | 1 | 5.1.1, row 4 |
 | `entry_flags` | `u32`, raw, with a presence octet ("not kept" when no VL entry has set it under this `epoch`) | 5 | recorded only (5.4, point 5) |
 | `volsync` | at most `inc.volsync_keep_max` bytes, with a length octet, or "not kept" | 65 | recorded only (5.4, point 5) |
 | `provenance` | two entries: one for the values a VL entry carries (`vl_ids`, `volume_type`, the site fields, `entry_flags`), one for `volsync`. Each holds the procedure that carried them ([vl-fs-read.md](vl-fs-read.md), 5.1.4's IronAFS name, as a one-octet code), the connection's security profile (N39's class, level and suite: one, one and four octets; "null class" in M2a), the boot-clock instant of the reply (C37, `u64`), and the server's suspect epoch when the call was sent (the callback specification, 5.6, point 1, `u64`). Procedure code 0 means "none": no reply has set those values under this `epoch` | 2 × 23 = 46 | C25, point 1's "where each observation came from"; shown by O13 (5.6, point 11) |
@@ -514,34 +516,34 @@ in this order `[OWN]`:
    and **unrecorded** otherwise (5.2, point 5); points 3, 5 and 6 do not
    apply, and point 4's rule on caching does. A new record holds the
    values the observation carries, with their provenance. What it does
-   not carry is "not observed" (the version ids and the type, which a
-   file-service observation never carries: a record evicted while the
-   context's calls are still routed by a cached VL entry), or "not kept"
-   with its provenance entry "none" (`entry_flags`, `volsync`). "New" is
+   not carry is "not observed" (the compared values, all of which only a
+   VL entry carries: a record made from a file-service observation, when
+   a record was evicted while the context's calls are still routed by a
+   cached VL entry), or "not kept" (`entry_flags`, `volsync`); a
+   provenance entry none of whose values the observation carries is
+   "none". "New" is
    safe whatever the context held before: an earlier record's epoch is
    never reused (5.2, point 4; 5.8), so nothing cached under it is
    reachable, and a record with a holder is never missing within a run
    (5.2, point 1). Journal records from an earlier run are
    5.8, point 3's.
 3. **Compared values.** A VL entry carries every value of 5.1.1 marked
-   "compared". A file-service observation carries the serving site its
-   call was sent to: the server the context's own connection reached,
-   and that site's partition and release state in the VL entry the call
-   was routed by ([vl-fs-read.md](vl-fs-read.md), 5.6, point 3). So a
-   switch to another site with no new VL reply (vl-fs-read.md, 5.9, rows
-   R7, R10 and R16) is compared like any other (T2). It carries no
-   version ids and no type. Each compared value the observation carries
-   is compared for equality with the record's. A value the observation
-   does not carry is not compared and keeps the record's value. A value
-   the record holds as "not observed" differs from every value an
-   observation carries: it is ambiguity, never filled in silently, at
-   the cost of one more incarnation change after an evicted record (T1,
-   T4). Any difference is **ambiguous**. The comparison is exact, field
-   by field, in each value's decoded form
-   ([vl-fs-read.md](vl-fs-read.md), 5.1.3): a server identity is
-   compared as its 16 octets (vl-fs-read.md, 5.1.3, point 6), an address
-   as its four octets; a server named by identity in one entry and by
-   address in the next is a difference.
+   "compared"; a file-service observation carries none of them (it carries
+   no VL entry, and the entry its call was routed by may be another
+   context's: the location cache, [vl-fs-read.md](vl-fs-read.md), 5.6,
+   point 3, and C33, point 7, is not said to be per context, so that entry
+   is not this context's evidence). Each compared value the observation
+   carries is compared for equality with the record's. A value the
+   observation does not carry is not compared and keeps the record's
+   value. A value the record holds as "not observed" differs from every
+   value an observation carries: it is ambiguity, never filled in
+   silently, at the cost of one more incarnation change after an evicted
+   record (T1 to T4). Any difference is **ambiguous**. The comparison is
+   exact, field by field, in each value's decoded form
+   ([vl-fs-read.md](vl-fs-read.md), 5.1.3): a server identity is compared
+   as its 16 octets (vl-fs-read.md, 5.1.3, point 6), an address as its
+   four octets; a server named by identity in one entry and by address in
+   the next is a difference.
 4. **Release state.** A change of `site_release` is a difference under
    point 3 (T3), whichever way it goes: a release flag that appears,
    changes or clears. While the record's `site_release` is not "none",
@@ -607,7 +609,7 @@ Not applicable: nothing is encoded or sent.
    | Id | Trigger | C25, point 3's case |
    |---|---|---|
    | T1 | a VL version id differs, including a release clone id that appears, changes or goes (5.4, point 3) | a release (the release clone id); a re-creation that did not choose every id is `[OWN]`, from 5.1.1's reason 2 |
-   | T2 | the serving server or partition differs: a move, a restore to a new site, a switch of replica site, including C33, point 7's refresh after "moved" or "offline" | a move; a replica switch is `[OWN]`, from 5.1.1's reason 3 |
+   | T2 | the serving server or partition differs: a move, a restore to a new site, a switch of replica site that the context's own VL entry shows, including C33, point 7's refresh after "moved" or "offline" (a failover with no new VL reply is not seen: Q11) | a move; a replica switch is `[OWN]`, from 5.1.1's reason 3 |
    | T3 | the serving site's release state differs from the record's: a release flag appears, changes or clears (5.4, point 4) | a release |
    | T4 | the volume's type differs | `[OWN]`: a type change can only be a new volume under the id |
    | T5 | not a trigger: a volume with no record (never seen, evicted, or after a restart) takes the outcome "new" or "unrecorded" (5.4, point 2), and nothing cached under an earlier epoch is reachable (5.2, point 4; 5.8) | a restart of the client, and `[OWN]` for an evicted record |
@@ -730,9 +732,9 @@ Not applicable: nothing is encoded or sent.
    change retires handles and quarantines journal records (C25, point 5).
    What an abort may lower is ADR 0006, decision 1, point 6's, which the
    callback specification carries out (its 5.6, point 11). The VL entry
-   the client then fetches is an observation, and may trigger T2; so is
-   the reply from another site the client then tries, which carries that
-   site (5.4, point 3) and so is T2. So a
+   the client then fetches is an observation, and may trigger T2. A
+   reply from another site of the entry already held, tried with no new
+   VL reply, is not T2 in this version (5.4, point 3; Q11). So a
    volume "seen offline" only through aborts, and restored in place while
    it was off line, is not detected by this version unless a wide
    suspicion covers the same window: section 13, Q3.
@@ -930,6 +932,7 @@ the user's own key (N5, point 2).
 | A restore made while the client was down, with equal data versions | no clean chunk survives a restart (5.8) |
 | A restore in place during a run, inside a window that only aborts show | not detected: section 13, Q3 records it and its remedy |
 | A restore hidden by a server reset that raised every data version it touched | read as ordinary changes: new bytes are served, but handles and journal records are not invalidated on the reset alone (5.6, point 12); section 13, Q10 |
+| A failover to another site of a VL entry already held, with no new VL reply | not detected as a switch: chunks from both sites share one epoch in that context until its next own VL observation; section 13, Q11 |
 | A restore in place during a run, with no event the client sees at all (no reset, no break, no move) | not detected; it is the residual C25 accepts by naming its cases. Section 13, Q4 asks whether servers break callbacks on a restore, and Q5 records the decision this needs |
 
 ## 9. How the invariants are kept
@@ -1021,11 +1024,6 @@ able to restore a volume from a dump it holds:
 - **AC3. Move.** A reads F; the volume moves to another server; A's VL
   entry is refreshed and shows the new site. Result: T2; A's `epoch`
   changes; F is fetched again; the old chunk is not reachable in A.
-  Variant (failover): F is in a read-only volume with two sites; A's
-  fetch at its site is aborted with the "off line" code, and A's next
-  fetch goes to the other site with no new VL reply. Result: T2 on that
-  fetch's reply (5.4, point 3), which fails its fence and is fetched
-  again under the new epoch (5.6, point 3, step 3).
 - **AC4. Release.** A reads a file of a read-only volume; a release
   starts, and A's VL entry shows the serving site flagged. Result: T3;
   A's epoch changes; the incarnation change event names A only. While
@@ -1129,6 +1127,8 @@ able to restore a volume from a dump it holds:
   that passes: it is a residual, recorded in Q5. AC16's variant asserts
   the residual of 5.6, point 12 (Q10) as it stands, so that a change to
   it is a visible test change.
+- A failover to another site of a VL entry already held, with no new
+  VL reply, has no case: it is not T2 in this version (Q11).
 
 ## 11. Revisit if
 
@@ -1325,6 +1325,19 @@ was found and is raised as section 13, Q3.
   **Decided** (controller, 2026-11-21): C24 is kept as this version
   reads it, and the amendment of C25, point 3's wording to match is
   taken up in #53. The owner may override.
+- **Q11. Attributing a file-service reply to a site.** A switch to
+  another site of a VL entry the client already holds (vl-fs-read.md,
+  5.9, rows R7, R10 and R16) sends the context's calls to another server
+  with no new VL reply, so no observation of the context's own shows it
+  and T2 does not fire: chunks from both sites share one epoch in that
+  context until its next own VL observation. Closing it needs an
+  interface vl-fs-read.md does not define: which site of which entry a
+  file-service call was sent to, named as that entry names it, and
+  whether that entry is the context's own observation rather than
+  another context's, if the location cache is shared. Blocks: nothing in
+  M2a (C20); the authenticated cache of M2b. Recommendation: define that
+  attribution in vl-fs-read.md (a site named in the entry's own form,
+  with the entry's provenance), then compare it here as T2.
 
 ## 14. Review
 
