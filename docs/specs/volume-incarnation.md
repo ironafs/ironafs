@@ -246,9 +246,10 @@ Section 9 shows where each is kept and which test fails if it is broken.
    change, unless the refetch shows a lower data version, or other bytes
    under an equal one (5.6, point 12).
 6. The cost is stated in each place: a cold cache after every restart, a
-   refetch of a whole volume after a move, a release, a replica switch or
-   an evicted record, and, after a server-wide or volume-wide event, one
-   fetch of each cached chunk on its next use.
+   refetch of a whole volume after a move, a release, a replica switch
+   the context's own VL entry shows (a failover with no new VL reply is
+   not seen: Q11), or an evicted record, and, after a server-wide or
+   volume-wide event, one fetch of each cached chunk on its next use.
 
 ## 4. Terms
 
@@ -337,10 +338,11 @@ event as before it.
    choose every id, and a release in progress (the release clone id), show
    in them. They cost four words.
 3. **The serving site is compared,** so a move, a restore to a new site,
-   and a switch between replica sites are each ambiguity (C25, point 3,
-   names a move). A switch between replica sites of one release is
-   ambiguity too, though it may be the same incarnation: no value read
-   here shows that two sites hold one release (Q6). The cost is a refetch
+   and a switch between replica sites, each as the context's own VL entry
+   shows it, are each ambiguity (C25, point 3, names a move). A switch
+   between replica sites of one release is ambiguity too, though it may
+   be the same incarnation: no value read here shows that two sites hold
+   one release (Q6). The cost is a refetch
    of that volume's data in that context after a replica switch its own
    VL entry shows. A failover to another site of an entry already held,
    with no new VL reply, is not seen by this version (Q11).
@@ -546,11 +548,14 @@ in this order `[OWN]`:
    the next is a difference.
 4. **Release state.** A change of `site_release` is a difference under
    point 3 (T3), whichever way it goes: a release flag that appears,
-   changes or clears. While the record's `site_release` is not "none",
-   for a "new" record too, nothing the context fetches from the volume is
-   cached, as for an unrecorded volume (5.2, point 5); a record exists,
-   so holders are not refused. An equal flag is not ambiguity again
-   (5.1.1, reason 4).
+   changes or clears. While the record's `site_release` is a release
+   flag, for a "new" record too, nothing the context fetches from the
+   volume is cached, as for an unrecorded volume (5.2, point 5); a record
+   exists, so holders are not refused. An equal flag is not ambiguity
+   again (5.1.1, reason 4). "Not observed" is not a release flag: the
+   volume is cached as under "none", because the context's next own VL
+   observation is ambiguity whatever it shows (point 3), so nothing
+   cached under that `epoch` is reachable after it.
 5. **Recorded values.** `entry_flags` and `volsync`, when the
    observation carries them, replace the record's copy and its provenance
    entry; a value the observation does not carry keeps the record's copy,
@@ -932,7 +937,7 @@ the user's own key (N5, point 2).
 | A restore made while the client was down, with equal data versions | no clean chunk survives a restart (5.8) |
 | A restore in place during a run, inside a window that only aborts show | not detected: section 13, Q3 records it and its remedy |
 | A restore hidden by a server reset that raised every data version it touched | read as ordinary changes: new bytes are served, but handles and journal records are not invalidated on the reset alone (5.6, point 12); section 13, Q10 |
-| A failover to another site of a VL entry already held, with no new VL reply | not detected as a switch: chunks from both sites share one epoch in that context until its next own VL observation; section 13, Q11 |
+| A failover to another site of a VL entry already held, with no new VL reply | not detected as a switch: chunks from both sites share one epoch in that context until an observation of its own shows a site that differs from the record's. A refreshed entry that names the site the record holds confirms it, so the sharing can last as long as the record; section 13, Q11 |
 | A restore in place during a run, with no event the client sees at all (no reset, no break, no move) | not detected; it is the residual C25 accepts by naming its cases. Section 13, Q4 asks whether servers break callbacks on a restore, and Q5 records the decision this needs |
 
 ## 9. How the invariants are kept
@@ -975,8 +980,8 @@ None: nothing is encoded or decoded here.
   only if every compared value the observation carries equals the
   record's and none of them is "not observed" in the record (5.4); a
   change in any one compared value alone, the release state included, is
-  ambiguous; and while the record's release state is not "none", nothing
-  is cached.
+  ambiguous; and while the record's release state is a release flag,
+  nothing is cached ("not observed" is not one).
 - **Epochs never repeat:** over random sequences of observations, outcomes,
   evictions and restarts, no two records ever hold the same `epoch`, and
   no `epoch` is reused after its record is replaced or evicted (N38,
@@ -1041,7 +1046,10 @@ able to restore a volume from a dump it holds:
   used one, V, whose record is evicted while A still has chunks of V
   cached; A reads V again. Result: the outcome is "new", with an epoch
   that no earlier record held; V's old chunks are not reachable; the
-  data is fetched again. Variant: A is at
+  data is fetched again. Variant: A's first observation of V after the
+  eviction is a file-service reply. Result: the new record holds every
+  compared value "not observed"; what A then fetches from V is cached;
+  A's next VL observation of V is ambiguity (T1 to T4). Variant: A is at
   `inc.records.per_context_max` with a handle on every volume it has a
   record for, and opens a file on one more. Result: no record is
   evicted; the open is refused as busy.
@@ -1330,7 +1338,10 @@ was found and is raised as section 13, Q3.
   5.9, rows R7, R10 and R16) sends the context's calls to another server
   with no new VL reply, so no observation of the context's own shows it
   and T2 does not fire: chunks from both sites share one epoch in that
-  context until its next own VL observation. Closing it needs an
+  context until an observation of its own shows a site that differs from
+  the record's. A refreshed entry that names the site the record holds
+  confirms it, so the sharing can last as long as the record. Closing it
+  needs an
   interface vl-fs-read.md does not define: which site of which entry a
   file-service call was sent to, named as that entry names it, and
   whether that entry is the context's own observation rather than

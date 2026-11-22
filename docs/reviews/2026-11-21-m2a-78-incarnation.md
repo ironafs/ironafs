@@ -248,6 +248,18 @@ case becomes section 13, Q11. The fixes are in the commit on top of
 | S3: one provenance entry covered the VL values and the file-service site, which could not both be recorded | minor | fixed by S1's withdrawal: a file-service observation sets only the `volsync` provenance entry; 5.4, point 2, says a provenance entry none of whose values the observation carries is "none" | introduced by an earlier fix round (`de31e4d`, F4) | consistency between parts |
 | S4: vl-fs-read.md, 5.6, point 3, was cited for routing a call by a site of an entry, which it does not define | minor | fixed by S1's withdrawal; the missing routing and attribution interface is section 13, Q11, and the failover with no new VL reply is a stated residual (5.1.1, reason 3; T2; 5.6, point 7; section 8; 10.6). The AC3 failover variant is removed | introduced by an earlier fix round (`de31e4d`, F4) | missing mechanism |
 
+The scoped round (`de31e4d..f0c735a`) was verified: `glm-5.3` (high)
+passed the Q11 residual; `deepseek-flash` passed with three minors that
+the withdrawal introduced. Under the stop rule they were fixed and
+recorded, with no further full round, in the commit on top of
+`f0c735a` that adds these rows; **those fixes have not been reviewed.**
+
+| Item | Severity | Disposition | Origin | Kind |
+|---|---|---|---|---|
+| S5: section 3, point 6, and 5.1.1, reason 3, still said a replica switch costs a refetch, without T2's qualifier that the context's own VL entry shows it | minor | fixed: both now say so, and section 3, point 6, names the unseen failover (Q11) | introduced by an earlier fix round (`f0c735a`) | consistency between parts |
+| S6: section 8 and Q11 bounded the shared epoch by "its next own VL observation", but a refresh naming the site the record holds confirms it | minor | fixed: both bound it by an own observation that shows a different site, and say a refresh naming the held site leaves the sharing in place for as long as the record lasts | introduced by an earlier fix round (`f0c735a`) | correctness |
+| S7: a record made from a file-service observation holds `site_release` "not observed", which 5.4, point 4, read as not "none", so the volume would stay uncached until the context's next VL observation | minor | fixed, a narrower fix than the finding's framing: 5.4, point 4's rule now applies to a release flag only; "not observed" caches as "none" does, which is safe because the context's next own VL observation is ambiguity whatever it shows (5.4, point 3), so nothing cached under that epoch outlives it. The comparison property and a new AC6 variant say so | introduced by an earlier fix round (`f0c735a`) | correctness |
+
 ## Q10: the server reset
 
 C25, point 3 (Working), asks the observing context to take a fresh
@@ -320,3 +332,6 @@ asked to open any excluded section.
 - At the commit with the scoped round's fixes: `cargo xtask check`
   passes (EXECUTED, macOS, 2026-11-21 UTC). Not verified by any lane;
   see "Scoped round".
+- At the commit with the scoped round's minor fixes: `cargo xtask
+  check` passes (EXECUTED, macOS, 2026-11-22 UTC). Not verified by any
+  lane.
