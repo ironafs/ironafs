@@ -5,7 +5,7 @@
 
 use std::ffi::OsString;
 
-use super::{Task, TrailerMode, UsageError, parse};
+use super::{CellCommand, Task, TrailerMode, UsageError, parse};
 
 #[test]
 fn parse_rejects_unknown_command() {
@@ -102,6 +102,14 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             Task::CheckDeps { self_test: true },
         ),
         (
+            &["check-fuzz-deny"][..],
+            Task::CheckFuzzDeny { self_test: false },
+        ),
+        (
+            &["check-fuzz-deny", "--self-test"][..],
+            Task::CheckFuzzDeny { self_test: true },
+        ),
+        (
             &["check-grants"][..],
             Task::CheckGrants { self_test: false },
         ),
@@ -109,10 +117,22 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             &["check-grants", "--self-test"][..],
             Task::CheckGrants { self_test: true },
         ),
+        (&["check-bans"][..], Task::CheckBans { self_test: false }),
+        (
+            &["check-bans", "--self-test"][..],
+            Task::CheckBans { self_test: true },
+        ),
         (&["check-pure"][..], Task::CheckPure { self_test: false }),
+        (&["fuzz"][..], Task::Fuzz { self_test: false }),
+        (&["fuzz", "--self-test"][..], Task::Fuzz { self_test: true }),
         (
             &["check-pure", "--self-test"][..],
             Task::CheckPure { self_test: true },
+        ),
+        (&["check-seams"][..], Task::CheckSeams { self_test: false }),
+        (
+            &["check-seams", "--self-test"][..],
+            Task::CheckSeams { self_test: true },
         ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Ok(task));
@@ -127,10 +147,55 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             UsageError::UnexpectedArgument("extra".into()),
         ),
         (
+            &["check-fuzz-deny", "--all"][..],
+            UsageError::UnexpectedArgument("--all".into()),
+        ),
+        (
+            &["check-bans", "--all"][..],
+            UsageError::UnexpectedArgument("--all".into()),
+        ),
+        (
             &["check-pure", "--all"][..],
+            UsageError::UnexpectedArgument("--all".into()),
+        ),
+        (
+            &["check-seams", "--all"][..],
             UsageError::UnexpectedArgument("--all".into()),
         ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
     }
+}
+
+#[test]
+fn parse_cell_pin() {
+    assert_eq!(
+        parse(["cell", "pin"].into_iter().map(OsString::from)),
+        Ok(Task::Cell(CellCommand::Pin))
+    );
+}
+
+#[test]
+fn parse_cell_unknown_subcommand_reports_usage() {
+    for (args, error) in [
+        (&["cell"][..], UsageError::MissingCellSubcommand),
+        (
+            &["cell", "start"][..],
+            UsageError::UnknownCellSubcommand("start".into()),
+        ),
+        (
+            &["cell", "pin", "extra"][..],
+            UsageError::UnexpectedArgument("extra".into()),
+        ),
+    ] {
+        assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
+    }
+}
+
+#[test]
+fn usage_names_the_cell_command() {
+    let usage = UsageError::MissingCellSubcommand.to_string();
+
+    assert_eq!(usage.lines().next(), Some("missing cell subcommand"));
+    assert!(usage.ends_with(" | cell pin"));
 }

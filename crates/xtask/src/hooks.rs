@@ -6,9 +6,9 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{self, Command, Stdio};
+use std::process::Stdio;
 
-use crate::Error;
+use crate::{Command, Error, files};
 
 #[cfg(test)]
 mod tests;
@@ -90,22 +90,13 @@ fn install_hook(
     force: bool,
     output: &mut impl Write,
 ) -> Result<(), Error> {
-    let staged = directory.join(format!(".ironafs-{}-{}", hook.name, process::id()));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&staged)
-        .map_err(Error::path_io("create temporary hook", &staged))?;
-    let written =
-        write_hook(&mut file, hook.command).map_err(Error::path_io("write hook", &staged));
-    drop(file);
-    let installed = written.and_then(|()| publish_hook(&staged, path, force, output));
-    if force && installed.is_ok() {
-        return Ok(());
-    }
-    let cleaned =
-        fs::remove_file(&staged).map_err(Error::path_io("remove temporary hook", &staged));
-    installed.and(cleaned)
+    files::write_staged(
+        directory,
+        hook.name,
+        |file| write_hook(file, hook.command),
+        |staged| publish_hook(staged, path, force, output),
+        |operation, staged, error| Error::path_io(operation, staged)(error),
+    )
 }
 
 fn write_hook(file: &mut File, command: &str) -> io::Result<()> {

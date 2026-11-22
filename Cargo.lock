@@ -3,12 +3,51 @@
 version = 4
 
 [[package]]
+name = "ironafs-bans-canary"
+version = "0.0.0"
+dependencies = [
+ "ironafs-time",
+]
+
+[[package]]
+name = "ironafs-cache"
+version = "0.0.0"
+
+[[package]]
 name = "ironafs-cli"
 version = "0.0.0"
 
 [[package]]
+name = "ironafs-crypto"
+version = "0.0.0"
+dependencies = [
+ "ironafs-time",
+]
+
+[[package]]
+name = "ironafs-rx"
+version = "0.0.0"
+dependencies = [
+ "ironafs-time",
+]
+
+[[package]]
 name = "ironafs-test-support"
 version = "0.0.0"
+dependencies = [
+ "ironafs-time",
+]
+
+[[package]]
+name = "ironafs-time"
+version = "0.0.0"
+
+[[package]]
+name = "ironafs-xdr"
+version = "0.0.0"
+dependencies = [
+ "ironafs-test-support",
+]
 
 [[package]]
 name = "xtask"

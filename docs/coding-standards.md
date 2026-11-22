@@ -40,7 +40,9 @@ number and is marked retired; new rules are appended.
    - A crate that needs it (FSKit, SSPI or other OS bindings) gets an ADR first.
      Check first whether a safe binding crate removes the need.
    - Every crate inherits the workspace lints (`[lints] workspace = true`);
-     a crate that does not is a finding.
+     a crate that does not is a finding. The one exception is `ironafs-os`
+     (ADR 0005, point 1.5): its manifest carries its own `[lints]` table,
+     equal to the workspace's except for `unsafe_code = "deny"`.
    - That crate's ADR says how it keeps the other workspace lint levels while
      lowering `unsafe_code` to `deny` for that crate only. Cargo cannot
      combine `[lints] workspace = true` with a crate-level override, and an
@@ -51,8 +53,9 @@ number and is marked retired; new rules are appended.
      is denied.
    - A Miri job is added with the first such crate.
 
-6. **Warnings are errors in CI, not in source.** CI and `cargo xtask check`
-   set `CARGO_BUILD_WARNINGS=deny` for Clippy. Source never says
+6. **Warnings are errors in CI, not in source.** CI sets
+   `CARGO_BUILD_WARNINGS=deny` for Clippy; `cargo xtask check`'s lint
+   refuses every warning but the ones `check-bans`' canary must draw. Source never says
    `#![deny(warnings)]`, which breaks builds on every new compiler lint.
 
 7. **Time and randomness go through a seam.** No direct `Instant::now`,
@@ -342,8 +345,9 @@ number and is marked retired; new rules are appended.
     - **Written in IronAFS:**
       - the protocols: Rx and its security classes (including rxkad's fcrypt),
         XDR, the RPC clients, and the FUSE wire protocol over `/dev/fuse`;
-      - the event loop and concurrency (threads first; an async runtime only
-        if the architecture ADR shows it is needed);
+      - the event loop and concurrency: blocking code on standard-library
+        threads, and no async runtime, neither a third-party one nor one of
+        our own (ADR 0004, C3);
       - CLI parsing, error types, logging, configuration parsing, and test
         helpers.
     - **A dependency only where writing it ourselves would be less safe:**

@@ -1379,16 +1379,16 @@ This specification's own choices:
 - M2a reads a capability word, or the capability query is needed for
   another reason (Q4);
 - the registry, the capabilities draft, RFC 4787 or the reference
-  pages are revised (register rows E75 to E77, E11 and E12).
+  pages are revised (register rows E7, E9, E10 and E56).
 
 ## 12. Sources
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| K1 | DOCUMENTATION | AFS Assigned Numbers Registry: the file service procedure table `rx/RXAFS.txt`, register of editions row E75 ([README](README.md)); the Rx service list `rxservice.txt` and the error tables `errors.html`, row E11. Rows whose source column names an implementation's change history are not used. A lead until a passage is allowlisted (section 13, Q2) | 2, 5.1, 5.5, 5.6 |
-| K2 | SPECIFICATION | T. Keiser et al., "AFS-3 Protocol Capabilities Query Mechanism", draft-keiser-afs3-capabilities-00, register of editions row E12: §4, §4.1, §5, §5.1, §6, §6.1 and §10 prose. Its appendices are excluded by name. A lead only | 5.1.2, 5.6, 5.7 |
-| N1 | SPECIFICATION | RFC 4787, "Network Address Translation (NAT) Behavioral Requirements for Unicast UDP", BCP 127, January 2007, register of editions row E76: §4.3 (REQ-5, REQ-6) and §5, both allowlisted there for facts about NATs, so those facts are CONFIRMED | 5.1.1, 5.2, 10.5 |
-| L1 | DOCUMENTATION | OpenAFS reference pages `afsd(8)` ("DESCRIPTION", "CAUTIONS" and the `-nosettime` and `-settime` options) and `fs_checkservers(1)` ("DESCRIPTION", "OPTIONS"), register of editions row E77. A lead only | 5.1.2, 5.6, 5.7 |
+| K1 | DOCUMENTATION | AFS Assigned Numbers Registry: the file service procedure table `rx/RXAFS.txt`, register of editions row E7 ([README](README.md)); the Rx service list `rxservice.txt` and the error tables `errors.html`, row E7. Rows whose source column names an implementation's change history are not used. A lead until a passage is allowlisted (section 13, Q2) | 2, 5.1, 5.5, 5.6 |
+| K2 | SPECIFICATION | T. Keiser et al., "AFS-3 Protocol Capabilities Query Mechanism", draft-keiser-afs3-capabilities-00, register of editions row E9: §4, §4.1, §5, §5.1, §6, §6.1 and §10 prose. Its appendices are excluded by name. A lead only | 5.1.2, 5.6, 5.7 |
+| N1 | SPECIFICATION | RFC 4787, "Network Address Translation (NAT) Behavioral Requirements for Unicast UDP", BCP 127, January 2007, register of editions row E56: §4.3 (REQ-5, REQ-6) and §5, both allowlisted there for facts about NATs, so those facts are CONFIRMED | 5.1.1, 5.2, 10.5 |
+| L1 | DOCUMENTATION | OpenAFS reference pages `afsd(8)` ("DESCRIPTION", "CAUTIONS" and the `-nosettime` and `-settime` options) and `fs_checkservers(1)` ("DESCRIPTION", "OPTIONS"), register of editions row E10. A lead only | 5.1.2, 5.6, 5.7 |
 | C | DECISION | [Claim record](../reviews/2026-11-20-adr-0004-claims.md) row `[DES-011]` (ports and services), re-read on 2026-11-21. The record has no row on keepalives or a server's time; its clock rows (`[DES-012]` to `[DES-017]`, `[DES-019]`) are C37's and C38's | 5.1 |
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; A13, A14; C6, C16, C18, C23, C24, C26, C30, C32, C37, C38, C39, C46 ([part 1](../adr/0004-architecture-1-core.md)); O1, O12, O23, O40, O50 ([part 3](../adr/0004-architecture-3-operations.md)); N3, N5, N9, N31 ([part 4](../adr/0004-architecture-4-negotiation.md)) | 1, 2, 5, 8, 9, 11 |
 | D2 | DECISION | [ADR 0006](../adr/0006-rx-unprotected-packets.md): decision 1, points 5, 6 and 9; decision 2, points 1, 2 and 4 | 1, 5.5, 5.6, 8, 9 |
@@ -1436,7 +1436,7 @@ server release, date, scenario and the evidence label EXECUTED.
   campaign with the callback specification's Q1 and the VL and FS read
   specification's Q1. Blocks: the keepalive's codec and every code path
   that raises trust; the gate of 5.7, point 1.
-- **Q2. Allowlisting the registry.** The registry (E75, E11) is a
+- **Q2. Allowlisting the registry.** The registry (E7) is a
   published list of assigned numbers kept apart from any
   implementation's repository; no passage is allowlisted, so 153 and the
   port are UNVERIFIED until a capture shows them. Recommendation: the
@@ -1449,7 +1449,7 @@ server release, date, scenario and the evidence label EXECUTED.
   version: callbacks.md records K's `lowerings` with every call's fence
   tuple, compares it in the trusted branch of its 5.6, point 5, raises it
   at every lowering and at a lapse (its 5.6, point 11), and tests it
-  (its C25). Kept here so that the question's number stays stable.
+  (its C26). Kept here so that the question's number stays stable.
 - **Q4. The keepalive procedure.** The capabilities draft recommends the
   capability query where clients formerly called the time procedure
   (K2 §4.1). This version keeps the time procedure (5.1.2).

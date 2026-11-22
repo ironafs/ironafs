@@ -13,12 +13,23 @@ mod tests;
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Task {
     Check,
+    CheckBans { self_test: bool },
     CheckDeps { self_test: bool },
+    CheckFuzzDeny { self_test: bool },
     CheckGrants { self_test: bool },
     CheckPure { self_test: bool },
+    CheckSeams { self_test: bool },
+    Fuzz { self_test: bool },
     InstallHook { force: bool },
     UninstallHook,
     Trailers(TrailerMode),
+    Cell(CellCommand),
+}
+
+/// A `cell` subcommand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CellCommand {
+    Pin,
 }
 
 /// Selects the trailer rules and where to read the message.
@@ -35,7 +46,9 @@ pub(super) enum UsageError {
     MissingHookSubcommand,
     MissingTrailerMode,
     MissingCommitMessagePath,
+    MissingCellSubcommand,
     UnknownCommand(OsString),
+    UnknownCellSubcommand(OsString),
     UnknownHookSubcommand(OsString),
     UnknownTrailerMode(OsString),
     UnexpectedArgument(OsString),
@@ -57,13 +70,17 @@ impl fmt::Display for UsageError {
             Self::UnknownTrailerMode(mode) => {
                 write!(formatter, "unknown trailers mode {}", mode.display())
             }
+            Self::MissingCellSubcommand => write!(formatter, "missing cell subcommand"),
+            Self::UnknownCellSubcommand(command) => {
+                write!(formatter, "unknown cell subcommand {}", command.display())
+            }
             Self::UnexpectedArgument(argument) => {
                 write!(formatter, "unexpected argument {}", argument.display())
             }
         }?;
         write!(
             formatter,
-            "\nusage: cargo xtask check | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file]"
+            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-fuzz-deny [--self-test] | check-grants [--self-test] | check-pure [--self-test] | check-seams [--self-test] | fuzz [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file] | cell pin"
         )
     }
 }
@@ -77,7 +94,13 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
     let command = arguments.next().ok_or(UsageError::MissingCommand)?;
     let task = match command.to_str() {
         Some("check") => Task::Check,
+        Some("check-bans") => Task::CheckBans {
+            self_test: parse_self_test(&mut arguments)?,
+        },
         Some("check-deps") => Task::CheckDeps {
+            self_test: parse_self_test(&mut arguments)?,
+        },
+        Some("check-fuzz-deny") => Task::CheckFuzzDeny {
             self_test: parse_self_test(&mut arguments)?,
         },
         Some("check-grants") => Task::CheckGrants {
@@ -86,8 +109,15 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
         Some("check-pure") => Task::CheckPure {
             self_test: parse_self_test(&mut arguments)?,
         },
+        Some("check-seams") => Task::CheckSeams {
+            self_test: parse_self_test(&mut arguments)?,
+        },
+        Some("fuzz") => Task::Fuzz {
+            self_test: parse_self_test(&mut arguments)?,
+        },
         Some("hooks") => parse_hooks(&mut arguments)?,
         Some("trailers") => Task::Trailers(parse_trailers(&mut arguments)?),
+        Some("cell") => Task::Cell(parse_cell(&mut arguments)?),
         _ => return Err(UsageError::UnknownCommand(command)),
     };
     if let Some(argument) = arguments.next() {
@@ -116,6 +146,14 @@ fn parse_trailers(
             .ok_or(UsageError::MissingCommitMessagePath),
         Some("main") => Ok(TrailerMode::Main(arguments.next().map(PathBuf::from))),
         _ => Err(UsageError::UnknownTrailerMode(mode)),
+    }
+}
+
+fn parse_cell(arguments: &mut impl Iterator<Item = OsString>) -> Result<CellCommand, UsageError> {
+    let command = arguments.next().ok_or(UsageError::MissingCellSubcommand)?;
+    match command.to_str() {
+        Some("pin") => Ok(CellCommand::Pin),
+        _ => Err(UsageError::UnknownCellSubcommand(command)),
     }
 }
 
