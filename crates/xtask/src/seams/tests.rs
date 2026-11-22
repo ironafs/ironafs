@@ -485,3 +485,23 @@ fn deadline_check_refuses_a_sample_from_a_parameter_that_is_not_the_clock() {
         "{found:?}"
     );
 }
+
+#[test]
+fn pure_check_passes_the_real_production_rng() {
+    // The production `Rng` of 5.2, point 3, as `ironafs-crypto` writes it.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let read = |path: &str| std::fs::read_to_string(dir.join(path)).unwrap();
+    let files = [
+        pure_file(
+            "ironafs-crypto",
+            "src/lib.rs",
+            &read("ironafs-crypto/src/lib.rs"),
+        ),
+        pure_file(
+            "ironafs-crypto",
+            "src/random.rs",
+            &read("ironafs-crypto/src/random.rs"),
+        ),
+    ];
+    assert_eq!(check(&files, SAMPLING), []);
+}

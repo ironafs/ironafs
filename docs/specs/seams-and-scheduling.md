@@ -8,8 +8,9 @@ interface types (#71's second part) to state the two `xtask` checks as
 built, with their limits: 5.2, point 5 (the token rules' place among
 the confinement checks, and the pure-crate rule: where a seam's name may
 appear, a variant with a seam's name exempt only at its declaration and
-through `Self::`, the refused renames and shadows, `path` attributes and
-`include`), 5.3, point 2 (the call-site check now covering
+through `Self::`, a production implementation's import and `impl`, the
+refused renames and shadows, `path` attributes and `include`), 5.3,
+point 2 (the call-site check now covering
 `ironafs-time`, which `cfg(test)` code it leaves out, the sampling
 function found by its full path, the exact fresh-sample form and its
 `Clock` parameter test, the second net's two configuration files, and
@@ -415,6 +416,11 @@ encoding is the simulator's specification's.
        body holds no block, so it provides no method and calls nothing;
      - in a `pub use` item of its home crate's library root, not
        followed by `as`;
+     - in the pure crate that point 3 names as the seam's production
+       implementation, for that seam only, in a private `use` of the
+       trait from its home crate, not renamed, and as the trait of an
+       `impl Name for Type` item (today `ironafs-crypto`'s `Rng`; any
+       other use of a seam there is refused);
      - as an enum variant, in two places only: its declaration in an
        `enum` body, and `Self::Name` in a file that declares a variant
        `Name`. Every other path to such a variant (`Owner::Name`,
@@ -2207,7 +2213,7 @@ listed with its crate.
 | C3, points 1 and 3 | 5.2 to 5.5 | `xtask`: `seams::core_names_no_real_io` (planted, one per banned item, through a re-export and a wrapper) |
 | C3, points 4 and 5; O45, point 5 | 5.6, point 13; 5.7, point 3 | `xtask`: `seams::core_spawns_no_thread` (planted) |
 | C3, point 6, and its trigger | 5.6, points 4 and 11 | `ironafs-sim`: `replay::sample_read_replays_byte_identically`, `replay::planted_divergence_is_caught_at_its_decision` |
-| C4, points 1, 4 and 7 | 5.2, points 1, 2 and 5 | `xtask`: `check-deps --self-test`, `check-pure --self-test`, `seams::pure_crate_calls_no_seam` (planted, `ironafs-time` included: a `Clock` method called inside it fails; a seam taken, bound, implemented, renamed, re-exported or named through a module path, a raw identifier, an uppercase alias or glob of its home crate, a `::`-rooted path through an enum named like the home crate, a home enum's name used without its import, the home crate renamed like a home enum inside it, a module named like a local enum with that variant, and a `::`-rooted path through another crate; a seam renamed in its home crate's root re-export; a variant with a seam's name reached by any path but `Self::`; a seam after a `#[cfg(test)]` field, which hides nothing after it; a pure crate's dependency renamed in cargo's resolved graph) |
+| C4, points 1, 4 and 7 | 5.2, points 1, 2 and 5 | `xtask`: `check-deps --self-test`, `check-pure --self-test`, `seams::pure_crate_calls_no_seam` (planted, `ironafs-time` included: a `Clock` method called inside it fails; a seam taken, bound, implemented, renamed, re-exported or named through a module path, a raw identifier, an uppercase alias or glob of its home crate, a `::`-rooted path through an enum named like the home crate, a home enum's name used without its import, the home crate renamed like a home enum inside it, a module named like a local enum with that variant, and a `::`-rooted path through another crate; a seam renamed in its home crate's root re-export; a variant with a seam's name reached by any path but `Self::`; a seam after a `#[cfg(test)]` field, which hides nothing after it; in the production `Rng`'s crate, the seam held, called, renamed on import or re-exported, and another seam implemented; another pure crate implementing `Rng`; a pure crate's dependency renamed in cargo's resolved graph) |
 | C16, points 2 and 3 | 5.8, points 2 and 3 | `ironafs-client`: `read::break_before_submission_is_fenced` (both binding roles) |
 | C16, points 1 and 6; C31 | 5.4, point 7; 5.8, point 2 | `ironafs-client`: `rpc::callback_overload_recorded_before_drop`, `read::overload_fences_install`, `read::no_ticket_over_pending_overload`; `binding::overload_pushes_epoch_advance` |
 | C24, point 1 | 5.4, point 2 | `ironafs-client`: `errors::unprotected_matching_abort_is_ambiguous`, `errors::abort_before_rxgk_is_never_authoritative` |

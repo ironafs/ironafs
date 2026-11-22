@@ -80,10 +80,14 @@ fn pure(krate: &str, path: &str, source: &str) -> Vec<SourceFile> {
         .map_or_else(|_| Vec::new(), |file| vec![file])
 }
 
+/// The production `Rng`'s shape (5.2, point 3): its import and its impl.
+const PURE_CRYPTO: &str = "use ironafs_time::{Rng, RngError};\npub struct CryptoRng;\nimpl Rng for CryptoRng {\n    fn fill(&self, bytes: &mut [u8]) -> Result<(), RngError> { Ok(()) }\n}\n";
+
 fn pure_control() -> Vec<SourceFile> {
     let mut files = pure("ironafs-time", "src/lib.rs", PURE_ROOT);
     files.extend(pure("ironafs-time", "src/seam.rs", PURE_SEAM));
     files.extend(pure("ironafs-rx", "src/rpc.rs", PURE_RX));
+    files.extend(pure("ironafs-crypto", "src/random.rs", PURE_CRYPTO));
     files
 }
 
@@ -574,6 +578,78 @@ const CASES: &[Case] = &[
         },
         kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
         at: Some("Tick"),
+    },
+    Case {
+        name: "the production `Rng`'s crate holds the seam",
+        files: || {
+            with_pure(pure(
+                "ironafs-crypto",
+                "src/hold.rs",
+                "use ironafs_time::Rng;\npub fn hold(rng: &dyn Rng) {}\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Rng", .. }),
+        at: Some("hold"),
+    },
+    Case {
+        name: "the production `Rng`'s crate calls the seam",
+        files: || {
+            with_pure(pure(
+                "ironafs-crypto",
+                "src/draw.rs",
+                "pub fn draw(source: &CryptoRng) { let _ = Rng::fill(source, &mut []); }\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Rng", .. }),
+        at: Some("draw"),
+    },
+    Case {
+        name: "the production `Rng`'s crate implements another seam",
+        files: || {
+            with_pure(pure(
+                "ironafs-crypto",
+                "src/clock.rs",
+                "use ironafs_time::Clock;\nimpl Clock for CryptoClock {}\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("CryptoClock"),
+    },
+    Case {
+        name: "the production `Rng`'s crate renames the seam on import",
+        files: || {
+            with_pure(pure(
+                "ironafs-crypto",
+                "src/source.rs",
+                "use ironafs_time::Rng as Source;\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Rng", .. }),
+        at: Some("Source"),
+    },
+    Case {
+        name: "the production `Rng`'s crate re-exports the seam",
+        files: || {
+            with_pure(pure(
+                "ironafs-crypto",
+                "src/lib.rs",
+                "pub use ironafs_time::Rng;\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Rng", .. }),
+        at: Some("pub"),
+    },
+    Case {
+        name: "another pure crate implements the production `Rng`'s seam",
+        files: || {
+            with_pure(pure(
+                "ironafs-rx",
+                "src/fake.rs",
+                "use ironafs_time::Rng;\nimpl Rng for FakeRng {}\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Rng", .. }),
+        at: Some("FakeRng"),
     },
     Case {
         name: "a seam re-exported outside its home crate's root",

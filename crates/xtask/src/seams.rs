@@ -10,8 +10,11 @@
 //!   crate's library source, a seam trait's name (`Clock`, `Rng`, `Rpc`,
 //!   `Disk`) appears only where its home crate defines it (`trait Name`),
 //!   where its home crate's library root re-exports it (`pub use`, not
-//!   renamed), and as an enum variant at its declaration in an `enum` body
-//!   or as `Self::Name` in a file that declares it. No path is resolved, so
+//!   renamed), in the pure crate that implements it in production (5.2,
+//!   point 3; `IMPLEMENTERS`) as its private `use` from the home crate and
+//!   the trait of its `impl Name for Type`, and as an enum variant at its
+//!   declaration in an `enum` body or as `Self::Name` in a file that
+//!   declares it. No path is resolved, so
 //!   every other path to a variant with a seam's name is refused: a token
 //!   rule cannot tell what `Owner` in `Owner::Name` reaches. A `use` or
 //!   `extern crate` item naming a home crate with `as` or `*`, an item
@@ -75,6 +78,18 @@ const SEAMS: &[(&str, &str)] = &[
     ("Rng", "ironafs-time"),
     ("Rpc", "ironafs-rx"),
     ("Disk", "ironafs-cache"),
+];
+
+/// Each seam's production implementation, by crate, as the seams and
+/// scheduling specification, 5.2, point 3, names it. Only a pure crate
+/// here gains anything: in it, and for its own seam only, the seam's name
+/// may appear in a private `use` of the trait from its home crate, not
+/// renamed, and as the trait of an `impl Seam for Type` item.
+const IMPLEMENTERS: &[(&str, &str)] = &[
+    ("Clock", "ironafs-os"),
+    ("Rng", "ironafs-crypto"),
+    ("Rpc", "ironafs-client"),
+    ("Disk", "ironafs-disk"),
 ];
 
 /// The crate whose deadline constructors are checked, and the constructors.
@@ -789,9 +804,14 @@ fn pure_crate_calls_no_seam(file: &SourceFile, violations: &mut Vec<Violation>) 
         let reexported = at_home
             && reexport.get(index).copied().unwrap_or(false)
             && !is_ident(tokens, index + 1, "as");
+        let production = IMPLEMENTERS
+            .iter()
+            .any(|(seam, krate)| *seam == name && file.krate == *krate);
+        let implemented =
+            production && (imports_from_home(tokens, index, home) || implements(tokens, index));
         if defined {
             check_trait_body(file, index, name, violations);
-        } else if !reexported {
+        } else if !reexported && !implemented {
             violations.push(Violation::SeamInPure {
                 file: file.path.clone(),
                 line: line(tokens, index),
@@ -799,6 +819,42 @@ fn pure_crate_calls_no_seam(file: &SourceFile, violations: &mut Vec<Violation>) 
             });
         }
     }
+}
+
+/// Whether the seam's name at `index` is in a private `use` item rooted at
+/// its home crate, not renamed: `use home_crate::Name;` or
+/// `use home_crate::{..., Name, ...};`.
+fn imports_from_home(tokens: &[Token], index: usize, home: &str) -> bool {
+    let mut at = index;
+    let start = loop {
+        let Some(before) = at.checked_sub(1) else {
+            return false;
+        };
+        at = before;
+        match kind(tokens, at) {
+            Some(TokenKind::Ident(word)) if word == "use" => break at,
+            Some(TokenKind::Ident(_) | TokenKind::PathSep | TokenKind::Punct('{' | ',')) => {}
+            _ => return false,
+        }
+    };
+    let private =
+        start == 0 || !(is_ident(tokens, start - 1, "pub") || is_punct(tokens, start - 1, ')'));
+    let root = if matches!(kind(tokens, start + 1), Some(TokenKind::PathSep)) {
+        start + 2
+    } else {
+        start + 1
+    };
+    private
+        && ident(tokens.get(root)) == Some(home.replace('-', "_").as_str())
+        && !is_ident(tokens, index + 1, "as")
+}
+
+/// Whether the seam's name at `index` is the trait of an `impl Name for`
+/// item, written exactly so (no generics, no path).
+fn implements(tokens: &[Token], index: usize) -> bool {
+    index > 0
+        && keyword(tokens, index - 1) == Some("impl")
+        && keyword(tokens, index + 1) == Some("for")
 }
 
 /// The variants declared directly in each `enum` body, as `(enum,
