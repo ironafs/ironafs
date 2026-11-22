@@ -642,8 +642,11 @@ encoding is the simulator's specification's.
        naming, by full path, at most one sampling function per crate (in
        the core, `ironafs_client::time::deadline_after`). The function
        is found by that path: at the top level of the module file it
-       names (`src/time.rs` or `src/time/mod.rs` here; the library root
-       for a function at the crate root), not in a nested module, an
+       names, under the crate's library directory (`time.rs` or
+       `time/mod.rs` there, so `src/time.rs` here, and never a file
+       elsewhere in the package that ends the same way, such as an
+       example's; the library root for a function at the crate root),
+       not in a nested module, an
        `impl` or a trait; a function of that name anywhere else is not
        the sampling function. Every path
        that resolves to `Deadline::boot_after` or

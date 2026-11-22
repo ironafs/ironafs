@@ -97,8 +97,9 @@ impl Sampling {
     }
 
     /// Whether `file` is the module the path names: the library root for
-    /// `krate::name`, else `src/a/b.rs` or `src/a/b/mod.rs` for
-    /// `krate::a::b::name`.
+    /// `krate::name`, else `a/b.rs` or `a/b/mod.rs` under the crate's
+    /// library directory for `krate::a::b::name`. A file elsewhere in the
+    /// package (an example, a binary's own `src`) never is.
     fn in_module_file(&self, file: &SourceFile) -> bool {
         let segments: Vec<&str> = self.path.split("::").collect();
         let Some(modules) = segments.get(1..segments.len().saturating_sub(1)) else {
@@ -107,8 +108,11 @@ impl Sampling {
         if modules.is_empty() {
             return file.lib_root;
         }
-        let mut flat = PathBuf::from("src");
-        let mut nested = PathBuf::from("src");
+        let Some(in_lib) = &file.in_lib else {
+            return false;
+        };
+        let mut flat = PathBuf::new();
+        let mut nested = PathBuf::new();
         for (at, module) in modules.iter().enumerate() {
             nested.push(module);
             if at + 1 == modules.len() {
@@ -118,7 +122,7 @@ impl Sampling {
             }
         }
         nested.push("mod.rs");
-        file.path.ends_with(&flat) || file.path.ends_with(&nested)
+        *in_lib == flat || *in_lib == nested
     }
 
     /// The listed function's definitions in `file`: in the module file its
@@ -149,6 +153,8 @@ pub(crate) struct SourceFile {
     path: PathBuf,
     pure: bool,
     lib_root: bool,
+    /// The file's path under its crate's library directory, if it is there.
+    in_lib: Option<PathBuf>,
     tokens: Vec<Token>,
 }
 
@@ -379,6 +385,7 @@ impl fmt::Display for Violation {
 }
 
 /// Reads `source` as one file of `krate`, with its test items removed.
+/// The library directory of a planted `path` is `src`.
 ///
 /// # Errors
 ///
@@ -392,7 +399,11 @@ pub(crate) fn source_file(
     source: &str,
 ) -> Result<SourceFile, Violation> {
     let read = rust_source::tokens(source).map_err(|error| error.to_string());
-    file_from(krate, PathBuf::from(path), pure, lib_root, read)
+    let in_lib = Path::new(path)
+        .strip_prefix("src")
+        .ok()
+        .map(Path::to_path_buf);
+    file_from(krate, PathBuf::from(path), pure, lib_root, in_lib, read)
 }
 
 /// One file of `krate` from what the token reader gave, with its test
@@ -403,6 +414,7 @@ fn file_from(
     path: PathBuf,
     pure: bool,
     lib_root: bool,
+    in_lib: Option<PathBuf>,
     read: Result<Vec<Token>, String>,
 ) -> Result<SourceFile, Violation> {
     match read {
@@ -411,6 +423,7 @@ fn file_from(
             path,
             pure,
             lib_root,
+            in_lib,
             tokens: without_test_items(tokens),
         }),
         Err(error) => Err(Violation::Unreadable { file: path, error }),
@@ -1482,6 +1495,9 @@ fn workspace_files(workspace: &Workspace) -> Result<(Vec<SourceFile>, Vec<Violat
                 // Only a pure crate's library is pure code.
                 pure && lib_dir.is_some_and(|dir| file.starts_with(dir)),
                 lib_root == Some(file.as_path()),
+                lib_dir
+                    .and_then(|dir| file.strip_prefix(dir).ok())
+                    .map(Path::to_path_buf),
                 rust_source::read(&file)?,
             ) {
                 Ok(source) => sources.push(source),

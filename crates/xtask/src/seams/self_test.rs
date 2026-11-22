@@ -446,6 +446,12 @@ const CASES: &[Case] = &[
         at: Some("boot_after"),
     },
     Case {
+        name: "the sampling function defined in a file ending like its module, outside the library",
+        files: || core_at("examples/app/src/time.rs", CONTROL),
+        kind: |found| matches!(found, Violation::Missing { .. }),
+        at: None,
+    },
+    Case {
         name: "the sampling function defined in a nested module",
         files: || core(&format!("mod nested {{\n{CONTROL}\n}}\n")),
         kind: |found| matches!(found, Violation::Outside { .. }),
