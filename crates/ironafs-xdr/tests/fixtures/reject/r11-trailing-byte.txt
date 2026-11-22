@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A valid note (G12) followed by one byte 00.
+
+type note
+breaks 5.4, point 10
+expect TrailingBytes -
+offset 44
+extent 1
+requests test.note.title:6 test.note.what.target:4 test.note.owner:4 test.note.body:5
+input 00000006 72656164 6d650000 00000001 00000004 646f6373 00000004 726f6f74 00000005 01020304 05000000 00

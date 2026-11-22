@@ -63,6 +63,9 @@ pub(crate) struct Package {
     /// and with every feature on. Development dependencies are left out:
     /// they never reach a shipped build.
     pub(crate) dependencies: Vec<String>,
+    /// Package ids reached only as development dependencies, kept apart
+    /// for the checks that refuse any edge at all (the canary's).
+    pub(crate) dev_dependencies: Vec<String>,
     /// The kinds of every target, as for a member.
     pub(crate) target_kinds: Vec<String>,
     /// The native library the package says it links, if any.
@@ -179,6 +182,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             Some(_) => return Err(unexpected()),
         };
         let mut dependencies = Vec::new();
+        let mut dev_dependencies = Vec::new();
         for dependency in array(node, "deps")? {
             let mut shipped = false;
             for kind in array(dependency, "dep_kinds")? {
@@ -189,10 +193,12 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
                     _ => return Err(unexpected()),
                 }
             }
+            let target = string(dependency, "pkg")?;
+            find_package(target)?;
             if shipped {
-                let target = string(dependency, "pkg")?;
-                find_package(target)?;
                 dependencies.push(target.to_owned());
+            } else {
+                dev_dependencies.push(target.to_owned());
             }
         }
         resolved.push(Package {
@@ -201,6 +207,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             path,
             member: member_ids.contains(&id),
             dependencies,
+            dev_dependencies,
             target_kinds: target_kinds(package)?,
             links: links(package)?,
             features: features(package)?,

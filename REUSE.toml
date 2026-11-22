@@ -3,11 +3,13 @@
 
 version = 1
 
-# Files whose format cannot carry a header (generated, JSON, or front matter
-# that must come first).
+# Files whose format cannot carry a header (generated, JSON, front matter
+# that must come first, or fuzz seeds, which are raw input bytes).
 [[annotations]]
 path = [
   "Cargo.lock",
+  "fuzz/Cargo.lock",
+  "fuzz/seeds/**",
   ".claude/settings.json",
   ".claude/skills/**/SKILL.md",
   ".github/pull_request_template.md",

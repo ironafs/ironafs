@@ -15,9 +15,11 @@ pub(super) enum Task {
     Check,
     CheckBans { self_test: bool },
     CheckDeps { self_test: bool },
+    CheckFuzzDeny { self_test: bool },
     CheckGrants { self_test: bool },
     CheckPure { self_test: bool },
     CheckSeams { self_test: bool },
+    Fuzz { self_test: bool },
     InstallHook { force: bool },
     UninstallHook,
     Trailers(TrailerMode),
@@ -78,7 +80,7 @@ impl fmt::Display for UsageError {
         }?;
         write!(
             formatter,
-            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-grants [--self-test] | check-pure [--self-test] | check-seams [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file] | cell pin"
+            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-fuzz-deny [--self-test] | check-grants [--self-test] | check-pure [--self-test] | check-seams [--self-test] | fuzz [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file] | cell pin"
         )
     }
 }
@@ -98,6 +100,9 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
         Some("check-deps") => Task::CheckDeps {
             self_test: parse_self_test(&mut arguments)?,
         },
+        Some("check-fuzz-deny") => Task::CheckFuzzDeny {
+            self_test: parse_self_test(&mut arguments)?,
+        },
         Some("check-grants") => Task::CheckGrants {
             self_test: parse_self_test(&mut arguments)?,
         },
@@ -105,6 +110,9 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
             self_test: parse_self_test(&mut arguments)?,
         },
         Some("check-seams") => Task::CheckSeams {
+            self_test: parse_self_test(&mut arguments)?,
+        },
+        Some("fuzz") => Task::Fuzz {
             self_test: parse_self_test(&mut arguments)?,
         },
         Some("hooks") => parse_hooks(&mut arguments)?,

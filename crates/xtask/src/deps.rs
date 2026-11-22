@@ -69,6 +69,9 @@ pub(crate) const CRATES: &[(&str, Kind)] = &[
     ("xtask", Kind::Automation),
     ("ironafs-sim", Kind::TestOnly),
     ("ironafs-test-support", Kind::TestOnly),
+    // Not an architecture crate: check-bans' canary (coding standards rule
+    // 7), which plants every ban and which no crate may depend on.
+    ("ironafs-bans-canary", Kind::TestOnly),
 ];
 
 /// The protocol crates (ADR 0004, C4, point 1).

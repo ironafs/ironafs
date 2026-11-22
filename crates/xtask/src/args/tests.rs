@@ -102,6 +102,14 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             Task::CheckDeps { self_test: true },
         ),
         (
+            &["check-fuzz-deny"][..],
+            Task::CheckFuzzDeny { self_test: false },
+        ),
+        (
+            &["check-fuzz-deny", "--self-test"][..],
+            Task::CheckFuzzDeny { self_test: true },
+        ),
+        (
             &["check-grants"][..],
             Task::CheckGrants { self_test: false },
         ),
@@ -115,6 +123,8 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             Task::CheckBans { self_test: true },
         ),
         (&["check-pure"][..], Task::CheckPure { self_test: false }),
+        (&["fuzz"][..], Task::Fuzz { self_test: false }),
+        (&["fuzz", "--self-test"][..], Task::Fuzz { self_test: true }),
         (
             &["check-pure", "--self-test"][..],
             Task::CheckPure { self_test: true },
@@ -135,6 +145,10 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
         (
             &["check-grants", "--self-test", "extra"][..],
             UsageError::UnexpectedArgument("extra".into()),
+        ),
+        (
+            &["check-fuzz-deny", "--all"][..],
+            UsageError::UnexpectedArgument("--all".into()),
         ),
         (
             &["check-bans", "--all"][..],

@@ -23,6 +23,7 @@
 //!   of a rename is seen) are refused too. A seam trait's body provides no
 //!   method.
 //! - **`deadline_built_from_a_fresh_sample`.** Every source of every crate
+//!   but check-bans' canary (`PLANTED_ONLY`)
 //!   builds a `Deadline` only inside its one named sampling function; in
 //!   `ironafs-time` the constructors' names appear only where they are
 //!   defined. The sampling function is found by its full path, at the top
@@ -91,6 +92,15 @@ const IMPLEMENTERS: &[(&str, &str)] = &[
     ("Rpc", "ironafs-client"),
     ("Disk", "ironafs-disk"),
 ];
+
+/// The one crate `deadline_built_from_a_fresh_sample` does not read, by
+/// package name: check-bans' canary. Its tracked files are held byte for
+/// byte to what check-bans writes from its ban list (an altered canary is
+/// a check-bans violation), so its content is fixed by that list, and it
+/// exists only to plant the banned calls, the two constructors among
+/// them, so that the workspace's lint is proved to ban them. No other rule
+/// exempts it.
+const PLANTED_ONLY: &[&str] = &["ironafs-bans-canary"];
 
 /// The crate whose deadline constructors are checked, and the constructors.
 const TIME_CRATE: &str = "ironafs-time";
@@ -1240,6 +1250,9 @@ fn deadline_built_from_a_fresh_sample(
     }
 
     for file in &files {
+        if PLANTED_ONLY.iter().any(|name| file.krate == *name) {
+            continue;
+        }
         let tokens = &file.tokens;
         let found: Vec<Found> = sampling
             .iter()

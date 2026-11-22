@@ -75,6 +75,18 @@ fn core_at(path: &str, source: &str) -> Vec<SourceFile> {
         .map_or_else(|_| Vec::new(), |file| vec![file])
 }
 
+/// The library of check-bans' canary: its constructor lines, taken from
+/// the ban list it is written from, in the crate named `krate`.
+fn canary_in(krate: &str) -> Vec<SourceFile> {
+    let lines: String = crate::bans::BANS
+        .iter()
+        .filter(|ban| ban.path.starts_with("ironafs_time::Deadline::"))
+        .flat_map(|ban| [ban.planted, "\n"])
+        .collect();
+    source_file(krate, "src/lib.rs", false, true, &lines)
+        .map_or_else(|_| Vec::new(), |file| vec![file])
+}
+
 fn pure(krate: &str, path: &str, source: &str) -> Vec<SourceFile> {
     source_file(krate, path, true, path == "src/lib.rs", source)
         .map_or_else(|_| Vec::new(), |file| vec![file])
@@ -131,6 +143,25 @@ fn time_error_enum() -> Vec<SourceFile> {
 }
 
 const CASES: &[Case] = &[
+    Case {
+        // Only the canary is exempt, by its exact package name.
+        name: "the canary's constructor lines in another crate",
+        files: || canary_in("planted-core"),
+        kind: |found| matches!(found, Violation::Outside { .. }),
+        at: Some("boot_after"),
+    },
+    Case {
+        name: "the canary's constructor lines in a crate named like it",
+        files: || canary_in("ironafs-bans-canary2"),
+        kind: |found| matches!(found, Violation::Outside { .. }),
+        at: Some("awake_after"),
+    },
+    Case {
+        name: "the canary's constructor lines in a crate spelt like it",
+        files: || canary_in("ironafs_bans_canary"),
+        kind: |found| matches!(found, Violation::Outside { .. }),
+        at: Some("boot_after"),
+    },
     Case {
         name: "a `now` kept from an earlier sample",
         files: || {
@@ -938,6 +969,10 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     for (name, files) in [
         ("the sampling-function control", core(CONTROL)),
         ("the pure-crate control", pure_control()),
+        (
+            "check-bans' canary planting both constructors",
+            canary_in("ironafs-bans-canary"),
+        ),
     ] {
         if files.is_empty() {
             return Err(failure(name, &[]));

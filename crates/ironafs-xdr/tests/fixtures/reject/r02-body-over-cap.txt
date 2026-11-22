@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# An opaque field one byte over its cap, cap below the declared bound (note.body, cap 16, bound 64: length 17).
+
+type note
+breaks 5.4, point 3.3
+expect CapExceeded test.note.body
+offset 12
+extent none
+requests test.note.title:0 test.note.owner:0
+input 00000000 00000000 00000000 00000011 00000000 00000000 00000000 00000000 00000000

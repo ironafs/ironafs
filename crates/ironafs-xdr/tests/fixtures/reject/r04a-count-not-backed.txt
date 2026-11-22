@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The same array type with a cap of 64 bytes, count 16 (16 x 4 = 64, within the cap), and 8 bytes after it.
+
+type ints
+breaks 5.4, point 4.4
+expect Truncated -
+offset 0
+extent 12
+requests none
+input 00000010 00000000 00000000

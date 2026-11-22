@@ -390,6 +390,7 @@ fn package(name: &str, member: bool, dependencies: &[&str]) -> Package {
         path: Some(PathBuf::from(format!("/w/crates/{name}"))),
         member,
         dependencies: dependencies.iter().map(|name| (*name).into()).collect(),
+        dev_dependencies: Vec::new(),
         target_kinds: vec!["lib".into()],
         links: None,
         features: Vec::new(),

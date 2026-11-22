@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# names with count 3: "abcd" and "abcd" at 4 to 20, then a third length word 00000000 at 20, which would pass the limit (20) though the input holds it.
+
+type names
+breaks 5.4, point 3.1 and point 5
+expect CapExceeded test.names
+offset 20
+extent none
+requests test.names:slots3 test.label:4 test.label:4
+input 00000003 00000004 61626364 00000004 61626364 00000000

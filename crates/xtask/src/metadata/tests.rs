@@ -64,6 +64,7 @@ fn package(name: &str, path: bool, member: bool, dependencies: &[&str]) -> Packa
         path: path.then(|| PathBuf::from(format!("/w/crates/{name}"))),
         member,
         dependencies: dependencies.iter().map(|name| id(name)).collect(),
+        dev_dependencies: Vec::new(),
         target_kinds: vec!["lib".into()],
         links: None,
         features: Vec::new(),
@@ -91,7 +92,7 @@ fn member(name: &str, lib: Option<&str>, target_kinds: &[&str]) -> Member {
 }
 
 #[test]
-fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
+fn parse_workspace_follows_package_ids_and_keeps_development_edges_apart() {
     let workspace = parse_workspace(METADATA).unwrap();
 
     assert_eq!(
@@ -113,12 +114,15 @@ fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
                 },
             ],
             packages: vec![
-                package(
-                    "ironafs-a",
-                    true,
-                    true,
-                    &["ironafs-b", "outside", "ironafs-d"]
-                ),
+                Package {
+                    dev_dependencies: vec![id("ironafs-c")],
+                    ..package(
+                        "ironafs-a",
+                        true,
+                        true,
+                        &["ironafs-b", "outside", "ironafs-d"],
+                    )
+                },
                 Package {
                     features: vec!["std".into(), "default".into()],
                     ..package("ironafs-b", true, true, &["outside"])
