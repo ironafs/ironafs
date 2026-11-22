@@ -775,3 +775,10 @@ The full record, with every finding and its disposition, is
     The owner accepted the amendment with ADR 0005 on 2026-11-21. The
     record is
     [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md).
+- **Correction, 2026-11-22:** C13 point 2 now refers to C7 point 3 for
+  its handle operations, so it names subscription to change
+  notification, which C7 point 3 already sends through the check;
+  release and release directory (C7 point 4) stay outside it. C13
+  point 2's main clause already said "every handle operation", and
+  finding R1-44 of the review record widened the check to all handle
+  operations. No decision changed.
