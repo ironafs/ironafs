@@ -99,7 +99,7 @@ Coding standards, rule 15, "Deterministic, always", its second item:
 Also cited, without a quotation this page must keep word for word: C3,
 point 1; C4, points 1 and 4; C37, point 7; O30, point 4; O41, point 4;
 O45, points 1, 2 and 4; O47, points 4 to 6; O48, points 1 to 4; O49,
-points 4 to 7; L40; coding standards rules 1 to 3, 5, 9, 16, 20 and 21;
+points 4 to 7; L40; coding standards rules 1 to 3, 6, 8, 16, 20 and 21;
 [docs/workflow.md](../workflow.md) §1, §3b, §3c and §5. All are Working
 unless marked.
 
@@ -314,10 +314,11 @@ item that does not apply says why in one line. Ids are stable.
 - **D8 Secrets:** the `Debug` text of a secret-bearing value holds no
   value of a secret field (rule 8), checked with a planted marker value.
 - **D9 Fuzz target** (O47, point 3), asserting: no panic; the same result
-  for the same input; on success with canonical input, re-encoding gives
-  the input (D3); on error, the offset is within the input; and the
-  decoder's memory accounting, where its specification defines one, stays
-  within the message's budget for every input, accepted or not. The
+  for the same input; where an encoder exists, on success with canonical
+  input, re-encoding gives the input (D3); on error, the offset is
+  within the input; and the decoder's memory accounting, where its
+  specification defines one, stays within the message's budget for every
+  input, accepted or not. The
   target's maximum input length, which the engine takes as an option
   `[E44: CONFIRMED]`, is the message cap plus one, and its
   tracked seeds include inputs at the cap and at the cap plus one, so the
@@ -465,11 +466,15 @@ Everything in 5.2.1, plus:
   check (5.3, point 3).
 - **F3 Compatibility corpora:** when a format version freezes, files
   written by that version go under `tests/fixtures/<format>/v<N>/` and are
-  never edited. Every later version reads each file, or refuses it exactly
-  as the format's section 5.3 says.
+  never edited. Every later version handles each file exactly as the
+  format's section 5.3 says for that version (decoded, migrated, dropped
+  and rebuilt, or refused), and the test checks the resulting data and
+  that the user loses only what the format states for that case
+  ([README](README.md), "Formats IronAFS defines").
 - **F4 Newer versions:** a file of an unknown newer version is refused
-  with the specified error and left unchanged ([README](README.md),
-  "Formats IronAFS defines").
+  with the specified error and left unchanged, unless the format's
+  specification says otherwise, and then handled as it says
+  ([README](README.md), "Formats IronAFS defines").
 - **F5 Storage qualification:** writes ship on a storage configuration
   only after O41, point 4's crash and power-loss tests pass on it.
 
@@ -585,8 +590,9 @@ Everything in 5.2.1, plus:
    - A scenario states which topologies and profiles apply; the tier runs
      the product of what applies, each with its checked-in seeds.
    - **Case manifest.** Each invariant of O45, point 3, each
-     competing-write case of O45, point 4, and each fault case of O48,
-     point 2, has a case id, a phase, a profile and a venue in a
+     competing-write case of O45, point 4, each fault case of O48,
+     point 2, and each crash-outcome class of 5.2.7, F2, per durable
+     update, has a case id, a phase, a profile and a venue in a
      checked-in manifest. A check fails a phase's run that leaves one of
      its cases at an exercise count of zero.
    - Event-sequence fuzzing feeds the simulator's inputs from fuzzer bytes
@@ -611,7 +617,9 @@ Everything in 5.2.1, plus:
 7. **The regression corpus.** Every bug fix adds its minimal reproducer in
    one of the forms of 5.1, point 5, shown red before the fix. Its name
    says what it checks, not which issue found it. It runs on every pull
-   request and is never deleted while the code it tests exists.
+   request, or, when only a venue can run it, in every run of that
+   venue's tier (5.4, point 5); it is skipped only when quarantined under
+   5.4, point 6, and is never deleted while the code it tests exists.
 
 ### 5.4 Quality of the tests
 
@@ -889,9 +897,14 @@ by nature.
    guards of N2) run in the private CI repository, which keeps their
    reproducers. Rule 15's printed seed therefore
    reaches the person who runs a test by hand, never a public scheduled
-   log. A failing seed reaches tracked files only as a reviewed regression
-   (5.3, point 7). The fixed seeds of the pull-request tier are public by
-   design.
+   log. A scheduled job's seed, input, log and corpus never reach tracked
+   files. A defect it found reaches them only as the fixer's reproducer
+   (5.3, point 7): a minimal case the fixer writes from their own private
+   reproduction, added by the pull request that fixes the defect and
+   reviewed with it, never earlier; for a failure that may be a
+   vulnerability, that pull request is published only once its embargo
+   has ended (8, point 3). The fixed seeds of the pull-request tier are
+   public by design.
 3. **Freshness** `[E42: CONFIRMED that scheduled workflows run on the
    default branch only, may be delayed under load, and are disabled in a
    public repository after 60 days without repository activity]`. A
@@ -911,10 +924,13 @@ by nature.
    watcher in the private CI repository takes over `[T3: owner's
    decision 12]`.
 4. **No re-run to green.** A scheduled failure is reported (point 9); a
-   re-run never replaces the first result. Scheduled workflows never set
-   the concurrency option that cancels a run in progress, so a dispatched
-   run cannot cancel a running nightly; without it, a run in progress
-   keeps running and the new run waits `[E46: CONFIRMED]`.
+   re-run never replaces the first result. Each scheduled workflow sets a
+   concurrency group and never the option that cancels a run in
+   progress, so a dispatched run cannot cancel a running nightly: within
+   a group, a run in progress keeps running and a new run waits,
+   replacing any run already waiting; without a group, runs overlap
+   `[E46: CONFIRMED]`. A replaced run never ran, so it is not a complete
+   run for the freshness check (point 3).
 5. **Fuzzing.** The engine runs only in scheduled jobs, time-boxed per
    target through its total-time option `[E44: CONFIRMED]`; pull requests replay the tracked seeds (5.3, point 6). Each
    target runs as its own invocation, so one target's crash never skips
@@ -931,8 +947,9 @@ by nature.
    weekly run differs from the nightly one only in its time. From M4, the
    private CI repository carries the corpus between its runs and
    minimises it (the engine's merge option minimises a corpus while
-   keeping its coverage `[E44: CONFIRMED]`); a minimised input reaches
-   `fuzz/seeds/<target>/` only through a reviewed pull request. Poisoning:
+   keeping its coverage `[E44: CONFIRMED]`). The carried corpus stays
+   there: its inputs never reach `fuzz/seeds/<target>/`, which holds only
+   the seeds of 5.1, point 6, and fixers' reproducers (point 2). Poisoning:
    only reviewed code writes a carried corpus, and the corpus only chooses
    where the engine starts; the tracked seeds are always added, so a lost
    or altered corpus cannot lower the floor below them, and an input in it
@@ -945,11 +962,11 @@ by nature.
 7. **Third-party test servers** (O48, point 1) are pinned by image digest,
    and the `xtask` command re-verifies the digest at every start, so a
    replaced or poisoned image fails closed.
-8. **Build caches.** Warnings are denied through the workspace lints
-   (rule 5), never through compiler flags added only in CI, so CI builds
-   what a developer builds; no cache in a release or publish job; no
-   cached binaries `[OWN]`. Pre-release runners are single-use,
-   one job each.
+8. **Build caches.** Warnings are denied in CI through Cargo's
+   `CARGO_BUILD_WARNINGS=deny` (rule 6), never through compiler flags
+   (`RUSTFLAGS`) added only in CI, so CI builds what a developer builds;
+   no cache in a release or publish job; no cached binaries `[OWN]`.
+   Pre-release runners are single-use, one job each.
 9. **Classifying and reporting scheduled failures.** Test jobs run with a
    read-only token and hold no secret. The runner classifies each failure
    when it captures it, failing closed:
@@ -1112,7 +1129,7 @@ arithmetic, which D7 tests.
 | O47, point 3 | 5.2.1, D9; 5.5, point 5 | the fuzz manifest check on a decoder or target without its pair |
 | O48, point 5 | 5.2.5, L3 and L4 | a gate result with no venue named is missing evidence |
 | O49, point 1 | 5.6, point 1 | a planted skip of work changes a count |
-| O49, points 2 and 3 | 5.5 table and point 11; 5.6, points 3 and 5 | the pull-request workflow check, on a runner label not in the hosted list or a timed benchmark in a pull-request workflow |
+| O49, points 2 and 3 | 5.5 table and point 11; 5.6, points 3 and 5 | point 3: the pull-request workflow check, on a runner label not in the hosted list or a timed benchmark in a pull-request workflow. Point 2: no check yet, since timed benchmarks run by hand until fixed hardware exists (owner's decision 7); its check comes with that hardware (section 11) |
 | Rule 7, no retries | 5.4, point 6 | the retries check on a profile or command with retries above zero |
 | Rule 15, printed seeds | 5.4, point 9; 5.5, point 2 | a property failure report with no seed, in the generator's own tests |
 
@@ -1192,8 +1209,9 @@ Not applicable.
 
 How each step of the procedure is checked:
 
-1. **Start:** a pull request deletes a test and adds none. **Result:** the
-   inventory job fails and names the test.
+1. **Start:** a pull request deletes a test, adds none, and adds no line
+   for it to `tests/inventory/removed.txt`. **Result:** the inventory job
+   fails and names the test.
 2. **Start:** a codec change stops checking a padding byte. **Result:** a
    generated D6 test fails at that byte's offset.
 3. **Start:** a new refusal error variant with no test. **Result:** the
@@ -1216,11 +1234,13 @@ none is written yet: the inventory ratchet (#72); mutation testing and the
 planted-defect probe (#73); coverage (#74); the scheduled workflows, the
 freshness check, the runner and the reporter (#75); the flaky-test rule
 and the retries check (#76); the fuzz crate and its manifest check (#45);
-the simulator (#79, #96); the timed-benchmark harness (#38); and, planned,
-the refusal-coverage check, the differential listing check, the seam
-conformance bodies, the release-build check of the fault feature, the
-pure-crate source check, the seam and ban census, and the pull-request
-workflow check.
+the simulator (#79, #96); the timed-benchmark harness (#38); and, in
+issues not yet filed, the seam conformance bodies (for the seams of #71
+and #99), the pure-crate source check and the pull-request workflow
+check (additions to closed issues #46 and #1), the refusal-coverage
+check, the differential listing check, the release-build check of the
+fault feature, and the seam and ban census. Each issue not yet filed is
+named here by its number when it is filed.
 
 ## 11. Revisit if
 
@@ -1265,7 +1285,7 @@ This page's own triggers:
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
 | T1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C3, C4, C37 ([part 1](../adr/0004-architecture-1-core.md)); L13, L22, L40, L41 ([part 2](../adr/0004-architecture-2-os-layers.md)); O22, O30, O41, O45 to O49 ([part 3](../adr/0004-architecture-3-operations.md)) | 1, 2, 5, 9, 11 |
-| T2 | DECISION | [Coding standards](../coding-standards.md), rules 1 to 3, 5, 7, 8, 15, 16, 20 and 21; [docs/workflow.md](../workflow.md) §1, §2, §3b, §3c, §5 and §6; [ADR 0001](../adr/0001-licence-and-dont-copy.md) | 1, 5, 7, 8 |
+| T2 | DECISION | [Coding standards](../coding-standards.md), rules 1 to 3, 6, 7, 8, 15, 16, 20 and 21; [docs/workflow.md](../workflow.md) §1, §2, §3b, §3c, §5 and §6; [ADR 0001](../adr/0001-licence-and-dont-copy.md) | 1, 5, 7, 8 |
 | T3 | DECISION | The owner's decisions recorded in issue #63 (section 1's list); the `no_std` decision is also in issue #53 | 1, 5 |
 | E38 | DOCUMENTATION | nextest, "Machine-readable output: test lists", register row E38 | 5.4 |
 | E39 | DOCUMENTATION | The rustc book, "Instrumentation-based code coverage", Rust 1.100.0, register row E39 | 5.4 |
