@@ -65,7 +65,10 @@ In short:
 
 The rules are in `docs/workflow.md` §2, "Judgement seat". Use it when two
 seats disagree on a point the work depends on and checked evidence does not
-settle it, and for any finding still disputed after the fix rounds.
+settle it, for any finding still disputed after the fix rounds, and for a
+single seat's tail of one or two majors (below, "After the run"). For a
+tail, A is the finding as the seat wrote it and B is the change's own text
+it concerns, both quoted from their sources, never written by you.
 
 1. **Choose the seat.** Exclude the work's authors, both disputing
    families, any family that took a side, and the controller's family if
@@ -104,8 +107,11 @@ settle it, and for any finding still disputed after the fix rounds.
 
 Every brief starts with "Run no credential command." and then gives:
 
-1. **What:** a commit range pinned by sha (or, for a design in the working
-   tree, the file and its sha256 prefix), and one bounded question.
+1. **What:** a commit range pinned by sha at both ends: for a first
+   review, from the merge base (`$(git merge-base main <head>)..<head>`,
+   written out as shas); for a fix verification, the fix's own commits.
+   For a design in the working tree, the file and its sha256 prefix. And
+   one bounded question.
 2. **Context:** the one-line repository description, decisions that are fixed
    and must not be argued, and what is already known.
 3. **The consistency pass** (`docs/workflow.md` §3a) as a named item when the
@@ -127,6 +133,22 @@ Every brief starts with "Run no credential command." and then gives:
 8. **The check code goes last**, after the inlined artefact or file list, with
    an end marker the lane must confirm it saw. Placed before the artefact, it
    cannot detect a prompt that was silently cut short.
+
+**A fix-round brief** (for the implementer) names the findings to fix,
+quoted as the seat wrote them, and says: "Fix only what each finding names.
+Add no new mechanism; a needed mechanism becomes a specification item or a
+change of its own, and is reported, not written."
+
+**An issue brief before it is filed or dispatched** gets one non-author
+review and one focused pass by a second non-author family on the same
+revision (the draft file and its sha256 prefix), with no round past two
+fix rounds (`docs/workflow.md` §3, step 3). Defer a design point only as
+that step allows.
+
+**Before any round after the second**, write the convergence note
+(`docs/workflow.md` §3, step 7) and check it against the stop rule below
+before dispatching; bring it up to date before each further fix round is
+written.
 
 For Gemini, inline the artefact and forbid tools. Split inlined material at
 file boundaries, keeping each part under a measured size (about 100 KB). A
@@ -165,21 +187,68 @@ a pass:
   run. Grant network access only to an implementer run that needs it, set
   per run.
 - **Rounds that don't count:** an inconclusive round never becomes the
-  baseline that the next, diff-scoped round starts from.
+  baseline that the next, diff-scoped round starts from. Each lane's
+  last-reviewed commit advances only on a conclusive round. An inconclusive
+  round's findings are still verified and recorded.
+- **Frozen during a round:** neither the reviewed files nor the lane
+  tooling change while a round runs; the tooling runs from a copy taken at
+  dispatch. A change to either voids the round.
 
 ## After the run
 
 - Verify every finding against the files before acting. Fix, refute with
   evidence, or defer with where it is tracked. Never accept or reject
   wholesale, and never count votes.
+- **Your own rulings get a refutation seat.** Before your refutation,
+  downgrade or deferral closes a blocker or major, or a move of a confirmed
+  finding of any severity into a specification item (a deferral) closes
+  it, a family that wrote none of the change, did not raise the finding
+  and is not yours reviews it. The move stands only if that seat agrees
+  the finding asks for mechanism the change need not decide. A
+  disputed claim about what code does at run time goes to a seat that runs
+  it; reading alone never settles it.
 - Write the record: in the ADR's Review section for an ADR, otherwise in
   `docs/reviews/YYYY-MM-DD-<slug>.md`. Give the seat, served model, effort,
   verdict, and each finding with its disposition. Redact paths outside the
-  repository, hostnames, cell names and keys.
+  repository, hostnames, cell names and keys. Also:
+  - tag each finding `origin:` (pre-existing, or introduced by fix round
+    N) and `kind:` (correctness, contract, consistency between parts,
+    missing mechanism, or other);
+  - give each round a row that notes each dispatch's quota headroom
+    before and after, where the lane reports it, or "not reported"; no
+    cost figures (`AI.md`);
+  - put "uncalibrated on IronAFS" beside each verdict from a pin that has
+    not passed a calibration on IronAFS material (`docs/workflow.md` §2,
+    "Model routing");
+  - from round 3 on, the convergence note: each seat's trend of blocker and
+    major counts, how many of the last round's findings the last fix
+    introduced, and any drift in the kind of defect found.
 - Only seats whose final verdict covers the landed tree go into
   `AI-Reviewed-by:` (ADR 0002).
 - Stop rule: stop when a round produces no blocker or major, every
   confirmed correctness or contract finding is resolved, whatever its
-  severity, and no judgement is pending or inconclusive. After two fix rounds on one change, split it, redesign it, or
-  record the blocker. If too few independent families are available, the
-  change waits.
+  severity, and no judgement is pending or inconclusive. After two fix
+  rounds on one change, take another only when the convergence note shows
+  the counts falling, few findings introduced by the fixes, and the kinds
+  narrowing; otherwise split it, move the mechanism into specification
+  items, redesign it, or record the blocker. If too few independent
+  families are available, the change waits.
+- A single seat's tail (one or two majors, no blocker, from one seat
+  alone) goes to the judgement seat or, through the refutation seat, into
+  specification items; never into another full round. The judgement seat
+  rules whether each major holds as a correctness or contract defect in
+  what the change decides:
+  one that holds is fixed by a scoped fix verified at its seat's pin, or
+  the change is split, redesigned or its blocker recorded; one that does
+  not hold is closed as ruled and recorded, and any mechanism it asks for
+  becomes a specification item.
+- A part is converged when each required seat's last conclusive verdict
+  covered its files at a pinned sha and no finding in them is open. Split
+  it from the latest sha every required seat's verdict covers for those
+  files (a verdict covers a later sha only if every change to the files
+  since was a fix verified at its finding seat's pin), as a change of its
+  own, with its own class and merge; its record carries the part's
+  findings and their dispositions.
+- Credit follows ADR 0002 unchanged. For class I and above, if no
+  required seat's final verdict covers the landed tree, a verification
+  round on the final diff comes before the merge.

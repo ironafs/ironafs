@@ -293,6 +293,8 @@ set at Windows 11 for its end of support (B2). The SMB route's transport
 was since measured reaching a probe listener on it, to the client's first
 packet (B2), so its tier is reopened, to be settled with the platform floors in the
 architecture ADR.
+(Update, 2026-11-21: settled by ADR 0004, L38, point 2: Windows 10 Pro 22H2
+x86_64 is a tier 2 target, SMB only, until 2027-10-12.)
 
 **RHEL 7 placement and justification:**
 
@@ -317,6 +319,11 @@ architecture ADR.
 This placement is a judgement, not a measured result.
 
 ## Open questions for the architecture ADR
+
+(Update, 2026-11-21: ADR 0004 decides these: Kerberos and GSS in C5, name
+resolution in C33, the FUSE layer and floor in L2, the Linux mount model in
+L7, the macOS floor in L8, Windows in L15, and the matrix and floors in L36 to
+L39 and L42.)
 
 1. **Minimum FUSE protocol:** 7.23, with everything newer optional?
 2. **Required and optional capabilities,** each optional one with a tested

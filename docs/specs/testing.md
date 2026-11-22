@@ -13,7 +13,7 @@ change that weakens an obligation on class S or R code is class S
 Sections keep their numbers once the specification is reviewed. Labels
 follow [README](README.md), "Labelling claims". Source ids (T1, T2 and so
 on) are in section 12; outside documents are registered in the
-[README](README.md)'s register of editions (rows E3 to E12).
+[README](README.md)'s register of editions (rows E38 to E47).
 
 ## 1. What this implements
 
@@ -264,7 +264,7 @@ it is broken.
    corpus directory and its crash-output prefix explicitly, both under
    paths git ignores, so a crash input is never committed or published by
    accident. By default the engine writes a crash input to its working
-   directory, under a prefix an option sets `[E9: CONFIRMED]`.
+   directory, under a prefix an option sets `[E44: CONFIRMED]`.
 7. **Simulator scenarios** and their seed lists live in `ironafs-sim`'s
    library, so the replay command and the tests call the same function.
 8. **Benchmarks:** `benches/<name>/main.rs` with `harness = false`
@@ -319,7 +319,7 @@ item that does not apply says why in one line. Ids are stable.
   decoder's memory accounting, where its specification defines one, stays
   within the message's budget for every input, accepted or not. The
   target's maximum input length, which the engine takes as an option
-  `[E9: CONFIRMED]`, is the message cap plus one, and its
+  `[E44: CONFIRMED]`, is the message cap plus one, and its
   tracked seeds include inputs at the cap and at the cap plus one, so the
   engine starts at the boundary instead of having to find it.
 - **D10 Stack:** the largest valid input decodes on a thread with the
@@ -646,26 +646,26 @@ Everything in 5.2.1, plus:
 3. **Coverage** `[T3: owner's decisions 4 and 5]`.
    - Measured nightly with rustc's coverage instrumentation, which reports
      function, instantiation, line and region coverage and needs the
-     profiler runtime and the LLVM tools component `[E4: CONFIRMED]`,
+     profiler runtime and the LLVM tools component `[E39: CONFIRMED]`,
      through cargo-llvm-cov 0.9.1, pinned: a prebuilt binary whose
      checksum is verified before it runs, installed only in the nightly
      coverage job, which holds no secret and has a read-only token, and
      run only behind `cargo xtask coverage`. `xtask` reads only the tool's
-     JSON export `[E5: CONFIRMED that the tool exports JSON, runs tests
+     JSON export `[E40: CONFIRMED that the tool exports JSON, runs tests
      through nextest, and offers prebuilt binaries]`.
    - Line, region and function coverage of library code, per crate, each
      figure naming its target; code behind a `cfg` the target does not
      build is "not measured", not uncovered. Branch coverage is reported as
      "not available": the tool's branch option needs a nightly compiler
-     `[E5: CONFIRMED]`, and the workspace's toolchain is stable. Doc-tests
+     `[E40: CONFIRMED]`, and the workspace's toolchain is stable. Doc-tests
      are not measured, since the tool needs a nightly compiler for them
-     `[E5: CONFIRMED]`, and the report says so.
+     `[E40: CONFIRMED]`, and the report says so.
    - Test code is not counted as covered code. The tool leaves `tests`
      directories and files named `tests.rs` out of its report by default
-     `[E5: CONFIRMED]`, which matches rule 15's unit-test files; other
+     `[E40: CONFIRMED]`, which matches rule 15's unit-test files; other
      exclusions are file patterns in one checked-in list, each with a
      reason, passed through the tool's file-name pattern option
-     `[E5: CONFIRMED]`, never source attributes or `cfg(coverage)` code.
+     `[E40: CONFIRMED]`, never source attributes or `cfg(coverage)` code.
    - The report has four tables. The first is the hand-written code of the
      pure decoder and state-machine crates: `ironafs-xdr`, `ironafs-rx`,
      `ironafs-rxkad`, `ironafs-rxgk`, `ironafs-proto`, `ironafs-vfs`,
@@ -697,8 +697,8 @@ Everything in 5.2.1, plus:
      checklist's tool-pinning items. It is a standalone tool, not linked
      (rule 21). It runs tests through nextest when told to, splits a run
      into shards, and can limit a run to the mutants a diff touches
-     `[E6: CONFIRMED]`. Its exclusions live in its configuration file, as
-     name patterns `[E6: CONFIRMED]`, never as source attributes.
+     `[E41: CONFIRMED]`. Its exclusions live in its configuration file, as
+     name patterns `[E41: CONFIRMED]`, never as source attributes.
    - Nightly, sharded, over the pure crates and `ironafs-client`. On a
      pull request, limited to the diff over the pure crates it touches,
      and report only (5.5, point 1). Making it required is a revisit
@@ -708,11 +708,11 @@ Everything in 5.2.1, plus:
      `tests/mutants-accepted.txt` with a one-line reason (an equivalent
      mutant, or logging only); the first reviewer checks each new line.
    - Results are classed as the tool classes them: caught, missed, timed
-     out and unviable `[E6: CONFIRMED]`. A mutant that does not build, or
+     out and unviable `[E41: CONFIRMED]`. A mutant that does not build, or
      a run that selected no test, is never "caught". A diff run with no
      mutants says so; a missing shard fails the job.
    - The tool stops a mutant's tests after a timeout and moves on to the
-     next mutant `[E6: CONFIRMED]`. A timed-out mutant is reported in its
+     next mutant `[E41: CONFIRMED]`. A timed-out mutant is reported in its
      own count, never as caught or missed. Each one is handled like a
      surviving mutant: a test that fails on it within its deadline is
      added, or its line in `tests/mutants-accepted.txt` says the mutant
@@ -725,7 +725,7 @@ Everything in 5.2.1, plus:
    - CI writes each crate's test names from nextest's machine-readable
      list, which gives each test binary's id, kind, build platform and
      test cases, each with whether it is ignored and whether it matches
-     the filter `[E3: CONFIRMED]`. The inventory is keyed by crate, test
+     the filter `[E38: CONFIRMED]`. The inventory is keyed by crate, test
      binary, feature set and target, and compared with the checked-in
      `tests/inventory/<crate>.txt`.
    - Each entry carries the tier and venue that run it, from 5.5's closed
@@ -768,7 +768,7 @@ Everything in 5.2.1, plus:
      fails any profile, per-test override, command or workflow environment
      that sets retries above zero. nextest takes retries from its command
      line, an environment variable, a profile and per-test overrides
-     `[E10: CONFIRMED]`, so the check reads all four.
+     `[E45: CONFIRMED]`, so the check reads all four.
    - A test that passes and fails on the same revision is a bug: an issue
      is opened with the seed, the machine and both runs, and the pull
      request that exposed it waits until the test is fixed or the issue is
@@ -782,9 +782,9 @@ Everything in 5.2.1, plus:
      result. A failing simulator seed is never flaky: it is a reproducer.
    - A timeout override cites measured times. Heavy tests join a
      thread-capped test group instead of getting a longer timeout; nextest
-     limits how many tests of a group run at once `[E10: CONFIRMED]`. A
+     limits how many tests of a group run at once `[E45: CONFIRMED]`. A
      crate that runs the simulator has a per-test timeout that terminates
-     the test after a stated number of slow periods `[E10: CONFIRMED]`, so
+     the test after a stated number of slow periods `[E45: CONFIRMED]`, so
      a run that never ends fails.
 7. **Paired controls.** A harness check (a fixture, a scripted fault, a
    capture filter) is shown working by a paired run with the condition
@@ -878,7 +878,7 @@ by nature.
    test produced or read (an input, a corpus, a seed, test output) in a
    cache, encrypted or not: on a public repository ciphertext is still
    published, and a pull request's workflow can restore caches its base
-   branch created, forks included `[E8: CONFIRMED]`, so a cache is
+   branch created, forks included `[E43: CONFIRMED]`, so a cache is
    readable by anyone who opens a pull request. Its runner keeps nothing
    once the job ends, so until the private CI repository exists a fresh
    seed that failed is kept nowhere; the maintainer reproduces the failure
@@ -892,7 +892,7 @@ by nature.
    log. A failing seed reaches tracked files only as a reviewed regression
    (5.3, point 7). The fixed seeds of the pull-request tier are public by
    design.
-3. **Freshness** `[E7: CONFIRMED that scheduled workflows run on the
+3. **Freshness** `[E42: CONFIRMED that scheduled workflows run on the
    default branch only, may be delayed under load, and are disabled in a
    public repository after 60 days without repository activity]`. A
    freshness check fails when a tier's last complete run is older than two
@@ -903,7 +903,7 @@ by nature.
    limit is refused, never read as complete: GitHub's list of workflow
    runs gives at most 100 runs a page and at most 1,000 results for a
    filtered search, and each run carries its attempt number
-   `[E12: CONFIRMED]`. The check runs on pushes,
+   `[E47: CONFIRMED]`. The check runs on pushes,
    on pull requests and on its own schedule, never only inside the
    schedule it watches. On a pull request it is advisory; at a phase gate
    or release candidate it is required. It cannot alert while the
@@ -914,9 +914,9 @@ by nature.
    re-run never replaces the first result. Scheduled workflows never set
    the concurrency option that cancels a run in progress, so a dispatched
    run cannot cancel a running nightly; without it, a run in progress
-   keeps running and the new run waits `[E11: CONFIRMED]`.
+   keeps running and the new run waits `[E46: CONFIRMED]`.
 5. **Fuzzing.** The engine runs only in scheduled jobs, time-boxed per
-   target through its total-time option `[E9: CONFIRMED]`; pull requests replay the tracked seeds (5.3, point 6). Each
+   target through its total-time option `[E44: CONFIRMED]`; pull requests replay the tracked seeds (5.3, point 6). Each
    target runs as its own invocation, so one target's crash never skips
    the rest; each is recorded as ran, crashed or not run. A check matches
    registered targets, fuzz binaries, tracked seed directories and run
@@ -931,7 +931,7 @@ by nature.
    weekly run differs from the nightly one only in its time. From M4, the
    private CI repository carries the corpus between its runs and
    minimises it (the engine's merge option minimises a corpus while
-   keeping its coverage `[E9: CONFIRMED]`); a minimised input reaches
+   keeping its coverage `[E44: CONFIRMED]`); a minimised input reaches
    `fuzz/seeds/<target>/` only through a reviewed pull request. Poisoning:
    only reviewed code writes a carried corpus, and the corpus only chooses
    where the engine starts; the tracked seeds are always added, so a lost
@@ -1253,7 +1253,7 @@ This page's own triggers:
 - the month of measurements is complete (the budgets of 5.5 and the
   coverage ratchet's start);
 - a pinned tool is abandoned, changes its licence, or changes a fact
-  registered in rows E3 to E12;
+  registered in rows E38 to E47;
 - a golden trace fixture passes its size cap;
 - fixed hardware for timed benchmarks exists (5.6, point 5);
 - the private CI repository exists (5.5, points 2, 3, 6 and 9);
@@ -1267,16 +1267,16 @@ This page's own triggers:
 | T1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; C3, C4, C37 ([part 1](../adr/0004-architecture-1-core.md)); L13, L22, L40, L41 ([part 2](../adr/0004-architecture-2-os-layers.md)); O22, O30, O41, O45 to O49 ([part 3](../adr/0004-architecture-3-operations.md)) | 1, 2, 5, 9, 11 |
 | T2 | DECISION | [Coding standards](../coding-standards.md), rules 1 to 3, 5, 7, 8, 15, 16, 20 and 21; [docs/workflow.md](../workflow.md) §1, §2, §3b, §3c, §5 and §6; [ADR 0001](../adr/0001-licence-and-dont-copy.md) | 1, 5, 7, 8 |
 | T3 | DECISION | The owner's decisions recorded in issue #63 (section 1's list); the `no_std` decision is also in issue #53 | 1, 5 |
-| E3 | DOCUMENTATION | nextest, "Machine-readable output: test lists", register row E3 | 5.4 |
-| E4 | DOCUMENTATION | The rustc book, "Instrumentation-based code coverage", Rust 1.100.0, register row E4 | 5.4 |
-| E5 | DOCUMENTATION | cargo-llvm-cov 0.9.1, its README at the release's tag and its release page, register row E5 | 5.4 |
-| E6 | DOCUMENTATION | cargo-mutants user guide, pages on nextest, sharding, the output directory, filtering mutants and timeouts, register row E6 | 5.4 |
-| E7 | DOCUMENTATION | GitHub Docs, "Events that trigger workflows", section `schedule`, register row E7 | 5.5 |
-| E8 | DOCUMENTATION | GitHub Docs, "Dependency caching reference", cache access restrictions, register row E8 | 5.5 |
-| E9 | DOCUMENTATION | LLVM, "libFuzzer – a library for coverage-guided fuzz testing", options and corpus merging, register row E9 | 5.1, 5.2, 5.5 |
-| E10 | DOCUMENTATION | nextest documentation, pages on test groups, slow tests and timeouts, and retries, register row E10 | 5.4 |
-| E11 | DOCUMENTATION | GitHub Docs, "Control the concurrency of workflows and jobs", register row E11 | 5.5 |
-| E12 | DOCUMENTATION | GitHub REST API, "List workflow runs for a workflow", register row E12 | 5.5 |
+| E38 | DOCUMENTATION | nextest, "Machine-readable output: test lists", register row E38 | 5.4 |
+| E39 | DOCUMENTATION | The rustc book, "Instrumentation-based code coverage", Rust 1.100.0, register row E39 | 5.4 |
+| E40 | DOCUMENTATION | cargo-llvm-cov 0.9.1, its README at the release's tag and its release page, register row E40 | 5.4 |
+| E41 | DOCUMENTATION | cargo-mutants user guide, pages on nextest, sharding, the output directory, filtering mutants and timeouts, register row E41 | 5.4 |
+| E42 | DOCUMENTATION | GitHub Docs, "Events that trigger workflows", section `schedule`, register row E42 | 5.5 |
+| E43 | DOCUMENTATION | GitHub Docs, "Dependency caching reference", cache access restrictions, register row E43 | 5.5 |
+| E44 | DOCUMENTATION | LLVM, "libFuzzer – a library for coverage-guided fuzz testing", options and corpus merging, register row E44 | 5.1, 5.2, 5.5 |
+| E45 | DOCUMENTATION | nextest documentation, pages on test groups, slow tests and timeouts, and retries, register row E45 | 5.4 |
+| E46 | DOCUMENTATION | GitHub Docs, "Control the concurrency of workflows and jobs", register row E46 | 5.5 |
+| E47 | DOCUMENTATION | GitHub REST API, "List workflow runs for a workflow", register row E47 | 5.5 |
 | O | OWN | Every point tagged `[OWN]`, with its reason in place | 5 |
 
 Each outside page was read on 2026-11-21 (INSPECTED, workflow §3c), for

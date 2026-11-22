@@ -4,8 +4,11 @@
 //! The `cargo xtask` entry point and its diagnostic and exit-status handling.
 
 mod args;
+mod bans;
+mod cell;
 mod check;
 mod deps;
+mod files;
 mod fixture;
 mod grants;
 mod hooks;
@@ -20,6 +23,18 @@ use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+
+/// The subprocess builder for repository automation: xtask runs cargo,
+/// git, rustup and the checks' tools. Coding standards rule 7 bans
+/// `std::process::Command` everywhere, since a subprocess can read the
+/// host's clock or randomness; xtask is never shipped, so it is exempt by
+/// this one alias, and every other ban still applies to it.
+#[expect(
+    clippy::disallowed_types,
+    reason = "rule 7: xtask is repository automation, never shipped; it runs tools as \
+              subprocesses"
+)]
+pub(crate) type Command = std::process::Command;
 
 #[derive(Debug)]
 enum Error {
@@ -40,6 +55,8 @@ enum Error {
         source: io::Error,
     },
     Trailer(trailers::Violation),
+    /// A test cell command failed.
+    Cell(cell::Failure),
     /// A rule check found violations, each written out.
     Rules {
         check: &'static str,
@@ -117,6 +134,7 @@ impl fmt::Display for Error {
                 write!(formatter, "{operation} at {}: {source}", path.display())
             }
             Self::Trailer(violation) => write!(formatter, "{violation}"),
+            Self::Cell(failure) => write!(formatter, "cell: {failure}"),
             Self::Rules { check, violations } => {
                 write!(formatter, "{check} found {} violations:", violations.len())?;
                 violations
@@ -143,12 +161,14 @@ fn run_task(
 ) -> Result<(), Error> {
     match args::parse(arguments).map_err(Error::Usage)? {
         args::Task::Check => check::run(output),
+        args::Task::CheckBans { self_test } => bans::run(self_test, output),
         args::Task::CheckDeps { self_test } => deps::run(self_test, output),
         args::Task::CheckGrants { self_test } => grants::run(self_test, output),
         args::Task::CheckPure { self_test } => pure::run(self_test, output),
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
         args::Task::Trailers(mode) => trailers::run(mode, output),
+        args::Task::Cell(command) => cell::run(command, output),
     }
 }
 
