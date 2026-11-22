@@ -29,7 +29,7 @@ pub(in crate::linux_peercred) fn last_error() -> io::Error {
 // library links. It is declared unsafe to call: it writes up to `*optlen`
 // bytes through `optval` and writes `*optlen`, so both pointers must be
 // valid for those writes; `crate::linux_peercred` passes only its own
-// locals, and only `SOL_SOCKET` with `SO_PEERCRED`.
+// locals, and only `SOL_SOCKET` with `SO_TYPE` or `SO_PEERCRED`.
 #[expect(unsafe_code, reason = "linux-peercred")]
 unsafe extern "C" {
     pub(in crate::linux_peercred) fn getsockopt(

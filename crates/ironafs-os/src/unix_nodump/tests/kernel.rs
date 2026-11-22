@@ -32,14 +32,18 @@ const SALT: u8 = 11;
 const NOBODY: u32 = 65_534;
 
 /// The user and group id the set-id exec test runs its grandchild under:
-/// one that no account or group of the machine has (checked before use), so
-/// no other process can run the set-user-id copy, which only this group
-/// may execute.
-const SET_ID_TEST_ID: u32 = 64_210;
+/// one that no account or group of the machine has (checked before use,
+/// in the files and through the name service), so no other process can run
+/// the set-user-id copy, which only this group may execute. It lies below
+/// systemd's dynamic range (61184 to 65519), whose ids the files do not
+/// list.
+const SET_ID_TEST_ID: u32 = 59_421;
 
-/// The directory, which only root may change, that the set-user-id copy's
-/// own directory is made in.
-const SET_ID_PARENT: &str = "/run";
+/// The directories, each one only root may change, that the set-user-id
+/// copy's own directory may be made in: the first on a mount that honours
+/// set-user-id bits and allows execution (`/run` is often mounted
+/// `nosuid` and `noexec`).
+const SET_ID_PARENTS: &[&str] = &["/run", "/var/lib", "/usr/local", "/opt"];
 
 /// The entry test a child runs; it does nothing without a role.
 #[test]
@@ -58,10 +62,15 @@ fn child() {
             println!("result={result:?}");
             println!("dumpable={}", dumpable().unwrap());
             println!("core-limit={soft} {hard}");
+            // Taking them again is the reapply rule after a transition.
+            println!("again={:?}", disable_dumps());
+            println!("dumpable-again={}", dumpable().unwrap());
         }
-        // Report the attribute this process started with, then take the
-        // controls and report it again.
+        // Report the real and effective user ids and the attribute this
+        // process started with, then take the controls and report it again.
         "report-then-disable" => {
+            let (real, effective) = user_ids();
+            println!("ids={real} {effective}");
             println!("before={}", dumpable().unwrap());
             disable_dumps().unwrap();
             println!("after={}", dumpable().unwrap());
@@ -112,7 +121,8 @@ fn child() {
 /// A copy of this test binary, owned by root and set-user-id, that only
 /// the group [`SET_ID_TEST_ID`], which no account or group of the machine
 /// has, may run. It is made in a new directory (refused if its path exists)
-/// in `/run`, which only root may change (checked); root owns the directory
+/// in the first of [`SET_ID_PARENTS`] that only root may change (checked)
+/// and whose mount honours set-user-id bits; root owns the directory
 /// and only that group may enter it. The copy is created new, never over an
 /// existing file, and the directory is removed, with it, when the returned
 /// guard is dropped, on every path that unwinds.
@@ -122,8 +132,12 @@ fn set_id_copy() -> (PrivateDir, std::path::PathBuf) {
         unused_id(SET_ID_TEST_ID),
         "{SET_ID_TEST_ID} belongs to an account or group here: choose another"
     );
-    let dir =
-        PrivateDir::create_in(std::path::Path::new(SET_ID_PARENT), "ironafs-os-set-id").unwrap();
+    let parent = SET_ID_PARENTS
+        .iter()
+        .map(std::path::Path::new)
+        .find(|parent| trusted_parent(parent).is_ok() && set_id_mount(parent))
+        .expect("no trusted directory on a mount without nosuid and noexec");
+    let dir = PrivateDir::create_in(parent, "ironafs-os-set-id").unwrap();
     chown(dir.path(), Some(0), Some(SET_ID_TEST_ID)).unwrap();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o710)).unwrap();
     let copy = dir.path().join("set-id-child");
@@ -141,15 +155,66 @@ fn set_id_copy() -> (PrivateDir, std::path::PathBuf) {
     (dir, copy)
 }
 
-/// Whether `id` is in neither `/etc/passwd` nor `/etc/group`.
+/// Whether `id` is no account's user or primary group id and no group's
+/// id, in `/etc/passwd` and `/etc/group` (fields 3 and 4, and 3), and
+/// whether the name service (`getent`, which also asks systemd's and
+/// directory services' sources) knows no user or group of that id.
 fn unused_id(id: u32) -> bool {
-    let named = |file: &str| {
-        std::fs::read_to_string(file)
-            .unwrap()
-            .lines()
-            .any(|line| line.split(':').nth(2) == Some(id.to_string().as_str()))
+    let id = id.to_string();
+    let named = |file: &str, fields: &[usize]| {
+        std::fs::read_to_string(file).unwrap().lines().any(|line| {
+            let line: Vec<&str> = line.split(':').collect();
+            fields
+                .iter()
+                .any(|field| line.get(*field) == Some(&id.as_str()))
+        })
     };
-    !named("/etc/passwd") && !named("/etc/group")
+    // `getent` exits 2 when the key is not found.
+    let known = |database: &str| {
+        let status = crate::dump::harness::Command::new("getent")
+            .args([database, id.as_str()])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        status.code() != Some(2)
+    };
+    !named("/etc/passwd", &[2, 3])
+        && !named("/etc/group", &[2])
+        && !known("passwd")
+        && !known("group")
+}
+
+/// Whether the mount `path` is on honours set-user-id bits and allows
+/// execution: the longest mount point of `/proc/self/mountinfo` above it
+/// has neither `nosuid` nor `noexec` among its options.
+fn set_id_mount(path: &std::path::Path) -> bool {
+    let mounts = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(' ').collect();
+            let point = std::path::Path::new(*fields.get(4)?);
+            let options = *fields.get(5)?;
+            path.starts_with(point).then_some((point, options))
+        })
+        .max_by_key(|(point, _)| point.as_os_str().len())
+        .is_some_and(|(_, options)| {
+            !options
+                .split(',')
+                .any(|option| option == "nosuid" || option == "noexec")
+        })
+}
+
+/// This process's real and effective user ids, from `/proc/self/status`.
+fn user_ids() -> (u32, u32) {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let mut ids = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .unwrap()
+        .split_whitespace()
+        .map(|id| id.parse().unwrap());
+    (ids.next().unwrap(), ids.next().unwrap())
 }
 
 /// The value `/proc/sys/fs/suid_dumpable` holds: what the kernel resets
@@ -172,8 +237,9 @@ fn is_root() -> bool {
 }
 
 #[track_caller]
-fn assert_reset_then_restored(run: &Run, reset_to: &str) {
+fn assert_reset_then_restored(run: &Run, ids: &str, reset_to: &str) {
     assert!(run.status.success(), "{run:?}");
+    assert_eq!(run.value("ids"), Some(ids), "{run:?}");
     assert_eq!(run.value("self"), Some("0"), "{run:?}");
     assert_eq!(run.value("before"), Some(reset_to), "{run:?}");
     assert_eq!(run.value("after"), Some("0"), "{run:?}");
@@ -181,8 +247,11 @@ fn assert_reset_then_restored(run: &Run, reset_to: &str) {
 
 #[test]
 fn a_trusted_parent_is_a_root_owned_directory_only_root_may_change() {
-    // `/run` is root's, mode 0755, on Linux and in the guest's containers.
+    // `/run` is root's, mode 0755, on Linux and in the guest's containers,
+    // as is `/`.
     trusted_parent(std::path::Path::new("/run")).unwrap();
+    // A relative path is refused, whatever it names.
+    assert!(trusted_parent(std::path::Path::new("run")).is_err());
     // The temporary directory lets any user add entries.
     let shared = std::path::Path::new("/tmp");
     assert!(trusted_parent(shared).is_err(), "{}", shared.display());
@@ -223,12 +292,15 @@ fn disable_dumps_reads_back_not_dumpable_and_zeroes_both_core_limits() {
     assert_eq!(run.value("result"), Some("Ok(())"), "{run:?}");
     assert_eq!(run.value("dumpable"), Some("0"), "{run:?}");
     assert_eq!(run.value("core-limit"), Some("0 0"), "{run:?}");
+    assert_eq!(run.value("again"), Some("Ok(())"), "{run:?}");
+    assert_eq!(run.value("dumpable-again"), Some("0"), "{run:?}");
 }
 
 #[test]
 fn an_exec_resets_the_attribute_to_dumpable_and_disable_dumps_restores_it() {
     let run = run(&mut command(ENTRY, "disable-then-exec"));
-    assert_reset_then_restored(&run, "1");
+    let (real, effective) = user_ids();
+    assert_reset_then_restored(&run, &format!("{real} {effective}"), "1");
 }
 
 /// An exec as another user: the child is started under `nobody` (the id
@@ -243,7 +315,7 @@ fn an_exec_resets_the_attribute_to_dumpable_and_disable_dumps_restores_it() {
 fn an_exec_as_another_user_resets_the_attribute_and_disable_dumps_restores_it() {
     assert!(is_root(), "run this test as root");
     let run = run(&mut command(ENTRY, "disable-then-exec-as-nobody"));
-    assert_reset_then_restored(&run, "1");
+    assert_reset_then_restored(&run, &format!("{NOBODY} {NOBODY}"), "1");
 }
 
 #[test]
@@ -252,7 +324,9 @@ fn a_set_id_exec_resets_the_attribute_to_suid_dumpable_and_disable_dumps_restore
     assert!(is_root(), "run this test as root");
     let reset_to = suid_dumpable();
     let run = run(&mut command(ENTRY, "disable-then-exec-set-id"));
-    assert_reset_then_restored(&run, &reset_to);
+    // The grandchild ran as the test id with root's effective id: the
+    // set-user-id bit took effect, so the reset seen is a set-id exec's.
+    assert_reset_then_restored(&run, &format!("{SET_ID_TEST_ID} 0"), &reset_to);
 }
 
 #[test]

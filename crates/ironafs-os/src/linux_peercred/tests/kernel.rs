@@ -5,7 +5,9 @@
 //! running kernel itself, so Miri does not build them: the credentials of
 //! a pair name this process's effective ids; a peer under another uid,
 //! connected through a listening socket, is named by its own ids and
-//! process id; and the credentials are those of the connection's time.
+//! process id; the credentials are those of the connection's time; and
+//! sockets that are not connected Unix streams, wrapped as streams, are
+//! refused.
 
 use std::io::Read;
 use std::os::fd::OwnedFd;
@@ -83,14 +85,16 @@ fn peer_credentials_of_a_shut_down_stream_are_still_the_connection_s() {
 #[test]
 #[ignore = "needs root, to run a peer under another user: run as root on a Linux guest"]
 fn peer_credentials_name_a_peer_under_another_uid() {
+    // Created exclusively, so a path planted before (a symlink included)
+    // fails the test rather than being followed. The other user needs
+    // only to search the directory and to write to the socket.
     let directory: PathBuf =
         std::env::temp_dir().join(format!("ironafs-peercred-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = directory.join("socket");
-    let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
 
     let mut child = command(ENTRY, "connect")
         .env(SOCKET, &path)
@@ -147,9 +151,32 @@ fn peer_credentials_refuse_sockets_with_no_peer_credentials() {
         assert!(
             matches!(
                 found,
-                Err(PeerError::NotConnected(_) | PeerError::NoCredentials)
+                Err(PeerError::NotConnected(_)
+                    | PeerError::NotStream(_)
+                    | PeerError::NoCredentials)
             ),
             "{case}: {found:?}"
         );
     }
+}
+
+/// `SOCK_DGRAM`, the type a datagram socket reports.
+const SOCK_DGRAM: i32 = 2;
+
+#[test]
+fn peer_credentials_refuse_a_reconnected_datagram_socket_of_a_pair() {
+    // A datagram pair has credentials cached when it was made; connected
+    // to another peer, its `SO_PEERCRED` still answers the pair's, so only
+    // the type check refuses it.
+    let dir = PrivateDir::create("ironafs-peercred").unwrap();
+    let other = UnixDatagram::bind(dir.path().join("other")).unwrap();
+    let (ours, _theirs) = UnixDatagram::pair().unwrap();
+    ours.connect(dir.path().join("other")).unwrap();
+    let wrapped = UnixStream::from(OwnedFd::from(ours));
+    let found = peer_credentials(&wrapped);
+    assert!(
+        matches!(found, Err(PeerError::NotStream(SOCK_DGRAM))),
+        "{found:?}"
+    );
+    drop(other);
 }

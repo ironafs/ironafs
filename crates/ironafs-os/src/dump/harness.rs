@@ -338,22 +338,31 @@ impl Drop for PrivateDir {
     }
 }
 
-/// Checks that `path` is a directory only root may change: not a symbolic
-/// link, owned by root, and writable by no group or other user. Entries in
-/// it cannot then be added, removed or replaced by anyone else.
+/// Checks that `path` is an absolute path to a directory only root may
+/// change, as is every directory above it: none a symbolic link, each
+/// owned by root and writable by no group or other user. Entries in it
+/// cannot then be added, removed or replaced by anyone else, nor can any
+/// directory on its path.
 pub(crate) fn trusted_parent(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
-    let metadata = fs::symlink_metadata(path)?;
-    let trusted =
-        metadata.file_type().is_dir() && metadata.uid() == 0 && metadata.mode() & 0o022 == 0;
-    if trusted {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "{}: not a directory that root owns and only root may write",
+    if !path.is_absolute() {
+        return Err(io::Error::other(format!(
+            "{}: not an absolute path",
             path.display()
-        )))
+        )));
     }
+    for directory in path.ancestors() {
+        let metadata = fs::symlink_metadata(directory)?;
+        let trusted =
+            metadata.file_type().is_dir() && metadata.uid() == 0 && metadata.mode() & 0o022 == 0;
+        if !trusted {
+            return Err(io::Error::other(format!(
+                "{}: not a directory that root owns and only root may write",
+                directory.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// A 64-bit little-endian ELF core image: a header, `segments` program

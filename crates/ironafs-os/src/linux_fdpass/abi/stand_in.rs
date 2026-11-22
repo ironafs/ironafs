@@ -134,7 +134,7 @@ pub(in crate::linux_fdpass) unsafe fn sendmsg(
     let count = match header.length() {
         ONE => 1,
         TWO => 2,
-        _ => return -1,
+        _ => return refused(),
     };
     if (header.level(), header.kind()) != (SOL_SOCKET, SCM_RIGHTS) {
         return refused();

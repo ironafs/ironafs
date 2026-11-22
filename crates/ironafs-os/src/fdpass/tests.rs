@@ -17,6 +17,7 @@ use super::{FdPassError, Received, Rules, accept, retried, sent};
 const RULES: Rules = Rules {
     level: 1,
     rights: 1,
+    pidfd: 4,
     truncated: 8,
     one: 20,
     two: 24,
@@ -166,6 +167,97 @@ fn accept_adopts_no_integer_of_a_header_that_fails_a_check() {
     }
 }
 
+/// A receive that delivered the peer's pidfd, 9, with the data byte.
+const PIDFD: Received = Received {
+    kind: 4,
+    payload: [9, 0],
+    ..ONE
+};
+
+#[test]
+fn accept_adopts_and_closes_a_pidfd_and_refuses() {
+    let (handed, error, log) = run(&PIDFD);
+    assert_eq!(handed, None);
+    assert!(matches!(error, Some(FdPassError::PeerPidfd)), "{error:?}");
+    assert_eq!(log.adopted, [9]);
+    assert_eq!(log.dropped, [9]);
+}
+
+#[test]
+fn accept_closes_a_pidfd_whatever_else_the_receive_reported() {
+    for (case, received, expected) in [
+        (
+            "the end of the stream",
+            Received { count: 0, ..PIDFD },
+            "Closed",
+        ),
+        ("truncation", Received { flags: 8, ..PIDFD }, "Truncated"),
+        (
+            "a wrong data byte",
+            Received { byte: 0, ..PIDFD },
+            "PeerPidfd",
+        ),
+    ] {
+        let (handed, error, log) = run(&received);
+        assert_eq!(handed, None, "{case}");
+        assert!(
+            format!("{error:?}").starts_with(&format!("Some({expected}")),
+            "{case}: {error:?}"
+        );
+        assert_eq!(log.adopted, [9], "{case}");
+        assert_eq!(log.dropped, [9], "{case}");
+    }
+}
+
+#[test]
+fn accept_adopts_no_integer_of_a_pidfd_header_that_fails_a_check() {
+    for (case, received) in [
+        ("a wrong level", Received { level: 0, ..PIDFD }),
+        (
+            "a length of two",
+            Received {
+                length: 24,
+                payload: [9, 8],
+                ..PIDFD
+            },
+        ),
+        (
+            "a short control length",
+            Received {
+                control: 19,
+                ..PIDFD
+            },
+        ),
+        (
+            "a header length past the control length",
+            Received {
+                control: 20,
+                length: 24,
+                ..PIDFD
+            },
+        ),
+    ] {
+        let (handed, error, log) = run(&received);
+        assert_eq!(handed, None, "{case}");
+        assert!(
+            matches!(error, Some(FdPassError::BadControl)),
+            "{case}: {error:?}"
+        );
+        assert_eq!(log.adopted, Vec::<i32>::new(), "{case}");
+    }
+}
+
+#[test]
+fn accept_never_adopts_a_negative_pidfd() {
+    let (handed, error, log) = run(&Received {
+        payload: [-1, 0],
+        ..PIDFD
+    });
+    assert_eq!(handed, None);
+    assert!(matches!(error, Some(FdPassError::PeerPidfd)), "{error:?}");
+    assert_eq!(log.adopted, Vec::<i32>::new());
+}
+
 #[test]
 fn accept_with_no_control_data_is_no_descriptor() {
     let (handed, error, log) = run(&Received {
@@ -206,7 +298,7 @@ fn accept_never_adopts_a_negative_value_and_closes_the_other_one() {
 fn accept_hands_out_only_the_valid_case_and_never_leaks_across_the_sweep() {
     for control in [0, 15, 16, 19, 20, 21, 23, 24, 25, 32] {
         for length in [0, 15, 16, 19, 20, 21, 23, 24, 25, 28] {
-            for (level, kind) in [(1, 1), (0, 1), (1, 2), (2, 0)] {
+            for (level, kind) in [(1, 1), (0, 1), (1, 2), (2, 0), (1, 4), (0, 4)] {
                 for (flags, count, byte) in [(0, 1, 1), (8, 1, 1), (0, 0, 1), (0, 1, 0)] {
                     let received = Received {
                         count,
@@ -223,7 +315,10 @@ fn accept_hands_out_only_the_valid_case_and_never_leaks_across_the_sweep() {
                         && (length == 20 || length == 24)
                         && length <= control
                         && (level, kind) == (1, 1);
+                    let pidfd =
+                        (20..=24).contains(&control) && length == 20 && (level, kind) == (1, 4);
                     let delivered = match (header, length) {
+                        (false, _) if pidfd => vec![7],
                         (false, _) => vec![],
                         (true, 20) => vec![7],
                         (true, _) => vec![7, 8],

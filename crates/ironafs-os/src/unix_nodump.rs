@@ -80,7 +80,7 @@ fn zero_core_limit() -> io::Result<()> {
     let status = unsafe { abi::setrlimit(resource, pointer) };
     if status != 0 {
         // At once, with no call in between, on the thread that made it.
-        return Err(io::Error::last_os_error());
+        return Err(abi::last_error());
     }
     Ok(())
 }
@@ -102,7 +102,7 @@ fn set_not_dumpable() -> io::Result<()> {
     let status = unsafe { abi::prctl(option, NOT_DUMPABLE, UNUSED, UNUSED, UNUSED) };
     if status != 0 {
         // At once, with no call in between, on the thread that made it.
-        return Err(io::Error::last_os_error());
+        return Err(abi::last_error());
     }
     Ok(())
 }
@@ -122,7 +122,7 @@ fn dumpable() -> io::Result<i32> {
     let value = unsafe { abi::prctl(option, UNUSED, UNUSED, UNUSED, UNUSED) };
     if value < 0 {
         // At once, with no call in between, on the thread that made it.
-        return Err(io::Error::last_os_error());
+        return Err(abi::last_error());
     }
     Ok(value)
 }

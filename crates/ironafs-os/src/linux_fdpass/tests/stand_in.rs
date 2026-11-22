@@ -13,8 +13,8 @@ use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 
 use super::super::abi::stand_in::{Plan, calls, plan};
-use super::super::abi::{iovec, msghdr};
-use super::super::{receive_fd, send_fd, send_message};
+use super::super::abi::{SCM_RIGHTS, SOL_SOCKET, cmsghdr, iovec, msghdr};
+use super::super::{Control, SPACE, receive_fd, send_fd, send_message};
 use crate::fdpass::FdPassError;
 
 /// `EPIPE` and `ECONNRESET`.
@@ -72,6 +72,28 @@ fn a_malformed_message_after_an_interruption_fails_with_einval_not_eintr() {
         iov_len: 1,
     };
     let message = msghdr::new(&raw mut buffer, core::ptr::null_mut(), 0).unwrap();
+    plan(Plan::Interrupt(1));
+    let first = send_message(sender.as_fd(), &message).unwrap_err();
+    assert_eq!(first.kind(), io::ErrorKind::Interrupted);
+    let second = send_message(sender.as_fd(), &message).unwrap_err();
+    assert_eq!(second.raw_os_error(), Some(EINVAL));
+}
+
+#[test]
+fn a_header_of_no_descriptor_count_after_an_interruption_fails_with_einval() {
+    // The same for a control message whose header length is neither one
+    // descriptor's nor two's.
+    let (sender, _receiver) = UnixStream::pair().unwrap();
+    let mut byte = 1_u8;
+    let mut buffer = iovec {
+        iov_base: (&raw mut byte).cast(),
+        iov_len: 1,
+    };
+    let mut control = Control {
+        header: cmsghdr::new(16, SOL_SOCKET, SCM_RIGHTS).unwrap(),
+        descriptors: [0, 0],
+    };
+    let message = msghdr::new(&raw mut buffer, (&raw mut control).cast(), SPACE).unwrap();
     plan(Plan::Interrupt(1));
     let first = send_message(sender.as_fd(), &message).unwrap_err();
     assert_eq!(first.kind(), io::ErrorKind::Interrupted);

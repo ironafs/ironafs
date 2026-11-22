@@ -448,6 +448,17 @@
               "value",
               "size"
             ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::getsockopt",
+            "arguments": [
+              "descriptor",
+              "level",
+              "option",
+              "value",
+              "size"
+            ]
           }
         ],
         "impls": 0,
@@ -457,7 +468,9 @@
           ],
           "constants": [
             "SOL_SOCKET",
-            "SO_PEERCRED"
+            "SO_PEERCRED",
+            "SO_TYPE",
+            "SOCK_STREAM"
           ]
         },
         "stand_in": {
@@ -481,6 +494,13 @@
               "arguments": [
                 "optlen",
                 "length"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "value",
+                "kind"
               ]
             }
           ]
@@ -508,11 +528,17 @@
           "sys/socket.h",
           "sys/uio.h"
         ],
+        "defines": [
+          "_GNU_SOURCE"
+        ],
         "expressions": {
           "CMSG_LEN_ONE": "CMSG_LEN(sizeof(int))",
           "CMSG_LEN_TWO": "CMSG_LEN(2 * sizeof(int))",
           "CMSG_SPACE_ONE": "CMSG_SPACE(sizeof(int))"
         },
+        "qualified": [
+          "SCM_PIDFD"
+        ],
         "extern_blocks": [
           {
             "link": null,
@@ -565,6 +591,7 @@
           "constants": [
             "SOL_SOCKET",
             "SCM_RIGHTS",
+            "SCM_PIDFD",
             "MSG_NOSIGNAL",
             "MSG_CMSG_CLOEXEC",
             "MSG_CTRUNC",

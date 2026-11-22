@@ -17,7 +17,9 @@
 //! What the receive returned is checked by [`crate::fdpass::accept`]
 //! before any descriptor is adopted, and every descriptor a valid message
 //! delivered is adopted as an `OwnedFd` before anything is refused, so
-//! none is leaked and none leaves this module as an integer.
+//! none is leaked and none leaves this module as an integer: a pidfd the
+//! kernel installed with `SCM_PIDFD` (on a socket with `SO_PASSPIDFD` set
+//! outside IronAFS) included, which is then closed.
 //!
 //! The wrapper says nothing about what the descriptor refers to, nor who
 //! is at the other end: the receiver checks the sender, and the sender the
@@ -33,7 +35,8 @@ use std::os::unix::net::UnixStream;
 
 use crate::fdpass::{FdPassError, Received, Rules, accept, retried, sent};
 use abi::{
-    MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_NOSIGNAL, SCM_RIGHTS, SOL_SOCKET, cmsghdr, iovec, msghdr,
+    MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_NOSIGNAL, SCM_PIDFD, SCM_RIGHTS, SOL_SOCKET, cmsghdr, iovec,
+    msghdr,
 };
 
 #[cfg(test)]
@@ -104,6 +107,7 @@ const _: () =
 const RULES: Rules = Rules {
     level: SOL_SOCKET,
     rights: SCM_RIGHTS,
+    pidfd: SCM_PIDFD,
     truncated: MSG_CTRUNC,
     one: ONE,
     two: TWO,
@@ -221,8 +225,8 @@ fn receive_message(socket: BorrowedFd<'_>, message: &mut msghdr) -> io::Result<u
     // `Control` of exactly `msg_controllen` bytes (`SPACE`), aligned for
     // its header; so the kernel writes only memory this call may write,
     // and nothing keeps any pointer afterwards. A descriptor the control
-    // data delivers is only an integer until `accept` has checked the
-    // header and `adopt` owns it. `flags` is `MSG_CMSG_CLOEXEC`. Failures
+    // data delivers (`SCM_RIGHTS`, or a pidfd with `SCM_PIDFD`) is only an
+    // integer until `accept` has checked the header and `adopt` owns it. `flags` is `MSG_CMSG_CLOEXEC`. Failures
     // are -1 with errno, never undefined behaviour. The call shares no
     // state with other threads. The declarations are in `abi`, proved by
     // the ABI check.
@@ -234,18 +238,19 @@ fn receive_message(socket: BorrowedFd<'_>, message: &mut msghdr) -> io::Result<u
 /// Takes ownership of a descriptor a receive delivered.
 ///
 /// Only `receive_fd` passes it, through `accept`, which calls it only with
-/// a non-negative integer of an `SCM_RIGHTS` message whose header passed
-/// every check, once per integer.
+/// a non-negative integer of an `SCM_RIGHTS` or `SCM_PIDFD` message whose
+/// header passed every check, once per integer.
 fn adopt(descriptor: c_int) -> OwnedFd {
     #[expect(unsafe_code, reason = "linux-fdpass")]
     // SAFETY: `OwnedFd::from_raw_fd` requires an open descriptor that
     // nothing else owns or will close. `accept` passes only a non-negative
     // integer from the data of a control message whose level is
-    // `SOL_SOCKET`, whose type is `SCM_RIGHTS` and whose length lies within
-    // the returned control data: a descriptor the kernel installed in this
-    // process for this receive ("a set of open file descriptors", unix(7)),
-    // which no other code has seen, and it passes each one once. So the
-    // `OwnedFd` is its only owner, and dropping it closes it.
+    // `SOL_SOCKET`, whose type is `SCM_RIGHTS` or `SCM_PIDFD` and whose
+    // length lies within the returned control data: a descriptor the
+    // kernel installed in this process for this receive ("a set of open
+    // file descriptors", unix(7), or the peer's pidfd), which no other
+    // code has seen, and it passes each one once. So the `OwnedFd`
+    // is its only owner, and dropping it closes it.
     unsafe {
         OwnedFd::from_raw_fd(descriptor)
     }

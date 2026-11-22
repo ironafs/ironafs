@@ -3,9 +3,10 @@
 
 //! The wrapper's failure paths, driven through `peer_credentials` itself
 //! with the call's Miri stand-in answering as planned (ADR 0005, sheet 13:
-//! the stand-in returns a short length and an over-long length, each an
-//! error), so a wrapper that ignored the call's status or length, or
-//! passed a constant on, fails here. Built only under Miri, where the
+//! the stand-in returns a short length and an over-long length for each
+//! read, and a type other than `SOCK_STREAM`, each an error), so a wrapper
+//! that ignored a call's status, length or type, or passed a constant on,
+//! fails here. Built only under Miri, where the
 //! stand-in replaces the call.
 
 use std::os::unix::net::UnixStream;
@@ -34,6 +35,38 @@ fn a_short_and_an_over_long_length_from_the_call_are_refused() {
             }) => assert_eq!(returned, usize::try_from(length).unwrap()),
             other => panic!("{length}: {other:?}"),
         }
+    }
+}
+
+#[test]
+fn a_short_and_an_over_long_length_from_the_type_read_are_refused() {
+    for length in [2, 8] {
+        match planned(Plan::TypeLength(length)) {
+            Err(PeerError::Length {
+                returned,
+                expected: 4,
+            }) => assert_eq!(returned, usize::try_from(length).unwrap()),
+            other => panic!("{length}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_type_other_than_a_stream_is_refused() {
+    // `SOCK_DGRAM` and `SOCK_SEQPACKET`.
+    for kind in [2, 5] {
+        match planned(Plan::Type(kind)) {
+            Err(PeerError::NotStream(found)) => assert_eq!(found, kind),
+            other => panic!("{kind}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_failed_type_read_is_refused_with_its_errno() {
+    match planned(Plan::TypeFail(EBADF)) {
+        Err(PeerError::Failed(error)) => assert_eq!(error.raw_os_error(), Some(EBADF)),
+        other => panic!("{other:?}"),
     }
 }
 
