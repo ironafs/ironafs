@@ -59,7 +59,7 @@ ADR 0004, C6, points 1 and 4 (**Firm**):
 > 4. A fact about the AFS protocols that this ADR could not tie to a public
 >    source is an input to a specification, never something to code from.
 
-ADR 0004, C16, points 1 and 2 (**Firm**):
+ADR 0004, C16, points 1 to 3 (**Firm**):
 
 > 1. **Record first, notify after.** Break counters, staleness and
 >    credential generations change in the core before any event is queued.
@@ -70,6 +70,19 @@ ADR 0004, C16, points 1 and 2 (**Firm**):
 >    changed while it was in flight, the reply is discarded and the fetch
 >    retried a bounded number of times, then fails with `Stale`. It is never
 >    handed to the request that started it.
+> 3. **Every delivery rechecks.** A grant is bound to the file, the
+>    operation, the binding, the credential generation and the rights
+>    generation. The last check is at **submission**: the binding checks the
+>    reply's context, generation, grant and node state in the same step that
+>    writes it to the kernel or to the SMB connection. […]
+
+ADR 0004, C25, point 3 (**Working**):
+
+> 3. When it is ambiguous (after the volume is seen offline, a server
+>    reset, a move, a release, or a restart of the client), data is fetched
+>    again. The observing context starts a fresh local epoch for the file or
+>    volume, so no old key in that scope can be used, and fetches in flight
+>    are fenced.
 
 ADR 0004, C24, points 2, 3, 6 and 7 (**Firm**):
 
@@ -168,9 +181,11 @@ ADR 0004, C34, points 2 and 6 (**Working**):
 >    translated source affects only whether breaks are received, not
 >    whether a server is trusted. […]
 
-ADR 0004, C39, point 3 (**Working**), the sentence that applies:
+ADR 0004, C39, points 3 and 4 (**Working**), the sentences that apply:
 
-> Every queue is bounded in bytes.
+> 3. […] Every queue is bounded in bytes.
+> 4. **No lock is held across an RPC wait, a disk write or a kernel
+>    notification.** Lock order is server, volume, object, chunk.
 
 ADR 0004, C46, point 3 (**Working**):
 
@@ -377,10 +392,12 @@ is broken.
    repeats), a trust state and a hold. A cached entry records its fence
    tuple when its validating call is sent: the object's and volume's
    break counters, the server's suspect epoch, the socket's pause
-   generation and a resume generation. The serve path compares the C37
-   clocks, then every value of the tuple, on every serve, so a break
-   during a fetch, an Rx pause, or a sleep fences the entry before
-   anything stale is served.
+   generation, a resume generation and the context's local volume
+   epoch. The serve path compares the C37 clocks, then every value of
+   the tuple, on every serve, so a break during a fetch, an Rx pause, a
+   sleep or a new volume incarnation fences the entry before anything
+   stale is served. The credential and rights generations are the
+   request's ticket's, checked at submission, not the fence's.
 5. Work the service cannot do now (Rx's overload events, breaks over a
    server's rate limit) waits for one **advance tick**: at most once per
    second, the service advances every affected suspect epoch, and only
@@ -424,10 +441,21 @@ is broken.
 - **Resume generation:** a client-wide counter the fence check raises
   when its comparison of the C37 clocks detects a suspend or a jump (5.6,
   point 2).
-- **Fence tuple:** for an object of server key K, the values (the
-  object's break counter, its volume's break counter, the suspect epoch
-  of K, the pause generation of K's family's socket, the resume
-  generation). The local endpoint generation is part of K itself.
+- **Local volume epoch:** a context's epoch for a volume, kept by the
+  volume incarnation specification (#78) in its evidence record; the
+  cache's fence table keeps a copy per context and volume (5.6,
+  point 3).
+- **Fence tuple:** for an object of server key K, in one context, the
+  values (the object's break counter, its volume's break counter, the
+  suspect epoch of K, the pause generation of K's family's socket, the
+  resume generation, the context's local volume epoch for the object's
+  volume). The local endpoint generation is part of K itself.
+- **Fence table:** the cache's table of each context's object and
+  volume break counters and local volume epoch copies, with the resume
+  generation, behind one lock (5.6, point 2).
+- **Ticket:** what a request carries to submission: the recorded tuple,
+  the credential and rights generations, and the grant (C16, point 3;
+  the contract specification, #67).
 - **Recorded tuple:** the fence tuple a validating or fetching call
   recorded for its object when it was sent, kept with the entry it
   validates.
@@ -775,7 +803,7 @@ point 7). The service never sends a datagram itself.
 
    | Field | Type | Written by | Meaning |
    |---|---|---|---|
-   | `suspect_epoch` | `u64`, taken from one client-wide counter that only rises; a new record starts at that counter's next value, and every advance takes the next value again. The counter is one atomic fetch-and-add with sequentially consistent ordering, the only way any thread takes a value, whether it creates a record or advances one; the value is taken before the record is published or the advance is visible, so no two takers ever get the same value `[OWN]` | this specification (points 6 to 9) | the server's break counter of C16, point 2. No value is ever used twice, by any record, so an entry recorded under a retired record can never match a later one `[OWN]` |
+   | `suspect_epoch` | `u64`, taken from one client-wide counter that only rises; a new record starts at that counter's next value, and every advance takes the next value again. The counter is changed only by one sequentially consistent atomic read-modify-write, a compare-and-swap that rises by 1 and never wraps (section 6, point 3), the only way any thread takes a value, whether it creates a record or advances one; the value is taken before the record is published or the advance is visible, so no two takers ever get the same value `[OWN]`. The field is written, at creation and at each advance, and read for a recording or a check, under the fence table's lock (point 2) `[OWN]` | this specification (points 6 to 9) | the server's break counter of C16, point 2. No value is ever used twice, by any record, so an entry recorded under a retired record can never match a later one `[OWN]` |
    | `recorded_since_advance` | `bool` | the cache, when a call records the current tuple (point 3); cleared by an advance | whether any call to the server has recorded the current suspect epoch |
    | `advance_pending` | `bool` | this specification (point 7) | an advance waits for the next tick |
    | `trust` | none, or trusted until an instant on the boot clock | raised only by the keepalive specification (#81, under C32, point 1); lowered here (point 11) | C32, points 1 and 3 |
@@ -786,22 +814,64 @@ point 7). The service never sends a datagram itself.
    The record is created by the first call the client sends to the server
    on that family, and retires as point 10 says. Callbacks never persist
    across a restart `[ADR 0004 C26.3: Working]`: no record survives one.
-2. **The fence tuple** of an object of K is (the object's break counter,
-   its volume's break counter, `suspect_epoch` of K, the pause generation
-   of K's family's socket, the resume generation) `[ADR 0004 C16.2:
-   Firm]`. The object's and volume's break counters are the cache's
-   (#91), raised by rows B1 and B2; the suspect epoch is this record's;
-   the pause generation is the driver's ([rx.md](rx.md), 5.12, point 5);
-   the resume generation is the fence check's (below). The local endpoint generation is
-   part of K: a rebinding makes a new K, whose record starts with no
-   trust and no promise ([rx.md](rx.md), 5.12, point 7) `[OWN]`.
+2. **The fence tuple** of an object of K, in a context, is (the
+   object's break counter, its volume's break counter, `suspect_epoch` of
+   K, the pause generation of K's family's socket, the resume generation,
+   the context's local volume epoch for the object's volume) `[ADR 0004
+   C16.2: Firm; C25.3: Working]`. The object's and volume's break
+   counters are the cache's (#91), held per context and raised by rows
+   B1 and B2 in every context that holds them; the suspect epoch is this
+   record's; the pause generation is the driver's ([rx.md](rx.md), 5.12,
+   point 5); the resume generation is the fence check's (below); the
+   local volume epoch is the incarnation specification's (#78), which
+   this specification only compares (point 3). The local endpoint
+   generation is part of K: a rebinding makes a new K, whose record
+   starts with no trust and no promise ([rx.md](rx.md), 5.12, point 7)
+   `[OWN]`.
+   **What is not in the tuple** `[OWN]`. The tuple is the cache's part
+   of a request's ticket; the ticket adds the credential and rights
+   generations and the grant, which submission checks (C16, point 3; the
+   contract specification, #67). The fence table is keyed by context and
+   credential generation, so a check made with the request's current
+   ones after a credential change finds no record and fails, but the
+   generations are not values of the tuple. There is no overload
+   counter: C31's rate-limit row reaches the tuple through the suspect
+   epoch, advanced at the tick before Rx drops what it held (point 7),
+   and through the pause generation, raised before Rx stops reading what
+   it cannot hold ([rx.md](rx.md), 5.10, points 5 and 6). Telling a
+   binding in its own process that a value changed (C16, point 6) is the
+   contract specification's (#67).
+   **Values never repeat** `[OWN]`. Every break counter value, made or
+   raised, is taken once from one sequence of the fence table that only
+   rises, and every suspect epoch once from point 1's counter, so a
+   recorded value equals a current one only if that record has existed,
+   unbroken, since the tuple was recorded. A counter record the table
+   evicts or does not hold reads as no value, which matches nothing, so
+   the tuples recorded under it fail; eviction only ever causes a
+   revalidation, never a stale serve. A sequence that runs out exhausts
+   the table: every check fails and no new tuple is recorded, so no call
+   is sent under it (as section 6, point 3, for the suspect epoch).
    **The fence check** is one function used both where a reply is
    installed and where an entry is served (points 3 and 4) `[OWN]`: it
    first compares the C37 clocks, as C32, point 5, requires, and raises
    the resume generation if the comparison shows a suspend or a jump not
-   seen before; then it reads the object's current fence tuple (the
-   pause generation read with no lock from the driver) and compares every
-   value with the recorded one. The comparison is edge-triggered: a
+   seen before; then it loads the pause generation from the driver, a
+   sequentially consistent load with no lock of the driver's, and reads
+   the rest of the object's current fence tuple, and compares every
+   value with the recorded one. A recording (point 3) takes the same
+   steps in the same order before it reads the tuple it records.
+   **The fence table's lock** `[OWN, within ADR 0004 C39.4: Working]`.
+   Every recording, raise and check is made under one lock of the fence
+   table, and the clock comparison, the raise of the resume generation,
+   the load of the pause generation and the comparison are one step
+   under it, which no other caller can come between. The lock is a leaf
+   in C39, point 4's order: taken after any other lock the caller holds,
+   held for one operation, and no lock is taken while it is held. The
+   serve path and submission hold it for their check: the check needs
+   the table held exclusively, so no caller can check without it. A
+   break, an advance or an epoch change is recorded under it before any
+   event is queued (C16, point 1), so every later check sees it. The
+   comparison is edge-triggered: a
    suspend or jump raises the resume generation once, and the same check
    moves the comparison's baseline to the current clocks, so later
    checks do not raise it again (the detection rule and its baseline are
@@ -824,6 +894,28 @@ point 7). The service never sends a datagram itself.
    keeps the recorded tuple, and installing it never clears a break: the
    break's raised counter is already in the recorded tuple of any later
    fetch, and an earlier one fails.
+   **The local volume epoch** `[OWN, under ADR 0004 C25.3: Working]`.
+   The incarnation specification (#78) writes a context's copy into the
+   fence table in the same step, under the volume's lock, in which it
+   sets or changes that context's epoch for the volume, taking the
+   table's lock inside the volume's (point 2). A changed epoch fails
+   every tuple recorded under the old one, and a copy lost when the
+   table evicts its volume record fails every tuple recorded under it.
+   A call sent while its context holds no copy for the volume records
+   no epoch, and its tuple fails its check, with one exception: the
+   install whose own observation wrote the epoch adopts it into the
+   recorded tuple, but only if the table shows that the context held no
+   copy for that volume at any time since the call was sent. It shows
+   that while it has never evicted a record holding a copy (the first
+   such eviction sets a latch that refuses every later adoption) and
+   while the context's volume record has the recorded tuple's counter
+   value, unbroken since the call was sent: an epoch written meanwhile
+   by anything but this reply's own observation would have needed
+   ambiguity, which raises the volume's break counter (#78). A refused
+   adoption fails the fence, and C16, point 2, applies: the retry
+   records the epoch the observation wrote. Once the latch is set, the
+   cost is a refetch whenever a call is sent while its context holds no
+   copy for the volume.
 4. **What the serve path compares** `[ADR 0004 C32.5: Working]`
    ([rx.md](rx.md), 5.12, point 5). On every serve of an entry from K,
    before the answer is given, the cache runs the fence check (point 2)
@@ -1138,8 +1230,10 @@ Every value read from a request is untrusted (coding standards rule 2).
    the elapsed monotonic time times its rate, in checked arithmetic,
    capped at its burst; an overflow is treated as a full bucket.
 3. **`suspect_epoch`** takes the client-wide counter's next value by one
-   atomic fetch-and-add (5.6, point 1), which rises by 1 and is checked:
-   a take that would pass `u64::MAX` returns no value. Then no new record
+   sequentially consistent atomic read-modify-write (5.6, point 1), a
+   compare-and-swap that rises by 1 and refuses to pass `u64::MAX`: each
+   value from 1 to `u64::MAX` is taken once, and every take after the
+   last returns no value. Then no new record
    is created, so no call to a server without a record is started: the
    client returns `EpochExhausted`, an outcome of this specification,
    before Rx is asked for anything, so nothing is sent; the operation
@@ -1222,6 +1316,9 @@ sees the calls (ADR 0004, O23; ADR 0006, "Context").
 | C6, points 1 and 4; N31, points 1 and 2 | every point labelled; layouts MISSING; nothing coded from an UNVERIFIED wire fact | review of this specification; the capture-backed revision (Q1) |
 | C16, point 1: record first | 5.6, points 9 and 13 | C2 |
 | C16, point 2: fence on the object's, volume's and server's break counters | 5.6, points 2 and 3 | C2, C7, C13, C23 |
+| C16, point 3: the credential and rights generations are the ticket's, checked at submission | 5.6, point 2 ("What is not in the tuple") | the contract specification's (#67) |
+| C25, point 3: fetches in flight fenced by a new local epoch | 5.6, points 2 and 3 (the local volume epoch) | C25 |
+| C39, point 4: lock order; no lock across a wait | 5.6, point 2 (the fence table's lock, a leaf) | C25; the check's signature, which needs the table held exclusively |
 | C24, points 2, 3 and 6: weak evidence only suspends | 5.6, point 9 | C2, C3, C4 |
 | C24, point 7, and C31, row 5: nothing received raises trust; a probe is never authority over any data | 5.6, point 8 and point 9 (rows I1, I2, I4) and point 11 | C11 |
 | C26, points 2 and 3: expiry from send; no persistence | 5.1.4; 5.6, point 1 | C16 |
@@ -1486,6 +1583,16 @@ with a callback state record on the family named.
   after at most `cb.fair_batch` breaks' work per identity call ahead of
   it, whatever the refusal backlog; the refusal backlog never delays a
   break.
+- **C25 The local volume epoch** (5.6, points 2 and 3; C25, point 3).
+  A fetch is sent; the context's epoch for the volume then changes
+  without a break (its evidence record made again after eviction): the
+  reply fails its fence on the local volume epoch, is not handed to its
+  request, and a retry is installed. A fetch sent while the context held
+  no copy: its install adopts the epoch its own observation wrote; the
+  same after the table has evicted a record holding a copy, or after the
+  volume's counter rose meanwhile, refuses the adoption and the fetch is
+  retried. The epoch is written under the volume's lock with the table's
+  lock taken inside it, and no lock is taken while the table's is held.
 - **C20 Rx's own drops.** Rx debug and version packets, and a call for an
   unregistered service id, from a known server's address: no packet in
   reply, no row reached (rx.md's tests carry the counters).
@@ -1579,7 +1686,7 @@ This specification's own choices:
 | K3 | SPECIFICATION | M. Benjamin, "AFS Callback Extensions", draft-benjamin-extendedcallbackinfo-02, register of editions row E13: §1, §2, §3 (3.1 and 3.2), §4.1, §4.2.1, §4.5's prose before §4.5.1, and §5 to §7. Excluded by name: §4.2.2 to §4.4, §4.5.1, §4.5.2 and Appendix A (the draft's type definitions and constants). A lead only | 5.1, 5.8 |
 | X1 | SPECIFICATION | "Rx protocol specification draft", N. Zeldovich, updated by J. Altman, 24 July 2026, register of editions row E3. Cited by heading: "RPC Layer"; also read: "Introduction". Read only as the mechanically excerpted copy; its section "Historical Implementation Notes" was not read and is not cited (README, "Sources and provenance", rule 12). A lead only | 5.1.1, 5.8 |
 | C | DECISION | [Claim record](../reviews/2026-11-20-adr-0004-claims.md) rows `[DES-011]` and `[DES-058]`, re-read against their sources' rows on 2026-11-21 (the service list, and the VL database's addresses) | 5.1, 5.4 |
-| D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; A11, A14; C4, C6, C16, C17, C23, C24, C26, C30, C31, C32, C34, C37, C38, C39, C46 ([part 1](../adr/0004-architecture-1-core.md)); O1, O12, O15, O23, O42 ([part 3](../adr/0004-architecture-3-operations.md)); N5, N21, N22, N23, N29, N31, N38 ([part 4](../adr/0004-architecture-4-negotiation.md)) | 1, 2, 5, 8, 9, 11 |
+| D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; A11, A14; C4, C6, C16, C17, C23, C24, C25, C26, C30, C31, C32, C34, C37, C38, C39, C46 ([part 1](../adr/0004-architecture-1-core.md)); O1, O12, O15, O23, O42 ([part 3](../adr/0004-architecture-3-operations.md)); N5, N21, N22, N23, N29, N31, N38 ([part 4](../adr/0004-architecture-4-negotiation.md)) | 1, 2, 5, 8, 9, 11 |
 | D2 | DECISION | [ADR 0006](../adr/0006-rx-unprotected-packets.md): decision 1, points 5, 6, 8 and 9; decision 2, points 3 and 5; tests 3 and 10 | 1, 5.6, 8, 9, 10 |
 | D3 | DECISION | [rx.md](rx.md): 5.2, 5.4, 5.6, 5.7, 5.9 to 5.12 and section 7; [xdr.md](xdr.md): 5.1, 5.2 and 5.4 | 2, 5, 6, 10 |
 | D4 | DECISION | the VL and FS read specification (#65): its 5.1.3, points 1, 3 and 6 (the file id, the promise words handed here, the UUID's encoding) | 5.1.3, 5.5 |
