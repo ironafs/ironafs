@@ -796,12 +796,18 @@ are in its sheet below the table, under the same number.
     on each target of point 5.3 (a target triple), against the headers of
     that target's ABI check (point 5.6), never by a value taken from
     another target or library, and never through a C expression. On a
-    target whose headers do not declare it the check has no evidence, so
-    it reports the row withheld there: MISSING under point 5.6, and the
-    site does not ship on that target. The musl targets are such targets
-    today, so there the row is only approved, not implemented: the crate
-    does not compile the site for musl (its module is gated to glibc),
-    and `check-os` holds that gate to the copy's statuses. A glibc build
+    target where the row is implemented and whose headers do not declare
+    it, the check has no evidence, so it reports the row withheld there:
+    MISSING under point 5.6, and the site does not ship on that target.
+    On the musl targets the row is withheld by its status instead: it is
+    only approved there, not implemented, because musl's headers do not
+    name `SCM_PIDFD` (above). Nothing of the row is compiled, probed or
+    reported on musl: the crate gates its module to glibc, `check-os`
+    holds that gate to the copy's statuses, and `check-abi` proves only
+    the rows implemented on a target, so a musl lane's report does not name
+    the row. Probing musl's headers for the name, and requiring an absent
+    one before the row may stay withheld, is a follow-up of #57; it lands
+    before any musl release and before the next change to `check-abi`. A glibc build
     on a host with older headers is the same target as one with newer
     headers: the constant is the kernel's value and the target's evidence
     is its ABI check's. `SO_TYPE` (3) and `SOCK_STREAM` (1), of row 13,
