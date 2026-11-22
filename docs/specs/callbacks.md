@@ -877,7 +877,10 @@ point 7). The service never sends a datagram itself.
    the load of the pause generation and the comparison are one step
    under it, which no other caller can come between. The lock is a leaf
    in C39, point 4's order: taken after any other lock the caller holds,
-   held for one operation, and no lock is taken while it is held. The
+   held for one operation, and no lock is taken while it is held. A
+   clock sample through the clock seam, whose state the `Clock`
+   implementation keeps (the seams specification, #71, its 5.3, point
+   2), is not a lock of C39, point 4's order. The
    serve path and submission hold it for their check: the check needs
    the table held exclusively, so no caller can check without it. A
    break, an advance or an epoch change is recorded under it before any
@@ -1160,8 +1163,11 @@ point 7). The service never sends a datagram itself.
     records its tuple and K's `lowerings` together, before it is handed
     to the transport, and a lowering is wholly before or wholly after
     that recording; a serve's fence check and its choice of branch see
-    one state of K and of the table, so no pause, advance, lowering or
-    raise falls between them; and a lowering is wholly before or wholly
+    one state of K and of the table, so no advance, lowering or raise
+    falls between them. A serve reads the pause generation once, inside
+    its K step (point 2's load): a pause Rx makes after that read takes
+    effect at the next serve, since this serve's choice was made on one
+    state; and a lowering is wholly before or wholly
     after a raise, never between its checks and its write.
 12. **The hold and its exit** `[ADR 0006 D2.5: Working]`.
     - While `hold` > 0 on any key of the server, every key of the server
@@ -1698,9 +1704,13 @@ with a callback state record on the family named.
   with a lapse of trust at its end instead of either. A keepalive sent
   before the ABORT whose reply arrives after it raises nothing. A serve
   of a fence-current entry of an untrusted K, interleaved with a pause
-  and resume of K's family's socket and then a keepalive's raise: the
-  serve sees neither or both (5.6, point 11, the K step); with both,
-  the entry is suspect and is revalidated, never served under trust.
+  and resume of K's family's socket and then a keepalive's raise, in
+  each of the three placements its K step can take (5.6, point 11):
+  before the pause, it sees neither and serves by bounded revalidation;
+  after the pause and before the raise, it sees the pause alone; after
+  both, it sees both. In the last two the changed pause generation
+  makes the entry suspect, and it is revalidated. In none is it served
+  under trust.
 - **C24 Fairness** (5.6, point 14). A within-rate break flood from one
   known server, a refusal and diagnostic flood from many sources, and
   probes from a second known server, together: each probe is answered

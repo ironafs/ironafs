@@ -741,8 +741,9 @@ point 7). Then, in order; the first failure decides `[OWN]`:
       clock jump came between its send and now;
    5. the network generation is unchanged since the send (C23, point 2;
       C32, point 1's "since the last network change");
-   6. K's `lowerings` is unchanged since the send `[OWN]`: a lowering
-      after the send is a possible loss of continuity that the reply,
+   6. K's `lowerings` is unchanged since the recording, before the
+      hand-off (point 4) `[OWN]`: a lowering after the recording, the
+      interval before the hand-off included, is a possible loss of continuity that the reply,
       sent before it was known, cannot speak for;
    7. the reply evidence meets the seams specification's conditions
       (#71, its 5.4, point 1): both the send and the receive stamps
@@ -891,7 +892,8 @@ point 7). Then, in order; the first failure decides `[OWN]`:
     the same kind of single step as the callback service's tick
     (callbacks.md, 5.6, point 14). The fence check's clock comparison
     and the fresh sample of condition 7 are reads, not waits, and run
-    inside the raise's K step. So for one keepalive the order is: sent
+    inside the raise's K step; a clock sample through the clock seam is
+    not a lock of C39, point 4's order (callbacks.md, 5.6, point 2). So for one keepalive the order is: sent
     (point 4, its values read in a K step); its outcome; then one K step
     that applies any end that is due (point 7), checks conditions 3 to
     7, and raises or does not. A lowering is a K step of its own, so it
