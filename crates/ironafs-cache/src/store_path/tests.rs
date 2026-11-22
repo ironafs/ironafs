@@ -63,17 +63,14 @@ fn store_dir_keeps_its_components_in_order() {
 }
 
 #[test]
-fn store_path_refuses_one_component_too_many() {
+fn store_dir_leaves_room_for_the_name_of_a_path() {
     let deepest = ["d"; MAX_COMPONENTS - 1].join("/");
     let too_deep = ["d"; MAX_COMPONENTS].join("/");
     let name = StoreName::new("f").unwrap();
-    let path = StorePath::new(StoreDir::parse(&deepest).unwrap(), name.clone()).unwrap();
+    let path = StorePath::new(StoreDir::parse(&deepest).unwrap(), name);
     assert_eq!(path.dir().names().len(), MAX_COMPONENTS - 1);
     assert_eq!(path.name().as_str(), "f");
     // A directory as deep as a whole path leaves no room for the name.
-    assert_eq!(
-        StoreDir::parse(&too_deep).and_then(|dir| StorePath::new(dir, name)),
-        None
-    );
+    assert_eq!(StoreDir::parse(&too_deep), None);
     assert_eq!(StoreDir::parse(&[too_deep.as_str(), "d"].join("/")), None);
 }

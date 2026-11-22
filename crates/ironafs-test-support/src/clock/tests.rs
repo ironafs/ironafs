@@ -218,6 +218,24 @@ fn awake_regression_moves_the_boot_count_only() {
 }
 
 #[test]
+fn a_regression_the_clocks_have_passed_again_is_one_episode() {
+    // The awake read counts the regression; by the next sample both clocks
+    // are past the last sample again, with the boot clock ahead by the
+    // regression. That is not a suspend as well.
+    let clock = at(100_000_000_000, 100_000_000_000, 100);
+    let _ = sample(&clock);
+    clock
+        .regress(ClockKind::Awake, Duration::from_secs(50))
+        .unwrap();
+    assert_eq!(clock.awake(), Ok(AwakeInstant::from_nanos(50_000_000_000)));
+    clock.advance(Duration::from_secs(100)).unwrap();
+    assert_eq!(counts(&clock), (Doubt { boot: 1, awake: 0 }, 1));
+    // The sample after it compares again.
+    clock.suspend(Duration::from_secs(2)).unwrap();
+    assert_eq!(counts(&clock), (Doubt { boot: 1, awake: 0 }, 2));
+}
+
+#[test]
 fn regression_seen_by_a_single_read_is_counted_once() {
     let clock = at(5_000_000_000, 5_000_000_000, 100);
     let _ = sample(&clock);

@@ -7,12 +7,13 @@ Status: draft (2026-11-21). Raised in issue #71. Amended with the
 interface types (#71's second part) to state the two `xtask` checks as
 built, with their limits: 5.2, point 5 (the token rules' place among
 the confinement checks, and the pure-crate rule: where a seam's name may
-appear, the name-based variant rule and why it suffices, the refused
-renames and shadows, `path` attributes and `include!`), 5.3, point 2
-(the call-site check now covering `ironafs-time`, the exact
-fresh-sample form and its `Clock` parameter test, the second net's two
-configuration files, and which plants are judged by line), and section
-9's plants.
+appear, a variant with a seam's name exempt only at its declaration and
+through `Self::`, the refused renames and shadows, `path` attributes and
+`include`), 5.3, point 2 (the call-site check now covering
+`ironafs-time`, which `cfg(test)` code it leaves out, the sampling
+function found by its full path, the exact fresh-sample form and its
+`Clock` parameter test, the second net's two configuration files, and
+which plants are judged by line), and section 9's plants.
 
 Kind: behaviour (interface shapes and orderings, no byte layout). Class:
 S. Every operation, the cache's durable writes and the simulator's gate
@@ -414,37 +415,34 @@ encoding is the simulator's specification's.
        body holds no block, so it provides no method and calls nothing;
      - in a `pub use` item of its home crate's library root, not
        followed by `as`;
-     - as an enum variant: declared in an `enum` body of the same file;
-       `Self::Name` in a file that declares a variant `Name`;
-       `home_crate::Owner::Name` where that home crate declares an enum
-       `Owner` with that variant (a leading `::` before the home crate's
-       name is allowed, since that name can only mean the crate);
-       `module::Owner::Name` or `Owner::Name` where some enum `Owner` of
-       the same crate declares that variant; or `Owner::Name` where the
-       file imports `Owner` by name from a home crate
-       (`use home_crate::...::Owner`) and that crate declares the
-       variant. Anything else, `::Owner::Name` included, is refused.
+     - as an enum variant, in two places only: its declaration in an
+       `enum` body, and `Self::Name` in a file that declares a variant
+       `Name`. Every other path to such a variant (`Owner::Name`,
+       `home_crate::Owner::Name`, `::Owner::Name`) is refused.
 
-     The variant rule matches names, not scopes: an enum declared
-     anywhere in the crate counts wherever the path is written. That is
-     enough because a path `Owner::Name` can reach a seam only if `Owner`
-     names a crate or a module that re-exports it, and the check closes
-     both: a crate is named only by its package's name (a pure crate
-     whose dependency's name in cargo's resolved graph differs from its
-     package's name, with `-` read as `_`, is refused, whatever the
-     manifest's spelling, a workspace-inherited rename and a library
-     target named otherwise included); an item named like a home crate
+     The check resolves no path. A token rule cannot tell which item a
+     path such as `Owner::Name` reaches (a module, a renamed crate or an
+     alias can stand where an enum's name does), so no path to a seam's
+     name is exempt, and neither exemption can name a seam: a
+     declaration in an `enum` body is a variant, and `Self` is a type,
+     so `Self::Name` is one of its variants or associated items, never a
+     trait, and an associated item named like a seam is refused where it
+     is declared. Code outside the declaring file that needs the variant
+     uses a method or an accessor of the enum instead. Today the one
+     variant with a seam's name is `DeadlineError::Clock`, which pure
+     crates reach only through `Self::` in its own file. The check also
+     refuses, in a pure crate, a `use` or `extern crate` item that names
+     a home crate with `as` or `*`, an item named like a home crate
      (`mod`, `enum`, `struct`, `union`, `type`, `trait`, `fn`, `const`,
-     `static`) is refused; and a module cannot re-export a seam without
-     writing its name, since a `use` or `extern crate` item that names a
-     home crate with `as` or `*` is refused. Its false positives (a type
-     alias of a home enum, a home enum re-exported through a local
-     module, `Self::Name` in a file that does not declare the enum) are
-     refused and are rewritten. In every crate the checks read, an
+     `static`), and a dependency whose name in cargo's resolved graph
+     differs from its package's name (with `-` read as `_`, whatever the
+     manifest's spelling); with no path exempt, these only keep a home
+     crate's name meaning that crate. In every crate the checks read, an
      attribute holding `path = ...` (directly or inside `cfg_attr`) and
-     an `include!` are refused, so no compiled file is out of their
-     sight; a macro that assembles either from fragments is not seen
-     (the macro limit of 5.3, point 2);
+     the identifier `include` anywhere (as `check-pure` refuses it, so
+     a `use` cannot rename the macro) are refused, so no compiled file is
+     out of their sight; a macro that assembles either from fragments is
+     not seen (the macro limit of 5.3, point 2);
    - no pure crate depends on `ironafs-sync`, `ironafs-net`,
      `ironafs-disk` or `ironafs-sim` (the dependency check's pure-crate
      rule, which already refuses any dependency outside the pure set);
@@ -629,15 +627,25 @@ encoding is the simulator's specification's.
    - **The call-site check (`xtask`'s
      `seams::deadline_built_from_a_fresh_sample`).** It reads the source
      of every workspace crate as tokens (each non-test module;
-     `#[cfg(test)]` items, test modules their parent gates and `tests/`
-     are left out). It matches the two constructors by name, so a `use`
+     `#[cfg(test)]` items, test modules their parent gates, a file whose
+     leading inner attributes hold `#![cfg(test)]`, and `tests/` are left
+     out; both checks read the same tokens. A `#[cfg(test)]` on anything
+     but an item, such as a field, a variant, an arm or a parameter, and
+     a `#![cfg(test)]` inside a module leave out nothing, since the token
+     reader cannot find their ends for certain: what they gate is read
+     as non-test code). It matches the two constructors by name, so a `use`
      rename of the type changes nothing. In `ironafs-time` the
      constructors' names may appear only where they are defined, so no
      helper there can hand the constructors to other crates. It fails
      unless all of these hold:
      - **One named sampling function per crate.** `xtask` keeps a list
        naming, by full path, at most one sampling function per crate (in
-       the core, `ironafs_client::time::deadline_after`). Every path
+       the core, `ironafs_client::time::deadline_after`). The function
+       is found by that path: at the top level of the module file it
+       names (`src/time.rs` or `src/time/mod.rs` here; the library root
+       for a function at the crate root), not in a nested module, an
+       `impl` or a trait; a function of that name anywhere else is not
+       the sampling function. Every path
        that resolves to `Deadline::boot_after` or
        `Deadline::awake_after` is the callee of a direct call inside
        that function's body. A path used as a value (a function pointer,
@@ -657,7 +665,9 @@ encoding is the simulator's specification's.
        `Deadline::boot_after(&now, from, ...)`, with `from` the function's
        own `from` parameter. The binding's name and `from` appear nowhere
        else in the body (no parameter, pattern, shadowing, use or
-       assignment of either), and the body holds no `|` (no closure, and
+       assignment of either), the `Clock` parameter's name appears in it
+       only as the sample's receiver (so no binding can stand in for the
+       parameter), and the body holds no `|` (no closure, and
        so no bitwise or either), no nested function and no constructor
        inside a macro call.
      - **`from` is the recorded arrival or `first_sent`.** At every call
@@ -688,7 +698,10 @@ encoding is the simulator's specification's.
        line (no fresh sample, a sample from a parameter that is not the
        clock, a parameter sharing the fresh sample's name, a duplicate
        and a missing sampling function are judged by kind alone): a `now` kept from an
-       earlier sample; a `now` from a parameter that is not the clock; a
+       earlier sample; a `now` from a parameter that is not the clock; the
+       clock parameter rebound before the sample; a sampling function
+       with no `from` parameter; one defined in another module or in a
+       nested module; a
        parameter or pattern binding sharing the fresh sample's name; a
        constructor before the binding; a constructor whose `from` is
        another parameter; a constructor called outside the sampling
@@ -698,7 +711,9 @@ encoding is the simulator's specification's.
        a closure and by a function pointer, or inside a macro call; a
        `from` that is a fresh sample; a `from` that is a forged `Stamp`
        literal with a high count; a `#[path]` module, also inside
-       `cfg_attr`; an `include!`.
+       `cfg_attr`; an `include!`, and `include` renamed by a `use`; an
+       inner `#![cfg(test)]` in a module, which hides nothing after it; a
+       source the token reader cannot read.
      - **Limits, which review covers** (the `rust-review` consistency
        pass): the check reads source as written and expands no macro, so
        a macro invocation whose tokens name either constructor fails it
@@ -2189,7 +2204,7 @@ listed with its crate.
 | C3, points 1 and 3 | 5.2 to 5.5 | `xtask`: `seams::core_names_no_real_io` (planted, one per banned item, through a re-export and a wrapper) |
 | C3, points 4 and 5; O45, point 5 | 5.6, point 13; 5.7, point 3 | `xtask`: `seams::core_spawns_no_thread` (planted) |
 | C3, point 6, and its trigger | 5.6, points 4 and 11 | `ironafs-sim`: `replay::sample_read_replays_byte_identically`, `replay::planted_divergence_is_caught_at_its_decision` |
-| C4, points 1, 4 and 7 | 5.2, points 1, 2 and 5 | `xtask`: `check-deps --self-test`, `check-pure --self-test`, `seams::pure_crate_calls_no_seam` (planted, `ironafs-time` included: a `Clock` method called inside it fails; a seam taken, bound, implemented, renamed, re-exported or named through a module path, a raw identifier, an uppercase alias or glob of its home crate, a `::`-rooted path through an enum named like the home crate, and a home enum's name used without its import; a pure crate's dependency renamed in cargo's resolved graph) |
+| C4, points 1, 4 and 7 | 5.2, points 1, 2 and 5 | `xtask`: `check-deps --self-test`, `check-pure --self-test`, `seams::pure_crate_calls_no_seam` (planted, `ironafs-time` included: a `Clock` method called inside it fails; a seam taken, bound, implemented, renamed, re-exported or named through a module path, a raw identifier, an uppercase alias or glob of its home crate, a `::`-rooted path through an enum named like the home crate, a home enum's name used without its import, the home crate renamed like a home enum inside it, a module named like a local enum with that variant, and a `::`-rooted path through another crate; a seam renamed in its home crate's root re-export; a variant with a seam's name reached by any path but `Self::`; a seam after a `#[cfg(test)]` field, which hides nothing after it; a pure crate's dependency renamed in cargo's resolved graph) |
 | C16, points 2 and 3 | 5.8, points 2 and 3 | `ironafs-client`: `read::break_before_submission_is_fenced` (both binding roles) |
 | C16, points 1 and 6; C31 | 5.4, point 7; 5.8, point 2 | `ironafs-client`: `rpc::callback_overload_recorded_before_drop`, `read::overload_fences_install`, `read::no_ticket_over_pending_overload`; `binding::overload_pushes_epoch_advance` |
 | C24, point 1 | 5.4, point 2 | `ironafs-client`: `errors::unprotected_matching_abort_is_ambiguous`, `errors::abort_before_rxgk_is_never_authoritative` |
@@ -2198,7 +2213,7 @@ listed with its crate.
 | C28, point 6; C29, point 9; N32, point 6 | 5.5, points 4, 6 and 7 | `ironafs-sim`: `disk::durable_replace_crash_at_every_cut`, `disk::one_ack_after_record_and_boundary`, `disk::restart_never_trusts_failed_sync`, `disk::marked_log_keeps_covered_suffix`, `disk::failed_sync_never_marks_covered`, `disk::no_ack_in_a_directory_not_made_this_incarnation`, `disk::root_parent_synced_at_construction` |
 | C32, points 1 and 4 | 5.4, point 1; 5.3, point 2 | `ironafs-sim`: `clock::keepalive_across_suspend_earns_no_trust`, `clock::keepalive_across_wall_jump_earns_no_trust`, `clock::trust_lapses_at_e_after_received` |
 | C32, point 5 | 5.3, point 2; 5.7, point 1; 5.8, point 2 | `ironafs-sim`: `clock::episode_marks_suspect_before_reply` (a suspend, a regression, a failed read and a wall jump) |
-| C37, points 4 and 5 | 5.3, points 1, 2 and 4; 5.6, point 5; 5.7, point 1 | `ironafs-sim`: `clock::failed_read_expires_every_deadline`, `clock::regression_expires_boot_deadlines_only`, `clock::latched_doubt_outlives_the_fault`, `clock::no_deadline_without_a_valid_sample`; `ironafs-time`: `deadline::stale_stamp_gives_an_already_failed_deadline`, `deadline::regression_between_from_and_now_fails_the_deadline`, `deadline::from_after_now_is_refused` (a higher count; a later instant on the deadline's clock) and the compile-fail doc-test that a `Deadline` cannot be built, destructured or edited outside the crate; `xtask`: `seams::deadline_built_from_a_fresh_sample` (planted: a kept `now`; a `now` from a parameter that is not the clock; a parameter or pattern sharing the fresh sample's name; a constructor before the binding; a constructor whose `from` is another parameter; a constructor outside the sampling function, and in `ironafs-time` outside its definition; a second allowed function; a module-level allowance; the constructor carried out by a closure, by a function pointer or inside a macro call; a fresh `from`; a forged high-count `from`; a `#[path]` module, also inside `cfg_attr`; an `include!`; and, as recorded limits that pass, an equal-count forged `from` through a forged `.arrival` and through a forged `Reply`); `check-bans` (both constructor bans fire; `ironafs-time`'s `clippy.toml` is the root one without them); the `Clock` conformance body |
+| C37, points 4 and 5 | 5.3, points 1, 2 and 4; 5.6, point 5; 5.7, point 1 | `ironafs-sim`: `clock::failed_read_expires_every_deadline`, `clock::regression_expires_boot_deadlines_only`, `clock::latched_doubt_outlives_the_fault`, `clock::no_deadline_without_a_valid_sample`; `ironafs-time`: `deadline::stale_stamp_gives_an_already_failed_deadline`, `deadline::regression_between_from_and_now_fails_the_deadline`, `deadline::from_after_now_is_refused` (a higher count; a later instant on the deadline's clock) and the compile-fail doc-test that a `Deadline` cannot be built, destructured or edited outside the crate; `xtask`: `seams::deadline_built_from_a_fresh_sample` (planted: a kept `now`; a `now` from a parameter that is not the clock; the clock parameter rebound before the sample; a sampling function with no `from` parameter, or defined in another module or a nested one; a parameter or pattern sharing the fresh sample's name; a constructor before the binding; a constructor whose `from` is another parameter; a constructor outside the sampling function, and in `ironafs-time` outside its definition; a second allowed function; a module-level allowance; the constructor carried out by a closure, by a function pointer or inside a macro call; a fresh `from`; a forged high-count `from`; a `#[path]` module, also inside `cfg_attr`; an `include!`, also renamed by a `use`; an inner `#![cfg(test)]` in a module, hiding nothing after it; an unreadable source; and, as recorded limits that pass, an equal-count forged `from` through a forged `.arrival` and through a forged `Reply`); `check-bans` (both constructor bans fire; `ironafs-time`'s `clippy.toml` is the root one without them); the `Clock` conformance body |
 | C39, point 3 | 5.3, points 3 and 5; 5.4, points 7 and 8 | `ironafs-sync`: `queue_refuses_over_cap`, `oneshot_cancel_wakes`; `ironafs-os`: `waker_raise_at_check_to_sleep_boundary`; `ironafs-client`: `rpc::admission_lanes`, `rpc::control_lane_never_full_at_shutdown`; `ironafs-sim`: `inbound_queue_full_drops` |
 | C39, point 4 | 5.3, point 6; 5.6, point 9 | `ironafs-sim`: `lock_held_at_yield_fails`, `contended_lock_fails` |
 | C46, point 3 | 5.4, point 2 | `ironafs-client`: `errors::abort_code_needs_rpc_and_server` |

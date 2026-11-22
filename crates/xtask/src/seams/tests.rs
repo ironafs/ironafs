@@ -178,15 +178,41 @@ fn pure_check_refuses_a_seam_through_an_uppercase_crate_alias() {
 }
 
 #[test]
-fn pure_check_passes_a_declared_variant_through_its_enum_and_self() {
+fn pure_check_passes_a_declared_variant_and_self() {
     let files = [pure_file(
         "ironafs-time",
         "src/wait.rs",
         "pub enum DeadlineError { Clock(u8), Overflow }\n\
-         pub fn failed() -> DeadlineError { DeadlineError::Clock(0) }\n\
-         impl DeadlineError { fn code(&self) -> u8 { match self { Self::Clock(code) => *code, Self::Overflow => 0 } } }\n",
+         impl DeadlineError {\n\
+             fn failed() -> Self { Self::Clock(0) }\n\
+             fn code(&self) -> u8 { match self { Self::Clock(code) => *code, Self::Overflow => 0 } }\n\
+         }\n",
     )];
     assert_eq!(check(&files, SAMPLING), []);
+}
+
+#[test]
+fn pure_check_refuses_a_variant_path_other_than_self_even_through_its_enum() {
+    // A path is not resolved by name: only the declaration and `Self::`
+    // are exempt.
+    let files = [pure_file(
+        "ironafs-time",
+        "src/wait.rs",
+        "pub enum DeadlineError { Clock(u8), Overflow }\n\
+         pub fn failed() -> DeadlineError { DeadlineError::Clock(0) }\n",
+    )];
+    let found = check(&files, SAMPLING);
+    assert!(
+        matches!(
+            found.as_slice(),
+            [Violation::SeamInPure {
+                name: "Clock",
+                line: 2,
+                ..
+            }]
+        ),
+        "{found:?}"
+    );
 }
 
 #[test]
@@ -363,7 +389,7 @@ fn pure_check_refuses_a_home_enum_path_that_is_not_imported() {
 }
 
 #[test]
-fn pure_check_passes_a_home_enum_variant_imported_or_by_full_path() {
+fn pure_check_refuses_a_home_enum_variant_imported_or_by_full_path() {
     let files = [
         time_error_enum(),
         pure_file(
@@ -374,7 +400,19 @@ fn pure_check_passes_a_home_enum_variant_imported_or_by_full_path() {
              pub fn also() -> ironafs_time::DeadlineError { ironafs_time::DeadlineError::Clock(1) }\n",
         ),
     ];
-    assert_eq!(check(&files, SAMPLING), []);
+    let found = check(&files, SAMPLING);
+    let lines: Vec<usize> = found
+        .iter()
+        .map(|found| match found {
+            Violation::SeamInPure {
+                name: "Clock",
+                line,
+                ..
+            } => *line,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(lines, [2, 3]);
 }
 
 fn member(name: &str, renamed: &[&str]) -> Member {

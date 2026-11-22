@@ -44,9 +44,12 @@ mod tests;
 /// The `Clock` implementation keeps the episode and the doubt (seams and
 /// scheduling specification, 5.3, point 2): it remembers its last valid
 /// sample, and [`Clock::sample`] and every read move two doubt counts, one
-/// per monotonic clock, and an episode count. A [`Deadline`] latches its
-/// clock's count when it is built, so a failure or a regression after that
-/// fails it at its next evaluation, even if the sample taken then is good.
+/// per monotonic clock, and an episode count. A failed read moves both
+/// counts; a regression of either monotonic clock moves only the boot
+/// count. A [`Deadline`] latches its own clock's count when it is built,
+/// so whatever moves that count after it was built fails it at its next
+/// evaluation, even if the sample taken then is good: a failure fails
+/// every deadline, a regression only boot-clock ones.
 /// [`MonotonicDeadline::after`](crate::MonotonicDeadline::after) builds a
 /// bare instant with no latch; seams take a [`Deadline`].
 ///

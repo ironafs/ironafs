@@ -84,11 +84,11 @@ pub struct StorePath {
 }
 
 impl StorePath {
-    /// The file `name` in `dir`, or `None` if the path would have more
-    /// than [`MAX_COMPONENTS`] components.
+    /// The file `name` in `dir`. A [`StoreDir`] leaves room for the name,
+    /// so the path has at most [`MAX_COMPONENTS`] components.
     #[must_use]
-    pub fn new(dir: StoreDir, name: StoreName) -> Option<Self> {
-        (dir.0.len() < MAX_COMPONENTS).then_some(Self { dir, name })
+    pub fn new(dir: StoreDir, name: StoreName) -> Self {
+        Self { dir, name }
     }
 
     /// The directory that holds the file.

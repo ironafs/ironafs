@@ -9,27 +9,25 @@
 //!   and plans, and calls no seam and holds no seam value. In each pure
 //!   crate's library source, a seam trait's name (`Clock`, `Rng`, `Rpc`,
 //!   `Disk`) appears only where its home crate defines it (`trait Name`),
-//!   where its home crate's library root re-exports it (`pub use`), and as
-//!   an enum variant the path resolves to: declared in an `enum` body;
-//!   `Owner::Name` where `Owner` is an enum of this crate that declares it
-//!   (alone, or after `crate`, `self`, `super` or a module), or a home
-//!   crate's enum that declares it, reached as `home_crate::Owner` or
-//!   imported by name with `use home_crate::...::Owner`; or `Self::Name` in
-//!   a file that declares it. Anything else, a `::`-rooted path included,
-//!   is refused, not exempt. So that a home crate's name always means the
-//!   crate: a `use` or `extern crate` item naming a home crate with `as` or
-//!   `*` is refused, an item named like a home crate is refused, and a pure
-//!   crate may not name a dependency otherwise than its package (read from
-//!   cargo's resolved graph, so every manifest spelling of a rename is
-//!   seen). The variant rule matches names, not scopes; these refusals are
-//!   what make that enough. A seam trait's body provides no method.
+//!   where its home crate's library root re-exports it (`pub use`, not
+//!   renamed), and as an enum variant at its declaration in an `enum` body
+//!   or as `Self::Name` in a file that declares it. No path is resolved, so
+//!   every other path to a variant with a seam's name is refused: a token
+//!   rule cannot tell what `Owner` in `Owner::Name` reaches. A `use` or
+//!   `extern crate` item naming a home crate with `as` or `*`, an item
+//!   named like a home crate, and a dependency named otherwise than its
+//!   package (read from cargo's resolved graph, so every manifest spelling
+//!   of a rename is seen) are refused too. A seam trait's body provides no
+//!   method.
 //! - **`deadline_built_from_a_fresh_sample`.** Every source of every crate
 //!   builds a `Deadline` only inside its one named sampling function; in
 //!   `ironafs-time` the constructors' names appear only where they are
-//!   defined. Inside the sampling function: one fresh sample, bound by
-//!   `let now = clock.sample().map_err(DeadlineError::Clock)?;` from a
-//!   parameter whose type names `Clock`; each constructor called
-//!   directly, after that binding, as
+//!   defined. The sampling function is found by its full path, at the top
+//!   level of the module file the path names. Inside it: one fresh sample,
+//!   bound by `let now = clock.sample().map_err(DeadlineError::Clock)?;`
+//!   from a parameter whose type names `Clock`, a name that appears nowhere
+//!   else in the body; each constructor called directly, after that
+//!   binding, as
 //!   `Deadline::boot_after(&now, from, ...)`, with `from` the function's
 //!   own parameter; and the two names appear nowhere else in the body (no
 //!   parameter, pattern, shadowing, use or assignment of either). The
@@ -41,10 +39,14 @@
 //!   other function that does.
 //!
 //! Both checks refuse an attribute holding `path = ...` (directly or in
-//! `cfg_attr`) and an `include!` anywhere,
-//! so every compiled file is where the walk reads it, as what it is, and
-//! none passes as test code under another name. `#[cfg(test)]` items, test modules their parent gates
-//! (coding standards rule 15) and `tests/` directories are left out. Both
+//! `cfg_attr`) and the identifier `include` anywhere (a `use` can rename
+//! the macro), so every compiled file is where the walk reads it, as what
+//! it is, and none passes as test code under another name. `#[cfg(test)]`
+//! items, a file-level `#![cfg(test)]`, test modules their parent gates
+//! (coding standards rule 15) and `tests/` directories are left out; a
+//! `#[cfg(test)]` on anything but an item, and a `#![cfg(test)]` inside a
+//! module, leave out nothing, so the check fails closed where the token
+//! reader cannot find what they gate. Both
 //! checks read source as written and expand no macro; the second trusts
 //! that only the ingress writes a request's `arrival` and only the call
 //! owner a reply's `first_sent` (5.3, point 2, "Limits"): review covers
@@ -53,7 +55,6 @@
 
 mod self_test;
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -94,6 +95,45 @@ impl Sampling {
     fn name(&self) -> &'static str {
         self.path.rsplit("::").next().unwrap_or(self.path)
     }
+
+    /// Whether `file` is the module the path names: the library root for
+    /// `krate::name`, else `src/a/b.rs` or `src/a/b/mod.rs` for
+    /// `krate::a::b::name`.
+    fn in_module_file(&self, file: &SourceFile) -> bool {
+        let segments: Vec<&str> = self.path.split("::").collect();
+        let Some(modules) = segments.get(1..segments.len().saturating_sub(1)) else {
+            return false;
+        };
+        if modules.is_empty() {
+            return file.lib_root;
+        }
+        let mut flat = PathBuf::from("src");
+        let mut nested = PathBuf::from("src");
+        for (at, module) in modules.iter().enumerate() {
+            nested.push(module);
+            if at + 1 == modules.len() {
+                flat.push(format!("{module}.rs"));
+            } else {
+                flat.push(module);
+            }
+        }
+        nested.push("mod.rs");
+        file.path.ends_with(&flat) || file.path.ends_with(&nested)
+    }
+
+    /// The listed function's definitions in `file`: in the module file its
+    /// path names, at that file's top level (not in a nested module, an
+    /// `impl` or a trait). A function of that name anywhere else is not
+    /// the sampling function.
+    fn definitions(&self, file: &SourceFile) -> Vec<Found> {
+        if file.krate != self.krate || !self.in_module_file(file) {
+            return Vec::new();
+        }
+        definitions(&file.tokens, self.name())
+            .into_iter()
+            .filter(|found| depth(&file.tokens, found.at) == 0)
+            .collect()
+    }
 }
 
 /// The workspace's sampling functions: at most one per crate.
@@ -130,7 +170,8 @@ pub(crate) enum Violation {
     /// A pure crate names a dependency by a name that is not its
     /// package's, so a crate could be named in source by any name.
     RenamedDependency { krate: String, name: String },
-    /// An `include!` of source from another file.
+    /// The `include!` macro, which brings in source from another file,
+    /// named anywhere (a `use` can rename it).
     IncludeMacro { file: PathBuf, line: usize },
     /// A seam trait that provides a method.
     ProvidedMethod {
@@ -160,7 +201,8 @@ pub(crate) enum Violation {
         line: usize,
         what: &'static str,
     },
-    /// No single fresh-sample binding in the sampling function.
+    /// No single fresh-sample binding in the sampling function, or its
+    /// clock parameter named anywhere else in the body.
     NoFreshSample { file: PathBuf, line: usize },
     /// The fresh sample's binding is reassigned or shadowed.
     Reassigned { file: PathBuf, line: usize },
@@ -232,8 +274,8 @@ impl fmt::Display for Violation {
             Self::IncludeMacro { file, line } => {
                 at(formatter, file, line)?;
                 formatter.write_str(
-                    "an `include!` brings in source from a file the walk does not read as what \
-                     it is",
+                    "`include` is named: `include!` brings in source from a file the walk does \
+                     not read as what it is, and a `use` can rename it",
                 )
             }
             Self::ProvidedMethod { file, line, name } => {
@@ -340,22 +382,39 @@ impl fmt::Display for Violation {
 ///
 /// # Errors
 ///
-/// Returns why the source is not readable as Rust tokens.
+/// Returns [`Violation::Unreadable`] if the source is not readable as Rust
+/// tokens.
 pub(crate) fn source_file(
     krate: &str,
     path: &str,
     pure: bool,
     lib_root: bool,
     source: &str,
-) -> Result<SourceFile, String> {
-    let tokens = rust_source::tokens(source).map_err(|error| error.to_string())?;
-    Ok(SourceFile {
-        krate: krate.to_owned(),
-        path: PathBuf::from(path),
-        pure,
-        lib_root,
-        tokens: without_test_items(tokens),
-    })
+) -> Result<SourceFile, Violation> {
+    let read = rust_source::tokens(source).map_err(|error| error.to_string());
+    file_from(krate, PathBuf::from(path), pure, lib_root, read)
+}
+
+/// One file of `krate` from what the token reader gave, with its test
+/// items removed: the workspace walk and the self-test's plants both come
+/// through here.
+fn file_from(
+    krate: &str,
+    path: PathBuf,
+    pure: bool,
+    lib_root: bool,
+    read: Result<Vec<Token>, String>,
+) -> Result<SourceFile, Violation> {
+    match read {
+        Ok(tokens) => Ok(SourceFile {
+            krate: krate.to_owned(),
+            path,
+            pure,
+            lib_root,
+            tokens: without_test_items(tokens),
+        }),
+        Err(error) => Err(Violation::Unreadable { file: path, error }),
+    }
 }
 
 /// Each dependency a pure crate names otherwise than its package's name,
@@ -399,7 +458,9 @@ pub(crate) fn check(files: &[SourceFile], sampling: &[Sampling]) -> Vec<Violatio
                     });
                 }
             }
-            if is_ident(&file.tokens, index, "include") && is_punct(&file.tokens, index + 1, '!') {
+            // The name anywhere, not only before `!`, as `check-pure` and
+            // `check-deps` refuse it: a `use` can rename the macro.
+            if is_ident(&file.tokens, index, "include") {
                 violations.push(Violation::IncludeMacro {
                     file: file.path.clone(),
                     line: line(&file.tokens, index),
@@ -407,28 +468,8 @@ pub(crate) fn check(files: &[SourceFile], sampling: &[Sampling]) -> Vec<Violatio
             }
         }
     }
-    // The variants each seam's home crate declares, by the name source
-    // gives that crate.
-    let home_variants: BTreeMap<String, BTreeSet<(String, String)>> = SEAMS
-        .iter()
-        .map(|(_, home)| {
-            let declared = files
-                .iter()
-                .filter(|file| file.krate == *home)
-                .flat_map(|file| declared_variants(&file.tokens))
-                .map(|(enumeration, variant, _)| (enumeration, variant))
-                .collect();
-            (home.replace('-', "_"), declared)
-        })
-        .collect();
     for file in files.iter().filter(|file| file.pure) {
-        let local: BTreeSet<(String, String)> = files
-            .iter()
-            .filter(|other| other.krate == file.krate)
-            .flat_map(|other| declared_variants(&other.tokens))
-            .map(|(enumeration, variant, _)| (enumeration, variant))
-            .collect();
-        pure_crate_calls_no_seam(file, &local, &home_variants, &mut violations);
+        pure_crate_calls_no_seam(file, &mut violations);
     }
     deadline_built_from_a_fresh_sample(files, sampling, &mut violations);
     violations
@@ -475,12 +516,14 @@ fn closing(tokens: &[Token], open: usize) -> Option<usize> {
 }
 
 /// The index just past the item that starts at `start`: its `;` at depth
-/// zero, or the block that closes it.
+/// zero, or the block that closes it. It never runs past a closing
+/// delimiter it did not open, so it never takes the enclosing one.
 fn item_end(tokens: &[Token], start: usize) -> usize {
     let mut index = start;
     while let Some(token) = tokens.get(index) {
         match &token.kind {
             TokenKind::Punct(';') => return index + 1,
+            TokenKind::Punct(')' | ']' | '}') => return index,
             TokenKind::Punct('{' | '(' | '[') => {
                 let Some(close) = closing(tokens, index) else {
                     return tokens.len();
@@ -536,17 +579,97 @@ fn is_cfg_test(tokens: &[Token], start: usize) -> bool {
         && is_punct(tokens, open + 5, ']')
 }
 
+/// A keyword at `index`: an identifier not written raw.
+fn keyword(tokens: &[Token], index: usize) -> Option<&str> {
+    tokens
+        .get(index)
+        .filter(|token| !token.raw)
+        .and_then(|token| ident(Some(token)))
+}
+
+/// Whether the tokens from `start`, after an outer attribute, are an item
+/// (after its other attributes, a visibility and the qualifiers `const`,
+/// `async`, `unsafe`, `extern` and `default`): not a field, a variant, a
+/// match arm, a parameter, an expression or a statement, whose ends the
+/// token reader cannot find for certain.
+fn starts_item(tokens: &[Token], start: usize) -> bool {
+    let mut index = start;
+    while let Some(next) = attribute_end(tokens, index) {
+        index = next;
+    }
+    if keyword(tokens, index) == Some("pub") {
+        index += 1;
+        if is_punct(tokens, index, '(') {
+            index = closing(tokens, index).map_or(index, |close| close + 1);
+        }
+    }
+    let named = |at: usize| ident(tokens.get(at + 1)).is_some();
+    // `const NAME`: an item; `const fn` and the like: a qualifier.
+    if keyword(tokens, index) == Some("const")
+        && !keyword(tokens, index + 1)
+            .is_some_and(|word| ["fn", "async", "unsafe", "extern"].contains(&word))
+    {
+        return named(index);
+    }
+    while keyword(tokens, index)
+        .is_some_and(|word| ["const", "async", "unsafe", "extern", "default"].contains(&word))
+    {
+        index += 1;
+    }
+    // An `extern` block (the ABI string is not a token).
+    if is_punct(tokens, index, '{') {
+        return index > start && keyword(tokens, index - 1) == Some("extern");
+    }
+    match keyword(tokens, index) {
+        // `fn(...)` with no name is a function pointer type.
+        Some("fn" | "mod" | "struct" | "enum" | "union" | "trait" | "type" | "static") => {
+            named(index)
+        }
+        Some("use" | "impl") => true,
+        Some("crate") => index > start && keyword(tokens, index - 1) == Some("extern"),
+        Some("macro_rules") => is_punct(tokens, index + 1, '!'),
+        _ => false,
+    }
+}
+
+/// Whether every token before `index` belongs to an inner attribute, so an
+/// inner attribute at `index` is the file's own.
+fn at_file_level(tokens: &[Token], index: usize) -> bool {
+    let mut at = 0;
+    while at < index {
+        if !is_punct(tokens, at + 1, '!') {
+            return false;
+        }
+        match attribute_end(tokens, at) {
+            Some(end) => at = end,
+            None => return false,
+        }
+    }
+    at == index
+}
+
 /// The tokens with every `#[cfg(test)]` item removed; none at all under a
-/// file-level `#![cfg(test)]`.
+/// file-level `#![cfg(test)]`. It fails closed: a `#![cfg(test)]` inside a
+/// module, and a `#[cfg(test)]` on anything but an item (a field, a
+/// variant, an arm, a parameter, a statement), remove nothing, so the
+/// tokens they gate are read as non-test code.
 fn without_test_items(tokens: Vec<Token>) -> Vec<Token> {
     let mut removed = vec![false; tokens.len()];
     let mut index = 0;
     while index < tokens.len() {
         if is_cfg_test(&tokens, index) {
             if is_punct(&tokens, index + 1, '!') {
-                return Vec::new();
+                if at_file_level(&tokens, index) {
+                    return Vec::new();
+                }
+                index += 1;
+                continue;
             }
             let mut end = attribute_end(&tokens, index).unwrap_or(tokens.len());
+            if !starts_item(&tokens, end) {
+                index = end;
+                continue;
+            }
             while let Some(next) = attribute_end(&tokens, end) {
                 end = next;
             }
@@ -577,102 +700,15 @@ fn home_crate_idents() -> impl Iterator<Item = String> {
     SEAMS.iter().map(|(_, home)| home.replace('-', "_"))
 }
 
-/// Keywords that can stand before a `::`-rooted path, so are never one of
-/// its segments.
-const KEYWORDS: &[&str] = &[
-    "as", "async", "await", "box", "break", "const", "continue", "dyn", "else", "enum", "extern",
-    "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
-    "return", "static", "struct", "trait", "type", "union", "unsafe", "use", "where", "while",
-];
-
 /// Item keywords whose name a path could take for a crate's.
 const NAMING: &[&str] = &[
     "mod", "enum", "struct", "union", "type", "trait", "fn", "const", "static",
 ];
 
-/// The names a file imports from a seam's home crate by `use` (no `as`,
-/// no glob: those are refused), each with that crate's source name.
-fn home_imports(tokens: &[Token], homes: &[String]) -> BTreeMap<String, String> {
-    let mut imports = BTreeMap::new();
-    for index in 0..tokens.len() {
-        if !is_ident(tokens, index, "use") {
-            continue;
-        }
-        let start = if matches!(kind(tokens, index + 1), Some(TokenKind::PathSep)) {
-            index + 2
-        } else {
-            index + 1
-        };
-        let Some(home) = ident(tokens.get(start)).filter(|word| homes.iter().any(|h| h == word))
-        else {
-            continue;
-        };
-        let end = item_end(tokens, index);
-        for at in start + 1..end {
-            if let Some(name) = ident(tokens.get(at))
-                && matches!(punct(tokens.get(at + 1)), Some(',' | '}' | ';'))
-            {
-                imports.insert(name.to_owned(), home.to_owned());
-            }
-        }
-    }
-    imports
-}
-
-/// Whether the seam name at `index` resolves to an enum variant, not the
-/// seam: `Owner::Name` where `Owner` is an enum that declares `Name` and
-/// the path reaches it, through a seam's home crate by its own name, or
-/// through this crate (a path from `crate`, `self`, `super` or a module,
-/// or `Owner` alone where it is declared in this crate or imported from a
-/// home crate). A `::`-rooted path whose first segment is the owner names a
-/// crate, and anything else unresolvable is refused, not exempt.
-fn resolves_to_variant(
-    tokens: &[Token],
-    index: usize,
-    name: &str,
-    local: &BTreeSet<(String, String)>,
-    home_variants: &BTreeMap<String, BTreeSet<(String, String)>>,
-    imports: &BTreeMap<String, String>,
-    file_declares: &[(String, String, usize)],
-) -> bool {
-    let Some(owner) = variant_path_owner(tokens, index) else {
-        return false;
-    };
-    let pair = (owner.to_owned(), name.to_owned());
-    if owner == "Self" {
-        return file_declares.iter().any(|(_, variant, _)| variant == name);
-    }
-    if index >= 3 && matches!(kind(tokens, index - 3), Some(TokenKind::PathSep)) {
-        let segment = index
-            .checked_sub(4)
-            .and_then(|at| ident(tokens.get(at)))
-            .filter(|word| !KEYWORDS.contains(word));
-        return match segment {
-            Some(segment) if home_variants.contains_key(segment) => home_variants
-                .get(segment)
-                .is_some_and(|declared| declared.contains(&pair)),
-            Some(_) => local.contains(&pair),
-            // `::Owner::Name`: the owner is a crate.
-            None => false,
-        };
-    }
-    local.contains(&pair)
-        || imports.get(owner).is_some_and(|home| {
-            home_variants
-                .get(home)
-                .is_some_and(|declared| declared.contains(&pair))
-        })
-}
-
-fn pure_crate_calls_no_seam(
-    file: &SourceFile,
-    local: &BTreeSet<(String, String)>,
-    home_variants: &BTreeMap<String, BTreeSet<(String, String)>>,
-    violations: &mut Vec<Violation>,
-) {
+fn pure_crate_calls_no_seam(file: &SourceFile, violations: &mut Vec<Violation>) {
     let tokens = &file.tokens;
     // A `use` or `extern crate` item that names a home crate and renames
-    // or globs: the only ways to name a seam without writing its name.
+    // or globs, so the crate's name keeps meaning the crate.
     let homes: Vec<String> = home_crate_idents().collect();
     for index in 0..tokens.len() {
         if !(is_ident(tokens, index, "use") || is_ident(tokens, index, "extern")) {
@@ -702,7 +738,6 @@ fn pure_crate_calls_no_seam(
             });
         }
     }
-    let imports = home_imports(tokens, &homes);
     // The token ranges of `pub use ... ;` items of a home crate's root.
     let mut reexport = vec![false; tokens.len()];
     if file.lib_root {
@@ -725,20 +760,15 @@ fn pure_crate_calls_no_seam(
             continue;
         };
         // An enum variant with a seam's name, such as
-        // `DeadlineError::Clock`, is not the seam: its declaration, a path
-        // through an enum that declares it (in this crate or a seam's home
-        // crate), or `Self::` in a file that declares it.
+        // `DeadlineError::Clock`, is not the seam in two places only: its
+        // declaration, and `Self::Name` in a file that declares a variant
+        // `Name`. `Self` is a type, so `Self::Name` is never a trait. Any
+        // other path to the variant is refused, so no path is resolved by
+        // name.
         let declaration = declared.iter().any(|(_, _, at)| *at == index);
-        let through_enum = resolves_to_variant(
-            tokens,
-            index,
-            name,
-            local,
-            home_variants,
-            &imports,
-            &declared,
-        );
-        if declaration || through_enum {
+        let through_self = variant_path_owner(tokens, index) == Some("Self")
+            && declared.iter().any(|(_, variant, _)| variant == name);
+        if declaration || through_self {
             continue;
         }
         let at_home = file.krate == home;
@@ -831,6 +861,8 @@ fn check_trait_body(
 
 /// A sampling function found in a file.
 struct Found {
+    /// Its `fn`.
+    at: usize,
     /// Its parameter list's delimiters.
     params: (usize, usize),
     /// Its body's braces.
@@ -857,11 +889,24 @@ fn definitions(tokens: &[Token], name: &str) -> Vec<Found> {
             continue;
         };
         found.push(Found {
+            at: index,
             params: (open, close),
             body: (body, end),
         });
     }
     found
+}
+
+/// The depth of braces at `index`: zero at a file's top level.
+fn depth(tokens: &[Token], index: usize) -> usize {
+    tokens
+        .iter()
+        .take(index)
+        .fold(0_usize, |depth, token| match token.kind {
+            TokenKind::Punct('{') => depth + 1,
+            TokenKind::Punct('}') => depth.saturating_sub(1),
+            _ => depth,
+        })
 }
 
 /// The ranges of the arguments or parameters inside the delimiters at
@@ -1084,7 +1129,7 @@ fn deadline_built_from_a_fresh_sample(
         let mut count = 0;
         let mut from = None;
         for file in &in_crate {
-            for found in definitions(&file.tokens, listed.name()) {
+            for found in listed.definitions(file) {
                 count += 1;
                 let params: Vec<(usize, usize)> =
                     split_list(&file.tokens, found.params.0, found.params.1);
@@ -1125,12 +1170,11 @@ fn deadline_built_from_a_fresh_sample(
 
     for file in &files {
         let tokens = &file.tokens;
-        let bodies: Vec<(usize, usize)> = sampling
+        let found: Vec<Found> = sampling
             .iter()
-            .filter(|listed| listed.krate == file.krate)
-            .flat_map(|listed| definitions(tokens, listed.name()))
-            .map(|found| found.body)
+            .flat_map(|listed| listed.definitions(file))
             .collect();
+        let bodies: Vec<(usize, usize)> = found.iter().map(|found| found.body).collect();
         let builds = tokens
             .iter()
             .any(|token| matches!(&token.kind, TokenKind::Ident(word) if CONSTRUCTORS.contains(&word.as_str())));
@@ -1174,10 +1218,7 @@ fn deadline_built_from_a_fresh_sample(
                         Some("impl") => Some("an impl"),
                         Some("trait") => Some("a trait"),
                         Some("fn") => {
-                            let sampling_here = sampling.iter().any(|listed| {
-                                listed.krate == file.krate
-                                    && is_ident(tokens, at + 1, listed.name())
-                            });
+                            let sampling_here = found.iter().any(|found| found.at == at);
                             let item = (at, item_end(tokens, at));
                             let names_constructor = (item.0..item.1).any(|i| {
                                 ident(tokens.get(i)).is_some_and(|w| CONSTRUCTORS.contains(&w))
@@ -1299,6 +1340,18 @@ fn check_sampling_body(
         });
     }
     names_only_in_constructor_arguments(file, found.body, now, bound_at, violations);
+    // The clock's name appears only as the fresh sample's receiver, so no
+    // binding can stand in for the parameter before the sample.
+    for index in open + 1..close {
+        if ident(tokens.get(index)).is_some_and(|word| clocks.contains(&word))
+            && Some(index) != bound_at.map(|at| at + 3)
+        {
+            violations.push(Violation::NoFreshSample {
+                file: shown(),
+                line: line(tokens, index),
+            });
+        }
+    }
     for index in open + 1..close {
         let Some(name) = ident(tokens.get(index)) else {
             continue;
@@ -1423,16 +1476,16 @@ fn workspace_files(workspace: &Workspace) -> Result<(Vec<SourceFile>, Vec<Violat
                 .strip_prefix(&workspace.root)
                 .unwrap_or(&file)
                 .to_path_buf();
-            match rust_source::read(&file)? {
-                Ok(tokens) => sources.push(SourceFile {
-                    krate: member.name.clone(),
-                    lib_root: lib_root == Some(file.as_path()),
-                    // Only a pure crate's library is pure code.
-                    pure: pure && lib_dir.is_some_and(|dir| file.starts_with(dir)),
-                    path: shown,
-                    tokens: without_test_items(tokens),
-                }),
-                Err(error) => unreadable.push(Violation::Unreadable { file: shown, error }),
+            match file_from(
+                &member.name,
+                shown,
+                // Only a pure crate's library is pure code.
+                pure && lib_dir.is_some_and(|dir| file.starts_with(dir)),
+                lib_root == Some(file.as_path()),
+                rust_source::read(&file)?,
+            ) {
+                Ok(source) => sources.push(source),
+                Err(violation) => unreadable.push(violation),
             }
         }
     }

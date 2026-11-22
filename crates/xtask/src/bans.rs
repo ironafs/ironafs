@@ -381,6 +381,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
             &workspace.target_dir,
             &clippy_toml,
             &toolchain_toml,
+            &time_config,
             &time_crate,
             output,
         );

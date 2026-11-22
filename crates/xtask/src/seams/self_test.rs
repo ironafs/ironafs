@@ -64,10 +64,14 @@ mod planted_tests {
 const PURE_ROOT: &str =
     "mod seam;\npub use seam::{\n    Clock, ClockError, ClockKind,\n    Rng,\n};\n";
 const PURE_SEAM: &str = "pub trait Clock: Send + Sync {\n    fn boot(&self) -> u64;\n    fn sample(&self) -> u64;\n}\npub trait Rng: Send + Sync { fn fill(&self, bytes: &mut [u8]); }\n";
-const PURE_RX: &str = "pub enum Failure { Clock(u8), Rng }\npub fn failed() -> Failure { Failure::Clock(0) }\npub trait Rpc: Send + Sync { fn call(&self, request: &[u8]); }\npub fn close(endpoint: &mut Endpoint) { endpoint.close(); }\n";
+const PURE_RX: &str = "pub enum Failure { Clock(u8), Rng }\nimpl Failure { pub fn failed() -> Self { Self::Clock(0) } }\npub trait Rpc: Send + Sync { fn call(&self, request: &[u8]); }\npub fn close(endpoint: &mut Endpoint) { endpoint.close(); }\n";
 
 fn core(source: &str) -> Vec<SourceFile> {
-    source_file("planted-core", "src/time.rs", false, false, source)
+    core_at("src/time.rs", source)
+}
+
+fn core_at(path: &str, source: &str) -> Vec<SourceFile> {
+    source_file("planted-core", path, false, false, source)
         .map_or_else(|_| Vec::new(), |file| vec![file])
 }
 
@@ -413,6 +417,73 @@ const CASES: &[Case] = &[
         at: None,
     },
     Case {
+        name: "a sampling function with no `from` parameter",
+        files: || core(&CONTROL.replace("    from: &Stamp,\n", "    start: &Stamp,\n")),
+        kind: |found| matches!(found, Violation::NoFrom { .. }),
+        at: Some("deadline_after"),
+    },
+    Case {
+        name: "the clock parameter rebound before the sample",
+        files: || {
+            core(&CONTROL.replace(
+                "    let now = clock.sample()",
+                "    let clock = &Rebound;\n    let now = clock.sample()",
+            ))
+        },
+        kind: |found| matches!(found, Violation::NoFreshSample { .. }),
+        at: Some("Rebound"),
+    },
+    Case {
+        name: "the sampling function defined in another module: the definition",
+        files: || core_at("src/other.rs", CONTROL),
+        kind: |found| matches!(found, Violation::Missing { .. }),
+        at: None,
+    },
+    Case {
+        name: "the sampling function defined in another module: its constructors",
+        files: || core_at("src/other.rs", CONTROL),
+        kind: |found| matches!(found, Violation::Outside { .. }),
+        at: Some("boot_after"),
+    },
+    Case {
+        name: "the sampling function defined in a nested module",
+        files: || core(&format!("mod nested {{\n{CONTROL}\n}}\n")),
+        kind: |found| matches!(found, Violation::Outside { .. }),
+        at: Some("boot_after"),
+    },
+    Case {
+        name: "`include` renamed by a `use`",
+        files: || {
+            core(&format!(
+                "{CONTROL}\nuse core::include as inc;\ninc!(\"../generated.rs\");\n"
+            ))
+        },
+        kind: |found| matches!(found, Violation::IncludeMacro { .. }),
+        at: Some("inc"),
+    },
+    Case {
+        name: "an inner `#![cfg(test)]` in a module hides nothing else in its file",
+        files: || {
+            core(&format!(
+                "mod gated {{ #![cfg(test)] }}\n{CONTROL}\npub fn other(now: &Stamp, d: Duration) -> Result<Deadline, DeadlineError> {{ Deadline::awake_after(now, now, d) }}\n"
+            ))
+        },
+        kind: |found| matches!(found, Violation::Outside { .. }),
+        at: Some("other"),
+    },
+    Case {
+        name: "a `#[cfg(test)]` field hides nothing after it",
+        files: || {
+            with_pure(pure(
+                "ironafs-rx",
+                "src/endpoint.rs",
+                "pub struct Endpoint {\n    #[cfg(test)]\n    planted: u8,\n    clock: &'static dyn ironafs_time::Clock,\n}\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("clock"),
+    },
+    Case {
         name: "a pure crate takes a seam as `&dyn`",
         files: || {
             with_pure(pure(
@@ -483,6 +554,20 @@ const CASES: &[Case] = &[
         },
         kind: |found| matches!(found, Violation::SeamInPure { name: "Rpc", .. }),
         at: Some("tick"),
+    },
+    Case {
+        name: "a seam renamed in its home crate's root re-export",
+        files: || {
+            let mut files = pure(
+                "ironafs-time",
+                "src/lib.rs",
+                "pub use seam::Clock as Tick;\n",
+            );
+            files.extend(pure_control());
+            files
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("Tick"),
     },
     Case {
         name: "a seam re-exported outside its home crate's root",
@@ -578,6 +663,44 @@ const CASES: &[Case] = &[
                 "pub fn tick(clock: &dyn DeadlineError::Clock) {}\n",
             ));
             files
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("tick"),
+    },
+    Case {
+        name: "a seam through its home crate renamed like a home enum, inside the home crate",
+        files: || {
+            let mut files = with_pure(time_error_enum());
+            files.extend(pure(
+                "ironafs-time",
+                "src/instant.rs",
+                "use crate as DeadlineError;\npub fn sampled(clock: &dyn DeadlineError::Clock) {}\n",
+            ));
+            files
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("sampled"),
+    },
+    Case {
+        name: "a seam through a module named like a local enum with that variant",
+        files: || {
+            with_pure(pure(
+                "ironafs-time",
+                "src/instant.rs",
+                "#[expect(non_camel_case_types)]\nenum seam { Clock }\npub fn sampled(clock: &dyn crate::seam::Clock) {}\n",
+            ))
+        },
+        kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
+        at: Some("sampled"),
+    },
+    Case {
+        name: "a `::`-rooted path through another crate to a name a local enum declares",
+        files: || {
+            with_pure(pure(
+                "ironafs-rx",
+                "src/endpoint.rs",
+                "enum Owner { Clock }\npub fn tick(clock: &dyn ::other::Owner::Clock) {}\n",
+            ))
         },
         kind: |found| matches!(found, Violation::SeamInPure { name: "Clock", .. }),
         at: Some("tick"),
@@ -756,10 +879,26 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         return Err(failure("nothing read", &found));
     }
     report("caught: nothing read".to_owned())?;
+
+    // The workspace walk reads every file through the same function.
+    let unreadable = "a source the token reader cannot read";
+    match source_file(
+        "planted-core",
+        "src/time.rs",
+        false,
+        false,
+        "pub fn f() { \"open }\n",
+    ) {
+        Err(found @ Violation::Unreadable { .. }) => {
+            report(format!("caught: {unreadable}: {found}"))?;
+        }
+        Err(found) => return Err(failure(unreadable, &[found])),
+        Ok(_) => return Err(failure(unreadable, &[])),
+    }
     report(format!(
         "check-seams --self-test: the controls passed, {} planted cases failed as planted, each \
          with its own kind on its planted line, and the {} recorded limits passed",
-        CASES.len() + 2,
+        CASES.len() + 3,
         LIMITS.len()
     ))
 }

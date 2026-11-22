@@ -80,6 +80,9 @@ struct ClockState {
     awake_reference: Option<AwakeInstant>,
     /// The last valid sample, for suspends and wall jumps.
     last_sample: Option<(BootInstant, AwakeInstant, WallTime)>,
+    /// A regression was counted since the last valid sample, so the next
+    /// one is not compared with it.
+    regressed_since_sample: bool,
 }
 
 /// Which clocks fail their reads.
@@ -122,6 +125,7 @@ impl SeededClock {
                 boot_reference: None,
                 awake_reference: None,
                 last_sample: None,
+                regressed_since_sample: false,
             }),
         }
     }
@@ -262,6 +266,7 @@ impl ClockState {
     fn regressed(&mut self) {
         self.doubt.boot = self.doubt.boot.saturating_add(1);
         self.episodes = self.episodes.saturating_add(1);
+        self.regressed_since_sample = true;
     }
 
     fn read_boot(&mut self) -> Result<BootInstant, ClockError> {
@@ -308,8 +313,9 @@ impl ClockState {
             let awake_grew = i128::from(awake.as_nanos()) - i128::from(last_awake.as_nanos());
             let wall_moved = wall_nanos(wall) - wall_nanos(last_wall);
             // A regression is its own episode, counted by the reads; the
-            // clocks are then not compared across it.
-            if boot_grew >= 0 && awake_grew >= 0 {
+            // clocks are then not compared across it, even if they have
+            // since moved past the last sample again.
+            if !self.regressed_since_sample && boot_grew >= 0 && awake_grew >= 0 {
                 if boot_grew - awake_grew > THRESHOLD_NANOS {
                     self.episodes = self.episodes.saturating_add(1);
                 }
@@ -319,6 +325,7 @@ impl ClockState {
             }
         }
         self.last_sample = Some((boot, awake, wall));
+        self.regressed_since_sample = false;
         self.boot_reference = Some(boot);
         self.awake_reference = Some(awake);
         self.failing_episode = false;
