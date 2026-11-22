@@ -304,9 +304,10 @@ each and the hold of point 5:
 From [rx.md](rx.md) (a specification this one rests on), the parts it
 leaves to the callback service: the confirmation of each `Overload` event
 only after the suspect epoch of the affected servers has advanced (rx.md,
-5.10, point 5); the pause generation as part of the suspect epoch of
-every server on its socket, compared on every serve (rx.md, 5.10, point
-6, and 5.12, point 5); and ADR 0006's test 3's hold and exit, which the
+5.10, point 5); the pause generation, which rx.md calls part of the
+suspect epoch of every server on its socket, and which is here a value
+of the fence tuple of every key on that socket, compared on every serve
+(rx.md, 5.10, point 6, and 5.12, point 5; 5.6, point 2); and ADR 0006's test 3's hold and exit, which the
 callback service's tests carry (rx.md, 10.5). Rx's review record names
 two items left here as well: the policy that confirms overloads and so
 ends a pause, and repeated revalidation under a sustained flood from one
@@ -886,7 +887,8 @@ point 7). The service never sends a datagram itself.
    three shared values), and sets K's `recorded_since_advance` `[ADR 0004
    C16.2: Firm]`. Its reply is installed for an object only if the fence
    check (point 2) finds that object's fence tuple unchanged, every value
-   of it, when the reply is installed; otherwise it fails its fence and C16, point 2, applies
+   of it, when the reply is installed (for a reply that is never cached,
+   every value but the local volume epoch, below); otherwise it fails its fence and C16, point 2, applies
    (discarded, retried a bounded number of times, then `Stale`, and
    never handed to the request that started it). So a break that names
    the object, or its volume, while the fetch is in flight fails the
@@ -895,27 +897,50 @@ point 7). The service never sends a datagram itself.
    break's raised counter is already in the recorded tuple of any later
    fetch, and an earlier one fails.
    **The local volume epoch** `[OWN, under ADR 0004 C25.3: Working]`.
-   The incarnation specification (#78) writes a context's copy into the
-   fence table in the same step, under the volume's lock, in which it
-   sets or changes that context's epoch for the volume, taking the
-   table's lock inside the volume's (point 2). A changed epoch fails
-   every tuple recorded under the old one, and a copy lost when the
-   table evicts its volume record fails every tuple recorded under it.
-   A call sent while its context holds no copy for the volume records
-   no epoch, and its tuple fails its check, with one exception: the
-   install whose own observation wrote the epoch adopts it into the
-   recorded tuple, but only if the table shows that the context held no
-   copy for that volume at any time since the call was sent. It shows
-   that while it has never evicted a record holding a copy (the first
-   such eviction sets a latch that refuses every later adoption) and
-   while the context's volume record has the recorded tuple's counter
-   value, unbroken since the call was sent: an epoch written meanwhile
-   by anything but this reply's own observation would have needed
-   ambiguity, which raises the volume's break counter (#78). A refused
-   adoption fails the fence, and C16, point 2, applies: the retry
-   records the epoch the observation wrote. Once the latch is set, the
-   cost is a refetch whenever a call is sent while its context holds no
-   copy for the volume.
+   - **Write path.** The incarnation specification (#78) writes a
+     context's copy into the fence table in the same step, under the
+     volume's lock, in which it sets, confirms or changes that context's
+     epoch for the volume (its outcomes "new", "confirmed" and
+     "ambiguous"), taking the table's lock inside the volume's (point
+     2). A write on "confirmed" puts back a copy the table evicted while
+     the evidence record lived. A changed epoch fails every tuple
+     recorded under the old one, and a copy lost when the table evicts
+     its volume record fails every tuple recorded under it. An evidence
+     record evicted leaves its last copy in the table; the next "new"
+     outcome replaces it, and a tuple recorded under the old copy fails
+     once. Making the copy's record can evict another record. A write
+     is refused only when the table is exhausted, and then every check
+     already fails and no call is sent under a new tuple (point 2;
+     section 6, point 3).
+   - **A call sent with no copy** records no epoch, and its tuple fails
+     its check, with one exception: the install whose own observation
+     wrote or confirmed the epoch may adopt it into the recorded tuple.
+     The table adopts the volume record's current epoch only if no
+     record holding a copy has ever been evicted (the first such
+     eviction sets a latch that refuses every later adoption), the table
+     is not exhausted, and the context's volume record has the recorded
+     tuple's counter value. Together these show that the context had no
+     epoch for the volume when the call was sent, since every epoch it
+     had was written to the table and none was lost, and that no
+     ambiguity or volume break came since. They do not show which
+     observation wrote the epoch adopted: an epoch can be written with
+     no ambiguity and no break (an outcome "new" after the evidence
+     record was evicted). So the install makes its own observation's
+     write and the adoption one step under the volume's lock, with no
+     other write between; the table does not check that the epoch it
+     adopts is the one this install wrote (section 13, Q11). A refused
+     adoption fails the fence, and C16, point 2, applies: the retry
+     records the epoch the observation wrote. Once the latch is set,
+     the cost is a refetch whenever a call is sent while its context
+     holds no copy for the volume.
+   - **A reply that is never cached** `[ADR 0004 C16.2: Firm; C20.1:
+     Working]`: data from an unauthenticated call, or from a volume the
+     incarnation specification leaves unrecorded, is handed only to the
+     request that sent it, and its context may hold no copy. Its install
+     is fenced on the other five values: the check names each value that
+     changed, and a change of the local volume epoch alone does not fail
+     it. No entry keeps its tuple, so no serve compares it again, and
+     no later reader can reach it under any epoch.
 4. **What the serve path compares** `[ADR 0004 C32.5: Working]`
    ([rx.md](rx.md), 5.12, point 5). On every serve of an entry from K,
    before the answer is given, the cache runs the fence check (point 2)
@@ -1318,7 +1343,7 @@ sees the calls (ADR 0004, O23; ADR 0006, "Context").
 | C16, point 2: fence on the object's, volume's and server's break counters | 5.6, points 2 and 3 | C2, C7, C13, C23 |
 | C16, point 3: the credential and rights generations are the ticket's, checked at submission | 5.6, point 2 ("What is not in the tuple") | the contract specification's (#67) |
 | C25, point 3: fetches in flight fenced by a new local epoch | 5.6, points 2 and 3 (the local volume epoch) | C25 |
-| C39, point 4: lock order; no lock across a wait | 5.6, point 2 (the fence table's lock, a leaf) | C25; the check's signature, which needs the table held exclusively |
+| C39, point 4: lock order; no lock across a wait | 5.6, point 2 (the fence table's lock, a leaf; the check needs the table held exclusively, which the compiler enforces) | none yet: no test exercises the lock order (10.6) |
 | C24, points 2, 3 and 6: weak evidence only suspends | 5.6, point 9 | C2, C3, C4 |
 | C24, point 7, and C31, row 5: nothing received raises trust; a probe is never authority over any data | 5.6, point 8 and point 9 (rows I1, I2, I4) and point 11 | C11 |
 | C26, points 2 and 3: expiry from send; no persistence | 5.1.4; 5.6, point 1 | C16 |
@@ -1591,8 +1616,11 @@ with a callback state record on the family named.
   no copy: its install adopts the epoch its own observation wrote; the
   same after the table has evicted a record holding a copy, or after the
   volume's counter rose meanwhile, refuses the adoption and the fetch is
-  retried. The epoch is written under the volume's lock with the table's
-  lock taken inside it, and no lock is taken while the table's is held.
+  retried. A copy evicted while its evidence record lives is written
+  again by the next "confirmed" outcome. An anonymous read, and a read
+  of an unrecorded volume, succeed with no copy, and fail on a break of
+  the object. Another observation writing an epoch with no break between
+  a fetch's send and its install is open (section 13, Q11).
 - **C20 Rx's own drops.** Rx debug and version packets, and a call for an
   unregistered service id, from a known server's address: no packet in
   reply, no row reached (rx.md's tests carry the counters).
@@ -1622,6 +1650,9 @@ in the test cell's harness, each recorded under the venue rules of
   waits on #47 (Q2).
 - C7 and C8 need Rx's driver model and the cache's serve path; until both
   exist they run against the simulator's models.
+- The fence table's lock order (C39, point 4): no test takes another
+  lock while the table's is held, or checks without it; the second is
+  kept by the compiler only.
 
 ## 11. Revisit if
 
@@ -1800,6 +1831,17 @@ evidence label EXECUTED.
   its fence on the object's counter alone may be answered from a fetch
   sent after the read began, which would need C16, point 2 (Firm) to
   allow it; until then the residual stands as stated.
+- **Q11. Which epoch an install adopts** (5.6, point 3). The fence
+  table adopts the volume record's current epoch without checking that
+  it is the one the installing reply's own observation wrote. Another
+  observation can write an epoch with no ambiguity and no volume break
+  (an outcome "new" after the evidence record was evicted), so adoption
+  is safe only while the install makes its own write and the adoption
+  one step under the volume's lock, a duty on the caller that the table
+  does not enforce. Recommendation: the cache (#91) takes the epoch the
+  install wrote and adopts only if the record's epoch equals it, with a
+  test in which another observation writes an epoch with no break
+  between a fetch's send and its install.
 
 ## 14. Review
 
