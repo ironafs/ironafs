@@ -54,6 +54,8 @@ the evidence that refutes it.
 | [2026-11-21-m2a-07-wire-time](2026-11-21-m2a-07-wire-time.md) | Issue #82: the wire time-field table, first version from the participating specifications |
 | [2026-11-21-m2a-62-local-ipc](2026-11-21-m2a-62-local-ipc.md) | Issue #62: the local IPC framework specification, in three parts; stopped with five blockers recorded |
 | [2026-11-21-m2a-71-types](2026-11-21-m2a-71-types.md) | Issue #71: the seam interface types in their crates, and `check-seams` |
+| [2026-11-21-m2a-66-callbacks](2026-11-21-m2a-66-callbacks.md) | Issue #66: the callback service specification, procedures and allowlist, first version from documents only |
+| [2026-11-21-m2a-78-incarnation](2026-11-21-m2a-78-incarnation.md) | Issue #78: volume incarnation evidence and the restore discriminator, the version from documents only |
 | [2026-11-21-m2a-14-xdr](2026-11-21-m2a-14-xdr.md) | Issue #59: `ironafs-xdr`, the XDR codec with caps, and `check-bans`' configuration checks |
 | [2026-11-21-m2a-45-fuzz](2026-11-21-m2a-45-fuzz.md) | Issue #45: the excluded `fuzz/` crate, its pinned tooling, the deny-file and replay checks, and the XDR decode target |
 
