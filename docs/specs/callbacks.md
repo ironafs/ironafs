@@ -390,15 +390,17 @@ is broken.
    stands whatever happens to the reply.
 4. The client keeps, per server, address family and local endpoint
    generation, a suspect epoch (from one client-wide counter that never
-   repeats), a trust state and a hold. A cached entry records its fence
-   tuple when its validating call is sent: the object's and volume's
-   break counters, the server's suspect epoch, the socket's pause
-   generation, a resume generation and the context's local volume
-   epoch. The serve path compares the C37 clocks, then every value of
-   the tuple, on every serve, so a break during a fetch, an Rx pause, a
-   sleep or a new volume incarnation fences the entry before anything
-   stale is served. The credential and rights generations are the
-   request's ticket's, checked at submission, not the fence's.
+   repeats), a trust state, a lowering count and a hold. A cached entry
+   records its fence tuple when its validating call is sent: the
+   object's and volume's break counters, the server's suspect epoch, the
+   socket's pause generation, a resume generation and the context's
+   local volume epoch; beside it, the server's lowering count, which
+   decides only whether the entry may be served under trust. The serve
+   path compares the C37 clocks, then every value of the tuple, on every
+   serve, so a break during a fetch, an Rx pause, a sleep or a new volume
+   incarnation fences the entry before anything stale is served. The
+   credential and rights generations are the request's ticket's, checked
+   at submission, not the fence's.
 5. Work the service cannot do now (Rx's overload events, breaks over a
    server's rate limit) waits for one **advance tick**: at most once per
    second, the service advances every affected suspect epoch, and only
@@ -460,6 +462,13 @@ is broken.
 - **Recorded tuple:** the fence tuple a validating or fetching call
   recorded for its object when it was sent, kept with the entry it
   validates.
+- **Lowering:** every event of 5.6, point 11, that sets K's `trust` to
+  none, whatever its value before, and the end of a raised trust that
+  was not renewed (5.6, point 11). **Lowering count:** K's `lowerings`
+  (5.6, point 1), which rises by one at every lowering. **Recorded
+  lowering count:** the value of `lowerings` a validating or fetching
+  call recorded when it was sent, kept with the entry beside its
+  recorded tuple. It is not part of the fence tuple (5.6, point 5).
 - **Promise:** the callback promise a fileserver grants with a reply
   (#65's 5.1.3, point 3), keyed by context and file.
 - **Break-class call:** a call to CallBack, ExtendedCallBack or one of
@@ -807,7 +816,8 @@ point 7). The service never sends a datagram itself.
    | `suspect_epoch` | `u64`, taken from one client-wide counter that only rises; a new record starts at that counter's next value, and every advance takes the next value again. The counter is changed only by one sequentially consistent atomic read-modify-write, a compare-and-swap that rises by 1 and never wraps (section 6, point 3), the only way any thread takes a value, whether it creates a record or advances one; the value is taken before the record is published or the advance is visible, so no two takers ever get the same value `[OWN]`. The field is written, at creation and at each advance, and read for a recording or a check, under the fence table's lock (point 2) `[OWN]` | this specification (points 6 to 9) | the server's break counter of C16, point 2. No value is ever used twice, by any record, so an entry recorded under a retired record can never match a later one `[OWN]` |
    | `recorded_since_advance` | `bool` | the cache, when a call records the current tuple (point 3); cleared by an advance | whether any call to the server has recorded the current suspect epoch |
    | `advance_pending` | `bool` | this specification (point 7) | an advance waits for the next tick |
-   | `trust` | none, or trusted until an instant on the boot clock | raised only by the keepalive specification (#81, under C32, point 1); lowered here (point 11) | C32, points 1 and 3 |
+   | `trust` | none, or trusted until an instant on the boot clock, with the network generation and episode count in force at the raise (#81, its 5.6, point 1) | raised only by the keepalive specification (#81, under C32, point 1); lowered here (point 11) | C32, points 1 and 3 |
+   | `lowerings` | `u64`, from 0, rising by 1 at every lowering, checked (section 6); read and changed, with `trust`, only in a K step (point 11) | this specification (point 11) | the lowering count: an entry is served under trust only if its recorded lowering count equals it (point 5), so a raise of trust never covers an entry validated before a lowering (the keepalive specification, #81, its 5.6, point 7) `[OWN]` |
    | `hold` | count of live outgoing connections to the server, on any family, that fail ADR 0006 decision 1, point 9's condition | the connection layer, from each connection's `eligible` flag ([rx.md](rx.md), 5.6, point 1) | ADR 0006 D2.5 (point 12) |
    | `bucket` | the rate state of `cb.rate.key_units` | this specification (point 8) | C31, point 2 |
    | counters | fixed set (5.9) | this specification | diagnostics |
@@ -867,7 +877,10 @@ point 7). The service never sends a datagram itself.
    the load of the pause generation and the comparison are one step
    under it, which no other caller can come between. The lock is a leaf
    in C39, point 4's order: taken after any other lock the caller holds,
-   held for one operation, and no lock is taken while it is held. The
+   held for one operation, and no lock is taken while it is held. A
+   clock sample through the clock seam, whose state the `Clock`
+   implementation keeps (the seams specification, #71, its 5.3, point
+   2), is not a lock of C39, point 4's order. The
    serve path and submission hold it for their check: the check needs
    the table held exclusively, so no caller can check without it. A
    break, an advance or an epoch change is recorded under it before any
@@ -884,8 +897,11 @@ point 7). The service never sends a datagram itself.
    can validate an entry or grant a promise (a status or data fetch, a
    bulk status, a keepalive) records, when it is sent, the fence tuple of
    each object it names (a keepalive, which names none, records K's
-   three shared values), and sets K's `recorded_since_advance` `[ADR 0004
-   C16.2: Firm]`. Its reply is installed for an object only if the fence
+   three shared values), records K's `lowerings` beside it, and sets K's
+   `recorded_since_advance` `[ADR 0004 C16.2: Firm]`. An entry it
+   installs keeps the recorded lowering count with its recorded tuple
+   `[OWN]`; a lowering never fails a fence (point 5 says what it
+   changes). Its reply is installed for an object only if the fence
    check (point 2) finds that object's fence tuple unchanged, every value
    of it, when the reply is installed (for a reply that is never cached,
    every value but the local volume epoch, below); otherwise it fails its fence and C16, point 2, applies
@@ -951,14 +967,28 @@ point 7). The service never sends a datagram itself.
    the service handles any event.
 5. **When an entry may be served,** with its recorded tuple equal to the
    current one:
-   - K trusted and `hold` = 0: while its promise is valid, and the
-     credential and grants are valid (C32, point 3's branch, which rests
-     on A14; 5.8);
+   - K trusted, `hold` = 0, `lowerings` below `u64::MAX` (section 6,
+     point 4), and the entry's recorded lowering count equal to K's
+     current `lowerings`: while its promise is valid, and
+     the credential and grants are valid (C32, point 3's branch, which
+     rests on A14; 5.8);
    - otherwise (bounded revalidation, C32, point 2): only if it was
      validated within the last T seconds, by a call that recorded the
      current tuple; else it is validated before delivery.
    An entry with any other recorded tuple is suspect (point 4) in both
-   branches.
+   branches. An entry whose recorded tuple is current but whose recorded
+   lowering count is older than K's is not suspect: the mismatch of the
+   count alone selects the second branch, until a call sent after the
+   latest lowering revalidates it, and then the first `[OWN]`; any
+   difference in the tuple makes it suspect, whatever its lowering
+   count (point 4). That keeps a lowering inside C32, point 2's bounded
+   revalidation (ADR 0006 D1.6) without advancing any suspect epoch (ADR
+   0006 D1.5), while a later keepalive's raise cannot put an entry
+   validated before a known loss of continuity back under trust with no
+   further cap, which C32, point 3, forbids. Before either branch is
+   chosen, the serve checks whether a raised trust has reached its end
+   (point 11); that check, the fence check of point 4 and the choice of
+   branch are one serve decision, one K step (point 11).
 6. **An advance** of K, made in the core before any event is queued
    (C16, point 1):
    - if `recorded_since_advance` is set, `suspect_epoch` takes the next
@@ -1065,7 +1095,9 @@ point 7). The service never sends a datagram itself.
     that key, has had no live outgoing connection to it, and has had no
     call to it in flight `[OWN]`. Its keys' `advance_pending` work runs
     first. A retired key's addresses no longer make a source match.
-11. **What lowers trust** (`trust` becomes none), and nothing else does:
+11. **What lowers trust** (`trust` becomes none, and `lowerings` rises
+    by one in the core before any event is queued, C16, point 1, whatever
+    `trust` was before), and nothing else does:
     - a reply to the client's own call that shows the server reset the
       client's callback state (C32, point 3): trust becomes none and every
       key of the server advances, at once. Which reply shows it is MISSING
@@ -1079,22 +1111,64 @@ point 7). The service never sends a datagram itself.
       suspect against the new tuple, which is stronger;
     - a call outcome that shows a loss of callback continuity `[ADR 0004
       C32.3: Working]`: in this version, every call to the server on K
-      that ends without a valid reply (`Timeout`, `DeadlineExceeded`,
-      `Aborted`, `KeyExhausted`; [rx.md](rx.md), section 7), and every
-      abort code the server returns, **except** an ABORT that ADR 0006
-      excludes. That is: a matching ABORT, call-level or call 0, on a
+      that was handed to the transport and ended without a valid reply
+      (`Timeout`; `DeadlineExceeded` and `KeyExhausted` with `sent_any`
+      set; `Aborted`; `ReplyTooLarge`; [rx.md](rx.md), section 7; in the
+      seams specification's terms, #71, its 5.4, point 2, `Aborted` and
+      `NoReply` with the causes `Deadline`, `PeerLost`, `ReplyTooLarge`
+      and `Security`), a keepalive's reply that fails to decode, and
+      every abort code the server returns. A local outcome, where the
+      server was not asked or the client itself ended the call (every
+      `NotSent` cause; `NoReply` with `Cancelled`, `Closed`,
+      `NetworkChanged` or `ClockFailed`; `Fenced`, `Cancelled`,
+      `StartRefused`, `IdentityExhausted`, `DeadlineInvalid`,
+      `ProtocolViolation`; `DeadlineExceeded` and `KeyExhausted` with
+      `sent_any` clear), is not one: the keepalive specification's split
+      (#81, its 5.6, point 8), applied to every call. A network change
+      and a clock failure end trust through the last bullet below. The
+      one other exception is an ABORT that ADR 0006 excludes: a matching ABORT, call-level or call 0, on a
       connection that fails decision 1, point 9's condition changes only
       counters `[ADR 0006 D1.6, D1.9: Firm; D2.5: Working]`. Which codes
       a server uses to report a lost callback is A14's question; until
       the test cell answers it, every failure counts (section 13, Q7);
     - an ABORT never advances a suspect epoch `[ADR 0006 D1.5: Firm]`:
-      it moves trust to none only.
+      it moves trust to none, and raises `lowerings`, only;
+    - a raised trust reaching its end without renewal: the boot clock
+      passes its instant (C32, point 4), the network generation changes
+      (C32, point 1, "since the last network change"), or a clock
+      episode ends it (#81, its 5.6, point 7). It is applied at
+      the first check that sees it; every serve of an entry of K, every
+      keepalive send to K and every handling of a keepalive's outcome
+      checks it first `[OWN]`: a lapse may hide a dropped break, so it
+      needs entries revalidated as any other lowering does.
     Trust is raised only as #81 specifies under C32, point 1, by a
-    keepalive call whose recorded tuple is still K's current fence tuple
-    when its reply arrives (point 3) `[OWN]`: a keepalive sent before the
-    latest pause-generation raise of K's family, or before K's latest
-    advance, raises nothing, because a break from that server may have
-    been dropped in between.
+    keepalive call whose recorded tuple is still K's current fence tuple,
+    and whose recorded lowering count is still K's `lowerings`, when its
+    reply arrives (point 3) `[OWN]`: a keepalive sent before the latest
+    pause-generation raise of K's family, before K's latest advance, or
+    before K's latest lowering, raises nothing, because a break from that
+    server may have been dropped, or a loss shown, in between. A raise
+    never lowers `lowerings`, and covers only entries whose recorded
+    lowering count is the current one (point 5).
+    **The K step** `[OWN]`. Every lowering, every end, every raise, a
+    call's recording when it is sent (point 3: its fence tuple and K's
+    `lowerings`), and a serve's decision (points 4 and 5: any end that
+    is due, the fence check, and the read of `trust`, `hold` and
+    `lowerings` that chooses the branch) is one step over K's record,
+    under its lock at the server level of C39, point 4's order, with no
+    RPC wait, disk write or kernel notification under it: the keepalive
+    specification's 5.6, point 10. A K step that records or checks a
+    fence tuple takes the fence table's lock inside K's, last, as
+    point 2's leaf, and holds both until the step ends. So a call
+    records its tuple and K's `lowerings` together, before it is handed
+    to the transport, and a lowering is wholly before or wholly after
+    that recording; a serve's fence check and its choice of branch see
+    one state of K and of the table, so no advance, lowering or raise
+    falls between them. A serve reads the pause generation once, inside
+    its K step (point 2's load): a pause Rx makes after that read takes
+    effect at the next serve, since this serve's choice was made on one
+    state; and a lowering is wholly before or wholly
+    after a raise, never between its checks and its write.
 12. **The hold and its exit** `[ADR 0006 D2.5: Working]`.
     - While `hold` > 0 on any key of the server, every key of the server
       is served as bounded revalidation (point 5), whatever `trust`
@@ -1207,8 +1281,9 @@ on A14 (C32, point 3; A14, "Settled by").
    this specification's test-cell case TC2 (10.5).
 2. **What bounds the uncapped branch meanwhile** `[OWN]`: a promise is
    relied on only until its expiry, cut to `cb.promise.lifetime_max`
-   (5.1.4); a reset or any failed call to the server ends trust (5.6,
-   point 11); and the serve path's fence tuple catches every drop Rx or
+   (5.1.4); a reset or any failed call to the server ends trust, and
+   entries validated before it are not served under trust again until
+   revalidated (5.6, points 5 and 11); and the serve path's fence tuple catches every drop Rx or
    the kernel makes while the client is overloaded (5.6, points 4 and 9).
    None of these is the revalidation cap C32, point 3, names for a
    refuted A14; that cap is a project decision if TC2 refutes A14.
@@ -1233,14 +1308,16 @@ of a break, or the host UUID.
   and advances skipped (5.6, point 6); ticks; identity calls answered
   and discarded (I1, I2, I4); refusals sent and `refuse_suppressed`, by
   number class (diagnostic, extension, reserved, unassigned); trust
-  lowered, by cause (5.6, point 11); hold entered and ended.
+  lowered, by cause, the lapse included (5.6, point 11); hold entered
+  and ended.
 - **Events:** one `CallbackSummary` per `cb.report_interval` with the
   counts since the last, if any is non-zero; one `CallbackHold` when a
   server's hold starts and when it ends; one `CallbackAdvance` per key
   per interval at most, naming the rows that caused its advances. Each
   is a fixed-size record; the count of keys bounds them (C39, point 3).
 - **Status** (`afs status`, C32, point 6): per known server and family,
-  `trust`, `hold`, the time of the last advance and its cause.
+  `trust`, `hold`, the time of the last advance and its cause, and the
+  time of the last lowering and its cause.
 
 ## 6. Arithmetic
 
@@ -1267,12 +1344,18 @@ Every value read from a request is untrusted (coding standards rule 2).
    every serve, and the record is retired at the next opportunity
    `[OWN]`. Even at the most the ticks allow for every key together, this
    takes far longer than any daemon runs, so it is a guard, not a case.
-4. **Promise lifetime.** The expiry is converted by #82's table into a
+4. **`lowerings`** rises by one with checked arithmetic; at `u64::MAX`
+   the key is served as if it were never trusted (5.6, point 5, takes
+   its first branch only below that value), and the record is
+   retired at the next opportunity `[OWN]`, as for an exhausted epoch
+   (point 3). It is a guard, not a case: one lowering per call outcome
+   cannot reach it in any daemon's life.
+5. **Promise lifetime.** The expiry is converted by #82's table into a
    64-bit duration (C38, point 4), then cut to
    `cb.promise.lifetime_max` and added to the send instant on the boot
    clock with C37's checked instant arithmetic; a sum that cannot be
    represented grants no promise (5.1.4).
-5. **Tick timing** uses the monotonic clock's checked instant arithmetic
+6. **Tick timing** uses the monotonic clock's checked instant arithmetic
    (C37); a tick whose next time cannot be represented runs at once.
 
 ## 7. Errors and failure
@@ -1330,6 +1413,7 @@ sees the calls (ADR 0004, O23; ADR 0006, "Context").
 | An ABORT on the client's reply undoing a break | effects are recorded before the reply and stand (row A1; ADR 0006 D1.8) |
 | A forged ABORT lowering trust through an outgoing call | only on an eligible connection, and only to bounded revalidation, never an epoch advance (5.6, point 11; ADR 0006 D1.5, D1.6) |
 | A reset or break from a NAT64 translator's unmatched address | not stopped: C34, point 6's stated residual. A break still suspends the files it names; a reset from such an address moves nothing (row R2). Trust still lapses without keepalive replies (C32, point 1) |
+| A keepalive reply putting an entry back under trust after a failed call or an ABORT showed a possible loss | an entry is served under trust only if its recorded lowering count is K's current one, so it is revalidated first (5.6, points 5 and 11); no suspect epoch moves for an ABORT (ADR 0006 D1.5) |
 | A server that drops the client's callbacks without telling it | A14's residual (5.8); bounded meanwhile by the promise's cut expiry and 5.6, point 11 |
 | Crashing the daemon | no panic, checked arithmetic (sections 6 and 7); fuzz targets (10.4) |
 
@@ -1355,6 +1439,7 @@ sees the calls (ADR 0004, O23; ADR 0006, "Context").
 | C31, point 4, and O15, point 2: closed allowlist | 5.1.2; 5.7, point 1 | C1, C19 |
 | C32, point 5 (the clocks compared on every serve), and Rx's pause fence | 5.6, points 2 and 4 (the resume and pause generations) | C7, C22 |
 | C32, point 3, and ADR 0006 D2.5: trust lowered only as allowed | 5.6, point 11 | C14 |
+| C32, point 3, and ADR 0006 D1.5 and D1.6: a known loss ends serving under trust until revalidation, with no epoch advanced for an ABORT | 5.6, points 3, 5 and 11 (the lowering count) | C26 |
 | ADR 0006 D2.5: the hold and its exit | 5.6, point 12 | C13 |
 | ADR 0006 D1.8 and D2.3: ABORT and BUSY on an incoming call | 5.6, point 9 (A1, A2) | C12 |
 | C34, point 6: unattributable sources | 5.6, point 9 (B2, R2, O2) | C3, C9 |
@@ -1558,7 +1643,9 @@ with a callback state record on the family named.
   matching ABORT on an eligible connection moves trust to none and moves
   no epoch; the same ABORT on a fixture ineligible connection changes
   only counters; a `Timeout` and an `Aborted` with a "no such file" code
-  each move trust to none; a break and a reset leave `trust` as it was
+  each move trust to none; each of these, and a lapse of a raised trust
+  at its end, raises `lowerings` by one, also when `trust` was already
+  none; a break and a reset leave `trust` and `lowerings` as they were
   while making entries suspect.
 - **C15 Malformed break** (rows M1, M2). A truncated CallBack from a
   known server: the key advances at the tick, then the call is discarded
@@ -1602,6 +1689,28 @@ with a callback state record on the family named.
   recorded under it; a new call creates a new record and its reply
   grants a whole-volume promise: every older entry of that server is
   suspect at its next serve, since no suspect epoch value repeats.
+- **C26 Coverage across a lowering** (5.6, points 3, 5 and 11; the
+  keepalive specification's 5.6, point 7). A trusted server; entry A
+  validated, with the credential, grant and promise valid throughout. A
+  status call to the server ends with a matching ABORT on an eligible
+  connection: trust is none, `lowerings` rises, no suspect epoch moves,
+  and A is not suspect. A keepalive sent after the ABORT raises trust.
+  A read of A within T of its validation is served from bounded
+  revalidation; then, past T, a read of A is revalidated before
+  delivery; once revalidated by a call sent after the ABORT, A is
+  served under trust.
+  An entry B validated by a call sent after the ABORT is served under
+  trust at once. The same with a `Timeout` instead of the ABORT, and
+  with a lapse of trust at its end instead of either. A keepalive sent
+  before the ABORT whose reply arrives after it raises nothing. A serve
+  of a fence-current entry of an untrusted K, interleaved with a pause
+  and resume of K's family's socket and then a keepalive's raise, in
+  each of the three placements its K step can take (5.6, point 11):
+  before the pause, it sees neither and serves by bounded revalidation;
+  after the pause and before the raise, it sees the pause alone; after
+  both, it sees both. In the last two the changed pause generation
+  makes the entry suspect, and it is revalidated. In none is it served
+  under trust.
 - **C24 Fairness** (5.6, point 14). A within-rate break flood from one
   known server, a refusal and diagnostic flood from many sources, and
   probes from a second known server, together: each probe is answered
