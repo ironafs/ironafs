@@ -112,7 +112,14 @@ jobs:
           install -d "$cargo_bin"
           install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
       - name: Prove mem-wipe's stores survive the release profile, x86_64 and aarch64 Linux
-        run: cargo --locked xtask check-wipe
+        # Each glibc target must report passed: a MISSING line exits 0 but
+        # proves nothing. The musl targets are proved in their os-linux lanes.
+        run: |
+          cargo --locked xtask check-wipe > check-wipe.log
+          cat check-wipe.log
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            grep -q "^$target: passed: " check-wipe.log
+          done
       - name: Run tests
         run: cargo nextest run --workspace --profile ci --retries 0 --no-tests fail --locked
       - name: Run doc-tests
@@ -179,7 +186,10 @@ jobs:
     # 24.04 and 26.04. Each lane names the target it proves, the sites
     # check-abi must have proved, and the native tests that must have run;
     # check-abi also checks that $CC is that target's compiler (its
-    # architecture and C library).
+    # architecture and C library). A lane's withheld sites are those whose
+    # qualified constants its headers do not name (ADR 0005, sheet 14):
+    # check-abi must report each withheld, MISSING evidence, so it does not
+    # ship on that target.
     strategy:
       fail-fast: false
       matrix:
@@ -193,6 +203,7 @@ jobs:
             nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
             nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
             cc: musl-gcc
+            withheld: linux-fdpass
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
@@ -202,6 +213,7 @@ jobs:
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
             nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
             cc: musl-gcc
+            withheld: linux-fdpass
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-26.04
             nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
@@ -211,6 +223,7 @@ jobs:
             nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
             nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
             cc: musl-gcc
+            withheld: linux-fdpass
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-26.04-arm
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
@@ -220,6 +233,7 @@ jobs:
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
             nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
             cc: musl-gcc
+            withheld: linux-fdpass
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     permissions:
@@ -227,16 +241,18 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass
+      WITHHELD: ${{ matrix.withheld }}
       NATIVE_TESTS: >-
         linux_clock::tests::read_clock_boot_advances_and_never_goes_back
         linux_clock::tests::read_clock_awake_advances_and_never_goes_back
         linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names
         linux_random::tests::getrandom_reports_a_full_piece_of_at_most_256_bytes
         mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257
-        unix_nodump::tests::disable_dumps_in_this_process_reads_back_not_dumpable
+        unix_nodump::tests::kernel::disable_dumps_reads_back_not_dumpable_and_zeroes_both_core_limits
         linux_dontdump::tests::secret_buffer_new_advises_its_whole_block_through_the_call
         linux_peercred::tests::kernel::peer_credentials_of_a_socket_pair_name_this_process_s_effective_ids
         linux_peercred::tests::kernel::peer_credentials_refuse_a_listener_wrapped_as_a_stream
+        linux_peercred::tests::kernel::peer_credentials_refuse_a_reconnected_datagram_socket_of_a_pair
         linux_fdpass::tests::kernel::one_descriptor_arrives_close_on_exec_and_nothing_else_stays_open
         linux_fdpass::tests::kernel::three_descriptors_are_truncated_and_what_was_delivered_is_closed
     steps:
@@ -275,6 +291,19 @@ jobs:
           for test in $NATIVE_TESTS; do
             grep -Eq "PASS .* ironafs-os $test\$" nextest.log
           done
+      - name: Close a pidfd the kernel installs, where it offers SO_PASSPIDFD
+        # Linux 6.5 or later, which every runner of this matrix has; python3
+        # sets the option, since no site of ADR 0005 does.
+        run: |
+          test=linux_fdpass::tests::kernel::a_pidfd_the_kernel_installs_is_closed_and_the_message_refused
+          cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked --run-ignored only -E "test(=$test)" > pidfd.log 2>&1 || { cat pidfd.log; exit 1; }
+          cat pidfd.log
+          grep -Eq "PASS .* ironafs-os $test\$" pidfd.log
+      - name: Prove mem-wipe's stores survive the release profile on the target
+        run: |
+          cargo --locked xtask check-wipe > check-wipe.log
+          cat check-wipe.log
+          grep -q "^$TARGET: passed: " check-wipe.log
       - name: Lint ironafs-os for the target, its C library's declarations included
         env:
           CARGO_BUILD_WARNINGS: deny
@@ -285,9 +314,12 @@ jobs:
         run: |
           cargo --locked xtask check-abi --target "$TARGET" > check-abi.log
           cat check-abi.log
-          grep -q "^check-abi: $TARGET: " check-abi.log
+          grep -q "^check-abi: $TARGET: the system's C compiler accepted " check-abi.log
           for site in $SITES; do
-            grep -q "$site (" check-abi.log
+            case " $WITHHELD " in
+              *" $site "*) grep -q "^check-abi: $TARGET: withheld $site: " check-abi.log ;;
+              *) grep -q "$site (" check-abi.log ;;
+            esac
           done
       - name: Prove the declaration check catches planted mismatches
         env:
@@ -362,6 +394,9 @@ jobs:
               linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names \
               linux_random::tests::arguments_pass_the_buffer_address_and_length_and_zeros_each_as_a_long \
               unix_nodump::tests::disable_dumps_in_this_process_reads_back_not_dumpable \
+              unix_nodump::tests::stand_in::a_failure_of_each_call_is_reported_with_its_errno \
+              linux_peercred::tests::stand_in::a_type_other_than_a_stream_is_refused \
+              fdpass::tests::accept_adopts_and_closes_a_pidfd_and_refuses \
               linux_dontdump::tests::secret_buffer_new_advises_its_whole_block_through_the_call \
               linux_peercred::tests::peer_credentials_of_a_socket_pair_name_this_process \
               linux_fdpass::tests::a_sent_descriptor_arrives_as_a_new_descriptor_for_the_same_socket \

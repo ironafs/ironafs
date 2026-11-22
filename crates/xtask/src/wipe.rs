@@ -13,10 +13,12 @@
 //! manifest, not restated), emits its assembly and reads four functions:
 //!
 //! - `wiped_live`: a buffer read after the wipe;
-//! - `wiped_dead`: a heap buffer allocated, wiped and freed in one
-//!   function, so the optimiser sees the whole lifetime;
-//! - `plain_dead`: the control, the same with a plain overwrite in place of
-//!   `wipe`; and `untouched_dead`, the same with no overwrite at all.
+//! - `wiped_dead`: a buffer on the stack, wiped just before it goes out of
+//!   scope, in one function, so the optimiser sees the whole lifetime and
+//!   no call follows the wipe;
+//! - `plain_dead`: the control of sheet 24, the same with `wipe`'s body
+//!   with a plain write in place of the volatile one (the fence kept); and
+//!   `untouched_dead`, the same with no overwrite at all.
 //!
 //! It passes on a target when both wiped cases hold no reference to
 //! `ironafs-os` (so `wipe`'s body is inlined there) and at least one zero
@@ -24,14 +26,11 @@
 //! instructions as `untouched_dead` (its stores are gone). If `wipe` is not
 //! inlined, or the control keeps its stores, the dead-buffer case shows
 //! nothing on that target and it fails. A target whose standard library is
-//! not installed is reported MISSING: `mem-wipe` does not ship there.
-//!
-//! The control is a plain overwrite with no fence. Sheet 24 words it as
-//! `wipe`'s body with a plain write in place of the volatile one, which
-//! keeps the fence; that variant (`fenced_dead`) is built and reported on
-//! each target but not judged, because on the toolchain this was written
-//! for the fence alone keeps a plain overwrite's stores, so it shows
-//! nothing (an open point for ADR 0005's sheet 24).
+//! not installed is reported MISSING: `mem-wipe` does not ship there. The
+//! harness is built under the root manifest's `[profile.release]` table
+//! only: a manifest with any `[profile.release.*]` table, which would
+//! change the shipping profile beside it, is refused rather than copied in
+//! part.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -67,27 +66,18 @@ pub fn wiped_live(fill: u8) -> u8 {\n\
     buffer.iter().fold(0, |all, byte| all | byte)\n\
 }\n\
 \n\
-/// A buffer allocated, wiped and freed here.\n\
+/// A buffer on the stack, wiped just before it goes out of scope.\n\
 #[inline(never)]\n\
 pub fn wiped_dead(fill: u8) {\n\
-    let mut buffer = vec![fill; 64];\n\
+    let mut buffer = [fill; 64];\n\
     ironafs_os::wipe(&mut buffer);\n\
 }\n\
 \n\
-/// The control: a plain overwrite in place of the wipe.\n\
+/// The control: `wipe`'s body with a plain write in place of the\n\
+/// volatile one, the fence kept.\n\
 #[inline(never)]\n\
 pub fn plain_dead(fill: u8) {\n\
-    let mut buffer = vec![fill; 64];\n\
-    for byte in buffer.iter_mut() {\n\
-        *byte = 0;\n\
-    }\n\
-}\n\
-\n\
-/// The control as sheet 24 words it: the plain overwrite with the fence\n\
-/// `wipe` keeps. Reported, not judged.\n\
-#[inline(never)]\n\
-pub fn fenced_dead(fill: u8) {\n\
-    let mut buffer = vec![fill; 64];\n\
+    let mut buffer = [fill; 64];\n\
     for byte in buffer.iter_mut() {\n\
         *byte = 0;\n\
     }\n\
@@ -97,8 +87,8 @@ pub fn fenced_dead(fill: u8) {\n\
 /// The same buffer with no overwrite at all.\n\
 #[inline(never)]\n\
 pub fn untouched_dead(fill: u8) {\n\
-    let buffer = vec![fill; 64];\n\
-    drop(buffer);\n\
+    let buffer = [fill; 64];\n\
+    core::mem::drop(buffer);\n\
 }\n";
 
 /// The architectures of the Linux targets, by their zero byte store.
@@ -122,8 +112,16 @@ impl Arch {
     }
 }
 
-/// The `[profile.release]` table of a manifest, up to the next table.
+/// The `[profile.release]` table of a manifest, up to the next table;
+/// `None` if there is none, or if any `[profile.release.*]` table (a
+/// per-package or build-override setting) changes the profile beside it.
 pub(crate) fn profile_table(manifest: &str) -> Option<String> {
+    if manifest
+        .lines()
+        .any(|line| line.trim_start().starts_with("[profile.release."))
+    {
+        return None;
+    }
     let mut lines = manifest.lines();
     lines
         .by_ref()
@@ -274,8 +272,9 @@ pub(crate) fn judge(asm: &str, arch: Arch) -> Result<(), Vec<String>> {
         (Some(plain), Some(untouched)) => {
             if normalized(&plain) != normalized(&untouched) {
                 problems.push(
-                    "the control `plain_dead` compiles to more than `untouched_dead`: its plain \
-                     overwrite survives, so the dead-buffer case shows nothing on this target"
+                    "the control `plain_dead` (a plain overwrite, the fence kept) compiles to \
+                     more than `untouched_dead`: its stores survive, so the dead-buffer case \
+                     shows nothing on this target"
                         .to_owned(),
                 );
             }
@@ -287,15 +286,6 @@ pub(crate) fn judge(asm: &str, arch: Arch) -> Result<(), Vec<String>> {
     } else {
         Err(problems)
     }
-}
-
-/// Whether the fenced control (`fenced_dead`) compiles to more than
-/// `untouched_dead`, that is, whether the fence alone keeps a plain
-/// overwrite's stores; `None` if either function is missing.
-pub(crate) fn fence_keeps_stores(asm: &str) -> Option<bool> {
-    let fenced = normalized(&body(asm, "fenced_dead")?);
-    let untouched = normalized(&body(asm, "untouched_dead")?);
-    Some(fenced != untouched)
 }
 
 /// Builds the harness for `target` and returns its assembly, or why it
@@ -401,7 +391,8 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     let manifest = fs::read_to_string(&manifest_path)
         .map_err(Error::path_io("read manifest", &manifest_path))?;
     let profile = profile_table(&manifest).ok_or(Error::UnexpectedOutput(
-        "Cargo.toml: no [profile.release] table",
+        "Cargo.toml: no [profile.release] table, or a [profile.release.*] table beside it, \
+         which the harness would not copy",
     ))?;
     let dir = crate::fixture::fresh_dir(&workspace.target_dir, CHECK)?;
     let result = check_targets(&workspace, &crate_dir, &profile, &dir, output);
@@ -425,6 +416,10 @@ fn check_targets(
         |line: String| writeln!(output, "{line}").map_err(Error::io("report check-wipe"));
     for target in ALLOWLIST.iter().filter(|target| target.contains("-linux-")) {
         let Some(arch) = Arch::of(target) else {
+            violations.push(format!(
+                "{target}: an architecture whose zero byte store this check cannot read, so \
+                 the gate cannot run there"
+            ));
             continue;
         };
         if !sysroot
@@ -447,18 +442,12 @@ fn check_targets(
                 continue;
             }
         };
-        let fenced = match fence_keeps_stores(&asm) {
-            Some(true) => "kept",
-            Some(false) => "removed",
-            None => "not found",
-        };
         match judge(&asm, arch) {
             Ok(()) => {
                 passed += 1;
                 report(format!(
                     "{target}: passed: wipe inlined in both cases, at least {LENGTH} zero byte \
-                     stores in each, and the plain overwrite's stores removed (with the fence \
-                     kept, a plain overwrite's stores are {fenced})"
+                     stores in each, and the control's plain overwrite (the fence kept) removed"
                 ))?;
             }
             Err(problems) => violations.extend(

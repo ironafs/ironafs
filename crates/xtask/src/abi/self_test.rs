@@ -11,8 +11,12 @@
 //!   generated (ADR 0005, point 5.6): a member type changed at the same
 //!   size and offset, a member's size changed, a constant changed by one
 //!   (one compared with a C expression too), a
-//!   parameter's type changed, a return type changed, and an alias of the
-//!   wrong size or sign. Each must fail with the assertion that names it;
+//!   parameter's type changed, a return type changed, an alias of the
+//!   wrong size or sign, and an alias of `c_char` naming a typedef of the
+//!   other sign. Each must fail with the assertion that names it;
+//! - by the probe of qualified constants: a name the headers do not define
+//!   is reported unnamed (so its row is withheld), and one they define is
+//!   not;
 //! - by the declaration reader, which refuses what C cannot be compared
 //!   with: another ABI string, an attribute on a foreign function (such as
 //!   `link_name`), a `packed` struct, a renaming import, a type alias, and
@@ -25,7 +29,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use super::{DataModel, Declarations, applies_here, c_source, compile, declarations};
+use super::{DataModel, Declarations, applies_here, c_source, compile, declarations, unnamed};
 use crate::Error;
 use crate::rust_source::tokens_with_strings;
 
@@ -108,6 +112,19 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
         "(rlim_t)-1 < 0",
     ),
 ];
+
+/// A typedef of a byte whose sign is not `char`'s on this host, which an
+/// alias of `c_char` must not pass as, and the assertion that refuses it.
+fn other_sign_byte() -> (&'static str, &'static str) {
+    if core::ffi::c_char::MIN == 0 {
+        ("int8_t", "((int8_t)-1 > 0) == ((char)-1 > 0)")
+    } else {
+        ("uint8_t", "((uint8_t)-1 > 0) == ((char)-1 > 0)")
+    }
+}
+
+/// A name no header defines, which the probe must report unnamed.
+const UNNAMED_NAME: &str = "IRONAFS_CHECK_ABI_SELF_TEST_UNNAMED";
 
 /// Declarations the reader must refuse: the case, the text it replaces,
 /// and a phrase of the reader's error.
@@ -213,6 +230,7 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
             }
         }
     }
+    char_sign_and_probe(dir, output)?;
     for (name, from, to, phrase) in READER {
         let planted = plant(name, from, to)?;
         match stage(&planted, &dir.join("reader.c"))? {
@@ -232,11 +250,54 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         output,
         format!(
             "check-abi --self-test: the fixture compiled; {} planted mismatches failed to compile \
-             at their assertions and {} declarations were refused by the reader",
-            COMPILER.len(),
+             at their assertions, an unnamed qualified constant was withheld, and {} declarations \
+             were refused by the reader",
+            COMPILER.len() + 1,
             READER.len()
         ),
     )
+}
+
+/// The `c_char` alias planted with a typedef of the other sign, which the
+/// compiler must refuse, and the probe of qualified constants, which must
+/// report only the unnamed one.
+fn char_sign_and_probe(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    let report = |output: &mut dyn Write, line: String| {
+        writeln!(output, "{line}").map_err(Error::io("report check-abi self-test"))
+    };
+    let (byte, label) = other_sign_byte();
+    let name = "an alias of c_char naming a typedef of the other sign";
+    let planted = plant(
+        name,
+        "const EINTR",
+        &format!("type {byte} = c_char;\nconst EINTR"),
+    )?;
+    match stage(&planted, &dir.join("char-sign.c"))? {
+        Stage::Compiler(error, at) if at.contains(label) => {
+            report(output, format!("caught by the C compiler: {name}: {error}"))?;
+        }
+        Stage::Compiler(error, _) | Stage::Reader(error) | Stage::Generator(error) => {
+            return Err(failure(name, format!("not refused at `{label}`: {error}")));
+        }
+        Stage::Compiled => return Err(failure(name, "the C compiler accepted it".to_owned())),
+    }
+    let headers: Vec<String> = HEADERS.iter().map(|header| (*header).to_owned()).collect();
+    let names = ["EINTR".to_owned(), UNNAMED_NAME.to_owned()];
+    let name = "a qualified constant the headers do not name";
+    match unnamed("self-test", &[], &headers, &names, DataModel::Lp64, "", dir)? {
+        Ok(absent) if absent == [UNNAMED_NAME] => report(
+            output,
+            format!("withheld by the probe: {name}; a named one (EINTR) was not"),
+        )?,
+        Ok(absent) => {
+            return Err(failure(
+                name,
+                format!("the probe found unnamed: {absent:?}"),
+            ));
+        }
+        Err(error) => return Err(failure(name, error)),
+    }
+    Ok(())
 }
 
 fn plant(name: &'static str, from: &str, to: &str) -> Result<String, Error> {

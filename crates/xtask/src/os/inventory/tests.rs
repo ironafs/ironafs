@@ -101,6 +101,8 @@ fn parse_reads_a_row_s_c_expressions_and_refuses_any_outside_their_alphabet() {
         "{\"X\": \"1)\\n#include <x.h>\\n(1\"}",
         "{\"X\": \"\"}",
         "{\"x y\": \"1\"}",
+        "{\"X\": \"4\"}",
+        "{\"X\": \"(2 * 2) + 0x0\"}",
     ] {
         let error = parse(&with(refused)).unwrap_err();
         assert!(error.contains("expressions"), "{refused}: {error}");
@@ -132,6 +134,39 @@ fn parse_reads_a_row_s_feature_macros_and_refuses_any_but_gnu_source() {
     );
     let refused = parse(&with("[\"_POSIX_C_SOURCE 1\\n#include <x.h>\"]")).unwrap_err();
     assert!(refused.contains("is not a feature macro"), "{refused}");
+}
+
+#[test]
+fn parse_reads_a_row_s_qualified_constants_and_refuses_any_it_does_not_record() {
+    let text = inventory_text();
+    let with = |qualified: &str| {
+        text.replacen(
+            "\"module\": \"linux_clock\",",
+            &format!("\"module\": \"linux_clock\",\n      \"qualified\": {qualified},"),
+            1,
+        )
+    };
+    let clock = |inventory: &super::Inventory| {
+        inventory
+            .rows
+            .iter()
+            .find(|row| row.id == "linux-clock")
+            .and_then(|row| row.code.clone())
+            .unwrap()
+    };
+    assert_eq!(
+        clock(&parse(&text).unwrap()).qualified,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        clock(&parse(&with("[\"CLOCK_BOOTTIME\"]")).unwrap()).qualified,
+        ["CLOCK_BOOTTIME"]
+    );
+    let refused = parse(&with("[\"SCM_PIDFD\"]")).unwrap_err();
+    assert!(
+        refused.contains("not one of the row's constants"),
+        "{refused}"
+    );
 }
 
 #[test]

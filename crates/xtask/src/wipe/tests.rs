@@ -4,7 +4,7 @@
 //! Tests for the release-assembly reader, on synthetic assembly in the
 //! shape the compiler emits for each architecture.
 
-use super::{Arch, body, fence_keeps_stores, judge, normalized, profile_table, zero_byte_stores};
+use super::{Arch, body, judge, normalized, profile_table, zero_byte_stores};
 
 /// Assembly with one function per harness case, in the shape of
 /// `x86_64` output: `wiped` cases with `count` zero stores, a `plain_dead`
@@ -126,27 +126,21 @@ fn profile_table_takes_the_release_profile_and_nothing_after_it() {
 }
 
 #[test]
+fn profile_table_refuses_a_release_subtable_it_would_not_copy() {
+    for subtable in [
+        "[profile.release.package.\"*\"]\nopt-level = 1\n",
+        "[profile.release.build-override]\nopt-level = 0\n",
+    ] {
+        let manifest = format!("[profile.release]\noverflow-checks = true\n\n{subtable}");
+        assert_eq!(profile_table(&manifest), None, "{subtable}");
+    }
+}
+
+#[test]
 fn body_follows_a_symbol_the_compiler_merged_into_another() {
     // Two functions that compile to the same code are emitted once, the
     // second as an alias of the first.
     let asm = "_RNvCs9_17ironafs_wipe_gate10plain_dead:\n\tretq\n.Lfunc_end0:\n\
                _RNvCs9_17ironafs_wipe_gate14untouched_dead = _RNvCs9_17ironafs_wipe_gate10plain_dead\n";
     assert_eq!(body(asm, "untouched_dead").unwrap(), ["\tretq"]);
-}
-
-#[test]
-fn fence_keeps_stores_tells_whether_the_fenced_control_differs_from_untouched() {
-    let base = x86(64, "", false);
-    let same = format!(
-        "{base}_RNvCs9_17ironafs_wipe_gate11fenced_dead:\n\tcallq\t*__rust_alloc@GOTPCREL(%rip)\n\
-         \tje\t.LBB4_1\n.LBB4_1:\n\tjmpq\t*__rust_dealloc@GOTPCREL(%rip)\n.Lfunc_end4:\n"
-    );
-    assert_eq!(fence_keeps_stores(&same), Some(false));
-    let kept = format!(
-        "{base}_RNvCs9_17ironafs_wipe_gate11fenced_dead:\n\tcallq\t*__rust_alloc@GOTPCREL(%rip)\n\
-         \tje\t.LBB4_1\n\tmovdqu\t%xmm0, (%rax)\n\t#MEMBARRIER\n.LBB4_1:\n\
-         \tjmpq\t*__rust_dealloc@GOTPCREL(%rip)\n.Lfunc_end4:\n"
-    );
-    assert_eq!(fence_keeps_stores(&kept), Some(true));
-    assert_eq!(fence_keeps_stores(&base), None);
 }
