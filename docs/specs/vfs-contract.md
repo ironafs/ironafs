@@ -889,13 +889,20 @@ makes it with the fence epoch of C16, point 6, under S1 (point 7).
      the binding serves;
    - every change of a context's local volume epoch for a volume the
      binding holds data from;
+   - every eviction from the fence table of an object or volume record of
+     a context the binding serves, and, for every binding, the table's
+     exhaustion: an evicted or exhausted value reads as no value, which
+     matches nothing, so the fence check fails every tuple recorded under
+     it (the callback specification, 5.6, point 2, "Values never
+     repeat"), and a later break finds no record to raise;
    - every change of a credential or rights generation, and every
      revocation, as C16, point 6, already says.
 
    This is a duty, not a mechanism: which task observes each change and
    pushes the advance, how the daemon knows which bindings hold data from
-   a server key, and how a raise made with no event behind it reaches the
-   push are open (section 13, Q9).
+   a server key or a record, and how a change made with no event behind
+   it (a raise, an eviction, exhaustion) reaches the push are open
+   (section 13, Q9).
 
 ### 5.10 The invalidation stream and its acknowledgements
 
@@ -1534,9 +1541,12 @@ entry (5.10, point 4) is to be observed with the FUSE codec (issue #92).
   advances and object and volume breaks in the core, and counts its
   `Pause` and `Resume` events for diagnostics only (its 5.6, point 9,
   row P1); the incarnation specification writes local volume epoch
-  changes; Rx's driver raises the pause generation with no lock; and the
-  fence check raises the resume generation only when a check runs, so a
-  resume with no check behind it raises nothing. Open: which task turns
+  changes; Rx's driver raises the pause generation with no lock; the
+  resume generation is raised by the clock comparison that every fence
+  check and every recording makes first (its 5.6, point 2), so a resume
+  with neither behind it raises nothing; and the fence table evicts
+  records, or becomes exhausted, inside a recording or a write of an
+  epoch copy, with no event of its own. Open: which task turns
   each kind of change into an advance and pushes it (the callback
   service's task, the notifier, or the housekeeping loop running the
   clock comparison after a resume); how the daemon finds the bindings
