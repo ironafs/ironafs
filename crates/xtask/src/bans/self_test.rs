@@ -23,6 +23,12 @@
 //! and proves each refused, beside one whose `[env]` sets another
 //! variable, which passes. The canary's own cases, each run through the
 //! workspace's lint, are in `canary`.
+//!
+//! `ironafs-time`'s own file must be the repository's `clippy.toml` without
+//! the constructor bans: it proves the repository's pair passes, that a
+//! copy keeping those bans or dropping another is drift, and that a
+//! workspace whose `ironafs-time` file drops a ban is refused through the
+//! same walk as the other cases.
 
 mod canary;
 
@@ -30,8 +36,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::{
-    CHECK, CONF_DIR, Found, Lint, Violation, cargo_env, check_build_scripts, check_tree,
-    unchanged_by,
+    CHECK, CONF_DIR, Found, Lint, TIME_CRATE_CONFIG, TIME_CRATE_EXEMPT, Violation, cargo_env,
+    check_build_scripts, check_tree, crate_config_drift, unchanged_by,
 };
 use crate::Error;
 use crate::fixture::{self, write_file};
@@ -51,6 +57,7 @@ const ROOT_FILE: &str = "clippy.toml";
 const DOT_ROOT_FILE: &str = ".clippy.toml";
 const CRATE_DIR: &str = "crates/planted";
 const CRATE_FILE: &str = "crates/planted/clippy.toml";
+const TIME_CRATE_DIR: &str = "crates/ironafs-time";
 
 /// Where a case writes its planted configuration.
 #[derive(Clone, Copy)]
@@ -63,6 +70,8 @@ enum Place {
     Crate,
     /// In a directory outside the workspace that `CLIPPY_CONF_DIR` names.
     ConfDir,
+    /// As `ironafs-time`'s own `clippy.toml`, beside the workspace's.
+    TimeCrate,
 }
 
 /// A planted configuration, what every violation it gives must be, and
@@ -182,7 +191,37 @@ const CASES: &[Case] = &[
         },
         needs: |_| true,
     },
+    Case {
+        // Held to the root's lines, not linted on a fixture.
+        name: "ironafs-time's own clippy.toml that leaves out a rule 7 ban",
+        place: Place::TimeCrate,
+        plant: |text| without(&time_own(text), REMOVED),
+        expect: |found| {
+            Path::new(&found.file) == Path::new(TIME_CRATE_CONFIG)
+                && matches!(found.violation, Violation::CrateConfigDrift(_))
+        },
+        needs: |_| true,
+    },
 ];
+
+/// `text` without the constructor bans `ironafs-time`'s own file leaves
+/// out.
+fn time_own(text: &str) -> String {
+    TIME_CRATE_EXEMPT
+        .iter()
+        .fold(text.to_owned(), |text, path| without(&text, path))
+}
+
+/// `violations`, each as found in `ironafs-time`'s own file.
+fn in_time_file(violations: Vec<Violation>) -> Vec<Found> {
+    violations
+        .into_iter()
+        .map(|violation| Found {
+            file: TIME_CRATE_CONFIG.to_owned(),
+            violation,
+        })
+        .collect()
+}
 
 /// `text` with a method ban on `UNPLANTED` added first to its methods.
 fn with_unplanted(text: &str) -> String {
@@ -215,12 +254,15 @@ fn names(found: &Violation, path: &str) -> bool {
 /// member crate, with the planted text written where its place says, and
 /// checks it: in place of `root`, as the root's `.clippy.toml`, as the
 /// crate's own `clippy.toml`, or in a directory outside the workspace that
-/// `CLIPPY_CONF_DIR` names.
+/// `CLIPPY_CONF_DIR` names, or as `ironafs-time`'s own `clippy.toml`, in
+/// a second member at its place. The fixtures depend on the crate at
+/// `time_crate`.
 fn check_planted(
     dir: &Path,
     root: &str,
     planted: (Place, &str),
     toolchain_toml: &str,
+    time_crate: &Path,
 ) -> Result<Vec<Found>, Error> {
     let (place, text) = planted;
     let own = matches!(place, Place::Crate).then_some(text);
@@ -243,12 +285,18 @@ fn check_planted(
     if let Some(elsewhere) = elsewhere {
         write_file(&conf_dir.join(ROOT_FILE), elsewhere)?;
     }
-    let members: Vec<PathBuf> = vec![tree.join(CRATE_DIR)];
+    let mut members: Vec<PathBuf> = vec![tree.join(CRATE_DIR)];
+    if matches!(place, Place::TimeCrate) {
+        write_file(&tree.join(TIME_CRATE_DIR).join("Cargo.toml"), "")?;
+        write_file(&tree.join(TIME_CRATE_CONFIG), text)?;
+        members.push(tree.join(TIME_CRATE_DIR));
+    }
     check_tree(
         &tree,
         &members,
         elsewhere.map(|_| conf_dir.as_os_str()),
         toolchain_toml,
+        time_crate,
         &dir.join("lint"),
     )
 }
@@ -263,10 +311,19 @@ pub(super) fn run(
     root_manifest: &str,
     clippy_toml: &str,
     toolchain_toml: &str,
+    time_config: &str,
+    time_crate: &Path,
     output: &mut impl Write,
 ) -> Result<(), Error> {
     let dir = fixture::fresh_dir(target_dir, CHECK)?;
-    let result = run_in(&dir, root_manifest, clippy_toml, toolchain_toml, output);
+    let result = run_in(
+        &dir,
+        root_manifest,
+        clippy_toml,
+        toolchain_toml,
+        (time_config, time_crate),
+        output,
+    );
     fixture::remove_dir(&dir)?;
     result
 }
@@ -276,22 +333,28 @@ fn run_in(
     root_manifest: &str,
     clippy_toml: &str,
     toolchain_toml: &str,
+    time: (&str, &Path),
     output: &mut impl Write,
 ) -> Result<(), Error> {
+    let (time_config, time_crate) = time;
     let mut report =
         |line: String| writeln!(output, "{line}").map_err(Error::io("report check-bans self-test"));
     let clean = "the repository's clippy.toml";
     // The clean case plants the repository's file in its own place.
-    let found = check_planted(
+    let mut found = check_planted(
         &dir.join("clean"),
         clippy_toml,
         (Place::Root, clippy_toml),
         toolchain_toml,
+        time_crate,
     )?;
+    found.extend(in_time_file(crate_config_drift(clippy_toml, time_config)));
     if !found.is_empty() {
         return Err(failure(clean, &found));
     }
-    report(format!("passed: {clean}"))?;
+    report(format!(
+        "passed: {clean}, and ironafs-time's own file is it without the constructor bans"
+    ))?;
     for (index, case) in CASES.iter().enumerate() {
         let planted = (case.plant)(clippy_toml);
         if planted == clippy_toml {
@@ -303,6 +366,7 @@ fn run_in(
             clippy_toml,
             (case.place, &planted),
             toolchain_toml,
+            time_crate,
         )?;
         match found.first() {
             Some(_) if found.iter().all(case.expect) && found.iter().any(case.needs) => {
@@ -313,11 +377,46 @@ fn run_in(
             _ => return Err(failure(case.name, &found)),
         }
     }
+    // `ironafs-time`'s own file: the root without the constructor bans
+    // passes; one that keeps them, or drops another ban, is drift.
+    let own = time_own(clippy_toml);
+    let drift_cases = [
+        (
+            "the crate file kept whole, constructor bans included",
+            clippy_toml.to_owned(),
+        ),
+        (
+            "the crate file without a rule 7 ban",
+            without(&own, REMOVED),
+        ),
+    ];
+    if !crate_config_drift(clippy_toml, &own).is_empty() {
+        return Err(failure(
+            "the crate file as the root without the constructor bans",
+            &[],
+        ));
+    }
+    report("passed: the crate file as the root without the constructor bans".to_owned())?;
+    for (name, planted) in &drift_cases {
+        let found = in_time_file(crate_config_drift(clippy_toml, planted));
+        match found.as_slice() {
+            [
+                found @ Found {
+                    violation: Violation::CrateConfigDrift(_),
+                    ..
+                },
+            ] => {
+                report(format!("caught: {name}: {found}"))?;
+            }
+            _ => return Err(failure(name, &found)),
+        }
+    }
     build_scripts(&dir.join("build"), toolchain_toml, &mut report)?;
     cargo_configs(&dir.join("cargo"), &mut report)?;
     canary::run(
         &dir.join("canary"),
         (root_manifest, clippy_toml, toolchain_toml),
+        time_crate,
         &mut report,
     )?;
     report(

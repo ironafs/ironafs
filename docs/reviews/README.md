@@ -51,6 +51,9 @@ the evidence that refutes it.
 | [2026-11-21-m2a-65-vl-fs-read](2026-11-21-m2a-65-vl-fs-read.md) | Issue #65: volume location and file-service reads and operation grants, the version from documents only |
 | [2026-11-21-m2a-60-dns-client](2026-11-21-m2a-60-dns-client.md) | Issue #60: the first-party DNS client for Linux and Unix builds |
 | [2026-11-21-m2a-63-testing](2026-11-21-m2a-63-testing.md) | Issue #63: the test strategy |
+| [2026-11-21-m2a-07-wire-time](2026-11-21-m2a-07-wire-time.md) | Issue #82: the wire time-field table, first version from the participating specifications |
+| [2026-11-21-m2a-62-local-ipc](2026-11-21-m2a-62-local-ipc.md) | Issue #62: the local IPC framework specification, in three parts; stopped with five blockers recorded |
+| [2026-11-21-m2a-71-types](2026-11-21-m2a-71-types.md) | Issue #71: the seam interface types in their crates, and `check-seams` |
 | [2026-11-21-m2a-14-xdr](2026-11-21-m2a-14-xdr.md) | Issue #59: `ironafs-xdr`, the XDR codec with caps, and `check-bans`' configuration checks |
 | [2026-11-21-m2a-45-fuzz](2026-11-21-m2a-45-fuzz.md) | Issue #45: the excluded `fuzz/` crate, its pinned tooling, the deny-file and replay checks, and the XDR decode target |
 

@@ -303,22 +303,31 @@ fn without_dependencies(manifest: &str) -> String {
 }
 
 /// Writes a workspace under `dir` holding only the canary, with the
-/// repository's `root_manifest`, `clippy_toml` and `toolchain_toml`, then
-/// `files`, and lints it as the real workspace is, with `env` set. With
+/// repository's `root_manifest`, `clippy_toml` and `toolchain_toml`, its
+/// one dependency `ironafs-time` taken from `time_crate`, then `files`, and
+/// lints it as the real workspace is, with `env` set. With
 /// `prime`, it first runs clippy on it as the lint does, into the
 /// workspace's own target directory, with `env` set and nothing else
 /// adjusted, and then lints it with no variable set.
 fn lint_planted(
     dir: &Path,
     texts: (&str, &str, &str),
+    time_crate: &Path,
     files: &[(&str, &str)],
     env: &[(&str, &str)],
     prime: bool,
 ) -> Result<Vec<Found>, Error> {
     let (root_manifest, clippy_toml, toolchain_toml) = texts;
     let root = dir.to_string_lossy().into_owned();
+    // The canary's one dependency, outside this workspace, so not a
+    // member of it.
+    let manifest = format!(
+        "{}\n[workspace.dependencies]\nironafs-time = {{ path = '{}' }}\n",
+        without_dependencies(root_manifest),
+        time_crate.display()
+    );
     let canary_files = [
-        ("Cargo.toml", without_dependencies(root_manifest)),
+        ("Cargo.toml", manifest),
         ("clippy.toml", clippy_toml.to_owned()),
         ("rust-toolchain.toml", toolchain_toml.to_owned()),
         ("crates/ironafs-bans-canary/Cargo.toml", canary::manifest()),
@@ -372,10 +381,11 @@ fn executable(path: &Path) -> Result<(), Error> {
 pub(super) fn run(
     dir: &Path,
     texts: (&str, &str, &str),
+    time_crate: &Path,
     report: &mut impl FnMut(String) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let clean = "a workspace whose lint draws every canary warning";
-    let found = lint_planted(&dir.join("clean"), texts, &[], &[], false)?;
+    let found = lint_planted(&dir.join("clean"), texts, time_crate, &[], &[], false)?;
     if !found.is_empty() {
         return Err(failure(clean, &found));
     }
@@ -390,6 +400,7 @@ pub(super) fn run(
         let found = lint_planted(
             &dir.join(format!("case-{index}")),
             texts,
+            time_crate,
             case.files,
             case.env,
             prime,
@@ -400,6 +411,38 @@ pub(super) fn run(
         for violation in found.iter().filter(|found| (case.needs)(&found.violation)) {
             report(format!("caught: {}: {violation}", case.name))?;
         }
+    }
+    // The canary's manifest as check-bans wrote it before the constructor
+    // bans: without the dependency their planted lines need.
+    let name = "the canary's manifest without its ironafs-time dependency";
+    let altered: String = canary::manifest()
+        .lines()
+        .filter(|line| *line != "[dependencies]" && !line.starts_with("ironafs-time = "))
+        .map(|line| {
+            if line.starts_with("planted = ") {
+                "planted = []"
+            } else {
+                line
+            }
+        })
+        .flat_map(|line| [line, "\n"])
+        .collect();
+    if altered == canary::manifest() {
+        return Err(failure(name, &[]));
+    }
+    let found = lint_planted(
+        &dir.join("no-time"),
+        texts,
+        time_crate,
+        &[("crates/ironafs-bans-canary/Cargo.toml", &altered)],
+        &[],
+        false,
+    )?;
+    if !found.iter().any(|found| tampered(&found.violation)) {
+        return Err(failure(name, &found));
+    }
+    for violation in found.iter().filter(|found| tampered(&found.violation)) {
+        report(format!("caught: {name}: {violation}"))?;
     }
     Ok(())
 }

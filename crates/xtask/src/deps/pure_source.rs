@@ -288,7 +288,7 @@ fn shown(workspace: &Workspace, path: &Path) -> PathBuf {
 
 /// Whether `path` is the file or directory of a module `tests` whose parent
 /// declares every `mod tests` it has under `#[cfg(test)]`.
-fn is_gated_test_module(path: &Path, lib_dir: &Path, lib_root: &Path) -> bool {
+pub(crate) fn is_gated_test_module(path: &Path, lib_dir: &Path, lib_root: &Path) -> bool {
     let named_tests = path
         .file_name()
         .is_some_and(|name| name == "tests" || name == "tests.rs");

@@ -129,6 +129,11 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             &["check-pure", "--self-test"][..],
             Task::CheckPure { self_test: true },
         ),
+        (&["check-seams"][..], Task::CheckSeams { self_test: false }),
+        (
+            &["check-seams", "--self-test"][..],
+            Task::CheckSeams { self_test: true },
+        ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Ok(task));
     }
@@ -151,6 +156,10 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
         ),
         (
             &["check-pure", "--all"][..],
+            UsageError::UnexpectedArgument("--all".into()),
+        ),
+        (
+            &["check-seams", "--all"][..],
             UsageError::UnexpectedArgument("--all".into()),
         ),
     ] {

@@ -84,6 +84,10 @@ jobs:
         run: cargo --locked xtask check-pure
       - name: Prove the pure-crate build catches planted violations
         run: cargo --locked xtask check-pure --self-test
+      - name: Check the seams' source rules
+        run: cargo --locked xtask check-seams
+      - name: Prove the seam rules catch planted violations
+        run: cargo --locked xtask check-seams --self-test
 
   test:
     name: test

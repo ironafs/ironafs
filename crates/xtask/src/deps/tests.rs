@@ -59,6 +59,7 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                 lib_root: None,
                 target_kinds: vec!["lib".into()],
                 editions: vec!["2024".into()],
+                renamed: Vec::new(),
             })
             .collect(),
         packages,

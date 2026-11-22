@@ -19,4 +19,6 @@
 #[rustfmt::skip] #[must_use] pub fn hash_map() -> usize { std::collections::HashMap::<u8, u8>::default().len() }
 #[rustfmt::skip] #[must_use] pub fn hash_map_collect() -> usize { [(1_u8, 2_u8)].into_iter().collect::<std::collections::HashMap<_, _>>().len() }
 #[rustfmt::skip] #[must_use] pub fn hash_set() -> usize { std::collections::HashSet::<u8>::new().len() }
+#[rustfmt::skip] #[must_use] pub fn deadline_boot(now: &ironafs_time::Stamp) -> bool { ironafs_time::Deadline::boot_after(now, now, core::time::Duration::ZERO).is_ok() }
+#[rustfmt::skip] #[must_use] pub fn deadline_awake() -> fn(&ironafs_time::Stamp, &ironafs_time::Stamp, core::time::Duration) -> Result<ironafs_time::Deadline, ironafs_time::DeadlineError> { ironafs_time::Deadline::awake_after }
 #[rustfmt::skip] #[must_use] pub fn subprocess() -> bool { std::process::Command::new("date").status().is_ok() }

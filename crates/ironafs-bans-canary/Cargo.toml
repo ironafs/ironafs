@@ -13,8 +13,12 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+# The crate that defines the deadline constructors, whose bans it plants.
+[dependencies]
+ironafs-time = { workspace = true, optional = true }
+
 [features]
-planted = []
+planted = ["dep:ironafs-time"]
 
 [lints]
 workspace = true

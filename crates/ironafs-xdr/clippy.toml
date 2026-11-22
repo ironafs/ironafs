@@ -3,8 +3,8 @@
 
 # Clippy reads the first clippy.toml it finds from the crate upwards, so this
 # file repeats the workspace's settings, every ban of coding standards rule 7
-# among them (the root clippy.toml says why each is there), and adds this
-# crate's own.
+# and the two Deadline constructors' among them (the root clippy.toml says
+# why each is there), and adds this crate's own.
 
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
@@ -19,6 +19,8 @@ doc-valid-idents = ["IronAFS", "OpenAFS", "AuriStor", "FSKit", "macOS", ".."]
 # list misses: `Vec::from` and other conversions through `From`, which
 # Clippy cannot name by path without banning `From::from` everywhere.
 disallowed-methods = [
+  { path = "ironafs_time::Deadline::boot_after", reason = "seams spec 5.3, point 2: a deadline is built only in a crate's one named sampling function, from its fresh Clock::sample (cargo xtask check-seams)" },
+  { path = "ironafs_time::Deadline::awake_after", reason = "seams spec 5.3, point 2: a deadline is built only in a crate's one named sampling function, from its fresh Clock::sample (cargo xtask check-seams)" },
   { path = "std::time::Instant::now", reason = "coding standards rule 7: read time through the Clock interface of ironafs-time" },
   { path = "std::time::Instant::elapsed", reason = "coding standards rule 7: elapsed reads the system clock; read time through the Clock interface of ironafs-time" },
   { path = "std::time::SystemTime::now", reason = "coding standards rule 7: read wall time through the Clock interface of ironafs-time" },

@@ -11,9 +11,10 @@ use std::ffi::OsStr;
 use super::snapshot as snapshot_of;
 use super::template;
 use super::{
-    BANS, Ban, CONF_DIR, Found, Lint, Snapshot, Violation, build_overrides, cargo_warnings,
-    changed, config_files, fired_violations, line_breaks, listed, outside_root, overridden,
-    plain_terminal, planted_source, root_config, uncovered, unreadable, workspace_clippy,
+    BANS, Ban, CONF_DIR, Found, Lint, Snapshot, TIME_CRATE_EXEMPT, Violation, build_overrides,
+    cargo_warnings, changed, config_files, crate_config_drift, fired_violations, line_breaks,
+    listed, outside_root, overridden, plain_terminal, planted_source, root_config, uncovered,
+    unreadable, workspace_clippy,
 };
 
 /// Clippy's short-format warning for `ban` fired on line `line`, spelt
@@ -934,4 +935,62 @@ fn workspace_clippy_is_cargo_check_with_clippy_s_driver() {
         Some(OsStr::new("/t/bin/clippy-driver"))
     );
     assert_eq!(set("CLIPPY_ARGS"), Some(OsStr::new("")));
+}
+
+#[test]
+fn bans_cover_the_deadline_constructors() {
+    for path in [
+        "ironafs_time::Deadline::boot_after",
+        "ironafs_time::Deadline::awake_after",
+    ] {
+        assert!(
+            BANS.iter()
+                .any(|ban| ban.path == path && ban.lint == Lint::Method),
+            "{path}"
+        );
+        assert!(TIME_CRATE_EXEMPT.contains(&path), "{path}");
+    }
+}
+
+const ROOT: &str = "# SPDX header\n\n# Why.\ndisallowed-methods = [\n  \
+                    { path = \"ironafs_time::Deadline::boot_after\", reason = \"r\" },\n  \
+                    { path = \"ironafs_time::Deadline::awake_after\", reason = \"r\" },\n  \
+                    { path = \"std::time::Instant::now\", reason = \"r\" },\n]\n";
+
+#[test]
+fn crate_config_matching_the_root_minus_the_constructor_bans_passes() {
+    let own = "# Its own comment.\n\ndisallowed-methods = [\n  \
+               { path = \"std::time::Instant::now\", reason = \"r\" },\n]\n";
+    assert_eq!(crate_config_drift(ROOT, own), []);
+}
+
+#[test]
+fn crate_config_missing_a_root_ban_is_drift() {
+    let own = "disallowed-methods = [\n]\n";
+    assert_eq!(
+        crate_config_drift(ROOT, own),
+        [Violation::CrateConfigDrift(
+            "  { path = \"std::time::Instant::now\", reason = \"r\" },".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn crate_config_listing_a_constructor_ban_is_drift() {
+    let found = crate_config_drift(ROOT, ROOT);
+    assert_eq!(
+        found,
+        [Violation::CrateConfigDrift(
+            "  { path = \"ironafs_time::Deadline::boot_after\", reason = \"r\" },".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn crate_config_drift_says_what_differs() {
+    assert_eq!(
+        Violation::CrateConfigDrift("x = 1".to_owned()).to_string(),
+        "crates/ironafs-time/clippy.toml must be the root clippy.toml without the Deadline \
+         constructor bans; first difference at: x = 1"
+    );
 }

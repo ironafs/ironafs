@@ -1,9 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The clock and randomness bans of coding standards rule 7, kept by
-//! clippy's `disallowed-methods` and `disallowed-types` in the root
-//! `clippy.toml`, and proved to fire.
+//! The clock and randomness bans of coding standards rule 7, and the
+//! deadline constructors' ban (the seams specification's second net, 5.3,
+//! point 2), kept by clippy's `disallowed-methods` and `disallowed-types`
+//! in the root `clippy.toml`, and proved to fire.
+//!
+//! `ironafs-time` has its own `clippy.toml`, since inside that crate the
+//! constructors' path names nothing: it must be the root file without the
+//! constructor bans, line for line apart from comments.
 //!
 //! A ban clippy cannot resolve only warns, and a ban removed from the file
 //! is silent, so neither is trusted as written. The check builds a small
@@ -19,7 +24,9 @@
 //!
 //! Clippy reads only the configuration nearest a crate and merges nothing,
 //! so a crate's own `clippy.toml` replaces the root's for that crate. Each
-//! such file is checked the same way, and must carry every ban itself.
+//! such file is checked the same way, and must carry every ban itself,
+//! except `ironafs-time`'s, which is held to the root's lines without the
+//! constructor bans (`crate_config_drift`) instead of linted on a fixture.
 //! `CLIPPY_CONF_DIR` comes before all of them: clippy then reads the
 //! directory it names for every crate. The check refuses to run while it
 //! is set, before it builds anything, and `cargo xtask check` lints
@@ -195,6 +202,16 @@ pub(crate) const BANS: &[Ban] = &[
         planted: "pub fn hash_set() -> usize { std::collections::HashSet::<u8>::new().len() }",
     },
     Ban {
+        lint: Lint::Method,
+        path: "ironafs_time::Deadline::boot_after",
+        planted: "pub fn deadline_boot(now: &ironafs_time::Stamp) -> bool { ironafs_time::Deadline::boot_after(now, now, core::time::Duration::ZERO).is_ok() }",
+    },
+    Ban {
+        lint: Lint::Method,
+        path: "ironafs_time::Deadline::awake_after",
+        planted: "pub fn deadline_awake() -> fn(&ironafs_time::Stamp, &ironafs_time::Stamp, core::time::Duration) -> Result<ironafs_time::Deadline, ironafs_time::DeadlineError> { ironafs_time::Deadline::awake_after }",
+    },
+    Ban {
         lint: Lint::Type,
         path: "std::process::Command",
         planted: "pub fn subprocess() -> bool { std::process::Command::new(\"date\").status().is_ok() }",
@@ -244,6 +261,9 @@ pub(crate) enum Violation {
     /// The configuration was added, removed or rewritten while the
     /// workspace was built.
     Changed,
+    /// `ironafs-time`'s own clippy.toml is not the root one without the
+    /// constructor bans; the first line that differs.
+    CrateConfigDrift(String),
 }
 
 impl fmt::Display for Violation {
@@ -261,6 +281,11 @@ impl fmt::Display for Violation {
             Self::Unresolved(line) => write!(
                 formatter,
                 "clippy cannot resolve a ban, so it bans nothing: {line}"
+            ),
+            Self::CrateConfigDrift(line) => write!(
+                formatter,
+                "crates/ironafs-time/clippy.toml must be the root clippy.toml without the \
+                 Deadline constructor bans; first difference at: {line}"
             ),
             Self::Clippy(error) => write!(
                 formatter,
@@ -330,6 +355,59 @@ impl fmt::Display for Violation {
             ),
         }
     }
+}
+
+/// The bans `ironafs-time`'s own clippy.toml leaves out: inside that crate
+/// the paths name nothing, and the constructors are defined and tested
+/// there (seams spec 5.3, point 2).
+pub(crate) const TIME_CRATE_EXEMPT: &[&str] = &[
+    "ironafs_time::Deadline::boot_after",
+    "ironafs_time::Deadline::awake_after",
+];
+
+/// Where `ironafs-time`'s own clippy.toml is, from the workspace root.
+pub(crate) const TIME_CRATE_CONFIG: &str = "crates/ironafs-time/clippy.toml";
+
+/// The lines of a clippy.toml that configure anything: not blank, not a
+/// comment.
+fn config_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|line| {
+            let line = line.trim();
+            !line.is_empty() && !line.starts_with('#')
+        })
+        .collect()
+}
+
+/// Checks that `own`, a crate's clippy.toml, configures exactly what the
+/// root's `root` does without the constructor bans, in the same order:
+/// clippy reads the nearest file whole, so any other difference would
+/// drop or change a ban for that crate. Comments may differ.
+pub(crate) fn crate_config_drift(root: &str, own: &str) -> Vec<Violation> {
+    let expected: Vec<&str> = config_lines(root)
+        .into_iter()
+        .filter(|line| {
+            !TIME_CRATE_EXEMPT
+                .iter()
+                .any(|path| line.contains(&format!("\"{path}\"")))
+        })
+        .collect();
+    let own = config_lines(own);
+    if own == expected {
+        return Vec::new();
+    }
+    let index = own
+        .iter()
+        .zip(&expected)
+        .position(|(own, expected)| own != expected)
+        .unwrap_or_else(|| own.len().min(expected.len()));
+    let line = match (own.get(index), expected.get(index)) {
+        (Some(extra), _) if !expected.contains(extra) => extra,
+        (_, Some(missing)) => missing,
+        (Some(extra), None) => extra,
+        (None, None) => "",
+    };
+    vec![Violation::CrateConfigDrift(line.to_owned())]
 }
 
 /// Whether `clippy_toml` has an entry whose path is exactly `path`.
@@ -731,6 +809,7 @@ pub(crate) fn fired_violations(output: &str) -> Vec<Violation> {
 pub(crate) fn check(
     clippy_toml: &str,
     toolchain_toml: &str,
+    time_crate: &Path,
     dir: &Path,
 ) -> Result<Vec<Violation>, Error> {
     crate::fixture::remove_dir(dir)?;
@@ -740,12 +819,15 @@ pub(crate) fn check(
         .map(|ban| Violation::NotListed { path: ban.path })
         .collect();
     violations.dedup();
+    // The constructors' bans need the crate that defines them.
+    let manifest = format!(
+        "[package]\nname = \"bans-fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+         [dependencies]\nironafs-time = {{ path = '{}' }}\n\n\
+         # Not part of the workspace whose target directory holds it.\n[workspace]\n",
+        time_crate.display()
+    );
     let files = [
-        (
-            "Cargo.toml",
-            "[package]\nname = \"bans-fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
-             # Not part of the workspace whose target directory holds it.\n[workspace]\n",
-        ),
+        ("Cargo.toml", manifest.as_str()),
         ("clippy.toml", clippy_toml),
         ("rust-toolchain.toml", toolchain_toml),
     ];
@@ -805,7 +887,8 @@ const CONFIG_NAMES: [&str; 2] = [".clippy.toml", "clippy.toml"];
 /// the root, the root's own included, sorted and each named once.
 ///
 /// Clippy reads only the nearest configuration and merges nothing, so each
-/// of these must carry every ban itself.
+/// of these must carry every ban itself (`ironafs-time`'s, every ban but
+/// the constructors').
 pub(crate) fn config_files(
     root: &Path,
     member_dirs: &[PathBuf],
@@ -829,7 +912,12 @@ pub(crate) fn config_files(
 /// configuration a member can be linted with (`config_files`), each in a
 /// format `read` accepts (`unreadable`) and with fixtures under its own
 /// directory below `dir`. Every ban of a root configuration, under either
-/// name, must be planted (`uncovered`). With `conf_dir`, the environment's
+/// name, must be planted (`uncovered`). `ironafs-time`'s own file
+/// (`TIME_CRATE_CONFIG`) is the one exception: its crate defines the
+/// constructors, so it must be the root `clippy.toml` without their bans
+/// (`crate_config_drift`), and it is held to that rather than linted on a
+/// fixture. The fixtures depend on the crate at `time_crate`, which
+/// defines the constructors. With `conf_dir`, the environment's
 /// `CLIPPY_CONF_DIR`, set, clippy would read none of these, so the check
 /// refuses before it lints anything (`overridden`).
 ///
@@ -842,6 +930,7 @@ pub(crate) fn check_tree(
     member_dirs: &[PathBuf],
     conf_dir: Option<&OsStr>,
     toolchain_toml: &str,
+    time_crate: &Path,
     dir: &Path,
 ) -> Result<Vec<Found>, Error> {
     if let Some(refusal) = overridden(conf_dir) {
@@ -852,6 +941,8 @@ pub(crate) fn check_tree(
     if !files.iter().any(|file| file == own) {
         files.insert(0, own.to_path_buf());
     }
+    let root_path = root.join(own);
+    let root_text = fs::read_to_string(&root_path).map_err(Error::path_io("read", &root_path))?;
     let mut found = Vec::new();
     for (index, file) in files.iter().enumerate() {
         let path = root.join(file);
@@ -861,7 +952,16 @@ pub(crate) fn check_tree(
         if root_config(file) {
             violations.extend(uncovered(&text));
         }
-        violations.extend(check(&text, toolchain_toml, &dir.join(index.to_string()))?);
+        if file == Path::new(TIME_CRATE_CONFIG) {
+            violations.extend(crate_config_drift(&root_text, &text));
+        } else {
+            violations.extend(check(
+                &text,
+                toolchain_toml,
+                time_crate,
+                &dir.join(index.to_string()),
+            )?);
+        }
         found.extend(violations.into_iter().map(|violation| Found {
             file: name.clone(),
             violation,
@@ -1326,6 +1426,8 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     };
     let clippy_toml = read("clippy.toml")?;
     let toolchain_toml = read("rust-toolchain.toml")?;
+    let time_config = read(TIME_CRATE_CONFIG)?;
+    let time_crate = workspace.root.join("crates").join("ironafs-time");
     if self_test {
         let root_manifest = read("Cargo.toml")?;
         return self_test::run(
@@ -1333,6 +1435,8 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
             &root_manifest,
             &clippy_toml,
             &toolchain_toml,
+            &time_config,
+            &time_crate,
             output,
         );
     }
@@ -1368,6 +1472,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         &member_dirs,
         conf_dir.as_deref(),
         &toolchain_toml,
+        &time_crate,
         &dir,
     );
     crate::fixture::remove_dir(&dir)?;
@@ -1378,6 +1483,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     }
     let files: Vec<String> = config_files(&workspace.root, &member_dirs, Path::is_file)
         .iter()
+        .filter(|file| *file != Path::new(TIME_CRATE_CONFIG))
         .map(|file| file.display().to_string())
         .collect();
     writeln!(
@@ -1385,7 +1491,8 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         "check-bans: {} planted calls each tripped their ban in each of {}; no ban is \
          unresolved; the workspace's lint drew each of the canary's {} warnings on its line \
          and no other; no build script reported a variable clippy reads, and none left a \
-         configuration changed; no cargo configuration read sets one",
+         configuration changed; no cargo configuration read sets one; {TIME_CRATE_CONFIG} is \
+         clippy.toml without the constructor bans",
         BANS.len(),
         files.join(", "),
         BANS.len()
