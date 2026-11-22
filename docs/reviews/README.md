@@ -55,6 +55,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-62-local-ipc](2026-11-21-m2a-62-local-ipc.md) | Issue #62: the local IPC framework specification, in three parts; stopped with five blockers recorded |
 | [2026-11-21-m2a-71-types](2026-11-21-m2a-71-types.md) | Issue #71: the seam interface types in their crates, and `check-seams` |
 | [2026-11-21-m2a-66-callbacks](2026-11-21-m2a-66-callbacks.md) | Issue #66: the callback service specification, procedures and allowlist, first version from documents only |
+| [2026-11-21-m2a-78-incarnation](2026-11-21-m2a-78-incarnation.md) | Issue #78: volume incarnation evidence and the restore discriminator, the version from documents only |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
