@@ -964,24 +964,28 @@ point 7). The service never sends a datagram itself.
    the service handles any event.
 5. **When an entry may be served,** with its recorded tuple equal to the
    current one:
-   - K trusted, `hold` = 0, and the entry's recorded lowering count
-     equal to K's current `lowerings`: while its promise is valid, and
+   - K trusted, `hold` = 0, `lowerings` below `u64::MAX` (section 6,
+     point 4), and the entry's recorded lowering count equal to K's
+     current `lowerings`: while its promise is valid, and
      the credential and grants are valid (C32, point 3's branch, which
      rests on A14; 5.8);
    - otherwise (bounded revalidation, C32, point 2): only if it was
      validated within the last T seconds, by a call that recorded the
      current tuple; else it is validated before delivery.
    An entry with any other recorded tuple is suspect (point 4) in both
-   branches. An entry whose recorded lowering count is older than K's is
-   not suspect: it is served by the second branch until a call sent
-   after the latest lowering revalidates it, and then by the first
-   `[OWN]`. That keeps a lowering inside C32, point 2's bounded
+   branches. An entry whose recorded tuple is current but whose recorded
+   lowering count is older than K's is not suspect: the mismatch of the
+   count alone selects the second branch, until a call sent after the
+   latest lowering revalidates it, and then the first `[OWN]`; any
+   difference in the tuple makes it suspect, whatever its lowering
+   count (point 4). That keeps a lowering inside C32, point 2's bounded
    revalidation (ADR 0006 D1.6) without advancing any suspect epoch (ADR
    0006 D1.5), while a later keepalive's raise cannot put an entry
    validated before a known loss of continuity back under trust with no
    further cap, which C32, point 3, forbids. Before either branch is
    chosen, the serve checks whether a raised trust has reached its end
-   (point 11).
+   (point 11); that check, the fence check of point 4 and the choice of
+   branch are one serve decision, one K step (point 11).
 6. **An advance** of K, made in the core before any event is queued
    (C16, point 1):
    - if `recorded_since_advance` is set, `suspect_epoch` takes the next
@@ -1143,14 +1147,22 @@ point 7). The service never sends a datagram itself.
     server may have been dropped, or a loss shown, in between. A raise
     never lowers `lowerings`, and covers only entries whose recorded
     lowering count is the current one (point 5).
-    **The K step** `[OWN]`. Every lowering, every end, every raise, the
-    read of `lowerings` a call records when it is sent (point 3), and the
-    read of `trust`, `hold` and `lowerings` a serve makes (point 5) is
-    one step over K's record, under its lock at the server level of C39,
-    point 4's order, with no RPC wait, disk write or kernel notification
-    under it: the keepalive specification's 5.6, point 10. So a lowering
-    is wholly before or wholly after a raise, never between its checks
-    and its write.
+    **The K step** `[OWN]`. Every lowering, every end, every raise, a
+    call's recording when it is sent (point 3: its fence tuple and K's
+    `lowerings`), and a serve's decision (points 4 and 5: any end that
+    is due, the fence check, and the read of `trust`, `hold` and
+    `lowerings` that chooses the branch) is one step over K's record,
+    under its lock at the server level of C39, point 4's order, with no
+    RPC wait, disk write or kernel notification under it: the keepalive
+    specification's 5.6, point 10. A K step that records or checks a
+    fence tuple takes the fence table's lock inside K's, last, as
+    point 2's leaf, and holds both until the step ends. So a call
+    records its tuple and K's `lowerings` together, before it is handed
+    to the transport, and a lowering is wholly before or wholly after
+    that recording; a serve's fence check and its choice of branch see
+    one state of K and of the table, so no pause, advance, lowering or
+    raise falls between them; and a lowering is wholly before or wholly
+    after a raise, never between its checks and its write.
 12. **The hold and its exit** `[ADR 0006 D2.5: Working]`.
     - While `hold` > 0 on any key of the server, every key of the server
       is served as bounded revalidation (point 5), whatever `trust`
@@ -1327,7 +1339,8 @@ Every value read from a request is untrusted (coding standards rule 2).
    `[OWN]`. Even at the most the ticks allow for every key together, this
    takes far longer than any daemon runs, so it is a guard, not a case.
 4. **`lowerings`** rises by one with checked arithmetic; at `u64::MAX`
-   the key is served as if it were never trusted, and the record is
+   the key is served as if it were never trusted (5.6, point 5, takes
+   its first branch only below that value), and the record is
    retired at the next opportunity `[OWN]`, as for an exhausted epoch
    (point 3). It is a guard, not a case: one lowering per call outcome
    cannot reach it in any daemon's life.
@@ -1676,13 +1689,18 @@ with a callback state record on the family named.
   status call to the server ends with a matching ABORT on an eligible
   connection: trust is none, `lowerings` rises, no suspect epoch moves,
   and A is not suspect. A keepalive sent after the ABORT raises trust.
-  A read of A more than T after its validation is revalidated before
-  delivery; a read within T is served from bounded revalidation; once
-  revalidated by a call sent after the ABORT, A is served under trust.
+  A read of A within T of its validation is served from bounded
+  revalidation; then, past T, a read of A is revalidated before
+  delivery; once revalidated by a call sent after the ABORT, A is
+  served under trust.
   An entry B validated by a call sent after the ABORT is served under
   trust at once. The same with a `Timeout` instead of the ABORT, and
   with a lapse of trust at its end instead of either. A keepalive sent
-  before the ABORT whose reply arrives after it raises nothing.
+  before the ABORT whose reply arrives after it raises nothing. A serve
+  of a fence-current entry of an untrusted K, interleaved with a pause
+  and resume of K's family's socket and then a keepalive's raise: the
+  serve sees neither or both (5.6, point 11, the K step); with both,
+  the entry is suspect and is revalidated, never served under trust.
 - **C24 Fairness** (5.6, point 14). A within-rate break flood from one
   known server, a refusal and diagnostic flood from many sources, and
   probes from a second known server, together: each probe is answered

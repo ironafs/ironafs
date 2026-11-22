@@ -244,8 +244,8 @@ From [callbacks.md](callbacks.md) (a specification this one rests on):
 the callback state record, of which this specification writes only
 `trust` (callbacks.md, 5.6, point 1); the fence tuple and the fence
 check (5.6, point 2); what a call records (5.6, point 3); every input
-that lowers trust (5.6, point 11), and its last paragraph, which leaves
-the one input that raises it to this specification. From [rx.md](rx.md):
+that lowers trust (5.6, point 11), and its paragraph on the raise,
+which leaves the one input that raises it to this specification. From [rx.md](rx.md):
 the keepalive call's channel and random call number (5.6, point 3), the
 start of a keepalive call (5.7, point 1), the outcomes (section 7) and
 the reservation window R (5.2). From the seams specification (#71, its
@@ -667,7 +667,8 @@ point 7). Then, in order; the first failure decides `[OWN]`:
      callbacks.md, 5.6, point 3, records for a keepalive (K's suspect
      epoch, the pause generation of K's family's socket, the resume
      generation), the network generation (C23, point 2), and K's
-     `lowerings`, read in one K step (point 10). It sets K's
+     `lowerings`, read and recorded in one K step before the call is
+     handed to the transport (point 10). It sets K's
      `recorded_since_advance` (callbacks.md, 5.6, point 3).
 5. **When a keepalive is due** `[ADR 0004 C32.4: Working; OWN for the
    values]`:
@@ -776,9 +777,11 @@ point 7). Then, in order; the first failure decides `[OWN]`:
      fence tuple (callbacks.md, 5.6, point 3) also records K's
      `lowerings`, and an entry is served under trust (callbacks.md, 5.6,
      point 5, first branch) only if its recorded `lowerings` equals K's
-     current one. Every other entry of K is served under bounded
-     revalidation (C32, point 2) until a call sent after the latest
-     lowering revalidates it.
+     current one. Every other entry of K whose recorded fence tuple is
+     current is served under bounded revalidation (C32, point 2) until a
+     call sent after the latest lowering revalidates it: the mismatch of
+     the count alone selects that branch. An entry whose tuple differs
+     is suspect (callbacks.md, 5.6, point 4), whatever its count.
    - **Why.** callbacks.md, 5.6, point 11, lowers trust on a reset or a
      failed call, the signals by which assumption A14 lets the client
      learn of a lost callback (C32, point 3). A reset also advances the
@@ -878,9 +881,13 @@ point 7). Then, in order; the first failure decides `[OWN]`:
     step only, with no RPC wait, disk write or kernel notification
     under it (C39, point 4). The K steps are: every lowering of
     callbacks.md, 5.6, point 11, including point 7's ends; every raise;
-    the read of `lowerings` a call records when it is sent (point 4;
-    callbacks.md, 5.6, point 3); and the read of `trust`, `hold` and
-    `lowerings` a serve makes (callbacks.md, 5.6, point 5). A K step is
+    a call's recording when it is sent, of its fence values and of
+    `lowerings` (point 4; callbacks.md, 5.6, point 3); and a serve's
+    decision, of any end that is due, the fence check and the branch
+    from `trust`, `hold` and `lowerings` (callbacks.md, 5.6, points 4
+    and 5). A K step that records or checks a fence tuple takes the
+    fence table's lock inside K's, last, as that lock's leaf rule says
+    (callbacks.md, 5.6, point 2). A K step is
     the same kind of single step as the callback service's tick
     (callbacks.md, 5.6, point 14). The fence check's clock comparison
     and the fresh sample of condition 7 are reads, not waits, and run
@@ -1393,7 +1400,7 @@ This specification's own choices:
 | D1 | DECISION | [ADR 0004](../adr/0004-architecture.md): constraint 4; A13, A14; C6, C16, C18, C23, C24, C26, C30, C32, C37, C38, C39, C46 ([part 1](../adr/0004-architecture-1-core.md)); O1, O12, O23, O40, O50 ([part 3](../adr/0004-architecture-3-operations.md)); N3, N5, N9, N31 ([part 4](../adr/0004-architecture-4-negotiation.md)) | 1, 2, 5, 8, 9, 11 |
 | D2 | DECISION | [ADR 0006](../adr/0006-rx-unprotected-packets.md): decision 1, points 5, 6 and 9; decision 2, points 1, 2 and 4 | 1, 5.5, 5.6, 8, 9 |
 | D3 | DECISION | the amendment of ADR 0004 in issue #53, point 3 (proposed, not yet accepted), and the owner's decision of 2026-11-20 it carries | 1, 5.2, 5.7 |
-| D4 | DECISION | [callbacks.md](callbacks.md): 5.1.4, 5.4, 5.6 (points 1 to 5, 10 and 11), 5.8, 5.9, section 6, 10.5 and section 13; [rx.md](rx.md): 5.2, 5.6, 5.7, 5.12 and section 7; [xdr.md](xdr.md): 5.2 and 5.4 | 2, 5, 6, 7 |
+| D4 | DECISION | [callbacks.md](callbacks.md): 5.1.4, 5.4, 5.6 (points 1 to 6, 9 to 11 and 14), 5.8, 5.9, section 6, 10.5 and section 13; [rx.md](rx.md): 5.2, 5.6, 5.7, 5.12 and section 7; [xdr.md](xdr.md): 5.2 and 5.4 | 2, 5, 6, 7 |
 | D5 | DECISION | the VL and FS read specification (#65): its 5.1.1 (framing, services) and section 2, point 3 (procedures not used; its sentence on the time procedure is superseded by this specification, section 13, Q10) | 5.1 |
 | D6 | DECISION | the seams specification (#71): its 5.3, points 1 and 2 (`Stamp`, `Deadline`, episodes, the sampling function) and 5.4, point 1 (`Reply`, `ReplyEvidence`, the trust conditions) | 4, 5.6, 5.7, 6 |
 | D7 | DECISION | [ADR 0001](../adr/0001-licence-and-dont-copy.md), "Don't copy"; [coding standards](../coding-standards.md), rules 1 to 3, 15 and 20 | 6, 7, 10, 12 |
