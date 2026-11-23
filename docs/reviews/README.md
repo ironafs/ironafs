@@ -83,7 +83,8 @@ record lists:
   it (no cost figures), and "uncalibrated on IronAFS" beside each verdict
   from an uncalibrated pin ([workflow](../workflow.md) §2, "Model routing");
 - **from round 3 on:** the convergence note ([workflow](../workflow.md) §3,
-  step 7).
+  step 7), and for each fix round past the second, the controller's
+  request, its recommendation, and the owner's answer with its date.
 
 Records are written from the lanes' output and redacted: no paths outside the
 repository, hostnames, cell names, keys or other projects. Raw transcripts are
