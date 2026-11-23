@@ -189,8 +189,9 @@ jobs:
         # this throwaway runner (its default is 0), so that exec's value is
         # told apart from the helper's 0 carried over and from an ordinary
         # exec's 1; the test refuses any other value and never sets it.
-        # The set-user-id copy refuses to be the helper (its effective uid
-        # is root's), before it starts anything. The set-id case is for a disposable
+        # The same test then shows the set-user-id copy refusing to be the
+        # helper (its effective uid is root's) before it starts the program
+        # the helper would; one test, so no two preflights run at once. The set-id case is for a disposable
         # guest, as this runner is, which is its access boundary: its check
         # that no account, group or thread holds its id is a snapshot taken
         # before the set-id copy is made.
@@ -201,7 +202,6 @@ jobs:
           sudo sysctl -w fs.suid_dumpable=2
           privileged="unix_nodump::tests::kernel::an_exec_as_another_user_resets_the_attribute_and_disable_dumps_restores_it
           unix_nodump::tests::kernel::a_set_id_exec_resets_the_attribute_to_suid_dumpable_and_disable_dumps_restores_it
-          unix_nodump::tests::kernel::the_set_user_id_copy_refuses_to_be_the_set_id_helper
           linux_peercred::tests::kernel::peer_credentials_name_a_peer_under_another_uid"
           filter=$(printf 'test(=%s) | ' $privileged)
           status=0
