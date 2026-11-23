@@ -104,7 +104,19 @@ Sections keep their numbers once the specification is reviewed.
    they appear, comments included. TOML refuses the C0 set and DEL in
    comments and strings `[S1 "Comment", "String": CONFIRMED]`; the
    subset also refuses the C1 set, which TOML allows, because a value
-   may be echoed to a terminal or a log `[OWN]`.
+   may be echoed to a terminal or a log `[OWN]`. The control characters
+   are Unicode's general category Cc, exactly the ranges listed.
+   **Bidirectional controls** are refused the same way, wherever they
+   appear, comments, keys and values included: the Unicode `Bidi_Control`
+   set, U+061C, U+200E, U+200F, U+202A to U+202E and U+2066 to U+2069
+   `[S2: CONFIRMED]`. They make text display in an order other than the
+   order it is read in, so a file, or a key or value echoed from it, could
+   show one thing on screen and mean another `[OWN]`. TOML allows them
+   in comments and strings `[S1 "Comment", "String": CONFIRMED]`. The
+   error is its own kind, a bidirectional control, at the character. No
+   other character is refused by this check: other format characters
+   (such as U+200B and U+200D), unassigned code points, and characters
+   that look like others are accepted (§8, point 4).
 4. **Whitespace** is space and tab `[S1 "Spec": CONFIRMED]`.
 5. **A line** is, after optional whitespace, one of:
    - empty;
@@ -159,7 +171,11 @@ Sections keep their numbers once the specification is reviewed.
 
 ### 5.2 Caps
 
-Every cap is checked before the bytes it bounds are stored `[OWN]`.
+Every cap is checked before the bytes it bounds are stored `[OWN]`. A
+header segment past `MAX_DEPTH` is refused at its first character,
+before it is read; `""` there keeps its own error of §5.5 (an empty key
+or a multi-line string), and so does any other character that cannot
+start a segment, since neither stores anything.
 
 | Cap | Value | Applies to | Reason |
 |---|---|---|---|
@@ -173,9 +189,15 @@ Every cap is checked before the bytes it bounds are stored `[OWN]`.
 
 What a file can make the parser allocate is bounded by these: every
 stored key and string is at most its cap; each table stores its path,
-at most `MAX_DEPTH` segments of at most `MAX_KEY_BYTES` each, and a
-header creates at most `MAX_DEPTH` tables, so the paths stored for one
-header are at most `MAX_DEPTH` times that header's line.
+at most `MAX_DEPTH` segments of at most `MAX_KEY_BYTES` each. For one
+header, let P be the decoded text of its segments, which is at most the
+header's line. The header creates at most `MAX_DEPTH` tables, each
+storing its full path (at most P); the explicit table it defines stores
+one more copy of its path in the document (at most P); and each table it
+creates is stored by name in its parent (at most P over all of them). So
+the decoded path text stored for one header is at most `MAX_DEPTH` + 2
+times P. These bounds measure decoded text only, not the overhead of the
+containers that hold it.
 
 ### 5.3 Versions
 
@@ -199,8 +221,17 @@ that it refuses today, never by changing the meaning of an accepted file
    before it, or to the root table before any header. A key already
    defined in that table, as a value or as a table, is refused
    (redefined) `[S1 "Keys", "Table": CONFIRMED]`. A header whose path
-   passes through a key that holds a value is refused (not a table).
-4. A redefinition error names the position of the first definition.
+   passes through a key that holds a value is refused: when the key is
+   the header's last segment, the header's table is that key, so it is
+   refused as redefined, at the header's `[`; when the key is an earlier
+   segment, it is refused as not a table, at that segment's first
+   character. Both errors name the key's position as the first
+   definition.
+4. A redefinition error names the position of the first definition. A
+   table's first definition is the header that created it, its own or a
+   deeper one's (section 4, "Definition"), even when a later header makes
+   it explicit. A header that redefines a table is refused at its `[`; a
+   key that redefines a key or a table, at the key's first character.
 5. **The result** is the document: the explicit tables in the order of
    their headers, each with its path and its header's position; and the
    key/value pairs in file order, each with its table's path, its key,
@@ -259,7 +290,9 @@ steps in order `[DEC-1]`:
    that differ only in ASCII case or in one final dot construct equal
    names.
 
-Each refusal names the byte offset in the input where it was found. A
+Each refusal names the byte offset in the input where it was found:
+for empty input, 0; for two final dots, the first of them; for a name
+too long, 253, the first byte over the limit. A
 name of one label is a valid cell name; whether a use accepts it is that
 use's rule (§2).
 
@@ -298,8 +331,13 @@ use's rule (§2).
 3. **Silent misreading:** the subset accepts only constructs whose
    meaning in TOML is unambiguous and the same here (§3, point 3), and
    refuses the rest. A duplicate key is refused, never "last one wins".
-4. **Text that hides from a reader:** control characters, including C1
-   and tab, are refused inside strings (§5.1, points 3 and 9).
+4. **Text that hides from a reader:** control characters, including C1,
+   and bidirectional controls are refused anywhere in the file, and tab
+   inside strings (§5.1, points 3 and 9). That is the whole filter: other
+   invisible or look-alike characters are accepted. A caller that
+   displays a key, a value or a file's text (an error message, a log, a
+   status command) escapes the characters that are not printable before
+   echoing it.
 5. **Two spellings of one cell:** §5.7, point 6 makes case and a final
    dot not matter, so one cell has one name everywhere.
 
@@ -309,7 +347,9 @@ use's rule (§2).
 |---|---|---|
 | O18, point 1: a strict subset, our own code | §5.1 and §5.5; the crate has no dependencies | the refusal tests of §10.3 |
 | O18, point 2: line, column, expected, hint | §7 | each §10.3 test asserts the position and kind |
-| rule 1: no panic | the workspace lints; §6 | the property test "arbitrary bytes never panic" |
+| rule 1: no panic | the workspace lints; §6 | the property test "arbitrary bytes never panic"; the fuzz target (§10.4) |
+| O47, point 3: the configuration parser is fuzzed | §10.4 | the fuzz target `ironafs-config_syntax`, its seeds replayed by `cargo xtask fuzz` |
+| the parser refuses Unicode `Bidi_Control` characters anywhere in the file | §5.1, point 3 | the bidirectional-control tests of §10.3 |
 | rule 3: caps before allocation | §5.2 | the cap tests at the cap and one above |
 | one cell name rule | §5.7, one constructor, private field | the cell-name boundary tests; the compile-fail doc-test |
 
@@ -334,16 +374,24 @@ in the subset and checks that it parses back to that model.
 
 Every construct of §5.5; every cap at its value (accepted) and one above
 (refused); a CR without LF; a control character in a comment, a string
-and a key position; invalid UTF-8; text after a value; each
+and a key position; each bidirectional control in a comment, a quoted
+key, a table-path segment, a string and an array element; invalid UTF-8; text after a value; each
 redefinition and not-a-table case of §5.4. Each test asserts the error
 kind and position.
 
 ### 10.4 Fuzz target
 
-`ironafs-config_syntax`: any bytes; asserts that the parser returns,
-that an error's position lies within the input, and that an accepted
-document respects every cap of §5.2. It is added with the fuzz crate
-(issue #45).
+`ironafs-config_syntax`, in the top-level `fuzz/` crate, with tracked
+seeds under `fuzz/seeds/ironafs-config_syntax/` that `cargo xtask fuzz`
+replays: any bytes; asserts that the parser returns, that an error's
+position lies within the input (its column counted in Unicode scalar
+values), that a file over `MAX_FILE_BYTES` is refused as too large with
+no position, that an accepted input respects every cap of §5.2 (the file
+and line caps on its bytes, the others on its document) and holds no
+character §5.1, point 3 refuses, and that the same input gives the same
+result. Its seeds include each byte cap at its value and one above. Its checks are
+the property tests' own, from
+`crates/ironafs-config/tests/it/invariants.rs`.
 
 ### 10.5 Acceptance cases
 
@@ -370,6 +418,7 @@ two final dots refused; mixed-case input stored lower-cased.
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
 | S1 | SPECIFICATION | TOML v1.0.0, <https://toml.io/en/v1.0.0>, sections "Spec", "Comment", "Keys", "String", "Integer", "Boolean", "Array", "Table" (read 2026-11-21) | §5.1, §5.4, §5.5 |
+| S2 | SPECIFICATION | Unicode Character Database 18.0.0, `PropList.txt`, property `Bidi_Control`, <https://www.unicode.org/Public/UCD/latest/ucd/PropList.txt> (read 2026-11-23) | §5.1 |
 | DEC-1 | DECISION | Issue #93, the canonical cell-name rule (owner's decision, 2026-11-20) | §1, §5.7 |
 | ADR | DECISION | ADR 0004, C4, O17, O18, O19, O47 | §1, §2 |
 | OWN | OWN | This specification's own choices, each with its reason where it is made | throughout |

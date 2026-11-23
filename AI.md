@@ -45,14 +45,15 @@ required review of its own family's work.
 |---|---|---|---|
 | Anthropic (Claude) | Claude Opus 5.5 (`claude-opus-5-5`), default; Claude Mythos 5.2 (`claude-mythos-5-2`, what Claude Code's `fable` alias serves) for the strongest seats; Claude Haiku 5.5 (`claude-haiku-5-5`) and Sonnet for light work, including Claude Code's own background steps | Claude Code CLI, Claude subscription | `claude-code` |
 | OpenAI (GPT) | GPT-6.2 Sol (`gpt-6.2-sol`), default; GPT-6.2 Astra (`gpt-6.2-astra`) for the strongest seats | codex CLI, ChatGPT subscription | `codex` |
-| Google (Gemini) | Gemini 4 Carbon (`gemini-4-carbon-medium`; `gemini-4-carbon-high` for class S and R and the strongest seats); Gemini Flash and Argon for light work only | Antigravity CLI (`agy`) | `gemini`, `agy` |
+| Google (Gemini) | Gemini 4 Carbon (`gemini-4-carbon-medium`, also for its security seats; `gemini-4-carbon-high` for other class S and R and strongest seats); Gemini Flash and Argon for light work only | Antigravity CLI (`agy`) | `gemini`, `agy` |
 | Zhipu / Z.ai (GLM) | GLM 5.3 (`glm-5.3`); GLM 5.3 Flash (`glm-5.3-flash`) for small helper steps | Claude Code CLI on Z.ai's endpoint, GLM Coding Plan | `glm` |
 | DeepSeek | DeepSeek V4.1 Flash (`deepseek-flash`) | Claude Code CLI on DeepSeek's endpoint, DeepSeek API | `deepseek` |
 
 Which model and effort each seat uses is set by the routing table in
 [docs/workflow.md](docs/workflow.md) §2, "Model routing": light models only
 for helpers and research gathering, standard tiers for required reviews,
-the strongest tiers for the named seats.
+the strongest tiers for the named seats, except where that section's
+"Precedence" rule says otherwise.
 
 Model versions change. A trailer always records the model that actually
 served the request, read from the lane's own log, not the one asked for. When
@@ -101,7 +102,7 @@ not make a family an author (`docs/workflow.md` §2).
 | **E** | Claude or the owner | none; the owner re-reads it | links resolve |
 | **I** | Claude | one other family: GLM or GPT for Claude's or the owner's own work; GLM for codex's or agy's | tests and lints pass |
 | **P** | Claude | as I, and the written contract (what users will see) is reviewed before any code | contract first |
-| **S** | Claude, from a design | the design is reviewed before code; the code by the first reviewer for its author (GLM, or GPT for Claude's work), plus a second family (Gemini, DeepSeek, GPT or Claude, whichever did not write it) when tokens, the wire or cache coherency are involved; a security review by GPT, Claude or GLM, whichever wrote neither the design nor the code | a test that reproduces the failure |
+| **S** | Claude, from a design | the design is reviewed before code; the code by the first reviewer for its author (GLM, or GPT for Claude's work), plus a second family (Gemini, DeepSeek, GPT or Claude, whichever did not write it) when tokens, the wire or cache coherency are involved; a security review by GPT, Claude, GLM or Gemini, whichever wrote neither the design nor the code | a test that reproduces the failure |
 | **R** | as S | as S | the owner's decision |
 
 If too few independent families are available, a change waits; the bar is
@@ -116,12 +117,14 @@ its exact commit message, and nothing lands without their approval.
 | Claude Mythos 5.2 (Anthropic) | | promoted implementation only | the strongest seats: judgements, class R designs, architecture ADRs, load-bearing research synthesis | judgements | yes, every Claude security review |
 | GPT-6.2 Sol (OpenAI, via codex) | | yes (extra capacity, separate tasks) | yes, read-only | yes, read-only, never codex's own work | no: Astra takes GPT's security seats |
 | GPT-6.2 Astra (OpenAI, via codex) | | after two recorded failures on the same defect | the strongest seats: judgements, class R designs, architecture ADRs, load-bearing research synthesis | judgements | yes, the default GPT security seat |
-| Gemini 4 Carbon (Google, via agy) | | when codex is out of quota | | yes, second family | no: it declined security-framed briefs in our runs |
+| Gemini 4 Carbon (Google, via agy) | | when codex is out of quota | | yes, second family | yes, at `gemini-4-carbon-medium`, when it wrote neither the design nor the code ([record](docs/reviews/2026-11-22-gemini-security-seat.md)) |
 | GLM 5.3 (Zhipu) | | | second view | yes, first reviewer | yes, when it wrote neither the design nor the code |
 | DeepSeek V4.1 Flash (DeepSeek) | | | research | yes, second family, off-peak (paid) | |
 
 When two seats disagree and the evidence does not settle it, a third
-family rules on the evidence, using its strongest model (the judgement seat,
+family rules on the evidence, using the model that §2's "Model routing"
+assigns to the seat, its strongest except where that section's
+"Precedence" rule says otherwise (the judgement seat,
 [docs/workflow.md](docs/workflow.md) §2).
 
 The authoritative rules are in [docs/workflow.md](docs/workflow.md) §1 and

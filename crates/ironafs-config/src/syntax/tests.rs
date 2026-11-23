@@ -300,6 +300,21 @@ fn parse_refuses_control_characters_everywhere() {
 }
 
 #[test]
+fn parse_accepts_characters_next_to_the_bidirectional_controls() {
+    // Neighbours of the set that are not in it: a zero-width joiner, an
+    // Arabic letter mark's neighbour, and the line separator's neighbour.
+    let document = accepted("a = \"\u{200d}\u{061b}\u{2065}\u{206a}\"");
+    assert_eq!(
+        entries(&document),
+        vec![(
+            path(&[]),
+            "a".to_string(),
+            string("\u{200d}\u{061b}\u{2065}\u{206a}")
+        )]
+    );
+}
+
+#[test]
 fn parse_refuses_tab_inside_string() {
     assert_eq!(
         refused_str("a = \"\tx\""),
@@ -621,6 +636,18 @@ fn parse_refuses_table_defined_twice() {
 }
 
 #[test]
+fn parse_redefinition_names_header_that_created_an_implicit_table() {
+    assert_eq!(
+        refused_str("[a.b]\n[a]\n[a]"),
+        (SyntaxErrorKind::Redefined { first: at(1, 1) }, 3, 1)
+    );
+    assert_eq!(
+        refused_str("[x.a.b]\n[x.a]\n[x]\na = 1"),
+        (SyntaxErrorKind::Redefined { first: at(1, 1) }, 4, 1)
+    );
+}
+
+#[test]
 fn parse_accepts_super_table_after_sub_table() {
     let document = accepted("[a.b]\nx = 1\n[a]\ny = 2\n");
     let tables: Vec<Vec<String>> = document
@@ -650,6 +677,21 @@ fn parse_refuses_table_where_a_value_is() {
     assert_eq!(
         refused_str("[t]\nb = 1\n[ t . b . c ]"),
         (SyntaxErrorKind::NotATable { first: at(2, 1) }, 3, 7)
+    );
+}
+
+#[test]
+fn parse_header_at_a_value_is_redefined_and_through_one_is_not_a_table() {
+    // The header's last segment names a key that holds a value: the
+    // header is refused as a redefinition at its `[`, naming the key.
+    assert_eq!(
+        refused_str("[t]\nb = 1\n[t.b]"),
+        (SyntaxErrorKind::Redefined { first: at(2, 1) }, 3, 1)
+    );
+    // A strict prefix names it: refused at that segment, naming the key.
+    assert_eq!(
+        refused_str("[t]\nb = 1\n[t.b.c]"),
+        (SyntaxErrorKind::NotATable { first: at(2, 1) }, 3, 4)
     );
 }
 
@@ -843,6 +885,44 @@ fn parse_depth_cap_at_and_above() {
     assert_eq!(
         refused_str("[a.b.c.d.e.f.g.h.i]"),
         (SyntaxErrorKind::TooDeep, 1, 18)
+    );
+}
+
+#[test]
+fn parse_depth_cap_refuses_a_ninth_segment_before_reading_it() {
+    // The ninth segment is refused as too deep before it is decoded, so
+    // what it holds is never read.
+    assert_eq!(
+        refused_str("[a.b.c.d.e.f.g.h.\"unterminated"),
+        (SyntaxErrorKind::TooDeep, 1, 18)
+    );
+    let long = "k".repeat(MAX_KEY_BYTES + 1);
+    assert_eq!(
+        refused_str(&format!("[a.b.c.d.e.f.g.h.{long}]")),
+        (SyntaxErrorKind::TooDeep, 1, 18)
+    );
+    assert_eq!(
+        refused_str("[a.b.c.d.e.f.g.h.\"x\\q\"]"),
+        (SyntaxErrorKind::TooDeep, 1, 18)
+    );
+    // The forms with their own error and hint keep them at the cap: their
+    // own error is found without storing anything.
+    assert_eq!(
+        refused_str("[a.b.c.d.e.f.g.h.\"\"]"),
+        unsupported(Feature::EmptyKey, 1, 18)
+    );
+    assert_eq!(
+        refused_str("[a.b.c.d.e.f.g.h.\"\"\"x\"\"\"]"),
+        unsupported(Feature::MultiLineString, 1, 18)
+    );
+    assert_eq!(
+        refused_str("[a.b.c.d.e.f.g.h.'x']"),
+        unsupported(Feature::LiteralString, 1, 18)
+    );
+    // A dot with no segment after it is still a missing key.
+    assert_eq!(
+        refused_str("[a.b.c.d.e.f.g.h.]"),
+        unexpected(Some(']'), Expected::Key, 1, 18)
     );
 }
 

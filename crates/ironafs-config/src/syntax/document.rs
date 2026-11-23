@@ -35,9 +35,11 @@ enum Child {
 #[derive(Debug)]
 struct Node {
     children: BTreeMap<String, Child>,
-    /// Where its header is, once a header defines it.
-    header: Option<Position>,
+    /// Whether a header of its own has defined it.
+    explicit: bool,
     /// Where the header that created it is: its own, or a deeper one's.
+    /// This is its first definition (`docs/specs/config-syntax.md`, section
+    /// 5.4, point 4), whether or not a header later makes it explicit.
     created: Position,
 }
 
@@ -45,14 +47,15 @@ impl Node {
     fn new(created: Position) -> Self {
         Self {
             children: BTreeMap::new(),
-            header: None,
+            explicit: false,
             created,
         }
     }
 
-    /// Where the table was defined, for a later redefinition's error.
+    /// Where the table was first defined, for a later redefinition's
+    /// error.
     fn first(&self) -> Position {
-        self.header.unwrap_or(self.created)
+        self.created
     }
 }
 
@@ -60,6 +63,15 @@ impl Node {
 pub(super) struct Segment {
     pub(super) text: String,
     pub(super) position: Position,
+}
+
+/// A key [`Builder::check_key`] has cleared for one table: what
+/// [`Builder::add_entry`] takes, so the pair it adds is the one checked.
+/// Reading the value in between leaves the builder unchanged.
+pub(super) struct CheckedKey {
+    table: usize,
+    key: String,
+    position: Position,
 }
 
 /// Builds a [`Document`], refusing every redefinition as it is made.
@@ -124,13 +136,15 @@ impl Builder {
         // `current` always indexes `nodes`: it is the root or a table this
         // builder created.
         if let Some(node) = self.nodes.get_mut(current) {
-            if let Some(first) = node.header {
+            if node.explicit {
                 return Err(SyntaxError::at(
                     header,
-                    SyntaxErrorKind::Redefined { first },
+                    SyntaxErrorKind::Redefined {
+                        first: node.first(),
+                    },
                 ));
             }
-            node.header = Some(header);
+            node.explicit = true;
         }
         let path = self
             .document
@@ -152,15 +166,15 @@ impl Builder {
     pub(super) fn check_key(
         &self,
         table: usize,
-        key: &str,
+        key: String,
         key_position: Position,
-    ) -> Result<(), SyntaxError> {
+    ) -> Result<CheckedKey, SyntaxError> {
         // `table` always indexes `nodes`: it came from `root` or
         // `open_table`.
         let existing = self
             .nodes
             .get(table)
-            .and_then(|node| node.children.get(key).copied());
+            .and_then(|node| node.children.get(&key).copied());
         match existing {
             Some(Child::Value(first)) => {
                 return Err(SyntaxError::at(
@@ -183,20 +197,25 @@ impl Builder {
                 SyntaxErrorKind::TooManyDefinitions,
             ));
         }
-        Ok(())
+        Ok(CheckedKey {
+            table,
+            key,
+            position: key_position,
+        })
     }
 
-    /// Adds a key/value pair to a table, after the checks of
-    /// [`Builder::check_key`].
+    /// Adds a key/value pair to the table its key was checked for.
     pub(super) fn add_entry(
         &mut self,
-        table: usize,
-        key: String,
-        key_position: Position,
+        checked: CheckedKey,
         value: Value,
         value_position: Position,
     ) -> Result<(), SyntaxError> {
-        self.check_key(table, &key, key_position)?;
+        let CheckedKey {
+            table,
+            key,
+            position: key_position,
+        } = checked;
         self.count(key_position)?;
         if let Some(node) = self.nodes.get_mut(table) {
             node.children

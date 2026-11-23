@@ -83,7 +83,7 @@ fn advance(position: &mut Position, character: char) {
 }
 
 /// Refuses a carriage return without a line feed, a control character
-/// other than tab, and a line longer than [`MAX_LINE_BYTES`] without its
+/// other than tab, a bidirectional control character, and a line longer than [`MAX_LINE_BYTES`] without its
 /// line end, whichever comes first.
 fn check_lines(text: &str) -> Result<(), SyntaxError> {
     let mut position = Position { line: 1, column: 1 };
@@ -101,6 +101,12 @@ fn check_lines(text: &str) -> Result<(), SyntaxError> {
                 }
             }
             '\t' => line_bytes += 1,
+            other if is_bidi_control(other) => {
+                return Err(SyntaxError::at(
+                    position,
+                    SyntaxErrorKind::BidiControl(other),
+                ));
+            }
             other if other.is_control() => {
                 return Err(SyntaxError::at(
                     position,
@@ -121,6 +127,16 @@ fn check_lines(text: &str) -> Result<(), SyntaxError> {
         advance(&mut position, character);
     }
     Ok(())
+}
+
+/// Unicode's `Bidi_Control` set (section 5.1, point 3): characters that
+/// change the order text is displayed in, so a file could read
+/// differently on screen than it parses.
+fn is_bidi_control(character: char) -> bool {
+    matches!(
+        character,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// A bare key's characters (section 5.1, point 8).
@@ -261,10 +277,17 @@ impl Parser<'_> {
         loop {
             self.cursor.skip_whitespace();
             let position = self.cursor.position();
-            let text = self.segment()?;
-            if segments.len() >= MAX_DEPTH {
+            // A segment past the cap is refused before it is decoded. What
+            // `segment` refuses without storing anything, `""` (an empty
+            // key or a multi-line string) and what cannot start a segment,
+            // is left to it, for its own error and hint.
+            let rest = self.cursor.rest();
+            let decoded =
+                rest.starts_with(is_bare) || (rest.starts_with('"') && !rest.starts_with("\"\""));
+            if segments.len() >= MAX_DEPTH && decoded {
                 return Err(SyntaxError::at(position, SyntaxErrorKind::TooDeep));
             }
+            let text = self.segment()?;
             segments.push(Segment { text, position });
             self.cursor.skip_whitespace();
             match self.cursor.peek() {
@@ -282,8 +305,8 @@ impl Parser<'_> {
     /// A key/value pair (section 5.1, point 7) in `table`.
     fn key_value(&mut self, table: usize) -> Result<(), SyntaxError> {
         let key_position = self.cursor.position();
-        let key = self.segment()?;
-        self.builder.check_key(table, &key, key_position)?;
+        let segment = self.segment()?;
+        let key = self.builder.check_key(table, segment, key_position)?;
         self.cursor.skip_whitespace();
         match self.cursor.peek() {
             Some('.') => {
@@ -302,8 +325,7 @@ impl Parser<'_> {
         } else {
             Value::Scalar(self.scalar(Expected::Value)?)
         };
-        self.builder
-            .add_entry(table, key, key_position, value, value_position)
+        self.builder.add_entry(key, value, value_position)
     }
 
     /// A bare or quoted key, or a table-path segment (section 5.1, point

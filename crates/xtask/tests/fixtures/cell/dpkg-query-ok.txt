@@ -1,0 +1,10 @@
+base-files 13.8+deb13u1
+debianutils 5.23.2
+libc6 2.41-12
+krb5-admin-server 1.21.3-5+deb13u1
+krb5-kdc 1.21.3-5+deb13u1
+krb5-user 1.21.3-5+deb13u1
+openafs-client 1.8.13.2-1
+openafs-dbserver 1.8.13.2-1
+openafs-fileserver 1.8.13.2-1
+openafs-krb5 1.8.13.2-1

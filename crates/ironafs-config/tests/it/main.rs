@@ -8,4 +8,5 @@
 //! and the cell name.
 
 mod cell_name;
+mod invariants;
 mod syntax;

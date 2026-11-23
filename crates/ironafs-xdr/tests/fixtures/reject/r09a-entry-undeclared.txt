@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# An entry with discriminant 00000007, not a declared kind: rejected before any arm is chosen.
+
+type entry
+breaks 5.4, point 7.1
+expect UnknownEnumValue test.entry.k
+offset 0
+extent none
+requests none
+input 00000007
