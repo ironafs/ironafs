@@ -75,6 +75,14 @@ impl Block {
     pub(crate) fn callee(&self) -> &str {
         self.operation.rsplit("::").next().unwrap_or_default()
     }
+
+    /// Whether the block is the one approved write: `core`'s volatile
+    /// write, by its whole path, of zero (sheet 24).
+    fn zero_write(&self) -> bool {
+        self.kind == BlockKind::Write
+            && WRITES.contains(&self.operation.as_str())
+            && self.arguments.last().map(String::as_str) == Some("0")
+    }
 }
 
 /// One extern block of an implemented row: its `#[link]` arguments as
@@ -641,10 +649,7 @@ fn row_problems(row: &Row) -> Vec<String> {
                 BlockKind::Call => declared(callee),
                 BlockKind::Read => READS.contains(&callee),
                 BlockKind::Adopt => ADOPTIONS.contains(&callee),
-                BlockKind::Write => {
-                    WRITES.contains(&block.operation.as_str())
-                        && block.arguments.last().map(String::as_str) == Some("0")
-                }
+                BlockKind::Write => block.zero_write(),
             };
             if !fits {
                 found.push(format!(
@@ -740,11 +745,7 @@ fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
     // A row whose foreign item is the volatile write holds that write, of
     // zero, as a write block (sheet 24).
     let volatile = foreign.contains("write_volatile");
-    let writes = code.blocks.iter().any(|block| {
-        block.kind == BlockKind::Write
-            && WRITES.contains(&block.operation.as_str())
-            && block.arguments.last().map(String::as_str) == Some("0")
-    });
+    let writes = code.blocks.iter().any(Block::zero_write);
     if volatile && !writes {
         found.push(format!(
             "{id}: the ADR's row is the volatile zero write, but no write block of zero is recorded"
