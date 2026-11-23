@@ -2470,9 +2470,79 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
   undescribed minor), fixed in the next commit and recorded; under the
   stop rule, no further round.
 - **Amendment, 2026-11-22 (#TBD): point 5.3 and Decision 4, the
-  target gate.** Point 5.3's refusal gains a target gate in the
-  crate's build script, which refuses by exact triple the targets whose
-  cfg set equals a listed one's; the `compile_error!` guard stays.
-  Decision 4 now describes the build script's two jobs. Evidence, review
-  rounds and the supersession sweep: to be recorded here before the
-  owner's acceptance.
+  target gate.**
+  - What changed: point 5.3's refusal has two parts. A target gate in
+    the crate's build script refuses, by exact triple, every target
+    outside the list, the targets whose cfg set equals a listed one's
+    included; the `compile_error!` guard stays as a second net.
+    `cargo xtask check-os` checks both layers: the gate's list against
+    a reference copy kept apart from it, the gate's acceptance of each
+    listed triple, the guard's verdict against one derived from the
+    list for every built-in target, and Cargo's refusal of each
+    cfg-equal target in the build script. The refusal prints the
+    target in an escaped, one-line form. Decision 4 now describes the
+    build script's two jobs (the gate, then the macOS shim), its rerun
+    rule while it holds the gate alone, and a requirement on the M4
+    shim change to rerun on every effective input Cargo does not
+    track. Consequences name the follow-up class S change (the script,
+    the check, the crate comments, the `deny.toml` build-script
+    allowlist entry); Alternatives record the residual route not
+    taken. Both decisions stay Working, with new triggers.
+  - Evidence: the first `ironafs-os` change (PR #118) found that on
+    the pinned compiler six built-in targets have exactly the cfg set
+    of a listed one, so the `compile_error!` guard cannot refuse them,
+    as point 5.3 requires; the crate's comments read point 1.4 as
+    forbidding the build script that could. Point 1.4 forbids
+    dependencies and point 1.1 only a build script that compiles or
+    runs foreign code, so neither forbids the gate. The owner chose
+    the gate over stating a residual on 2026-11-22 (decision comment
+    on PR #118).
+  - Sweep: the repository at `origin/main` was searched for "no build
+    script", "point 1.4", "compile_error", "build.rs", "build script",
+    "5.3" and "0005"; the open branches of PRs #118, #132, #136 and
+    #143 for the same.
+    - On `main`: no file states the superseded rule. The "no build
+      script" hits are about pure crates (`ironafs-crypto`,
+      `ironafs-time`, `ironafs-ipc` in `docs/specs/local-ipc.md`, and
+      `crates/xtask/src/pure.rs`), whose rule is ADR 0004, C4, point
+      1, unchanged. Coding standards rules 5, 20 and 21, `AGENTS.md`,
+      `docs/workflow.md` and the skills were read: none says this
+      crate has no build script. The `add-dependency` skill puts each
+      build script in `deny.toml`'s `[bans.build]` allowlist, which
+      covers workspace crates; that entry comes with the follow-up
+      code, as Consequences say. Unchanged.
+    - On the branches of PRs #118, #132, #136 and #143 (the same
+      inherited files): `crates/ironafs-os/Cargo.toml` ("no build
+      script (ADR 0005, point 1.4)") and `crates/ironafs-os/src/lib.rs`
+      (the cfg-equal targets stated as a limit, citing point 1.4) are
+      corrected by the follow-up change; `crates/xtask/src/os/
+      allowlist.rs` (the same reading) gains the check of point 5.3
+      there. `crates/xtask/src/deps.rs` cites point 1.4 for
+      dependencies only, which is unchanged. Recorded as follow-ups
+      for those pull requests; their branches are not edited here.
+    - The rule binds the maintainer's session and contributors and
+      their agents, who build and review the crate; no bot acts on it
+      (Dependabot proposes no build script, and CI runs the check).
+  - Review rounds, class S, from families that wrote neither the
+    amendment nor the decision. Point 7.2 asks for the strongest row:
+    GPT ran at `gpt-6.2-sol` xhigh rather than `gpt-6.2-astra`, the
+    owner's standing choice to conserve GPT quota, and GLM's rounds 1
+    to 3 ran at high, its final pass and verification at max.
+    - Round 1 on `3f73854..225145f`: GPT (`gpt-6.2-sol`, xhigh) FAIL,
+      3 major and 1 minor (the guard's expected verdict taken from the
+      guard under test; no proof that the gate accepts the listed
+      targets; the rerun rule would leave a stale shim; the proof not
+      assigned to `check-os`); GLM (`glm-5.3`, high) FAIL, 1 major (the
+      same as GPT's first) and 2 minor (the target printed raw, which
+      a line break could turn into a Cargo directive; the rerun rule).
+      All fixed in `a661d2c`.
+    - Round 2 on `225145f..a661d2c`: GLM PASS, and, as refutation
+      seat, it accepted moving the method that isolates the gate's
+      verdict to the follow-up change; GPT FAIL, 1 major (the shim's
+      indirect inputs: SDK headers and build settings). Fixed in
+      `26ee981` as a requirement on the M4 shim change.
+    - Round 3 on `a661d2c..26ee981`: GPT PASS and GLM PASS.
+    - Round 4, the final pass over the whole amendment,
+      `3f73854..26ee981`: GLM (`glm-5.3`, max) PASS with 1 minor (the
+      check's reference list must be kept apart from the gate), fixed
+      in `cdc8cb3` and verified by GLM at max.
