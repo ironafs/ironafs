@@ -138,8 +138,9 @@ and recorded, so no verification round.
 
 ## Security round
 
-The class S security review read `ec2b47f..980fad5` and returned one
-major and six minor findings. The branch first took `main` (`df943f9`,
+The class S security review, GPT read-only (`gpt-6.2-sol`, effort
+xhigh, 2026-11-23), read `ec2b47f..980fad5` and returned one major and
+six minor findings. The branch first took `main` (`df943f9`,
 a merge of `720a9cd`), which brought the fuzz crate. The fixes are
 `cf04f93` (code and tests), `7fd8d9d` (fuzz target) and `4a457e2`
 (specification).
@@ -232,3 +233,65 @@ Evidence (EXECUTED, macOS 27 on Apple silicon, 2026-11-23, at
 - A fuzzing run of `ironafs-config_syntax` on the pinned nightly, from
   the tracked seeds, for 120 seconds: about 4.8 million inputs, no
   failure.
+
+### Verification
+
+The same seat (GPT read-only, `gpt-6.2-sol`, xhigh, 2026-11-23)
+verified the fixes. It found F2 to F7 and the merge fixed, F1 partly
+fixed, and one major and four minor findings in the fixes. The fixes are
+`20770d7` and `6fc4ccf`.
+
+- **F1 residual, major, fixed (`20770d7`):** "The fuzz target checks
+  caps visible in the parsed document and omits the file and line byte
+  caps, even though it has the raw input. The fix narrows §10.4 at
+  docs/specs/config-syntax.md:384 to match the incomplete check."
+  - The shared check now refuses an accepted input over the file cap or
+    with a line over the line cap (LF or CR LF ends a line), and requires
+    `FileTooLarge` with no position exactly when the input is over the
+    file cap.
+  - Section 10.4 again states the whole invariant: every cap of section
+    5.2, the byte caps on the input and the others on the document.
+  - Four new seeds hold the line cap and the file cap each at its value
+    and one above.
+  - Tests of the check itself failed first (it passed an over-cap input
+    with an empty document, and an error with no position for a small
+    input). With the parser's line cap, then its file cap, planted one
+    byte too high, `cargo xtask fuzz` failed on the matching over-cap
+    seed each time.
+- **Minor, fixed (`20770d7`):** "The new fuzz target inherits a
+  byte-based column bound from the property test. The format defines
+  columns in Unicode scalar values."
+  - A column is bounded by the line's Unicode scalar values plus one; in
+    a line that is not UTF-8, by its valid prefix, so the latest column
+    is the one just after that prefix. The test failed first on a column
+    of 4 in a two-character, three-byte line.
+- **Minor, fixed (`20770d7`):** "At the depth cap, the new guard returns
+  `TooDeep` for an empty quoted segment or a multiline basic string
+  opener."
+  - The guard refuses only a segment that would be decoded: a bare key,
+    or `"` not followed by another `"`. `""` goes to the segment reader,
+    which refuses an empty key and a multi-line string without storing
+    anything. Section 5.2 states this precedence.
+  - The test failed first: both forms gave `TooDeep`. A literal string at
+    the cap keeps its error too.
+- **Minor, fixed (`20770d7`):** "The new invariant says text displays as
+  it parses."
+  - Section 9's row now states what is tested: the parser refuses Unicode
+    `Bidi_Control` characters anywhere in the file.
+- **Minor, fixed (`20770d7`, `6fc4ccf`):** "The test-only
+  `BIDI_CONTROLS` list duplicates the one at
+  crates/ironafs-config/src/syntax/tests.rs:305."
+  - One list remains, in `tests/it/invariants.rs`, apart from the
+    production predicate.
+  - Sharing it with the unit tests by a path attribute failed
+    `check-pure`, which refuses a path attribute in a pure crate's
+    source. So the rejection test moved to the integration tests
+    (`tests/it/syntax.rs`), which use the same list as the property
+    tests and the fuzz target.
+
+Evidence (EXECUTED, macOS 27 on Apple silicon, 2026-11-23, at
+`6fc4ccf`), each with exit 0: the same commands as above
+(`cargo nextest run` passed 815 tests); the fuzz job's steps, with
+`cargo xtask fuzz` replaying ten seeds of `ironafs-config_syntax` and
+three of `ironafs-xdr_decode`; and a 120-second fuzzing run of
+`ironafs-config_syntax` from its seeds, with no failure.
