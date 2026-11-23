@@ -314,7 +314,7 @@ authoritative.
    two fix rounds a brief is split, redesigned, or its blocker recorded and
    the work kept gated. Step 7's rule after two fix rounds applies to a
    brief as to a change: a further fix round needs the owner's permission
-   for that brief alone, one round at a time. A brief's permission never
+   for that brief alone. A brief's permission never
    covers the code change implemented from it, nor the reverse. The review
    record in `docs/reviews/` for the batch of briefs filed together holds
    these reviews, two counts (review runs per brief filed, and acceptance
@@ -375,8 +375,10 @@ authoritative.
      change alone. The controller asks for it with the latest note and a
      recommendation, and recommends another round only when the note shows
      the counts falling, few findings introduced by the fixes, and the
-     kinds narrowing. Each permission covers exactly one fix round and is
-     asked again before the next; it never carries to another change. The
+     kinds narrowing. A permission covers the fix rounds the owner names
+     (one, unless they say more) for that change, and never carries to
+     another; before each of them the controller checks the updated note,
+     and asks again if it no longer shows convergence. The
      request, the recommendation, the owner's answer and its date go in the
      review record. A convergence note alone never extends the limit.
    - **What counts.** A scoped fix of an upheld tail, or of a finding still

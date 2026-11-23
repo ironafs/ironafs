@@ -247,9 +247,10 @@ a pass:
   owner's permission for that change alone: you ask, with the latest
   convergence note and a recommendation, and recommend another round only
   when the note shows the counts falling, few findings introduced by the
-  fixes, and the kinds narrowing (`docs/workflow.md` §3, step 7). Each
-  permission covers exactly one fix round and is asked again before the
-  next; it never carries to another change. A convergence note alone never
+  fixes, and the kinds narrowing (`docs/workflow.md` §3, step 7). A
+  permission covers the fix rounds the owner names (one, unless they say
+  more) for that change and never carries to another; before each, check
+  the updated note and ask again if it no longer shows convergence. A convergence note alone never
   extends the limit. A scoped fix of an upheld tail, or of a finding still
   disputed after the fix rounds, counts as a fix round. A part split off
   unconverged keeps the parent's count; a redesign starts a new count. If
