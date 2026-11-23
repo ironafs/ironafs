@@ -3,7 +3,10 @@
 
 //! Tests for the reading and judging of the target gate.
 
-use super::{ACCEPTED, Expected, GATE_ERROR, Run, cargo_refusal, judge, list_problems, listed};
+use super::{
+    ACCEPTED, Expected, GATE_ERROR, Run, cargo_refusal, judge, list_problems, listed,
+    script_executed,
+};
 
 const SCRIPT: &str = "//! Docs.\nconst TARGETS: [&str; 2] = [\n    \"x86_64-unknown-linux-gnu\",\n    \
                       \"aarch64-apple-darwin\",\n];\nfn main() {}\n";
@@ -134,22 +137,60 @@ fn judge_refusal_refuses_output_holding_the_hidden_bytes() {
     assert!(judge(&leaked, &expected).is_some());
 }
 
-#[test]
-fn cargo_refusal_needs_the_build_script_and_the_gate_s_message() {
-    let target = "arm64e-apple-darwin";
-    let refusal = format!(
+fn refusal(target: &str) -> String {
+    format!(
         "   Compiling ironafs-os v0.0.0 (/w/crates/ironafs-os)\n\
-         error: ironafs-os@0.0.0: {GATE_ERROR} \"{target}\": ADR 0005, point 5.3\n\
          error: failed to run custom build command for `ironafs-os v0.0.0 (/w/crates/ironafs-os)`\n\
          \nCaused by:\n  process didn't exit successfully: `build-script-build` (exit status: 1)\n\
          \x20 --- stdout\n  cargo::rerun-if-changed=build.rs\n\
          \x20 cargo::error={GATE_ERROR} \"{target}\": ADR 0005, point 5.3\n"
-    );
-    assert_eq!(cargo_refusal(&refusal, target), Ok(()));
-    assert!(cargo_refusal(&refusal, "aarch64-oe-linux-gnu").is_err());
+    )
+}
+
+#[test]
+fn cargo_refusal_needs_the_gate_s_message_in_the_failed_script_s_output() {
+    let target = "arm64e-apple-darwin";
+    let refused = refusal(target);
+    assert_eq!(cargo_refusal(&refused, target), Ok(()));
+    assert!(cargo_refusal(&refused, "aarch64-oe-linux-gnu").is_err());
     let later = "error[E0463]: can't find crate for `core`\n";
     assert!(cargo_refusal(later, target).is_err());
-    assert!(cargo_refusal(&format!("{refusal}{later}"), target).is_err());
+    assert!(cargo_refusal(&format!("{refused}{later}"), target).is_err());
     let guard = "error: ironafs-os builds only for the targets of ADR 0005, point 5.3\n";
     assert!(cargo_refusal(guard, target).is_err());
+}
+
+#[test]
+fn cargo_refusal_refuses_the_message_outside_the_script_s_standard_output() {
+    let target = "arm64e-apple-darwin";
+    let directive = format!("cargo::error={GATE_ERROR} \"{target}\": ADR 0005, point 5.3");
+    // Printed by the script on its standard error.
+    let on_stderr = refusal(target)
+        .replace(&format!("  {directive}\n"), "")
+        .replace(
+            "  cargo::rerun-if-changed=build.rs\n",
+            &format!("  cargo::rerun-if-changed=build.rs\n  --- stderr\n  {directive}\n"),
+        );
+    assert!(cargo_refusal(&on_stderr, target).is_err());
+    // The right text, but in another package's failed script.
+    let other = refusal(target).replace("`ironafs-os v0.0.0", "`other v0.0.0");
+    assert!(cargo_refusal(&other, target).is_err());
+    // The right text outside any build-script diagnostic, beside the
+    // crate's failure for another reason.
+    let unrelated = format!(
+        "warning: {directive}\nerror: failed to run custom build command for `ironafs-os v0.0.0 \
+         (/w)`\n\nCaused by:\n  could not execute process `build-script-build`\n"
+    );
+    assert!(cargo_refusal(&unrelated, target).is_err());
+}
+
+#[test]
+fn script_executed_reads_cargo_s_report_of_the_crate_s_script() {
+    let executed = "{\"reason\":\"build-script-executed\",\"package_id\":\
+                    \"path+file:///w/crates/ironafs-os#0.0.0\",\"env\":[]}\n";
+    assert!(script_executed(executed));
+    assert!(!script_executed(&executed.replace("ironafs-os", "other")));
+    assert!(!script_executed(
+        "{\"reason\":\"build-finished\",\"success\":false}\n"
+    ));
 }

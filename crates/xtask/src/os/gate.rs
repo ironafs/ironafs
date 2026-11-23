@@ -21,6 +21,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::pin::Pinned;
 use crate::pure::CLEARED_ENVIRONMENT;
 use crate::rust_source::{TokenKind, ident, matching, punct, tokens_with_strings};
 use crate::{Command, Error};
@@ -180,13 +181,14 @@ impl Gate {
     /// Returns an error if `rustc` cannot be started or the directory
     /// cannot be made; a script that does not compile is `Ok(Err(..))`.
     pub(crate) fn compile(
+        pinned: &Pinned,
         root: &Path,
         source: &Path,
         out_dir: &Path,
     ) -> Result<Result<Self, String>, Error> {
         fs::create_dir_all(out_dir).map_err(Error::path_io("create directory", out_dir))?;
         let program = out_dir.join(format!("gate{}", std::env::consts::EXE_SUFFIX));
-        let output = Command::new("rustc")
+        let output = Command::new(&pinned.rustc)
             .current_dir(root)
             .args([
                 "--edition",
@@ -322,20 +324,32 @@ pub(crate) fn verdict_problems(
     Ok(problems)
 }
 
-/// Why Cargo's build of the crate in `manifest` for `target` was not
-/// refused by the gate in the build script, if it was not: it built, or
-/// failed later, or for another reason.
+/// What one Cargo build of the crate showed.
+#[derive(Debug)]
+pub(crate) struct CargoRun {
+    /// Whether the build succeeded.
+    pub(crate) success: bool,
+    /// Whether Cargo reported the crate's build script as run to success
+    /// (a `build-script-executed` message): the script accepted the target.
+    pub(crate) script_accepted: bool,
+    /// What Cargo printed on its standard error.
+    pub(crate) stderr: String,
+}
+
+/// Builds the crate in `manifest` for `target` with Cargo, given the
+/// pinned compiler, into `build_dir`.
 ///
 /// # Errors
 ///
 /// Returns an error if cargo cannot be started.
-pub(crate) fn cargo_problem(
+pub(crate) fn cargo_run(
+    pinned: &Pinned,
     root: &Path,
     manifest: &Path,
     locked: bool,
     target: &str,
     build_dir: &Path,
-) -> Result<Option<String>, Error> {
+) -> Result<CargoRun, Error> {
     let mut command = Command::new("cargo");
     command.current_dir(root).arg("check");
     if locked {
@@ -344,11 +358,10 @@ pub(crate) fn cargo_problem(
     command
         .args(["--lib", "--manifest-path"])
         .arg(manifest)
+        .args(["--package", super::CRATE, "--color", "never"])
         .args([
-            "--package",
-            super::CRATE,
-            "--color",
-            "never",
+            "--message-format",
+            "json-render-diagnostics",
             "--target",
             target,
         ])
@@ -357,39 +370,101 @@ pub(crate) fn cargo_problem(
     for name in CLEARED_ENVIRONMENT {
         command.env_remove(name);
     }
+    command.env("RUSTC", &pinned.rustc);
     let output = command.output().map_err(Error::io("cargo check"))?;
-    if output.status.success() {
-        return Ok(Some("Cargo built the crate for it".to_owned()));
-    }
-    Ok(cargo_refusal(&String::from_utf8_lossy(&output.stderr), target).err())
+    Ok(CargoRun {
+        success: output.status.success(),
+        script_accepted: script_executed(&String::from_utf8_lossy(&output.stdout)),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
-/// Whether Cargo's `stderr` shows the build refused in the crate's build
-/// script by the gate's message for `target`, and nothing compiled after.
+/// Whether Cargo's JSON `messages` report the crate's build script run to
+/// success.
+pub(crate) fn script_executed(messages: &str) -> bool {
+    messages
+        .lines()
+        .filter_map(|line| crate::json::parse(line).ok())
+        .any(|message| {
+            message.get("reason").and_then(crate::json::Value::as_str)
+                == Some("build-script-executed")
+                && message
+                    .get("package_id")
+                    .and_then(crate::json::Value::as_str)
+                    .is_some_and(|id| id.contains(super::CRATE))
+        })
+}
+
+/// Why `run` is not Cargo refusing `target` in the build script with the
+/// gate's message, if it is not: it built, the script accepted it, or it
+/// failed for another reason.
+pub(crate) fn cargo_problem(run: &CargoRun, target: &str) -> Option<String> {
+    if run.success {
+        Some("Cargo built the crate for it".to_owned())
+    } else if run.script_accepted {
+        Some("the build script accepted it and the build failed later".to_owned())
+    } else {
+        cargo_refusal(&run.stderr, target).err()
+    }
+}
+
+/// Whether Cargo's `stderr` shows the crate's build script failing, with
+/// the gate's refusal of `target` in that failed run's captured standard
+/// output, and nothing compiled after it.
 pub(crate) fn cargo_refusal(stderr: &str, target: &str) -> Result<(), String> {
-    let in_script = stderr.lines().any(|line| {
-        line.starts_with(&format!(
-            "error: failed to run custom build command for `{} ",
-            super::CRATE
-        ))
-    });
     let shown = format!("{target:?}");
-    let gate = stderr.lines().map(str::trim).any(|line| {
+    let refuses = |line: &str| {
         line.strip_prefix("cargo::error=").is_some_and(|refusal| {
             refusal.starts_with(GATE_ERROR)
                 && refusal.contains(&shown)
                 && refusal.contains("point 5.3")
         })
-    });
+    };
     let later = stderr
         .lines()
         .any(|line| line.starts_with("error[") || line.starts_with("error: could not compile"));
-    if in_script && gate && !later {
+    let captured = script_stdout(stderr);
+    if !later && captured.is_some_and(|lines| lines.iter().any(|line| refuses(line))) {
         Ok(())
     } else {
         Err(format!(
-            "Cargo's build did not fail in the build script with the gate's message: {}",
+            "Cargo's build did not fail in the build script with the gate's message in its \
+             output: {}",
             crate::pure::first_error(stderr.as_bytes())
         ))
     }
+}
+
+/// The captured standard output of the crate's failed build script, as
+/// Cargo's diagnostic for it quotes it: the indented lines after `---
+/// stdout`, up to `--- stderr` or the end of the diagnostic, within the
+/// `failed to run custom build command` error for the crate.
+fn script_stdout(stderr: &str) -> Option<Vec<&str>> {
+    let header = format!(
+        "error: failed to run custom build command for `{} v",
+        super::CRATE
+    );
+    let mut lines = stderr
+        .lines()
+        .skip_while(|line| !line.starts_with(&header))
+        .skip(1);
+    let mut exited = false;
+    for line in lines.by_ref() {
+        if line.starts_with("error") {
+            return None;
+        }
+        exited |= line.starts_with("  process didn't exit successfully");
+        if line == "  --- stdout" {
+            break;
+        }
+    }
+    if !exited {
+        return None;
+    }
+    Some(
+        lines
+            .take_while(|line| line.starts_with("  ") && *line != "  --- stderr")
+            .map(|line| line.get(2..).unwrap_or_default())
+            .collect(),
+    )
 }

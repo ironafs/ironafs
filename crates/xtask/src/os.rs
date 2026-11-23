@@ -31,6 +31,7 @@
 mod allowlist;
 mod gate;
 pub(crate) mod inventory;
+mod pin;
 pub(crate) mod scan;
 mod self_test;
 
@@ -575,6 +576,7 @@ const SYMLINK: &str = "a symbolic link in ironafs-os: the compiler could read th
 /// and a build for another target that the gate did not refuse in the
 /// build script.
 pub(crate) fn compiled_files(
+    pinned: &pin::Pinned,
     workspace: &Workspace,
     crate_dir: &Path,
     build_dir: &Path,
@@ -597,9 +599,8 @@ pub(crate) fn compiled_files(
     let manifest = crate_dir.join("Cargo.toml");
     for target in &targets {
         if !ALLOWLIST.contains(&target.as_str()) {
-            if let Some(problem) =
-                gate::cargo_problem(&workspace.root, &manifest, true, target, build_dir)?
-            {
+            let run = gate::cargo_run(pinned, &workspace.root, &manifest, true, target, build_dir)?;
+            if let Some(problem) = gate::cargo_problem(&run, target) {
                 violations.push(Violation::Target {
                     target: target.clone(),
                     what: format!("is outside ADR 0005's allowlist, but {problem}"),
@@ -780,19 +781,66 @@ pub(crate) fn guard_violations(
     (violations, unlisted)
 }
 
+/// Why the build script Cargo registers for the crate (`registered`, from
+/// Cargo's metadata) is not the gate this check proves, if it is not: it
+/// must be `build.rs` in the crate's directory, a regular file and not a
+/// symbolic link. Checked before the script is compiled or run, alone or
+/// by Cargo.
+pub(crate) fn build_script_problem(registered: Option<&Path>, crate_dir: &Path) -> Option<String> {
+    let expected = crate_dir.join(gate::BUILD_SCRIPT);
+    let Some(registered) = registered else {
+        return Some("Cargo registers no build script for the crate".to_owned());
+    };
+    match fs::symlink_metadata(&expected) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => {
+            return Some(format!(
+                "{} is not a regular file (a symbolic link or other): the gate must be the \
+                 crate's own file",
+                expected.display()
+            ));
+        }
+        Err(error) => return Some(format!("cannot read {}: {error}", expected.display())),
+    }
+    let same = match (fs::canonicalize(registered), fs::canonicalize(&expected)) {
+        (Ok(registered), Ok(expected)) => registered == expected,
+        _ => false,
+    };
+    if same {
+        None
+    } else {
+        Some(format!(
+            "Cargo registers {} as the crate's build script, not {}",
+            registered.display(),
+            expected.display()
+        ))
+    }
+}
+
 /// Point 5.3's check of both layers of the refusal, before anything is
 /// built: the gate's list and verdicts (`gate`), the guard's verdict on
 /// every built-in target, and Cargo's refusal, in the build script, of
 /// each target the guard accepts but the list does not name. Returns the
 /// violations and those targets.
 fn target_violations(
+    pinned: &pin::Pinned,
     root: &Path,
     crate_dir: &Path,
     build_dir: &Path,
     cfgs: &BTreeMap<String, allowlist::Cfg>,
 ) -> Result<(Vec<Violation>, Vec<String>), Error> {
     let targets: Vec<String> = cfgs.keys().cloned().collect();
-    let mut violations = gate_violations(root, crate_dir, &build_dir.join("gate"), &targets)?;
+    // The standalone gate goes to a directory of this process's own.
+    let gate_dir = build_dir.join(format!("gate-{}", std::process::id()));
+    let found = gate_violations(
+        pinned,
+        root,
+        &crate_dir.join(gate::BUILD_SCRIPT),
+        &gate_dir,
+        &targets,
+    );
+    crate::fixture::remove_dir(&gate_dir)?;
+    let mut violations = found?;
     let lib = crate_dir.join("src").join("lib.rs");
     let text = fs::read_to_string(&lib).map_err(Error::path_io("read crate root", &lib))?;
     let guard = match allowlist::guard_of(&text) {
@@ -809,7 +857,8 @@ fn target_violations(
     violations.extend(found);
     let manifest = crate_dir.join("Cargo.toml");
     for target in &unlisted {
-        if let Some(problem) = gate::cargo_problem(root, &manifest, true, target, build_dir)? {
+        let run = gate::cargo_run(pinned, root, &manifest, true, target, build_dir)?;
+        if let Some(problem) = gate::cargo_problem(&run, target) {
             violations.push(Violation::Target {
                 target: target.clone(),
                 what: format!(
@@ -822,20 +871,20 @@ fn target_violations(
 }
 
 /// The gate's list against the reference copy, and its verdicts, from its
-/// own code compiled alone into `out_dir`, on each of `targets` and the
-/// special values.
+/// own code (`script`) compiled alone with the pinned compiler into
+/// `out_dir`, on each of `targets` and the special values.
 pub(crate) fn gate_violations(
+    pinned: &pin::Pinned,
     root: &Path,
-    crate_dir: &Path,
+    script: &Path,
     out_dir: &Path,
     targets: &[String],
 ) -> Result<Vec<Violation>, Error> {
-    let script = crate_dir.join(gate::BUILD_SCRIPT);
     let gate_error = |what: String| Violation::Target {
         target: "the build script's gate".to_owned(),
         what,
     };
-    let text = match fs::read_to_string(&script) {
+    let text = match fs::read_to_string(script) {
         Ok(text) => text,
         Err(error) => {
             return Ok(vec![gate_error(format!(
@@ -851,7 +900,7 @@ pub(crate) fn gate_violations(
             .collect(),
         Err(error) => vec![gate_error(error)],
     };
-    let gate = match gate::Gate::compile(root, &script, out_dir)? {
+    let gate = match gate::Gate::compile(pinned, root, script, out_dir)? {
         Ok(gate) => gate,
         Err(error) => {
             violations.push(gate_error(error));
@@ -941,11 +990,33 @@ pub(crate) fn crate_dir(workspace: &Workspace) -> Result<PathBuf, Error> {
 pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error> {
     let workspace = metadata::load(None, &[])?;
     let crate_dir = crate_dir(&workspace)?;
+    let registered = workspace
+        .members
+        .iter()
+        .find(|member| member.name == CRATE)
+        .and_then(|member| member.build_script.as_deref());
+    // Nothing below compiles or runs the script before it is known to be
+    // the crate's own `build.rs`, and the compiler before it is the pin.
+    if let Some(problem) = build_script_problem(registered, &crate_dir) {
+        return Err(rules(&[Violation::Target {
+            target: "the build script's gate".to_owned(),
+            what: problem,
+        }]));
+    }
+    let pinned = match pin::resolve(&workspace.root)? {
+        Ok(pinned) => pinned,
+        Err(problem) => {
+            return Err(rules(&[Violation::Target {
+                target: "every target".to_owned(),
+                what: problem,
+            }]));
+        }
+    };
     let build_dir = workspace.target_dir.join("xtask-check-os");
-    let cfgs = allowlist::target_cfgs(&workspace.root)?;
+    let cfgs = allowlist::target_cfgs(&pinned, &workspace.root)?;
     let (mut violations, unlisted) =
-        target_violations(&workspace.root, &crate_dir, &build_dir, &cfgs)?;
-    let (compiled, found) = compiled_files(&workspace, &crate_dir, &build_dir)?;
+        target_violations(&pinned, &workspace.root, &crate_dir, &build_dir, &cfgs)?;
+    let (compiled, found) = compiled_files(&pinned, &workspace, &crate_dir, &build_dir)?;
     violations.extend(found);
     let inventory = match read_inventory(&workspace.root, &crate_dir)? {
         Ok(inventory) => inventory,
@@ -959,17 +1030,20 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
             return Err(rules(&violations));
         }
         return self_test::run(
-            &workspace.root,
-            &workspace.target_dir,
-            &crate_dir,
+            &self_test::Context {
+                pinned: &pinned,
+                root: &workspace.root,
+                target_dir: &workspace.target_dir,
+                crate_dir: &crate_dir,
+                cfgs: &cfgs,
+            },
             &inventory,
             &compiled,
-            &cfgs,
             output,
         );
     }
     violations.extend(outside_violations(&workspace.root, &crate_dir)?);
-    let keys = allowlist::musl_keys(&workspace.root)?;
+    let keys = allowlist::musl_keys(&pinned, &workspace.root)?;
     violations.extend(musl_key_violations(&crate_dir, &keys)?);
     let (files, unreadable) = crate_files(&crate_dir)?;
     violations.extend(unreadable);

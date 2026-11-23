@@ -167,10 +167,6 @@ fn compare_fails_unnamed_unknown_and_misplaced_sites() {
     }
 }
 
-fn cfg_of(lines: &str) -> super::allowlist::Cfg {
-    super::allowlist::parse_cfg(lines)
-}
-
 #[test]
 fn guard_violations_compare_the_guard_with_the_list_s_verdict_by_whole_cfg_set() {
     use super::allowlist::guard_of;
@@ -180,15 +176,21 @@ fn guard_violations_compare_the_guard_with_the_list_s_verdict_by_whole_cfg_set()
                         compile_error!(\"no\");\n";
     let listed = "target_os=\"linux\"\ntarget_arch=\"x86_64\"\ntarget_vendor=\"unknown\"\n";
     let cfgs = BTreeMap::from([
-        (LINUX.to_owned(), cfg_of(listed)),
+        (LINUX.to_owned(), super::allowlist::parse_cfg(listed)),
         // The same cfg set under another name: the list's verdict passes it.
-        ("x86_64-twin-linux-gnu".to_owned(), cfg_of(listed)),
+        (
+            "x86_64-twin-linux-gnu".to_owned(),
+            super::allowlist::parse_cfg(listed),
+        ),
         // Another vendor: the list's verdict refuses it, the guard does not.
         (
             "x86_64-other-linux-gnu".to_owned(),
-            cfg_of(&listed.replace("unknown", "other")),
+            super::allowlist::parse_cfg(&listed.replace("unknown", "other")),
         ),
-        (WINDOWS.to_owned(), cfg_of("target_os=\"windows\"\n")),
+        (
+            WINDOWS.to_owned(),
+            super::allowlist::parse_cfg("target_os=\"windows\"\n"),
+        ),
     ]);
     let guard = guard_of(ROOT).unwrap();
     let (violations, unlisted) = guard_violations(&guard, &cfgs, &[LINUX, WINDOWS]);
@@ -211,4 +213,37 @@ fn guard_violations_compare_the_guard_with_the_list_s_verdict_by_whole_cfg_set()
         Violation::Target { target, what } if target == "aarch64-unknown-unknown"
             && what.contains("does not know")
     )));
+}
+
+#[test]
+fn build_script_problem_needs_cargo_s_script_to_be_the_crate_s_own_file() {
+    use super::build_script_problem;
+
+    let dir = std::env::temp_dir().join(format!(
+        "ironafs-xtask-os-build-script-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("other")).unwrap();
+    let script = dir.join("build.rs");
+    std::fs::write(&script, "fn main() {}\n").unwrap();
+    std::fs::write(dir.join("other/build.rs"), "fn main() {}\n").unwrap();
+
+    assert_eq!(build_script_problem(Some(&script), &dir), None);
+    assert!(build_script_problem(None, &dir).is_some());
+    let elsewhere = dir.join("other/build.rs");
+    assert!(
+        build_script_problem(Some(&elsewhere), &dir)
+            .is_some_and(|problem| problem.contains("registers"))
+    );
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(&script).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &script).unwrap();
+        assert!(
+            build_script_problem(Some(&script), &dir)
+                .is_some_and(|problem| problem.contains("not a regular file"))
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }

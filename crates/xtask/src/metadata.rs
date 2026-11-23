@@ -31,6 +31,9 @@ pub(crate) struct Member {
     pub(crate) dir: PathBuf,
     /// The library target's root file, if it has one.
     pub(crate) lib_root: Option<PathBuf>,
+    /// The build script's source file, as Cargo registers it, if the
+    /// member has one.
+    pub(crate) build_script: Option<PathBuf>,
     /// The kinds of every target, such as `lib`, `bin`, `custom-build` (a
     /// build script) or `test`.
     pub(crate) target_kinds: Vec<String>,
@@ -131,6 +134,40 @@ fn declared(package: &Value) -> Result<Vec<String>, Error> {
     Ok(found)
 }
 
+/// What a member's targets say: its library root, its build script, and
+/// each target's kinds and edition.
+struct Targets {
+    lib_root: Option<PathBuf>,
+    build_script: Option<PathBuf>,
+    kinds: Vec<String>,
+    editions: Vec<String>,
+}
+
+impl Targets {
+    fn read(package: &Value) -> Result<Self, Error> {
+        let mut targets = Self {
+            lib_root: None,
+            build_script: None,
+            kinds: Vec::new(),
+            editions: Vec::new(),
+        };
+        for target in array(package, "targets")? {
+            targets.editions.push(string(target, "edition")?.to_owned());
+            for kind in array(target, "kind")? {
+                let kind = kind.as_str().ok_or(Error::UnexpectedOutput(COMMAND))?;
+                let source = || string(target, "src_path").map(PathBuf::from);
+                match kind {
+                    "lib" => targets.lib_root = Some(source()?),
+                    "custom-build" => targets.build_script = Some(source()?),
+                    _ => {}
+                }
+                targets.kinds.push(kind.to_owned());
+            }
+        }
+        Ok(targets)
+    }
+}
+
 /// Reads the workspace from `cargo metadata` output. Dependencies are
 /// followed by package id, never by the name a manifest gives them.
 ///
@@ -162,19 +199,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
         let package = find_package(id)?;
         let manifest = PathBuf::from(string(package, "manifest_path")?);
         let dir = manifest.parent().ok_or_else(unexpected)?.to_path_buf();
-        let mut lib_root = None;
-        let mut target_kinds = Vec::new();
-        let mut editions = Vec::new();
-        for target in array(package, "targets")? {
-            editions.push(string(target, "edition")?.to_owned());
-            for kind in array(target, "kind")? {
-                let kind = kind.as_str().ok_or_else(unexpected)?;
-                if kind == "lib" {
-                    lib_root = Some(PathBuf::from(string(target, "src_path")?));
-                }
-                target_kinds.push(kind.to_owned());
-            }
-        }
+        let targets = Targets::read(package)?;
         // Every member must be in the resolved graph. A dependency whose
         // name there is not its package's name is a rename.
         let node = nodes
@@ -185,9 +210,10 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             name: string(package, "name")?.to_owned(),
             id: (*id).to_owned(),
             dir,
-            lib_root,
-            target_kinds,
-            editions,
+            lib_root: targets.lib_root,
+            build_script: targets.build_script,
+            target_kinds: targets.kinds,
+            editions: targets.editions,
             declared_dependencies: declared(package)?,
             renamed: renamed(node, packages)?,
         });

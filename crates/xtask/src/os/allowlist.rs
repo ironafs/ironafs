@@ -15,6 +15,7 @@
 
 use std::collections::BTreeSet;
 
+use super::pin::Pinned;
 use crate::rust_source::{Token, TokenKind, ident, matching, punct};
 
 #[cfg(test)]
@@ -75,6 +76,7 @@ pub(crate) fn guard(tokens: &[Token]) -> Result<Expression, String> {
         })
         .ok_or("no attribute stands directly before compile_error!")?;
     top_level_alone(tokens, open)?;
+    no_conditional_crate_attribute(tokens)?;
     let start = open + 2;
     let (expression, next) = read(tokens, start)?;
     if next != close {
@@ -87,6 +89,40 @@ pub(crate) fn guard(tokens: &[Token]) -> Result<Expression, String> {
         },
         _ => Err("the attribute is not #[cfg(not(...))]".to_owned()),
     }
+}
+
+/// Refuses a crate-level inner attribute (`#![...]`, at the top level of
+/// the crate root) that names `cfg` or `cfg_attr` anywhere in it: such an
+/// attribute can remove the whole crate, the guard with it, on targets the
+/// guard itself refuses (`#![cfg(...)]`, or `#![cfg_attr(..., cfg(...))]`),
+/// and this reader does not evaluate it.
+fn no_conditional_crate_attribute(tokens: &[Token]) -> Result<(), String> {
+    let mut depth = 0_i64;
+    for (at, token) in tokens.iter().enumerate() {
+        match punct(Some(token)) {
+            Some('{') => depth += 1,
+            Some('}') => depth -= 1,
+            Some('#') if depth == 0 && punct(tokens.get(at + 1)) == Some('!') => {
+                let close = matching(tokens, at + 2, '[', ']')
+                    .ok_or("an unbalanced crate-level attribute")?;
+                let conditional = tokens
+                    .get(at + 3..close)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|inner| matches!(ident(Some(inner)), Some("cfg" | "cfg_attr")));
+                if conditional {
+                    return Err(format!(
+                        "line {}: a crate-level attribute names cfg or cfg_attr, and could \
+                         remove the crate and its compile_error! guard on a target the guard \
+                         refuses",
+                        token.line
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Checks that the guard attribute at `open` stands at the top level of
@@ -146,26 +182,42 @@ fn top_level_alone(tokens: &[Token], open: usize) -> Result<(), String> {
 /// # Errors
 ///
 /// Returns an error if `rustc` cannot be run.
-pub(crate) fn musl_keys(root: &std::path::Path) -> Result<BTreeSet<String>, crate::Error> {
+pub(crate) fn musl_keys(
+    pinned: &Pinned,
+    root: &std::path::Path,
+) -> Result<BTreeSet<String>, crate::Error> {
     let mut keys = BTreeSet::new();
     for (musl, gnu) in [
         ("x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"),
         ("aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"),
     ] {
-        let musl = parse_cfg(&print_cfg(root, musl)?);
-        let gnu = parse_cfg(&print_cfg(root, gnu)?);
+        let musl = parse_cfg(&print_cfg(pinned, root, musl)?);
+        let gnu = parse_cfg(&print_cfg(pinned, root, gnu)?);
         keys.extend(musl.symmetric_difference(&gnu).map(|(key, _)| key.clone()));
     }
     Ok(keys)
 }
 
-fn print_cfg(root: &std::path::Path, target: &str) -> Result<String, crate::Error> {
-    let output = crate::Command::new("rustc")
+fn print_cfg(
+    pinned: &Pinned,
+    root: &std::path::Path,
+    target: &str,
+) -> Result<String, crate::Error> {
+    print(pinned, root, &["--print", "cfg", "--target", target])
+}
+
+/// What the pinned compiler, run from `root`, prints for `arguments`.
+fn print(
+    pinned: &Pinned,
+    root: &std::path::Path,
+    arguments: &[&str],
+) -> Result<String, crate::Error> {
+    let output = crate::Command::new(&pinned.rustc)
         .current_dir(root)
-        .args(["--print", "cfg", "--target", target])
+        .args(arguments)
         .output()
-        .map_err(crate::Error::io("run rustc --print cfg"))?;
-    crate::Error::check_status("rustc --print cfg", output.status)?;
+        .map_err(crate::Error::io("run rustc --print"))?;
+    crate::Error::check_status("rustc --print", output.status)?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -230,20 +282,12 @@ pub(crate) fn guard_of(lib_rs: &str) -> Result<Expression, String> {
 ///
 /// Returns an error if `rustc` cannot be run or reports failure.
 pub(crate) fn target_cfgs(
+    pinned: &Pinned,
     root: &std::path::Path,
 ) -> Result<std::collections::BTreeMap<String, Cfg>, crate::Error> {
-    let rustc = |arguments: &[&str]| -> Result<String, crate::Error> {
-        let output = crate::Command::new("rustc")
-            .current_dir(root)
-            .args(arguments)
-            .output()
-            .map_err(crate::Error::io("run rustc --print"))?;
-        crate::Error::check_status("rustc --print", output.status)?;
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    };
     let mut cfgs = std::collections::BTreeMap::new();
-    for target in rustc(&["--print", "target-list"])?.lines() {
-        let cfg = parse_cfg(&rustc(&["--print", "cfg", "--target", target])?);
+    for target in print(pinned, root, &["--print", "target-list"])?.lines() {
+        let cfg = parse_cfg(&print_cfg(pinned, root, target)?);
         cfgs.insert(target.to_owned(), cfg);
     }
     Ok(cfgs)

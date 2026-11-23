@@ -90,6 +90,7 @@ fn member(name: &str, lib: Option<&str>, target_kinds: &[&str]) -> Member {
         lib_root: lib.map(|file| PathBuf::from(format!("/w/crates/{name}/{file}"))),
         target_kinds: target_kinds.iter().map(|kind| (*kind).into()).collect(),
         editions: target_kinds.iter().map(|_| "2024".into()).collect(),
+        build_script: None,
         declared_dependencies: Vec::new(),
         renamed: Vec::new(),
     }
@@ -121,6 +122,7 @@ fn parse_workspace_follows_package_ids_and_keeps_development_edges_apart() {
                 member("ironafs-c", None, &["bin"]),
                 Member {
                     editions: vec!["2024".into(), "2018".into()],
+                    build_script: Some(PathBuf::from("/w/crates/ironafs-d/build.rs")),
                     declared_dependencies: Vec::new(),
                     ..member("ironafs-d", Some("src/lib.rs"), &["lib", "custom-build"])
                 },
