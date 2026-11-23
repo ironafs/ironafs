@@ -1,0 +1,5 @@
+name = "example.org"
+retries = [1, 2, 3] # note
+
+[cells."Example.ORG"]
+enabled = true

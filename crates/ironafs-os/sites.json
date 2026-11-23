@@ -791,10 +791,10 @@
       "row": 23,
       "id": "linux-rtnetlink",
       "targets": "Linux, glibc and musl",
-      "foreign_item": "`socket` with `AF_NETLINK`, `SOCK_RAW \\| SOCK_CLOEXEC` and `NETLINK_ROUTE` only; `bind` with a wrapper-built `struct sockaddr_nl` (the fixed group set on the notify socket, none on the request socket); `ssize_t sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t)` to the kernel's address only; `ssize_t recvmsg(int, struct msghdr *, int)` with a `struct sockaddr_nl` for the sender and `MSG_TRUNC` checked; each descriptor adopted as an `OwnedFd` (C23, point 2)",
+      "foreign_item": "`socket` with `AF_NETLINK`, `SOCK_RAW \\| SOCK_CLOEXEC` and `NETLINK_ROUTE` only; `bind` with a wrapper-built `struct sockaddr_nl` (the fixed group set on the notify socket, none on the request socket); `ssize_t sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t)` to the kernel's address only, with `MSG_DONTWAIT` only; `ssize_t recvmsg(int, struct msghdr *, int)` with `MSG_DONTWAIT` only, a `struct sockaddr_nl` for the sender and `MSG_TRUNC` checked; `int eventfd(unsigned int, int)` with 0 and `EFD_CLOEXEC \\| EFD_NONBLOCK` only, for the wake descriptor; `int poll(struct pollfd *, nfds_t, int)` on exactly two entries, one route socket and its wake descriptor, `POLLIN` requested on each, with a timeout of 0 or more only; each descriptor adopted as an `OwnedFd` (C23, point 2; amended 2026-11-22)",
       "linked_from": "the C library",
       "declared": "`unsafe fn`",
-      "blocks": "one per call (four); one that adopts the descriptor",
+      "blocks": "one per call (six); one that adopts a descriptor, a route socket's or the wake descriptor's (one private function)",
       "open": false,
       "status": {
         "x86_64-unknown-linux-gnu": "approved",

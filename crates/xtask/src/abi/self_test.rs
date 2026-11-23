@@ -29,7 +29,10 @@
 use std::io::Write;
 use std::path::Path;
 
-use super::{DataModel, Declarations, applies_here, c_source, compile, declarations, unnamed};
+use super::{
+    DataModel, Declarations, applies_here, c_source, compile, declarations, header_macros,
+    required_constants, unnamed,
+};
 use crate::Error;
 use crate::rust_source::tokens_with_strings;
 
@@ -80,6 +83,12 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
         "EINTR: c_int = 4",
         "EINTR: c_int = 5",
         "EINTR == 5",
+    ),
+    (
+        "a constant written with a leading zero, emitted as its decimal value",
+        "EINTR: c_int = 4",
+        "EINTR: c_int = 010",
+        "EINTR == 10",
     ),
     (
         "a constant compared with a C expression changed by one",
@@ -158,6 +167,12 @@ const READER: &[(&str, &str, &str, &str)] = &[
         "use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};",
         "use core::ffi::{c_char, c_int, c_long as c_ulong, c_uint};",
         "a renaming import",
+    ),
+    (
+        "a module named core, shadowing core::ffi",
+        "const EINTR",
+        "mod core { pub mod ffi { pub type c_int = u8; } }\nconst EINTR",
+        "named `core`",
     ),
     (
         "a C type name not imported from core::ffi",
@@ -246,16 +261,76 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
             Stage::Compiled => return Err(failure(name, "it was accepted".to_owned())),
         }
     }
+    missing_fact_case(dir)?;
+    report(
+        output,
+        "caught: a constant the code names, a C macro of its headers, declared outside the \
+         declaration files"
+            .to_owned(),
+    )?;
     report(
         output,
         format!(
             "check-abi --self-test: the fixture compiled; {} planted mismatches failed to compile \
-             at their assertions, an unnamed qualified constant was withheld, and {} declarations \
-             were refused by the reader",
+             at their assertions, an unnamed qualified constant was withheld, {} declarations \
+             were refused by the reader, and a missing fact was found",
             COMPILER.len() + 1,
             READER.len()
         ),
     )
+}
+
+/// The row's code (here, a root file beside the fixture) names `EINTR`, a
+/// macro of the fixture's headers: with the fixture's declaration, nothing
+/// is missing; with that declaration moved out of the declaration files,
+/// `EINTR` is a required fact no assertion proves.
+fn missing_fact_case(dir: &Path) -> Result<(), Error> {
+    const CASE: &str = "a constant the code names, declared outside the declaration files";
+    const ROOT: &str = "fn interrupted(code: c_int) -> bool { code == abi::EINTR }\n";
+    let headers: Vec<String> = HEADERS.iter().map(|header| (*header).to_owned()).collect();
+    let macros = match header_macros(
+        "self-test",
+        &[],
+        &headers,
+        DataModel::Lp64,
+        &dir.join("macros.c"),
+    )? {
+        Ok(macros) => macros,
+        Err(error) => return Err(failure(CASE, error)),
+    };
+    let undeclared = |declarations: &str| -> Result<Vec<String>, Error> {
+        let mut found = Declarations::default();
+        let tokens =
+            tokens_with_strings(declarations).map_err(|error| failure(CASE, error.to_string()))?;
+        declarations_of(&tokens, &mut found)?;
+        let used: Vec<String> = [ROOT, declarations]
+            .iter()
+            .filter_map(|text| crate::rust_source::tokens(text).ok())
+            .flatten()
+            .filter_map(|token| crate::rust_source::ident(Some(&token)).map(str::to_owned))
+            .collect();
+        Ok(required_constants(used.iter().map(String::as_str), &macros)
+            .into_iter()
+            .filter(|name| !found.constants.iter().any(|(constant, _)| constant == name))
+            .collect())
+    };
+    let clean = undeclared(FIXTURE)?;
+    if !clean.is_empty() {
+        return Err(failure(CASE, format!("the fixture itself lacks {clean:?}")));
+    }
+    let moved = undeclared(&plant(CASE, "const EINTR: c_int = 4;\n", "")?)?;
+    if moved == ["EINTR"] {
+        Ok(())
+    } else {
+        Err(failure(CASE, format!("found {moved:?}, not [\"EINTR\"]")))
+    }
+}
+
+fn declarations_of(
+    tokens: &[crate::rust_source::Token],
+    found: &mut Declarations,
+) -> Result<(), Error> {
+    declarations(tokens, "C", found).map_err(|error| failure("reading the fixture", error))
 }
 
 /// The `c_char` alias planted with a typedef of the other sign, which the

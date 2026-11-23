@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# The fuzz targets (coding standards rule 20): excluded from the workspace,
+# so this manifest is written by hand, states its own dependencies and lints,
+# and has its own lock file and its own clippy, fmt and cargo-deny runs.
+[package]
+name = "ironafs-fuzz"
+description = "IronAFS's fuzz targets"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/ironafs/ironafs"
+publish = false
+# Every target is a [[bin]] table below, the one form `cargo xtask fuzz`
+# reads; Cargo finds none of its own in src/main.rs or src/bin/.
+autobins = false
+
+# Its own workspace root. The root manifest's exclude keeps it out of the
+# workspace, but Cargo keeps searching parent directories past an exclude,
+# so a checkout nested inside another workspace would otherwise claim it.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+# The fuzzing engine's binding, the one planned test-only exception of
+# coding standards rule 21 (ADR 0004, O47, point 5). Exact version: its
+# NCSA licence exception and build-script entry in fuzz/deny.toml name it.
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+ironafs-config = { path = "../crates/ironafs-config", version = "=0.0.0" }
+ironafs-xdr = { path = "../crates/ironafs-xdr", version = "=0.0.0" }
+
+[[bin]]
+name = "ironafs-config_syntax"
+path = "fuzz_targets/ironafs-config_syntax.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ironafs-xdr_decode"
+path = "fuzz_targets/ironafs-xdr_decode.rs"
+test = false
+doc = false
+bench = false
+
+# The workspace's lints, which an excluded crate cannot inherit.
+[lints.rust]
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+elided_lifetimes_in_paths = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+mod_module_files = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+string_slice = "deny"
+dbg_macro = "deny"
+allow_attributes = "deny"

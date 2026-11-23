@@ -35,7 +35,7 @@
 //! and `check-os` requires them to be exactly the modules of the rows the
 //! copy implements on glibc and only approves on musl.
 
-use crate::rust_source::{Token, TokenKind, ident, matching, punct};
+use crate::rust_source::{Token, TokenKind, core_shadows, ident, matching, punct};
 
 #[cfg(test)]
 mod tests;
@@ -63,6 +63,9 @@ pub(crate) const TARGET_ENV: &str = "target_env is named only in the crate root'
 pub(crate) const LIBRARY_SITE: &str = "a C library's declaration file (abi/gnu.rs, abi/musl.rs) \
                                        holds no site, so a musl build's sites are the glibc \
                                        build's (ADR 0005, points 5.2 and 6.7)";
+pub(crate) const CORE: &str = "an item, import or generic parameter named `core`, under which \
+                               `core::...` in this crate could name something other than the \
+                               core crate (ADR 0005, point 6.7)";
 pub(crate) const TWO_NAMES: &str = "one statement or item carries more than one \
                                     #[expect(unsafe_code)] (ADR 0005, point 6.1)";
 pub(crate) const OUTSIDE: &str = "unsafe code, a foreign declaration or function, or a #[link] \
@@ -415,6 +418,13 @@ pub(crate) fn scan(tokens: &[Token], place: Place) -> Scan {
                 .map(|line| Problem { line, what: CFG }),
         );
     }
+    // Every file of the crate: a `core` item anywhere could reach a site's
+    // file through a glob import.
+    scan.problems.extend(
+        core_shadows(tokens)
+            .into_iter()
+            .map(|line| Problem { line, what: CORE }),
+    );
     scan
 }
 

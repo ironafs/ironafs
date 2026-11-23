@@ -65,10 +65,29 @@ jobs:
         run: cargo --locked xtask check-grants
       - name: Prove the confinement catches planted violations
         run: cargo --locked xtask check-grants --self-test
+      - name: Check the fuzz crate's dependency policy against the root's
+        run: cargo --locked xtask check-fuzz-deny
+      - name: Prove a drifted fuzz dependency policy is caught
+        run: cargo --locked xtask check-fuzz-deny --self-test
+      - name: Prove the fuzz step fails when nothing ran and prints no reproducer
+        run: cargo --locked xtask fuzz --self-test
+      - name: Install the fuzz crate's pinned nightly
+        working-directory: fuzz
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Check the fuzz crate's dependencies
+        working-directory: fuzz
+        run: cargo deny --locked check
       - name: Build the pure crates against core and alloc alone
         run: cargo --locked xtask check-pure
       - name: Prove the pure-crate build catches planted violations
         run: cargo --locked xtask check-pure --self-test
+      - name: Check the seams' source rules
+        run: cargo --locked xtask check-seams
+      - name: Prove the seam rules catch planted violations
+        run: cargo --locked xtask check-seams --self-test
       - name: Check unsafe stays in ironafs-os and matches ADR 0005's table
         run: cargo --locked xtask check-os
       - name: Prove the site inventory catches planted changes
@@ -332,19 +351,57 @@ jobs:
         env:
           CC: ${{ matrix.cc || 'cc' }}
         run: cargo --locked xtask check-abi --self-test
+      - name: Compare the musl build's own sites with the copy
+        # The production library built for this musl target, its sites read
+        # from the files that build compiled (ADR 0005, point 6.7), and a
+        # site planted for this target alone caught (a synthetic input: the
+        # planted file added to that build's file list).
+        if: matrix.cc == 'musl-gcc'
+        run: |
+          cargo --locked xtask check-os > check-os.log
+          cat check-os.log
+          grep -Eq "^check-os: .* on [^;]*${TARGET}[,;]" check-os.log
+          cargo --locked xtask check-os --self-test > check-os-self-test.log
+          cat check-os-self-test.log
+          grep -qx "caught: a site planted for a musl target alone (synthetic input: added to its build's file list): $TARGET" check-os-self-test.log
 
   os-linux-glibc-2-28:
-    name: os-linux (glibc 2.28, aarch64)
+    name: os-linux (glibc 2.28, ${{ matrix.target }})
     # The oldest glibc of the build goal (ADR 0004, L42, point 3; ADR 0005,
-    # point 5.5): ironafs-os built and its tests run on AlmaLinux 8. The
-    # conditional glibc 2.17 artefact is qualified separately, before it is
-    # offered.
-    runs-on: ubuntu-24.04-arm
+    # point 5.5): ironafs-os built and its tests run on AlmaLinux 8, on
+    # each Linux architecture. Each lane proves the target it built and
+    # the runtime it ran on, and requires the named clock, random and wipe
+    # tests. The conditional glibc 2.17 artefact is not offered until it is
+    # qualified separately.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Each lane's own AlmaLinux 8 image, by its architecture's digest
+          # in the same multi-architecture index.
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            runner: ubuntu-24.04
+            image: docker.io/library/almalinux:8@sha256:974135fa35c47f8406ae9f81e8479fe0c372bdd64244a48770848466ceb694ce
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            image: docker.io/library/almalinux:8@sha256:34a85f19e05e28243249d45dd3842621741a43b110865ca80575c9b4e083cc29
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
     container:
-      image: docker.io/library/almalinux:8@sha256:34a85f19e05e28243249d45dd3842621741a43b110865ca80575c9b4e083cc29
+      image: ${{ matrix.image }}
+    env:
+      TARGET: ${{ matrix.target }}
+      ARCH: ${{ matrix.arch }}
+      NATIVE_TESTS: >-
+        linux_clock::tests::read_clock_boot_advances_and_never_goes_back
+        linux_clock::tests::read_clock_awake_advances_and_never_goes_back
+        linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names
+        linux_random::tests::getrandom_reports_a_full_piece_of_at_most_256_bytes
+        mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -352,16 +409,32 @@ jobs:
       - name: Install a C toolchain and Rust
         run: |
           dnf --assumeyes install gcc
-          ldd --version | head -n 1 | grep -q ' 2\.28$'
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs > rustup-init.sh
           sh rustup-init.sh -y --default-toolchain none --profile minimal
           "$HOME/.cargo/bin/rustup" toolchain install --profile minimal --no-self-update --no-update
-      - name: Run ironafs-os's tests on glibc 2.28
+      - name: Prove the runtime and the target
+        # Each output is read whole into a variable before it is tested, so
+        # no command writes into a pipe that closes early (SIGPIPE under
+        # pipefail).
         run: |
-          "$HOME/.cargo/bin/cargo" test -p ironafs-os --locked > test.log 2>&1
+          glibc=$(ldd --version | sed -n 1p)
+          echo "$glibc"
+          case "$glibc" in
+            *' 2.28') ;;
+            *) echo "not glibc 2.28: $glibc"; exit 1 ;;
+          esac
+          test "$(uname -m)" = "$ARCH"
+          host=$("$HOME/.cargo/bin/rustc" -vV | sed -n 's/^host: //p')
+          echo "rustc host: $host"
+          test "$host" = "$TARGET"
+      - name: Run ironafs-os's tests on glibc 2.28, real system calls included
+        run: |
+          "$HOME/.cargo/bin/cargo" test -p ironafs-os --locked --target "$TARGET" > test.log 2>&1
           cat test.log
           grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' test.log
-          grep -q '^test linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names \.\.\. ok$' test.log
+          for test in $NATIVE_TESTS; do
+            grep -q "^test $test \.\.\. ok\$" test.log
+          done
 
   miri:
     name: miri
@@ -442,16 +515,60 @@ jobs:
         if: github.event_name == 'push'
         run: cargo --locked xtask trailers main
 
+  fuzz:
+    name: fuzz (${{ matrix.runner }})
+    # Fuzzing runs on Linux runners, on the fuzz crate's pinned nightly (ADR
+    # 0004, O47, point 4). Pull requests replay the tracked seeds once; the
+    # time-bounded fuzzing run is the scheduled job's. The engine's output is
+    # never shown: a failure is reported by target and digest (O30).
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Install the fuzz crate's pinned nightly
+        working-directory: fuzz
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Install cargo-fuzz
+        run: |
+          cargo install --locked --version =0.13.2 cargo-fuzz
+          cargo fuzz --version
+      - name: Check the fuzz crate's formatting
+        working-directory: fuzz
+        run: cargo fmt --check
+      - name: Run Clippy on the fuzz crate
+        working-directory: fuzz
+        env:
+          CARGO_BUILD_WARNINGS: deny
+        run: cargo clippy --all-targets --locked
+      - name: Replay every fuzz target's tracked seeds
+        run: cargo --locked xtask fuzz
+
   ci-ok:
     name: ci-ok
-    needs: [lint, test, os-linux, os-linux-glibc-2-28, miri, trailers]
+    needs: [lint, test, os-linux, os-linux-glibc-2-28, miri, trailers, fuzz]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - name: Require lint, test, os-linux, glibc 2.28, Miri and trailer check success
+      - name: Require lint, test, os-linux, glibc 2.28, Miri, trailer and fuzz check success
         env:
           LINT_RESULT: ${{ needs.lint.result }}
           TEST_RESULT: ${{ needs.test.result }}
@@ -459,6 +576,7 @@ jobs:
           OLD_GLIBC_RESULT: ${{ needs.os-linux-glibc-2-28.result }}
           MIRI_RESULT: ${{ needs.miri.result }}
           TRAILERS_RESULT: ${{ needs.trailers.result }}
+          FUZZ_RESULT: ${{ needs.fuzz.result }}
         run: |
-          printf 'lint: %s\ntest: %s\nos-linux: %s\nglibc 2.28: %s\nmiri: %s\ntrailers: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$OS_LINUX_RESULT" "$OLD_GLIBC_RESULT" "$MIRI_RESULT" "$TRAILERS_RESULT"
-          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$OS_LINUX_RESULT" == success && "$OLD_GLIBC_RESULT" == success && "$MIRI_RESULT" == success && "$TRAILERS_RESULT" == success ]]
+          printf 'lint: %s\ntest: %s\nos-linux: %s\nglibc 2.28: %s\nmiri: %s\ntrailers: %s\nfuzz: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$OS_LINUX_RESULT" "$OLD_GLIBC_RESULT" "$MIRI_RESULT" "$TRAILERS_RESULT" "$FUZZ_RESULT"
+          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$OS_LINUX_RESULT" == success && "$OLD_GLIBC_RESULT" == success && "$MIRI_RESULT" == success && "$TRAILERS_RESULT" == success && "$FUZZ_RESULT" == success ]]

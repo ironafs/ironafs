@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# An opaque x<> of length 2 with its padding byte at offset 7 set to 01.
+
+type blob
+breaks 5.4, point 8
+expect NonZeroPadding -
+offset 7
+extent none
+requests test.blob:2
+input 00000002 01020001

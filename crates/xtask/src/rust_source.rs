@@ -689,3 +689,101 @@ fn use_tree(
         }
     }
 }
+
+/// The lines of every name `core` among `tokens` that can stand for the
+/// first segment of a `core::...` path in its scope (or, through a glob
+/// import, in another file): a module, a type (struct, enum, union, trait
+/// or alias), a crate (`extern crate`), an import, a type parameter in any
+/// position of a generic list, or a macro. Raw identifiers included. Names
+/// of the value namespace (a binding, a parameter, a field, a function, a
+/// constant or a static) cannot, and are not reported. With none reported
+/// in a crate, every `core::...` path in it resolves through the extern
+/// prelude to the core crate.
+pub(crate) fn core_shadows(tokens: &[Token]) -> Vec<usize> {
+    const ITEMS: &[&str] = &["mod", "struct", "enum", "union", "trait", "type"];
+    let generic_lists = generic_lists(tokens);
+    let mut in_import = false;
+    let mut found = Vec::new();
+    for (at, token) in tokens.iter().enumerate() {
+        let word = ident(Some(token));
+        if (word == Some("use") || (word == Some("crate") && previous_is(tokens, at, "extern")))
+            && !token.raw
+        {
+            in_import = true;
+        }
+        if punct(Some(token)) == Some(';') {
+            in_import = false;
+        }
+        if word != Some("core") || is(tokens, at + 1, &TokenKind::PathSep) {
+            continue;
+        }
+        let before = at.checked_sub(1).and_then(|before| tokens.get(before));
+        let item = ident(before).is_some_and(|word| ITEMS.contains(&word));
+        let macro_name = punct(before) == Some('!') && previous_is(tokens, at - 1, "macro_rules");
+        let parameter = generic_lists.iter().any(|(open, close)| {
+            *open < at
+                && at < *close
+                && matches!(punct(before), Some('<' | ','))
+                && matches!(
+                    tokens.get(at + 1).and_then(|next| punct(Some(next))),
+                    Some(':' | ',' | '>' | '=')
+                )
+        });
+        if item || macro_name || parameter || in_import {
+            found.push(token.line);
+        }
+    }
+    found
+}
+
+/// Whether the token before `at` is the identifier `word`.
+fn previous_is(tokens: &[Token], at: usize, word: &str) -> bool {
+    at.checked_sub(1)
+        .and_then(|before| tokens.get(before))
+        .is_some_and(|token| ident(Some(token)) == Some(word))
+}
+
+/// The generic parameter lists among `tokens`, as the indices of their
+/// `<` and `>`: a `<` right after `impl`, or after the name of a function,
+/// struct, enum, union, trait or type alias. A `>` after `-` (an arrow in
+/// a bound) does not close one.
+fn generic_lists(tokens: &[Token]) -> Vec<(usize, usize)> {
+    const NAMED: &[&str] = &["fn", "struct", "enum", "union", "trait", "type"];
+    let mut lists = Vec::new();
+    for (open, token) in tokens.iter().enumerate() {
+        if punct(Some(token)) != Some('<') {
+            continue;
+        }
+        let after_impl = previous_is(tokens, open, "impl");
+        let after_name = open >= 2
+            && ident(open.checked_sub(1).and_then(|before| tokens.get(before))).is_some()
+            && open
+                .checked_sub(2)
+                .and_then(|before| tokens.get(before))
+                .and_then(|token| ident(Some(token)))
+                .is_some_and(|word| NAMED.contains(&word));
+        if !(after_impl || after_name) {
+            continue;
+        }
+        let mut depth = 0_usize;
+        for (at, inner) in tokens.iter().enumerate().skip(open) {
+            match punct(Some(inner)) {
+                Some('<') => depth += 1,
+                Some('>')
+                    if at
+                        .checked_sub(1)
+                        .and_then(|before| punct(tokens.get(before)))
+                        != Some('-') =>
+                {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        lists.push((open, at));
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    lists
+}

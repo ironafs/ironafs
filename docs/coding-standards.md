@@ -53,8 +53,9 @@ number and is marked retired; new rules are appended.
      is denied.
    - A Miri job is added with the first such crate.
 
-6. **Warnings are errors in CI, not in source.** CI and `cargo xtask check`
-   set `CARGO_BUILD_WARNINGS=deny` for Clippy. Source never says
+6. **Warnings are errors in CI, not in source.** CI sets
+   `CARGO_BUILD_WARNINGS=deny` for Clippy; `cargo xtask check`'s lint
+   refuses every warning but the ones `check-bans`' canary must draw. Source never says
    `#![deny(warnings)]`, which breaks builds on every new compiler lint.
 
 7. **Time and randomness go through a seam.** No direct `Instant::now`,

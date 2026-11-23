@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Empty input for an int.
+
+type int
+breaks 5.4, point 2
+expect Truncated -
+offset 0
+extent 0
+requests none
+input 

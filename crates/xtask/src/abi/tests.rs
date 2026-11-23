@@ -5,7 +5,7 @@
 
 use super::{
     CType, DataModel, Declarations, Function, Struct, c_source, canonical, declarations, identity,
-    missing_facts,
+    missing_facts, object_macros, preamble, required_constants,
 };
 use crate::rust_source::tokens_with_strings;
 
@@ -122,6 +122,10 @@ fn declarations_refuse_what_c_cannot_be_compared_with() {
         (
             "use core::ffi::c_long as c_int;",
             "line 1: a renaming import",
+        ),
+        (
+            "mod core { pub mod ffi { pub type c_int = u8; } }",
+            "line 1: an item, import or generic parameter named `core`",
         ),
     ] {
         let error = refused(source);
@@ -483,4 +487,56 @@ fn identity_names_the_architecture_and_c_library_of_the_target() {
     let gnu = identity("x86_64-unknown-linux-gnu");
     assert!(gnu.contains("#if !defined(__x86_64__)"), "{gnu}");
     assert!(gnu.contains("#if !defined(__GLIBC__)"), "{gnu}");
+}
+
+#[test]
+fn constants_are_emitted_as_normalized_decimal_values() {
+    let found = read(
+        "const LEADING: c_int = 046;\nconst SPLIT: c_int = 0_1_0;\nconst NEG: c_int = -007;\n",
+    );
+    assert_eq!(
+        found.constants,
+        [
+            ("LEADING".to_owned(), "46".to_owned()),
+            ("SPLIT".to_owned(), "10".to_owned()),
+            ("NEG".to_owned(), "-7".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn object_macros_reads_the_preprocessor_s_definitions() {
+    let dump = "#define EINTR 4\n#define _GNU_SOURCE 1\n#define FD_SET(fd, set) x\n\
+                #define __x86_64__ 1\n";
+    let found = object_macros(dump);
+    assert!(found.contains("EINTR") && found.contains("__x86_64__"));
+    assert!(!found.contains("FD_SET"));
+}
+
+#[test]
+fn required_constants_are_the_c_macros_the_row_s_code_names() {
+    let macros =
+        object_macros("#define EINTR 4\n#define EPERM 1\n#define unix 1\n#define errno x\n");
+    // EINTR is used by the code and is a C macro; FLAGS is used but is no
+    // C macro; unix and errno have no upper-case letter, so a Rust `cfg`
+    // word or a variable is never taken for one.
+    let used = ["EINTR", "FLAGS", "unix", "errno", "c_int"];
+    assert_eq!(required_constants(used.iter().copied(), &macros), ["EINTR"]);
+}
+
+#[test]
+fn the_macro_scan_and_the_assertions_share_one_preamble() {
+    let headers = ["time.h".to_owned()];
+    let start = preamble("linux-clock", &[], &headers, DataModel::Lp64);
+    assert!(start.contains("#define _DEFAULT_SOURCE 1\n"));
+    let source = c_source(
+        "linux-clock",
+        &[],
+        &headers,
+        &[],
+        &read(CLOCK),
+        DataModel::Lp64,
+    )
+    .unwrap();
+    assert!(source.starts_with(&start));
 }

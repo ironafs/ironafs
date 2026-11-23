@@ -6,9 +6,13 @@
 mod abi;
 mod args;
 mod bans;
+mod cell;
 mod check;
 mod deps;
+mod files;
 mod fixture;
+mod fuzz;
+mod fuzz_deny;
 mod grants;
 mod hooks;
 mod json;
@@ -16,6 +20,7 @@ mod metadata;
 mod os;
 mod pure;
 mod rust_source;
+mod seams;
 mod trailers;
 mod wipe;
 
@@ -56,6 +61,8 @@ enum Error {
         source: io::Error,
     },
     Trailer(trailers::Violation),
+    /// A test cell command failed.
+    Cell(cell::Failure),
     /// A rule check found violations, each written out.
     Rules {
         check: &'static str,
@@ -133,6 +140,7 @@ impl fmt::Display for Error {
                 write!(formatter, "{operation} at {}: {source}", path.display())
             }
             Self::Trailer(violation) => write!(formatter, "{violation}"),
+            Self::Cell(failure) => write!(formatter, "cell: {failure}"),
             Self::Rules { check, violations } => {
                 write!(formatter, "{check} found {} violations:", violations.len())?;
                 violations
@@ -161,16 +169,20 @@ fn run_task(
         args::Task::Check => check::run(output),
         args::Task::CheckBans { self_test } => bans::run(self_test, output),
         args::Task::CheckDeps { self_test } => deps::run(self_test, output),
+        args::Task::CheckFuzzDeny { self_test } => fuzz_deny::run(self_test, output),
+        args::Task::Fuzz { self_test } => fuzz::run(self_test, output),
         args::Task::CheckGrants { self_test } => grants::run(self_test, output),
         args::Task::CheckPure { self_test } => pure::run(self_test, output),
         args::Task::CheckOs { self_test } => os::run(self_test, output),
         args::Task::CheckAbi { self_test, target } => {
             abi::run(self_test, target.as_deref(), output)
         }
+        args::Task::CheckSeams { self_test } => seams::run(self_test, output),
         args::Task::CheckWipe => wipe::run(output),
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
         args::Task::Trailers(mode) => trailers::run(mode, output),
+        args::Task::Cell(command) => cell::run(command, output),
     }
 }
 

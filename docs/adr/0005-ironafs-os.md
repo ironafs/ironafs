@@ -7,7 +7,10 @@ Status: accepted (2026-11-21), by the owner, after the review rounds
 recorded below. Raised in issue #43; the ADR 0004 amendment it needs
 is issue #49, in the same pull request (#101). Amended 2026-11-21
 (#57): rows 13 and 14 and sheets 13 and 14 (the socket type, `SCM_PIDFD`,
-and where a received descriptor is an integer).
+and where a received descriptor is an integer); amended 2026-11-22
+(#152): point 5.3 and Decision 4, the target gate; and amended
+2026-11-22 (#153): row 23 and its sheet, the route sockets' bounded
+wait.
 
 ## Context
 
@@ -205,6 +208,8 @@ and where a received descriptor is an integer).
   | `RLIMIT_CORE` (Linux) | a limit of zero prevents a dump, "However, RLIMIT_CORE will be ignored if the system is configured to pipe core dumps to a program" | [core(5)](https://man7.org/linux/man-pages/man5/core.5.html); CONFIRMED 2026-11-20 |
   | `MADV_DONTDUMP` | since Linux 3.4: "Exclude from a core dump those pages in the range"; "addr must be page-aligned" (`EINVAL` otherwise) | [madvise(2)](https://man7.org/linux/man-pages/man2/madvise.2.html); CONFIRMED 2026-11-20 |
   | `RLIMIT_CORE` (macOS) | "The maximum size of a core file is limited by setrlimit(2). Files which would be larger than the limit are not created"; "Core dumps are disabled by default"; "To disable core dumps, set the limit to 0". macOS has no `PR_SET_DUMPABLE` | core(5) and setrlimit(2) in the macOS 27.2 manual; CONFIRMED 2026-11-20 |
+  | `poll` (Linux) | `int poll(struct pollfd *fds, nfds_t nfds, int timeout)`; `struct pollfd` is `int fd; short events; short revents`; "Specifying a negative value in timeout means an infinite timeout", zero returns at once, and the interval "will be rounded up to the system clock granularity" and "may overrun by a small amount"; 0 means the call "timed out before any file descriptors became ready"; `EINTR`: "A signal occurred before any requested event"; `POLLERR`, `POLLHUP` and `POLLNVAL` are "only returned in revents; ignored in events" | [poll(2)](https://man7.org/linux/man-pages/man2/poll.2.html); CONFIRMED 2026-11-22. The width of `nfds_t` in glibc and musl is not on the page: UNVERIFIED until point 5.6's check |
+  | `eventfd` | `int eventfd(unsigned int initval, int flags)`; `EFD_CLOEXEC` and `EFD_NONBLOCK` since Linux 2.6.27; the wrapper since glibc 2.8. A read of fewer than 8 bytes fails with `EINVAL`; a read of a non-zero counter returns it and "the counter's value is reset to zero"; a zero counter fails a non-blocking read with `EAGAIN`; a write adds its 8-byte value, and one that would pass 0xfffffffffffffffe fails a non-blocking write with `EAGAIN`; the descriptor is readable "if the counter has a value greater than 0"; an overflowed counter makes `poll` return `POLLERR` | [eventfd(2)](https://man7.org/linux/man-pages/man2/eventfd.2.html); CONFIRMED 2026-11-22 |
   | `clock_gettime` in glibc 2.17 | "The `clock_*' suite of functions ... is now available directly in the main C library. Previously it was necessary to link with -lrt" (2.17) | glibc `NEWS`, 2.17 entry; CONFIRMED 2026-11-20 |
 
 - **What the operating systems document: the control endpoint.** The
@@ -311,7 +316,8 @@ Revisit point 6 if: C33 is revisited.
    receives one descriptor, makes one mount call, creates and serves one
    named pipe, reads what a pipe's caller or server token says, creates
    one IPv6-only UDP socket, reads one filesystem's free space, opens,
-   writes to and reads from one route-notification socket, and overwrites
+   writes to and reads from one route-notification socket, waits for it
+   or a wake with a finite timeout, and overwrites
    one byte buffer with zeros in a way the compiler keeps.
    Which caller is an administrator, and which server is the daemon, is
    decided by its callers. What a clock jump means (C37, points 4 and 5),
@@ -464,7 +470,7 @@ are in its sheet below the table, under the same number.
 | 20 | `windows-pipe-server` | Windows (in `afs`, the session agents and any token sender) | `GetNamedPipeServerProcessId` (twice), `OpenProcess` with `PROCESS_QUERY_LIMITED_INFORMATION` only, `OpenProcessToken` with `TOKEN_QUERY` only, `GetTokenInformation` (`TokenUser` only) (C43, points 1, 2 and 4) | see point 5.4 | `unsafe fn` | one per call; one per adopted handle (two); one bounded SID read |
 | 21 | `linux-udp6` | Linux, glibc and musl | `int socket(int, int, int)` with `AF_INET6`, `SOCK_DGRAM \| SOCK_CLOEXEC` and 0 only; `int setsockopt(int, int, int, const void *, socklen_t)` with `IPPROTO_IPV6`, `IPV6_V6ONLY` and the value 1 only; `int bind(int, const struct sockaddr *, socklen_t)` with a wrapper-built `struct sockaddr_in6`; the descriptor adopted as an `OwnedFd` and returned as a `std::net::UdpSocket` (C30, point 1; C34, point 2) | the C library | `unsafe fn` | one per call (three); one that adopts the descriptor (`OwnedFd::from_raw_fd`) |
 | 22 | `linux-statvfs` | Linux, glibc and musl | `int fstatvfs(int, struct statvfs *)` on a borrowed descriptor of the chunk store's directory (C27, point 3) | the C library | `unsafe fn` | one |
-| 23 | `linux-rtnetlink` | Linux, glibc and musl | `socket` with `AF_NETLINK`, `SOCK_RAW \| SOCK_CLOEXEC` and `NETLINK_ROUTE` only; `bind` with a wrapper-built `struct sockaddr_nl` (the fixed group set on the notify socket, none on the request socket); `ssize_t sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t)` to the kernel's address only; `ssize_t recvmsg(int, struct msghdr *, int)` with a `struct sockaddr_nl` for the sender and `MSG_TRUNC` checked; each descriptor adopted as an `OwnedFd` (C23, point 2) | the C library | `unsafe fn` | one per call (four); one that adopts the descriptor |
+| 23 | `linux-rtnetlink` | Linux, glibc and musl | `socket` with `AF_NETLINK`, `SOCK_RAW \| SOCK_CLOEXEC` and `NETLINK_ROUTE` only; `bind` with a wrapper-built `struct sockaddr_nl` (the fixed group set on the notify socket, none on the request socket); `ssize_t sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t)` to the kernel's address only, with `MSG_DONTWAIT` only; `ssize_t recvmsg(int, struct msghdr *, int)` with `MSG_DONTWAIT` only, a `struct sockaddr_nl` for the sender and `MSG_TRUNC` checked; `int eventfd(unsigned int, int)` with 0 and `EFD_CLOEXEC \| EFD_NONBLOCK` only, for the wake descriptor; `int poll(struct pollfd *, nfds_t, int)` on exactly two entries, one route socket and its wake descriptor, `POLLIN` requested on each, with a timeout of 0 or more only; each descriptor adopted as an `OwnedFd` (C23, point 2; amended 2026-11-22) | the C library | `unsafe fn` | one per call (six); one that adopts a descriptor, a route socket's or the wake descriptor's (one private function) |
 | 24 | `mem-wipe` | every target | none: no foreign call. `core::ptr::write_volatile` of a zero byte through each `&mut u8` of the caller's slice, then `core::sync::atomic::compiler_fence(SeqCst)` (O28, point 2) | none | none | one (the volatile write, in a loop of safe code) |
 
 - **The boot clock** is `CLOCK_BOOTTIME`, `CLOCK_MONOTONIC_RAW` and
@@ -1130,13 +1136,36 @@ are in its sheet below the table, under the same number.
     C20).
     *Test:* a tmpfs of known size, empty and full (a value under the
     floor); a descriptor on another filesystem measures that one.
-23. **`linux-rtnetlink`.**
+23. **`linux-rtnetlink`.** Amended 2026-11-22: the bounded wait, the
+    wake descriptor and non-blocking sends and receives. **Working.**
+    Revisit this row if: point 5.6's check finds a declaration of the
+    wait or the wake wrong on a target (`nfds_t` among them); a run
+    shows a send to the kernel waiting inside the kernel despite
+    `MSG_DONTWAIT`, a wake lost or a wait not ending at its timeout; or
+    `std` gains a safe way to wait on a socket and a wake together.
+    The owner accepts this amendment before its code is written (point
+    7.1). The network-change monitor's redesign that uses it is a
+    separate class S change: its design is reviewed by a non-author
+    family before code, then its code (point 6.6).
     *Interface:* open a notify socket subscribed to a fixed group set
     (links, the addresses and routes of both families, and the policy
     rules of both families), or a request socket with no groups; send
-    one request to the kernel; receive one datagram into a caller's
-    buffer, returning its length, or a typed error that tells overflow
-    (`ENOBUFS`), truncation and a sender other than the kernel apart.
+    one request to the kernel, without waiting for buffer space;
+    receive one datagram into a caller's buffer, without waiting for
+    one to arrive, returning its length,
+    "nothing queued", "interrupted", or a typed error that tells
+    overflow (`ENOBUFS`), truncation, an empty datagram and a sender
+    other than the kernel apart; make a wake (one `eventfd`), signal it
+    from any thread, and clear it; and wait on one route socket and one
+    wake together for a given `Duration`, rounded up to whole
+    milliseconds and subject to the kernel's rounding and scheduling
+    delay (Context, poll(2)), returning, for the route socket, which of
+    readable, error and hangup were reported, whether the wake is
+    signalled, "timed out" or "interrupted". That wait is the site's
+    explicit readiness wait, and always has a finite timeout;
+    `MSG_DONTWAIT` keeps the send from waiting for buffer space and the
+    receive from waiting for a datagram. Whether a send can still wait
+    inside the kernel is UNVERIFIED (below).
     The bytes are not decoded here: the netlink messages go to a pure,
     fuzzed decoder outside this crate (Decision 1, point 3; rules 1 and
     9).
@@ -1144,31 +1173,230 @@ are in its sheet below the table, under the same number.
     - The `sockaddr_nl` values are zero-initialised wrapper-owned locals;
       the group set is a constant (the owner named its members, 2026-11-20; a review also named
       the relevant nexthops, settled with the network-change monitor's
-      design before the row is final). The descriptor is adopted as an `OwnedFd` as in
+      design before the row is final). The members, as the interface
+      above names them: links, the addresses, routes and policy rules
+      of IPv4 and of IPv6. The nexthop group (`RTNLGRP_NEXTHOP`) is
+      proposed by the network-change monitor's specification (PR #143,
+      not yet landed; its 5.1, point 3), with an open question there on
+      binding that bit on a kernel before Linux 5.3. **Open item for
+      the monitor's change:** the group set becomes final only when
+      that specification is accepted and the set, nexthops included or
+      not, is restated here by amendment (point 7.1). Until then row 23
+      stays approved-only on every target; it is marked implemented on
+      a target only as a whole row, once that amendment is accepted
+      and the full row is implemented there (point 6.7); a
+      measurement on a kernel before 5.3 settles the open question.
+      The descriptor is adopted as an `OwnedFd` as in
       sheet 21.
     - `sendto` always names the kernel (port id 0, no groups): that a
       plain write reaches the kernel is UNVERIFIED across the candidate
-      kernels. A short send is an error. `EINTR` is retried.
-    - `recvmsg` uses one `iovec` over the caller's slice and a
-      `sockaddr_nl` for the sender. `MSG_TRUNC` in the returned flags is
+      kernels. It passes `MSG_DONTWAIT`, so it never waits for buffer
+      space; `EAGAIN` is a distinct "would block" error, never retried
+      here. Whether a send to the kernel can still wait inside the
+      kernel (for a lock the kernel's own handler takes) is not stated
+      by netlink(7): UNVERIFIED, and the reason the caller never sends
+      under its state lock (below). A short send is an error. `EINTR` is
+      returned as "interrupted", not retried here, so the caller decides
+      again (below).
+    - `recvmsg` passes `MSG_DONTWAIT` and uses one `iovec` over the
+      caller's slice and a `sockaddr_nl` for the sender. `EAGAIN` is
+      "nothing queued", not an error: a ready report from the wait does
+      not promise a datagram, and the receive never blocks to find one.
+      `MSG_TRUNC` in the returned flags is
       the truncation error. The returned `msg_namelen` must equal the size
       of `struct sockaddr_nl` and its family must be `AF_NETLINK`, both
       checked before the port id is read; then a sender whose port id is
       not 0 is an error. On any of these the datagram is not returned.
-      `ENOBUFS` is the overflow error.
+      `ENOBUFS` is the overflow error. A return of 0 bytes is the
+      "empty datagram" error, never a datagram. `EINTR` is returned as
+      "interrupted", not retried here.
+    - **The wake** is one `eventfd` made with an initial value of 0 and
+      `EFD_CLOEXEC | EFD_NONBLOCK`, adopted as an `OwnedFd` as soon as the
+      call returns a non-negative value, then held as a `std::fs::File`.
+      Signalling and clearing are safe `std` I/O on that file, as sheet
+      21's socket I/O is, so they need no foreign item: a signal writes
+      the 8-byte value 1 in native byte order, and `EAGAIN` (the counter
+      at its maximum) means already signalled and is success; a clear
+      reads 8 bytes, and `EAGAIN` means not signalled. `EINTR`, which a
+      non-blocking transfer is not expected to return, is retried once;
+      a second `EINTR`, any other error, and a transfer of other than 8
+      bytes, are errors. The wake is
+      `Send` and `Sync`: any thread may signal it. A signal made before
+      the wait starts is kept by the counter, so it is never lost.
+    - **The wait** calls `poll` on a wrapper-owned array of two
+      zero-initialised `struct pollfd`, the route socket's and the
+      wake's descriptor, each borrowed for the call, with `POLLIN`
+      requested on both. The `Duration` becomes milliseconds rounded up,
+      so a remainder below one millisecond never becomes 0, and is
+      clamped at `i32::MAX`; a negative (infinite) timeout is never
+      passed. A return of 0 is "timed out". `EINTR` is returned as
+      "interrupted" and **not retried here**: the time left is the
+      caller's to recompute from its deadline, through the clock seam
+      (below). Any other failure is an error. On a positive return, the
+      two `revents` values and the returned count are copied out and
+      checked by a safe validator over those owned values (fuzzed, point
+      6.5): on the route socket, `POLLIN`, `POLLERR` and `POLLHUP` are
+      each reported as they came, never merged; on the wake, `POLLIN`
+      marks it signalled. `POLLNVAL` on either, any other bit on the
+      wake (an overflowed counter's `POLLERR` included), a bit outside
+      those named, or a count that does not equal the number of entries
+      with a non-zero `revents`, is an error. Both may be ready at once,
+      and both are reported. The wait clears nothing: the caller clears
+      the wake.
     - Policy is the caller's (owner, 2026-11-20; the network-change monitor): subscribe before the first
       snapshot and reconcile notifications received during it; on
       overflow, truncation, an interrupted dump or a monitor failure,
       invalidate the consumers at once and take a fresh verified snapshot
       before reusing state; ignore only lifetime refreshes that leave an
-      address's usability unchanged. The daemon's unit allows
+      address's usability unchanged. A failed signal or clear of a
+      wake (below) is not recoverable: consumers are invalidated at once
+      and the source stops, with no fresh snapshot; the other failures
+      keep the invalidate-and-resnapshot rule. The daemon's unit allows
       `AF_NETLINK` (the Linux units).
+    - **What the caller must do with the wait** (owner, 2026-11-22; the
+      network-change monitor; amended 2026-11-22). These are
+      requirements on the caller's design, reviewed before its code and
+      with it under point 6.6. They rest on two documents: the seams
+      and scheduling specification (`docs/specs/seams-and-scheduling.md`,
+      5.3) for samples and deadlines, and the network-change monitor's
+      specification (PR #143, not yet landed) for the attempts and the
+      failure count. Where that specification does not yet say what a
+      point below needs, the point is an open item that its change
+      settles before code.
+      - **One wake per blocked worker, cleared only by it.** Each thread
+        that waits on a route socket has its own wake; no other thread
+        waits on it or clears it. A stop, and anything else that must
+        make a worker look again (a new or earlier deadline), is decided
+        under the caller's state lock and then signals that worker's
+        wake. The wake replaces any netlink message sent only to end a
+        receive. Each turn of a worker is, in this order: clear its
+        wake; take the state lock and read what it must act on (a stop,
+        its outstanding attempts and their deadlines); release the lock;
+        wait, with the lock released. So a signal made after the read is
+        still in the counter, and ends the wait. After a wait in which
+        the wake and the route socket are both ready, the worker handles
+        the stop and any deadline change before it receives from the
+        socket. A failed signal or clear is fatal, as the policy above
+        says.
+      - **A finite timeout from an awake-clock deadline.** Each wait's
+        timeout is the time left to the worker's earliest outstanding
+        deadline on the awake clock, taken from the shared `Clock`'s
+        sample (ADR 0004, C37; coding standards rule 7; the seams
+        specification, 5.3), and never more than a named horizon
+        constant, `ROUTE_WAIT_HORIZON` (1 second, accepted by the
+        owner with this amendment, 2026-11-22). With nothing due, the
+        worker waits to the horizon and looks again, so an idle worker
+        wakes once per horizon.
+      - **The time left is recomputed after every `EINTR`.** After an
+        "interrupted" return of the wait, a send or a receive, and after
+        any other early return, the worker checks its stop, whether the
+        attempt it was serving is still live, and the time left from a
+        fresh sample, before it calls again; an earlier timeout is never
+        passed again, and a send is retried, if at all, with the lock
+        released.
+      - **Each attempt is registered before its send.** A dump request
+        or a barrier is an attempt with its own id, its sequence number
+        and its own deadline. The attempt is registered under the state
+        lock (sequence and deadline set, the deadline starting from the
+        fresh sample taken at registration) before its send, which is
+        then made with the lock released and is non-blocking. The
+        deadline's duration for a dump and for a barrier are named
+        constants of the monitor's specification: **open item**,
+        settled there before code, with the evidence of a dump's and a
+        barrier's round trip on the supported kernels.
+      - **One terminal transition per attempt.** A send failure ("would
+        block" included), an expiry and a terminal answer each end an
+        attempt only through one transition taken under the state lock,
+        which acts once: the first to take it decides; the others find
+        the attempt gone and do nothing. A send failure is charged to the
+        attempt whose id it carries, never to a newer one. A terminal
+        answer is the record that ends the attempt in the monitor's
+        specification (a dump's terminator, or the barrier's
+        acknowledgement); an intermediate dump record does not end it.
+      - **An answer is accepted only while its attempt is live and in
+        time.** Before any record of an answer is applied, an
+        intermediate dump record included, under the state lock, the
+        caller checks that the attempt is live, that the answer came on
+        the socket the attempt was sent on (the same socket instance,
+        not a replacement), that its sequence is the attempt's, and,
+        from a fresh sample, that the attempt's deadline has not passed
+        and that its latched awake-clock doubt has not moved (the seams
+        specification, 5.3, point 2). An intermediate record that passes
+        is applied and the attempt stays open. A record, intermediate or
+        terminal, at or past the deadline, or after a moved doubt count,
+        is not applied: the attempt's terminal transition retires it and
+        counts it as expired. So a
+        late acknowledgement cannot publish, even if it takes the lock
+        before the expiry path does. A retired attempt's sequence is
+        never issued again on the socket that may still carry a reply
+        to it.
+      - **Each expired or failed attempt is counted once** as a failed
+        snapshot under the monitor's failure count: in its
+        specification (PR #143, 5.5, point 4), 8 failed snapshots in a
+        row, with no snapshot completed between them, stop the source,
+        and a completed snapshot resets the run. A dirty snapshot is not
+        a failure there. If that specification changes the count, the
+        once-only rule here still holds.
+      - **Clock failure** (C37, point 5). The monitor uses the shared
+        `Clock`, so C37's own rules (startup refused without a valid
+        pair, callbacks marked suspect, one event per episode) stay in
+        force and are not the monitor's to repeat. A failed sample, and
+        a failure seen by any other user of the clock and cleared before
+        the worker samples again (shown by the awake doubt count having
+        moved past an attempt's latched count), expire every outstanding
+        attempt, each counted once, as above; no new deadline is set
+        until a valid sample returns. Meanwhile each wait takes
+        `ROUTE_WAIT_HORIZON` as its timeout, the bounded fallback
+        horizon, and after every return the worker checks its stop and
+        whether the clock has returned.
+      - **Error and hangup on a route socket.** A wait that reports
+        `POLLERR` or `POLLHUP` on the route socket is followed by a
+        receive. `POLLERR` is explained only by an error return of that
+        receive: `ENOBUFS` takes the overflow path above, and any other
+        error is a failed receive. `POLLHUP` is explained by no receive
+        outcome. A flag that the receive does not explain (a datagram,
+        "nothing queued" or the empty-datagram error after `POLLERR`,
+        and any outcome after `POLLHUP`) is a failed receive on that
+        socket: a datagram received with it is not applied, consumers
+        are invalidated at once, and the socket is made again, before
+        any snapshot can publish, as the monitor's specification already
+        rules for "any other failed receive on the notify socket"
+        (PR #143, section 7). Whether a route socket ever reports an
+        error or hangup that a receive does not explain is UNVERIFIED:
+        **open item**, measured on the supported kernels by the
+        monitor's change.
+      - **Deterministic tests.** The caller's design tests, through a
+        seam over this site and a test clock: a lost wake; a signal made
+        between the state read and the wait; the wake and the route
+        socket ready at once; repeated interruption of the wait, a send
+        and a receive; a dump that is never answered; a late
+        acknowledgement after its expiry, both when the expiry path
+        takes the lock first and when the acknowledgement does; a send
+        failure racing an expiry; a clock that fails and returns between
+        two of the monitor's samples; an intermediate dump record before
+        and after its deadline; and an error or hangup followed by an
+        empty receive and by a valid datagram.
     *Test:* in a network namespace, an address, a route and a rule added
     and removed, each seen on the notify socket; a dump answered on the
-    request socket; an overflow provoked with a small receive buffer; a
+    request socket; an overflow provoked with a small receive buffer,
+    where the wait reports the socket ready and the receive returns the
+    overflow error; a
     truncated read; a datagram from a non-kernel sender, where the kernel
     lets one be sent; the stand-in returns a short sender address and a
-    wrong family.
+    wrong family, and an error or hangup with nothing queued. For the
+    wait: a wait with nothing ready returns "timed
+    out"; a wake signalled from another thread ends a blocked wait; a
+    wake signalled before the wait starts ends it at once; two signals
+    are cleared by one clear; a receive with nothing queued returns
+    "nothing queued" without blocking; a timeout below one millisecond is
+    not passed as 0. "Interrupted" and the `POLLNVAL` and wake-`POLLERR`
+    errors are tested through the stand-in (point 6.5), which returns
+    them on demand, and the `revents` validator has its fuzz target
+    (point 6.5: invalid bits, a count that disagrees with the entries,
+    both entries ready); on the OS, delivering a signal to the waiting thread
+    needs a handler that the crate does not install (Decision 1, point
+    2), so that path is UNVERIFIED on the OS unless a test can do it
+    without a new site.
 24. **`mem-wipe`.** Owner, 2026-11-20 (the cryptography decision).
     *Interface:* `wipe(&mut [u8])`, safe, returning nothing. It writes
     zero to every byte with `core::ptr::write_volatile`, one byte per
@@ -1732,11 +1960,73 @@ site.
      callback under Miri over fabricated replies, a non-zero
      `errorCode` with poisoned other parameters included.
 
-### 4. The macOS C shim
+### 4. The build script: the target gate and the macOS C shim
 
 **Working.** Revisit if: O8's shim decision is revisited, Apple ships a
-non-macro entry point for unified logging, or the build fails on a
-supported Xcode (L37, point 2).
+non-macro entry point for unified logging, the build fails on a
+supported Xcode (L37, point 2), a build of the crate is found that
+does not run its build script (then point 5.3's gate has a gap), or
+the pinned toolchain starts admitting custom targets in its normal
+stable mode, or the workspace's standard builds enable unstable
+custom-target support.
+
+The crate's one build script, `build.rs`, does two things, in this
+order: of the targets Cargo selects by a built-in triple, it refuses
+every one outside point 5.3's list (the target gate, amended
+2026-11-22; its scope is below), and on a macOS host building for macOS it
+builds the shim. It is written in IronAFS's own Rust with the standard
+library only: it has no `[build-dependencies]` (point 1.4 covers every
+dependency table), runs no other program but the two `xcrun` commands
+below, and compiles or runs no foreign code but the shim (point 1.1).
+
+- **The target gate** (amended 2026-11-22). The script reads Cargo's
+  `TARGET` variable, the short name Cargo reports for the target: the
+  triple of a built-in target, or, for a custom JSON target, the stem
+  of the specification file's name (`foo` out of `foo.json`), never
+  its path. It compares that name, as an exact string, with the seven
+  triples of point 5.3. On any other value, an
+  absent or non-UTF-8 one included, it prints one
+  `cargo::error=` line naming the triple and point 5.3, and exits with
+  a nonzero status, so Cargo fails the build before the crate is
+  compiled. The value is never printed raw: `TARGET` can be the stem
+  of a target specification file's name, which may itself hold a line
+  break, and a raw line break would let the rest of the value become a
+  Cargo directive.
+  A UTF-8 value is printed in Rust's debug form (`{:?}`), which escapes
+  every line break and control character, so the refusal is always one
+  line; an absent value is printed as "unset" and a non-UTF-8 one as
+  "not UTF-8", with none of its bytes. **Scope.** The comparison
+  identifies the target by the value Cargo reports, which is the
+  target itself only when Cargo selects it by a built-in triple. The
+  pinned toolchain rejects custom JSON targets in its normal stable
+  mode: Cargo accepts a `.json` target only with unstable target
+  support enabled (`-Z json-target-spec`, usually with
+  `-Z build-std`), on a nightly toolchain or with `RUSTC_BOOTSTRAP=1`
+  set. Whenever unstable target support is enabled, a builder can name
+  a specification after a listed triple and copy its cfg values, and
+  neither the gate nor point 5.3's `compile_error!` guard can tell it
+  apart. The refusal is guaranteed for targets Cargo selects by a
+  built-in triple; custom targets are outside it. The gate compiles nothing,
+  writes nothing and reads no
+  other variable, so it runs the same on every host, for `cargo build`,
+  `cargo check`, `cargo clippy`, `cargo doc` and Miri alike.
+- **When Cargo reruns the script.** While the script holds the gate
+  alone, it tells Cargo to rerun it only when `build.rs` changes
+  (`cargo::rerun-if-changed=build.rs`); a new `TARGET` is a new build
+  in any case. When the shim is added (M4), the same script also names
+  the shim's C file and every other file it reads in
+  `cargo::rerun-if-changed=` lines, so an edit to any of them reruns
+  the script and rebuilds the shim; a stale archive is never linked.
+  **A requirement on the M4 shim change:** the build reruns, and the
+  shim archive is rebuilt, whenever any effective input of the shim
+  changes that Cargo does not already track. That includes the
+  headers the compiler reads (the SDK's `<os/log.h>` and what it
+  includes), the selected SDK and Xcode, and the deployment version
+  and every other build setting the script passes to `xcrun`. How the
+  script tracks them is that change's design, reviewed under point
+  6.6.
+
+The macOS C shim:
 
 - One C file inside `ironafs-os`, IronAFS's own, with an SPDX header. It
   includes only `<os/log.h>` and `<stdint.h>`. It uses one constant format
@@ -1745,16 +2035,17 @@ supported Xcode (L37, point 2).
   the log handles it creates once. Its exported functions take fixed-width
   integers and `const char *` only, and check each integer against the
   shim's own tables (sheet 5). It does no DNS work (point 3.3).
-- **Built by the crate's own `build.rs`** (the written reason rule 20 asks
-  for is this ADR and O8, point 2). On a macOS host building for a macOS
-  target, it runs `xcrun clang` `[DES-021]` for Cargo's target
-  architecture and deployment version, with warnings as errors, then
-  `xcrun libtool -static`, and tells Cargo to link the result statically.
-  It reads only the named Cargo variables, writes only under `OUT_DIR`, and
-  uses no network.
-- On any other host or target it compiles nothing, so `cargo check` and
-  `cargo clippy --target` for macOS still run from Linux. Linking the macOS
-  daemon needs a macOS host.
+- **Built by the same `build.rs`**, after the target gate (the written
+  reason rule 20 asks for is this ADR, O8, point 2, and point 5.3). On a
+  macOS host building for a macOS target, it runs `xcrun clang`
+  `[DES-021]` for Cargo's target architecture and deployment version,
+  with warnings as errors, then `xcrun libtool -static`, and tells Cargo
+  to link the result statically. It reads only the named Cargo
+  variables, writes only under `OUT_DIR`, and uses no network.
+- On any other host or target it compiles nothing (the gate still runs),
+  so `cargo check` and `cargo clippy --target` for macOS still run from
+  Linux. Linking the macOS daemon needs a macOS host. Until the shim
+  lands (M4), the build script holds the target gate alone.
 - **The shim is linked into the daemon only.** O8, point 2, leaves open
   whether other Rust binaries (the `afs` CLI) get it; this ADR does not
   link it into them, so the gap O8 states remains until an amendment.
@@ -1768,7 +2059,13 @@ supported Xcode (L37, point 2).
 not run on a target does not ship there). **Working** (points 1 to 5).
 Revisit points 1 and 2 if: the upkeep proves larger than expected, or an
 ABI error reaches `main` that an upstream crate's tests would have caught.
-Revisit point 3 if: a row of L37 to L39 is added, removed or qualified.
+Revisit point 2's per-C-library declaration of `struct pollfd` and
+`nfds_t` if point 5.6's check shows the glibc and musl declarations
+equal on every Linux target, or a declaration wrong on one (amended
+2026-11-22).
+Revisit point 3 if: a row of L37 to L39 is added, removed or qualified,
+or a compiler update changes which targets share a listed target's cfg
+set.
 Revisit point 4 if: the link-and-run check fails on a supported Windows
 release, or the pinned toolchain's `raw-dylib` support changes. Revisit
 point 5 if: L42's glibc floor moves, or a supported kernel lacks
@@ -1801,10 +2098,16 @@ decision and a change to this point (point 7).
    target included (318 on x86_64, 278 on aarch64; Context). `struct
    msghdr` and `struct cmsghdr` are declared per C library: glibc and musl
    give the same sizes and offsets on these targets but different field
-   types and musl's padding fields (Context), which the wrapper zeroes. No
+   types and musl's padding fields (Context), which the wrapper zeroes.
+   `struct pollfd` and `nfds_t` are declared per target: row 7's on
+   macOS, and row 23's per C library on Linux, as `struct msghdr` is,
+   since `nfds_t`'s type differs from macOS's and its width in glibc and
+   musl is UNVERIFIED until point 5.6's check (Context). No
    upstream crate's tests stand behind them.
-3. **A target allowlist.** The crate compiles for these targets only, all
-   64-bit, and any other target is a `compile_error!`:
+3. **A target allowlist.** For Cargo builds that select a built-in
+   triple, the crate compiles for these targets only, all 64-bit, and
+   the build refuses every other built-in triple (amended 2026-11-22;
+   the refusal and its scope are below the list):
    - `x86_64-` and `aarch64-unknown-linux-gnu` (L37, point 1; L42, point 3);
    - `x86_64-` and `aarch64-unknown-linux-musl` (the static musl candidate,
      L39, point 5);
@@ -1826,6 +2129,59 @@ decision and a change to this point (point 7).
    CONFIRMED 2026-11-20). No release documents an awake clock that stops
    in suspend, so C37's pair for it needs its own evidence first.
    Adding a target is a change to the list (point 7).
+
+   **The refusal has two parts, and both stay** (amended 2026-11-22).
+   Both cover the targets Cargo selects by a built-in triple; a custom
+   target, which Cargo accepts only with unstable target support
+   enabled, is outside the
+   guarantee (Decision 4, "Scope"):
+   - **The target gate** of Decision 4 refuses, by exact triple, every
+     target not on the list that Cargo selects by triple. It is the part that makes the refusal
+     exact. Some of the compiler's targets have exactly the cfg set of a
+     listed one (vendor variants, `arm64e`, and sanitizer variants of
+     `x86_64` glibc: six on the pinned compiler, as the review of the
+     crate's first change counted them; UNVERIFIED until the check
+     below runs), so no `cfg` in source can tell them apart; the
+     triple can.
+   - **The `compile_error!` guard** in the crate root refuses every
+     target whose cfg set differs from every listed target's. It is
+     kept as a second net: it holds even where a build script is not
+     run, and it names the property that differs.
+
+   `cargo xtask check-os`, which `cargo xtask check` runs beside point
+   6.7's inventory, checks both layers:
+   - the gate's seven triples must equal this list exactly. The
+     check's reference copy of the list is kept apart from the gate,
+     never read from the gate's own code, and is tied to this point's
+     text by review: a change to either the gate's list or the
+     reference copy without the other fails the check;
+   - the production gate itself must accept each listed triple: an
+     affirmative result from the gate's own code for each of the seven,
+     obtained before any shim compilation, linking or ABI check (how
+     the check isolates the gate is the follow-up change's, reviewed
+     under point 6.6);
+   - the guard's expected verdict is derived from this list, not from
+     the guard: a target is expected to pass the guard exactly when its
+     whole cfg set (every name and every `key = "value"` pair that
+     `rustc --print cfg --target` reports on the pinned compiler)
+     equals a listed target's. For every built-in target of the pinned
+     compiler, the guard's evaluated verdict is compared with the
+     expected one, and any disagreement, in either direction, fails the
+     check. So the guard must accept every listed target and refuse
+     every target whose cfg set differs from every listed one's;
+   - every target the guard accepts but the list does not name (the
+     cfg-equal targets above) is built through Cargo, which must reach
+     the gate and fail in the build script with the gate's message, not
+     later and not for another reason. A target that fails that way is
+     refused; one that builds, or fails for another reason, fails the
+     check.
+
+   Its negative tests: a gate that accepts one cfg-equal extra triple, a
+   gate list missing one listed triple, a gate that refuses one listed
+   triple, and a guard widened by one target, each make it fail. Until this check has run on the pinned compiler, the
+   cfg-equal targets are MISSING evidence of refusal
+   (`docs/workflow.md` §3c), and a compiler update reruns it (as point
+   5.7 does for headers).
 4. **Windows.** Declarations are `extern "system"`. Microsoft's reference
    names Kernel32.dll as the DLL for both clock functions, `mincore.lib` as
    the library for `QueryUnbiasedInterruptTimePrecise`, and its Interrupt
@@ -1861,10 +2217,12 @@ decision and a change to this point (point 7).
    "unavailable or filtered" with the real errno, and a call that blocks
    early in boot is waited for under the unit's start timeout (sheet 8;
    owner, 2026-11-20). Rows 21 to 23 use `socket`, `setsockopt`, `bind`, `sendto`,
-   `recvmsg` and `fstatvfs`; `fstatvfs` was in the x86-64 glibc ABI
-   before 2.17 (CONFIRMED, Context item 8), and the others are older
-   POSIX and BSD socket calls (UNVERIFIED at a glibc 2.17 source; the
-   run on 2.17 settles it).
+   `recvmsg`, `poll`, `eventfd` and `fstatvfs`; `fstatvfs` was in the
+   x86-64 glibc ABI before 2.17 (CONFIRMED, Context item 8), `eventfd`
+   is in glibc from 2.8 (CONFIRMED, Context), and the others are older
+   POSIX and BSD calls (UNVERIFIED at a glibc 2.17 source; the
+   run on 2.17 settles it). That musl offers `eventfd` with the same
+   flags is UNVERIFIED; the musl run settles it.
 6. **An ABI check per target, in CI.** For each site with a foreign item
    (a site with none, `mem-wipe`, is gated by sheet 24's release-assembly
    check instead, under the same MISSING rule), a small C file is
@@ -1955,8 +2313,9 @@ decision and a change to this point (point 7).
    readers of sheets 19 and 20 (short buffers, bad sub-authority counts,
    a SID pointer outside the token buffer); the ancillary-data checks of
    sheet 14 (bad `msg_controllen` and `cmsg_len`, wrong level and type);
-   and the netlink sender check of sheet 23 (short addresses, a wrong
-   family).
+   the netlink sender check of sheet 23 (short addresses, a wrong
+   family); and the `revents` validator of sheet 23's wait (invalid
+   bits, a count that disagrees with the entries, both entries ready).
 6. **Class S** (`docs/workflow.md` §1 lists `unsafe` code as S), for every
    change to a site, a declaration, the shim or the build script, and for
    any change in any crate that adds non-Rust source, or adds or edits
@@ -2050,12 +2409,29 @@ decision and a change to this point (point 7).
   capped (480 octets on the RFC 5424 fallback until a larger limit is
   qualified), so long detail is truncated, marked and counted, and
   reaches the support bundle instead (Decision 1, point 7).
+  The route sockets' bounded wait (row 23; amended 2026-11-22) costs
+  one `eventfd` descriptor per waiting worker (two for the
+  network-change monitor) and one wake per worker per
+  `ROUTE_WAIT_HORIZON` while idle.
 - **Coding standards rule 5 changes** in the same pull request as this ADR:
   "every crate inherits the workspace lints" gains its one named exception.
   Rule 20 is not edited here: it changes with the layout pull request, a
-  separate change that is pending. Until then this ADR and O8, point 2,
-  are the written reason for this crate's `build.rs` that rule 20 asks
-  for (Decision 4).
+  separate change that is pending. Until then this ADR, O8, point 2,
+  and point 5.3's target gate are the written reason for this crate's
+  `build.rs` that rule 20 asks for (Decision 4).
+- **The target gate** (amended 2026-11-22; point 5.3, Decision 4).
+  Before this amendment the crate's own comments read point 1.4 as
+  forbidding any build script and stated the cfg-equal targets as an
+  accepted limit; point 1.4 forbids dependencies, and point 1.1 only a
+  build script that compiles or runs foreign code or a native helper,
+  so neither forbids the gate. The gate comes as its own class S change
+  (point 6.6) after the owner accepts this amendment, not inside
+  another change's fix round. That change writes the build script,
+  teaches `cargo xtask check-os` the check of point 5.3, corrects the crate's
+  comments that cite point 1.4 for "no build script" and state the
+  limit, and adds the crate's own build script to `deny.toml`'s
+  build-script allowlist (`[bans.build]`, which covers workspace
+  crates). It adds no dependency.
 - **CI grows:** the ABI check and the per-site tests on Linux, macOS and
   Windows runners, a C compiler on each, the Miri job, and the inventory
   check. None of them is a Cargo dependency.
@@ -2069,8 +2445,10 @@ decision and a change to this point (point 7).
   the oldest supported Linux kernel); the dump marker test of O26,
   point 5, on Linux and macOS; on macOS, the stalled DNS reply of point
   3.3; on Linux, rows 21 to 23's runs in a network namespace (both
-  `bindv6only` values; a netlink overflow and truncation; whether a plain
-  write reaches the kernel, which the site does not rely on); and before
+  `bindv6only` values; a netlink overflow and truncation, and the wait's
+  report of an overflow; whether a plain write reaches the kernel, which
+  the site does not rely on; whether a send to the kernel can wait inside
+  the kernel despite `MSG_DONTWAIT`); and before
   the control pipe ships on Windows, the gates of sheets
   17 to 20 (a pre-created pipe name, the 1368 answer before the prefix
   read, revert on every path, a disconnect and reconnect between the
@@ -2255,6 +2633,29 @@ no macOS or Windows component's status: that is the owner's (below).
   It would remove the Windows half of point 5.2's upkeep, and is the
   fallback there for the same reason `libc` is on Unix.
 - **The `cc` crate for the shim.** See point 4.
+- **Stating the cfg-equal targets as a residual of point 5.3** (the
+  crate documents them, `cargo xtask` names them, and every build
+  matrix and release excludes them). Not taken (owner, 2026-11-22):
+  point 5.3 asks that any other target be refused, and a pure-Rust
+  build script reading the triple refuses them exactly, at the cost of
+  one build script that runs on every build and an allowlist entry for
+  it. A residual held only by build matrices would hold only as long
+  as every matrix and every user's command line stays correct.
+- **`SO_RCVTIMEO` on the route sockets** for row 23's bounded receive
+  (one `setsockopt` and `struct timeval`, a fixed period such as one
+  second). Not taken (owner, 2026-11-22): it bounds one receive call
+  only, so a retried `EINTR` or a send outside the receive is not
+  bounded by it; a stop waits up to a period instead of ending the wait
+  when signalled; and the period is a constant rather than the caller's
+  deadline. Both designs wake an idle worker once per period (here, the
+  horizon). `poll` with a wake ends a wait on a local signal, and
+  chooses each interval from the current deadline, subject to poll's
+  rounding and scheduling delay, for two more foreign items.
+- **A row of its own for the wake** (`eventfd`, and `poll` with it).
+  Not taken: the wake serves only the wait on a route socket, and row 7
+  keeps its `poll` in the row whose descriptor it waits on. A second
+  user of the wake is a change to the list (point 7), which can split
+  it into its own row then.
 - **A Swift relay process for macOS logging.** The daemon would send each
   event over local IPC to a small Swift program that calls the logging API
   natively. Not taken: entries would be attributed to the relay, not the
@@ -2446,3 +2847,342 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
   and stand. The amendment is reviewed with #57's pull request, on the
   strongest row; its rounds are in that change's review record,
   `docs/reviews/2026-11-21-m2a-57-os-parts-bc.md`.
+- **Amendment, 2026-11-22 (#152): point 5.3 and Decision 4, the
+  target gate.** Design issue #151.
+  - What changed: point 5.3's refusal has two parts. A target gate in
+    the crate's build script refuses, by exact triple, every target
+    outside the list that Cargo selects by triple, the targets whose cfg
+    set equals a listed one's included; the `compile_error!` guard
+    stays as a second net. A custom target, which Cargo accepts only
+    with unstable target support enabled, is outside the guarantee.
+    `cargo xtask check-os` checks both layers: the gate's list against
+    a reference copy kept apart from it, the gate's acceptance of each
+    listed triple, the guard's verdict against one derived from the
+    list for every built-in target, and Cargo's refusal of each
+    cfg-equal target in the build script. The refusal prints the
+    target in an escaped, one-line form. Decision 4 now describes the
+    build script's two jobs (the gate, then the macOS shim), its rerun
+    rule while it holds the gate alone, and a requirement on the M4
+    shim change to rerun on every effective input Cargo does not
+    track. Consequences name the follow-up class S change (the script,
+    the check, the crate comments, the `deny.toml` build-script
+    allowlist entry); Alternatives record the residual route not
+    taken. Both decisions stay Working, with new triggers.
+  - Evidence: the first `ironafs-os` change (PR #118) found that on
+    the pinned compiler six built-in targets have exactly the cfg set
+    of a listed one, so the `compile_error!` guard cannot refuse them,
+    as point 5.3 requires (open item O3 of that change's review record,
+    on the round that reviewed `8183d8f`, 2026-11-21). The crate's
+    comments (`crates/ironafs-os/Cargo.toml`,
+    `crates/ironafs-os/src/lib.rs`) read point 1.4 as forbidding the
+    build script that could. Point 1.4 forbids dependencies. Point 1.1
+    keeps a build script that compiles or runs foreign code or a
+    native helper out of every crate but this one, and this crate may
+    have one (the shim's, Decision 4); the gate compiles and runs
+    nothing, so neither point forbids it. The owner chose the gate over
+    stating a residual on 2026-11-22 (decision comment on PR #118).
+  - Sweep: the repository at `origin/main` (`3f73854`) was searched for
+    "no build script", "point 1.4", "compile_error", "build.rs", "build
+    script", "5.3" and "0005"; so were the open branches of PR #118
+    (`m2a-57-os`, `ff71ace`), PR #132 (`m2a-57-osc`, `291bc50`), PR #136
+    (`m2a-57-ose`, `33bc576`) and PR #143 (`m2a-97-netgen`, `e6c9eae`).
+    - On `main`, point 5.3 itself is the old rule, rewritten above. No
+      other file states it. The "no build script" hits are the pure
+      crates' rule (ADR 0004, C4, point 1, unchanged):
+      `crates/ironafs-crypto/Cargo.toml`, `crates/ironafs-time/Cargo.toml`,
+      `crates/xtask/src/pure.rs`, `docs/specs/local-ipc.md` (for
+      `ironafs-ipc`) and the review record
+      `docs/reviews/2026-11-21-m2a-13-check-deps.md`; and
+      `crates/xtask/src/bans.rs` uses the words in a check's report
+      about the build scripts clippy runs, a different rule. Coding
+      standards rules 5, 20 and 21, `AGENTS.md`, `docs/workflow.md`
+      and the skills were read in full: none says this crate has no
+      build script. The `add-dependency` skill puts each build script
+      in `deny.toml`'s `[bans.build]` allowlist, which covers
+      workspace crates; that entry comes with the follow-up code, as
+      Consequences say. Unchanged.
+    - On the four branches, each a follow-up for its pull request, not
+      edited here. Each carries main's point 5.3 and Decision 4
+      unchanged, which take this amendment when it is merged. Three
+      carry main's ADR 0005 exactly; PR #132's branch (`291bc50`) is
+      the exception: it carries its own amendment of rows and sheets
+      13 and 14, which touches neither point 5.3 nor Decision 4, and
+      that pull request must reconcile both amendments in the ADR's
+      status line and Review section on merge. Each also carries:
+      `crates/ironafs-os/Cargo.toml` ("no build script (ADR 0005,
+      point 1.4)") and `crates/ironafs-os/src/lib.rs` (the cfg-equal
+      targets stated as a limit, citing point 1.4), corrected by the
+      follow-up change; `crates/xtask/src/os/allowlist.rs` (the same
+      reading) and `crates/xtask/src/os.rs` (the guard comparison that
+      accepts the cfg-equal targets as "equivalent", the matrix check
+      that forbids naming them, and its messages) and their tests,
+      replaced there by point 5.3's check. `crates/xtask/src/deps.rs`
+      cites point 1.4 for dependencies only, unchanged.
+    - Actors. The rule binds the maintainer's session, and contributors
+      and their agents, who build and review the crate. CI: on the four
+      branches it runs today's `check-os` (the guard and the matrix
+      check); `main` does not run it; enforcing the amended check in CI
+      comes with the follow-up change. Dependabot proposes dependency
+      updates only and never adds a build script; the `deny.toml`
+      allowlist would refuse one.
+  - Review rounds, class S, from families that wrote neither the
+    amendment nor the decision. The design seat was GPT at
+    `gpt-6.2-sol` (xhigh), not the strongest row's `gpt-6.2-astra`,
+    by the owner's standing choice to conserve GPT quota; ADR 0005's
+    own rounds 16 and 17 used the same pin. The security seat was GLM
+    `glm-5.3`, at high in rounds 1 to 3, and at max for the final pass
+    over the whole amendment (round 4) and its verification, the
+    judgement seat, and rounds 5 and 6. This departure from
+    point 7.2's strongest row was accepted by the owner with the
+    amendment (2026-11-22). Each finding, its disposition and the convergence
+    note are in the review record,
+    [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md),
+    section "Amendment: the target gate".
+    - Round 1 on `3f73854..225145f`: GPT FAIL, 3 major and 1 minor;
+      GLM FAIL, 1 major (GPT's first) and 2 minor. Fixed in `a661d2c`.
+    - Round 2 on `225145f..a661d2c`: GLM PASS, and, as refutation
+      seat, it accepted moving the method that isolates the gate's
+      verdict to the follow-up change; GPT FAIL, 1 major (the shim's
+      indirect inputs). Fixed in `26ee981` as a requirement on the M4
+      shim change.
+    - Round 3 on `a661d2c..26ee981`: GPT PASS and GLM PASS.
+    - Round 4, the final pass over the whole amendment,
+      `3f73854..26ee981`: GLM (`glm-5.3`, max) PASS with 1 minor (the
+      check's reference list must be kept apart from the gate), fixed
+      in `cdc8cb3` and verified by GLM at max.
+    - Round 5, the check of the Review entry, the sweep and the issue
+      draft, on `a9f3886`: GPT (`gpt-6.2-sol`, xhigh) FAIL, 1 blocker,
+      3 major and 2 minor; GLM (`glm-5.3`, max) PASS with 1 minor.
+      (An earlier version of this entry used "Round 5" for this round
+      and the judgement below together; they are now listed apart.)
+    - Judgement on I-GPT-A-2 (for a custom JSON target, `TARGET` holds
+      the specification file's stem, not a path, and the gate cannot
+      tell such a target from a listed one): the judgement seat, GLM
+      (`glm-5.3`, max), ruled A, with high confidence: a defect of
+      wording and scope, not a bypass possible under the pinned
+      toolchain. The controller checked its premises in Cargo's source
+      at commit `3acc79c0c841844675bc53a605922dbfc441e750`: `TARGET` is
+      set from the target's short name
+      (`src/compiler/custom_build.rs:375`), which is the triple or a
+      JSON target's file stem (`src/compiler/compile_kind.rs:241-245`),
+      and a `.json` target is refused without `-Zjson-target-spec`, an
+      unstable flag (`compile_kind.rs:204-205`). Fixed in `8a529d9`:
+      the description of `TARGET`, the basis of the no-raw-print rule,
+      a scope sentence in Decision 4 and point 5.3, and a new trigger.
+    - Round 6, the verification of the fixes, on `8a529d9`: GPT
+      (`gpt-6.2-sol`, xhigh) FAIL, 1 major (the opening rules still
+      stated an unconditional refusal) and 4 minor (unstable target
+      support is also enabled by `RUSTC_BOOTSTRAP`, not only on
+      nightly; PR #132's branch carries its own amendment; two on the
+      issue draft); GLM (`glm-5.3`, max) PASS with 1 minor (the same
+      PR #132 point). Fixed in the next commit.
+    - Round 7, the verification of `8a529d9..a5d0919`: GPT
+      (`gpt-6.2-sol`, xhigh) FAIL, 1 major (point 5.3's opening still
+      limited the crate before the built-in-triple qualifier) and 2
+      minor (`RUSTC_BOOTSTRAP=1`; the revisit trigger split into two
+      conditions); GLM (`glm-5.3`, max) PASS, no findings. All wording,
+      fixed in `07c08f0`.
+    - Round 8, GPT's scoped check of `a5d0919..07c08f0` (`gpt-6.2-sol`,
+      xhigh): all three fixed; 2 record minors, fixed in the next
+      commit. Under the stop rule the rounds stop here.
+- **Amendment, 2026-11-22 (#153): row 23 and sheet 23, the route
+  sockets' bounded wait.** Design issue #154.
+  - What changed: row 23 gains `poll` on one route socket and its
+    wake, and `eventfd` for the wake. Its sends and receives pass
+    `MSG_DONTWAIT`, which keeps a send from waiting for buffer space
+    and a receive from waiting for a datagram; `poll`, always with a
+    finite timeout, is the site's explicit readiness wait. Whether a
+    send can still wait inside the kernel is UNVERIFIED and a
+    qualification measurement of the row. `EINTR` from the wait, a send
+    or a receive is returned to the caller, not retried. The wait
+    reports readable, error and hangup separately, through a fuzzed
+    validator (point 6.5). Sheet 23 states the caller's requirements:
+    one wake per worker, cleared only by it, before it reads state;
+    the timeout from an awake-clock deadline, capped by
+    `ROUTE_WAIT_HORIZON`; attempts registered before their unlocked
+    send; one terminal transition per attempt; a record applied only
+    while its attempt is live, on its socket, with its sequence and in
+    time; each expired attempt counted once; C37's clock failure;
+    unexplained error or hangup as a failed receive; failed wake I/O
+    fatal. Open items for the monitor's change: the deadline
+    durations, the final group set (nexthops), and whether an
+    unexplained error or hangup occurs. Point 5.2 declares `struct
+    pollfd` and `nfds_t` per C library on Linux, settled by point
+    5.6's check. The row, the sheet and point 5.2 stay Working, with
+    new triggers.
+  - Evidence: on PR #143's branch, the network-change monitor's
+    threads block in a receive that returns on a datagram or a socket
+    error (such as `ENOBUFS`), and nothing else ends it. A wake whose
+    send fails, or whose acknowledgement is lost, can leave an
+    otherwise idle worker blocked, and a drop of the handle from a
+    thread other than a worker can then wait for it indefinitely, if
+    no later datagram or error ends the receive (`RouteSocket::receive`
+    in `crates/ironafs-os/src/linux_rtnetlink.rs` at `e6c9eae`, lines
+    140-172, with `receive_message` from line 281, a single blocking
+    `recvmsg`, and `retried` in `crates/ironafs-os/src/fdpass.rs`,
+    lines 283-290, which retries `EINTR`: so it returns only on a
+    datagram or an error) (a drop
+    on a worker only asks for the stop). A lost barrier acknowledgement
+    has no deadline or retry, and can leave the generation unavailable
+    until another loss or a stop (open item B1 of that change's review
+    record, `docs/reviews/2026-11-21-m2a-97-netgen.md` at `e6c9eae`).
+    Bounding the wait needs a call row 23 did not hold. The owner chose
+    `poll` with an `eventfd` wake over `SO_RCVTIMEO` on 2026-11-22,
+    with the conditions sheet 23 now carries (decision comment on PR
+    #143).
+  - Sweep: the repository at `origin/main` (`3f73854`) was searched for
+    "SO_RCVTIMEO", "EINTR", "is retried", "wake", "receive timeout",
+    "blocked receive", "rtnetlink", "poll", "eventfd" and "0005"; so
+    were the open branches of PR #118 (`m2a-57-os`, `ff71ace`), PR #132
+    (`m2a-57-osc`, `291bc50`), PR #136 (`m2a-57-ose`, `33bc576`) and PR
+    #143 (`m2a-97-netgen`, `e6c9eae`).
+    - On `main`, only this ADR states row 23's rules, rewritten above.
+      Within it, sheets 8 and 14 and Decision 3.3 retry `EINTR` for
+      their own calls, unchanged; the other "is retried" hits are
+      other rules. Unchanged.
+    - On the four branches: each hit below is annotated on its pull
+      request as a follow-up; how that pull request reworks its code,
+      inventory, tests and CI is its own change, reviewed there. These
+      branches are not edited here. Each carries main's row 23 and sheet
+      23 unchanged, which take this amendment when it is merged. Three
+      carry main's ADR 0005 exactly; PR #132's branch (`291bc50`) is the
+      exception: it carries its own amendment of rows and sheets 13 and
+      14. The two amendments touch different rows and sheets, and
+      combine on merge; both edit only the status line and the Review
+      section in common, which that pull request reconciles.
+      - `crates/ironafs-os/sites.json`, the machine-readable copy of
+        point 6.7, holds the old row 23 on all four: approved-only on
+        `m2a-57-os` and `m2a-57-osc`; implemented on every Linux target
+        on `m2a-57-ose` and `m2a-97-netgen`. Each must take the amended
+        row's items and counts; on the last two, the row goes back to
+        approved-only until the group-set amendment is accepted and the
+        whole amended row is implemented (point 6.7).
+      - `crates/ironafs-os/src/linux_rtnetlink.rs` and its `abi/`
+        files on `m2a-57-ose` and `m2a-97-netgen`: blocking sends and
+        receives with no flags, which retry `EINTR`, and no `poll` or
+        `eventfd`. Rewritten to the amended sheet by the redesign.
+      - Their tests (`linux_rtnetlink/tests/stand_in.rs`, `kernel.rs`)
+        on the same two branches, including the stand-in test that an
+        interrupted send and receive are each made again, which CI
+        names (`.github/workflows/ci.yml`); replaced by the amended
+        sheet's tests.
+      - `crates/xtask/src/os.rs` and its inventory and ABI checks on
+        all four branches: unchanged in rule, but they check the copy
+        above, so they follow it.
+      - On `m2a-57-ose`: `docs/reviews/2026-11-21-m2a-57-os-part-e.md`,
+        the review record of row 23's first implementation under the
+        old sheet, including its open item O2 (the group set without
+        nexthops). A dated record, not rewritten; PR #136 notes the
+        amendment in it when the branch takes it.
+      - On `m2a-97-netgen` only: the monitor's specification,
+        `docs/specs/network-generation.md`, section 1 (its quotation of
+        sheet 23's caller obligations), 5.1, point 3 (it decides the
+        nexthop group and says "the sheet's text is left as accepted"),
+        5.7, point 7 (the netlink wake, and "needs no call beyond
+        `linux-rtnetlink`'s"), section 6 (the sequence number 0 kept
+        for the wake) and section 13, Q6; and
+        `crates/ironafs-net/src/monitor.rs` and
+        `crates/ironafs-netgen/src/monitor.rs` (the netlink wake).
+        Rewritten by that pull request's class S redesign. For 5.1,
+        point 3: under the amended sheet the group set becomes final
+        only by an amendment of row 23, so that point's decision, which
+        that branch's code and inventory already implement, becomes the
+        proposal that amendment restates, and row 23 stays
+        approved-only until it is accepted.
+      - On `m2a-97-netgen`: open item B1 of
+        `docs/reviews/2026-11-21-m2a-97-netgen.md`, an open blocker.
+        This amendment supplies the calls B1's fix needs (a bounded
+        wait, a wake that needs no netlink acknowledgement, and a
+        deadline for each attempt); B1 stays open on PR #143 until its
+        redesign implements them, reviewed there.
+    - Files read. Every file that states the old row 23 and sheet 23
+      rules was read in full, except two read as their diff from a full
+      read of the same file (named below): `docs/adr/0005-ironafs-os.md` at
+      `3f73854`, `ff71ace`, `33bc576` and `e6c9eae` (main's text) and at
+      `291bc50`; at `33bc576`, `crates/ironafs-os/src/linux_rtnetlink.rs`
+      and every file under `crates/ironafs-os/src/linux_rtnetlink/`,
+      `crates/ironafs-os/sites.json`, `.github/workflows/ci.yml` and
+      `docs/reviews/2026-11-21-m2a-57-os-part-e.md`; at `e6c9eae`, the
+      four `linux_rtnetlink` files that differ from `33bc576`,
+      `docs/specs/network-generation.md`,
+      `docs/reviews/2026-11-21-m2a-97-netgen.md`,
+      `crates/ironafs-net/src/monitor.rs` and
+      `crates/ironafs-netgen/src/monitor.rs`. Read at their diff from
+      `33bc576`'s full read: `sites.json` and `ci.yml` at `e6c9eae`.
+      Read in full at their own pins, since each is a separate copy of
+      the inventory: `crates/ironafs-os/sites.json` at `ff71ace` and at
+      `291bc50`; in each, row 23 appears once, as an approved-only entry
+      with the old text and no code.
+    - Actors. The rule binds the maintainer's session, and contributors
+      and their agents, who write and review the monitor and the site.
+      CI: on the four branches it runs `check-os` (the inventory
+      against the copy above) and the ABI check, and, where the row is
+      implemented, the named site tests, all against the old row;
+      `main` runs none of them; the amended row is enforced in CI when the
+      redesign lands. Dependabot proposes dependency updates only and
+      does not act on the row.
+  - Review rounds, class S, from families that wrote neither the
+    amendment nor the decision. The design seat was GPT at
+    `gpt-6.2-sol` (xhigh), not the strongest row's `gpt-6.2-astra`,
+    by the owner's standing choice to conserve GPT quota; ADR 0005's
+    own rounds 16 and 17 used the same pin. The security seat was GLM
+    `glm-5.3`, at high in rounds 1 to 3, and at max for the judgement
+    seat, the final pass over the whole amendment (round 4), rounds 5
+    and 6, and the refutation seat after round 6. This departure
+    from point 7.2's strongest row was accepted by the owner with
+    the amendment (2026-11-22). Each finding, its disposition and the
+    convergence note are in the review record,
+    [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md),
+    section "Amendment: the route sockets' bounded wait".
+    - Round 1 on `3f73854..dca6340`: GPT FAIL, 1 blocker, 8 major and
+      1 minor (an earlier version of this entry said 7 major, a
+      miscount corrected here; the round's output lists 8); GLM FAIL,
+      1 major and 3 minor. Fixed in `e74a38c`; four
+      points were moved to open items or citations of the monitor's
+      specification (M1 to M4).
+    - Round 2 on `dca6340..e74a38c`: GLM PASS with 2 minor and, as
+      refutation seat, accepted M1 to M4; GPT FAIL, 3 major and 2
+      minor. Fixed in `86cc6f6`.
+    - Round 3 on `e74a38c..86cc6f6`: GLM PASS; GPT FAIL, 1 major
+      (`POLLERR` followed by an interrupted receive). The judgement
+      seat, GLM (`glm-5.3`, max), ruled that the finding does not hold
+      and that the asked fix would replace healthy sockets on every
+      signal. What its sources support: `MSG_DONTWAIT` stops the
+      receive from waiting for a datagram; a pending socket error is
+      cleared when a receive returns it or when `SO_ERROR` is read, and
+      this site never reads `SO_ERROR`. That on a route socket an
+      interrupted receive after `POLLERR` leaves the error pending, so
+      that the next wait reports it again, is UNVERIFIED by poll(2),
+      recv(2) and socket(7); the judgement seat reasoned it from the
+      kernel's source. The finding is closed as ruled.
+    - Round 4, the final pass over the whole amendment,
+      `3f73854..86cc6f6`, GLM (`glm-5.3`, max): PASS, no findings.
+    - Round 5, the check of the Review entry, the sweep and the issue
+      draft, on `dd054a0`: GPT (`gpt-6.2-sol`, xhigh) FAIL, 1 blocker,
+      7 major and 1 minor; GLM (`glm-5.3`, max) FAIL, 1 major and 2
+      minor. Fixes attempted in `5b6bacd`; each finding's closure is in
+      the review record's table.
+    - Round 6, the verification, on `5b6bacd`: GPT (`gpt-6.2-sol`,
+      xhigh) FAIL, 3 major and 4 minor; GLM (`glm-5.3`, max) PASS with
+      3 minor. A refutation seat, GLM (`glm-5.3`, max), ruled on two of
+      the controller's moves: the full-file read-through, PR #132's own
+      amendment, PR #136's review record, the monitor specification's
+      5.1, point 3, and B1 belong in this record (the move failed;
+      added above); how each other pull request reworks its code,
+      inventory, tests and CI is that pull request's own change (the
+      move stands). Fixes attempted in `d0b358d`; each finding's
+      closure is in the review record's table.
+    - Round 7, the verification of `5b6bacd..d0b358d`: GPT
+      (`gpt-6.2-sol`, xhigh) FAIL, 1 major (two copies of `sites.json`
+      were recorded as read only at their row 23 entry) and 2 minor
+      (the Evidence paragraph's unconditional wording and missing
+      wrapper citation; "fixed in" lines that the table contradicts);
+      GLM (`glm-5.3`, max) PASS with 1 minor (the same read-scope
+      point, and the bullet's opening claimed every file was read in
+      full). The two files were then read in full, the opening says
+      which two were read as diffs, and the wording was fixed in the
+      next commit. GPT's scoped check of that commit
+      (`gpt-6.2-sol`, xhigh) found its findings fixed but for 3 record
+      minors (a missing citation of the shared `retried` helper, one
+      origin, one overbroad sentence), fixed in the commit after it;
+      under the stop rule the rounds stop there.
