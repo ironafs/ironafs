@@ -388,9 +388,6 @@ fn core_shadows_finds_every_item_or_import_named_core() {
         "mod core;\n",
         "pub(crate) struct core;\n",
         "enum core {}\n",
-        "fn core() {}\n",
-        "const core: u8 = 0;\n",
-        "static core: u8 = 0;\n",
         "type core = u8;\n",
         "trait core {}\n",
         "union core { a: u8 }\n",
@@ -403,7 +400,9 @@ fn core_shadows_finds_every_item_or_import_named_core() {
         "fn f<T, core>() {}\n",
         "impl<'a, T, core: Copy> S<'a, T> {}\n",
         "struct S<const N: usize, core>;\n",
-        "fn f<T>() where core: Copy {}\n",
+        "fn f<F: Fn() -> u8, core>() {}\n",
+        "trait T<core = u8> {}\n",
+        "extern crate core;\n",
         "mod r#core {}\n",
     ] {
         let found = core_shadows(&tokens(source).unwrap());
@@ -414,6 +413,16 @@ fn core_shadows_finds_every_item_or_import_named_core() {
         "use core::ptr;\nfn f() { core::ptr::null::<u8>(); }\n",
         "let x = ::core::mem::size_of::<u8>();\n",
         "// mod core\n",
+        // The value namespace: none of these can stand for the first
+        // segment of a `core::` path.
+        "fn f() { let core = 1; let _ = core; }\n",
+        "struct S { core: u8 }\nfn f(s: S) -> u8 { s.core }\n",
+        "fn f(core: u8) -> u8 { core }\n",
+        "fn g() -> S { S { core: 1 } }\n",
+        "fn core() {}\n",
+        "const core: u8 = 0;\n",
+        "static core: u8 = 0;\n",
+        "fn f(x: u8) -> bool { x < 1 && core::convert::identity(true) }\n",
     ] {
         assert_eq!(
             core_shadows(&tokens(source).unwrap()),

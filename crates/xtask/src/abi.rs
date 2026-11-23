@@ -658,14 +658,6 @@ pub(crate) fn c_source(
     Ok(source)
 }
 
-/// Compiles `source` with the platform's C compiler (`$CC`, or `cc`),
-/// warnings as errors, syntax only; returns the compiler's first error line
-/// on failure.
-///
-/// # Errors
-///
-/// Returns an error if the file cannot be written or the compiler cannot
-/// be started.
 /// The start of every generated C file of a row, the macro scan's and the
 /// assertions' alike: the feature defines (`_GNU_SOURCE`, which glibc
 /// needs to expose `CLOCK_BOOTTIME` and others), the common headers and the
@@ -718,6 +710,14 @@ pub(crate) fn header_macros(
     Ok(Ok(object_macros(&String::from_utf8_lossy(&output.stdout))))
 }
 
+/// Compiles `source` with the platform's C compiler (`$CC`, or `cc`),
+/// warnings as errors, syntax only; returns the compiler's first error line
+/// on failure.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be written or the compiler cannot
+/// be started.
 pub(crate) fn compile(source: &str, file: &Path) -> Result<Result<(), String>, Error> {
     crate::fixture::write_file(file, source)?;
     let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
