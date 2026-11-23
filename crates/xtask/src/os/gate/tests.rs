@@ -182,15 +182,30 @@ fn cargo_refusal_refuses_the_message_outside_the_script_s_standard_output() {
          (/w)`\n\nCaused by:\n  could not execute process `build-script-build`\n"
     );
     assert!(cargo_refusal(&unrelated, target).is_err());
+    // A script that writes only to its standard error, a stdout marker
+    // among what it writes.
+    let marker = refusal(target).replace(
+        "  --- stdout\n  cargo::rerun-if-changed=build.rs\n",
+        "  --- stderr\n  --- stdout\n",
+    );
+    assert!(cargo_refusal(&marker, target).is_err());
 }
 
 #[test]
 fn script_executed_reads_cargo_s_report_of_the_crate_s_script() {
-    let executed = "{\"reason\":\"build-script-executed\",\"package_id\":\
-                    \"path+file:///w/crates/ironafs-os#0.0.0\",\"env\":[]}\n";
-    assert!(script_executed(executed));
-    assert!(!script_executed(&executed.replace("ironafs-os", "other")));
+    const ID: &str = "path+file:///w/crates/ironafs-os#0.0.0";
+    let executed =
+        format!("{{\"reason\":\"build-script-executed\",\"package_id\":\"{ID}\",\"env\":[]}}\n");
+    assert!(script_executed(&executed, ID));
     assert!(!script_executed(
-        "{\"reason\":\"build-finished\",\"success\":false}\n"
+        &executed.replace("ironafs-os", "other"),
+        ID
+    ));
+    // Another package, under a path that holds the crate's name.
+    let unrelated = executed.replace(ID, "path+file:///w/crates/ironafs-os/vendor/other#0.1.0");
+    assert!(!script_executed(&unrelated, ID));
+    assert!(!script_executed(
+        "{\"reason\":\"build-finished\",\"success\":false}\n",
+        ID
     ));
 }

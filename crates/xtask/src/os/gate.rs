@@ -21,8 +21,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::pin::Pinned;
-use crate::pure::CLEARED_ENVIRONMENT;
+use super::pin::{Pinned, pin_cargo};
 use crate::rust_source::{TokenKind, ident, matching, punct, tokens_with_strings};
 use crate::{Command, Error};
 
@@ -336,8 +335,9 @@ pub(crate) struct CargoRun {
     pub(crate) stderr: String,
 }
 
-/// Builds the crate in `manifest` for `target` with Cargo, given the
-/// pinned compiler, into `build_dir`.
+/// Builds the crate in `manifest`, the package `package_id`, for `target`
+/// with Cargo, given the pinned compiler and no wrapper, into
+/// `build_dir`.
 ///
 /// # Errors
 ///
@@ -346,6 +346,7 @@ pub(crate) fn cargo_run(
     pinned: &Pinned,
     root: &Path,
     manifest: &Path,
+    package_id: &str,
     locked: bool,
     target: &str,
     build_dir: &Path,
@@ -367,21 +368,18 @@ pub(crate) fn cargo_run(
         ])
         .arg("--target-dir")
         .arg(build_dir);
-    for name in CLEARED_ENVIRONMENT {
-        command.env_remove(name);
-    }
-    command.env("RUSTC", &pinned.rustc);
+    pin_cargo(&mut command, pinned);
     let output = command.output().map_err(Error::io("cargo check"))?;
     Ok(CargoRun {
         success: output.status.success(),
-        script_accepted: script_executed(&String::from_utf8_lossy(&output.stdout)),
+        script_accepted: script_executed(&String::from_utf8_lossy(&output.stdout), package_id),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
 }
 
-/// Whether Cargo's JSON `messages` report the crate's build script run to
-/// success.
-pub(crate) fn script_executed(messages: &str) -> bool {
+/// Whether Cargo's JSON `messages` report the build script of the package
+/// `package_id` (its exact ID, from Cargo's metadata) run to success.
+pub(crate) fn script_executed(messages: &str, package_id: &str) -> bool {
     messages
         .lines()
         .filter_map(|line| crate::json::parse(line).ok())
@@ -391,7 +389,7 @@ pub(crate) fn script_executed(messages: &str) -> bool {
                 && message
                     .get("package_id")
                     .and_then(crate::json::Value::as_str)
-                    .is_some_and(|id| id.contains(super::CRATE))
+                    == Some(package_id)
         })
 }
 
@@ -456,6 +454,10 @@ fn script_stdout(stderr: &str) -> Option<Vec<&str>> {
         exited |= line.starts_with("  process didn't exit successfully");
         if line == "  --- stdout" {
             break;
+        }
+        // Past the script's standard error, nothing is its standard output.
+        if line == "  --- stderr" {
+            return None;
         }
     }
     if !exited {

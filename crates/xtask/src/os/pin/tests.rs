@@ -3,7 +3,11 @@
 
 //! Tests for the reading of the pinned toolchain.
 
-use super::{channel, mismatch, release};
+use std::ffi::OsStr;
+use std::path::PathBuf;
+
+use super::{Pinned, channel, mismatch, pin_cargo, release};
+use crate::Command;
 
 #[test]
 fn channel_reads_the_toolchain_file_s_pin() {
@@ -32,4 +36,24 @@ fn mismatch_names_a_tool_that_is_not_the_pin() {
         found.contains("cargo") && found.contains("1.101.0-nightly") && found.contains("1.100.0")
     );
     assert!(mismatch("rustc", None, "1.100.0").is_some());
+}
+
+#[test]
+fn pin_cargo_names_the_pinned_compiler_and_no_wrapper() {
+    let pinned = Pinned {
+        rustc: PathBuf::from("/pinned/bin/rustc"),
+    };
+    let mut command = Command::new("cargo");
+    command.env("RUSTFLAGS", "-Cplanted");
+    pin_cargo(&mut command, &pinned);
+    let envs: Vec<(&OsStr, Option<&OsStr>)> = command.get_envs().collect();
+    let value = |name: &str| {
+        envs.iter()
+            .find(|(key, _)| *key == OsStr::new(name))
+            .map(|(_, value)| *value)
+    };
+    assert_eq!(value("RUSTC"), Some(Some(OsStr::new("/pinned/bin/rustc"))));
+    assert_eq!(value("RUSTC_WRAPPER"), Some(Some(OsStr::new(""))));
+    assert_eq!(value("RUSTC_WORKSPACE_WRAPPER"), Some(Some(OsStr::new(""))));
+    assert_eq!(value("RUSTFLAGS"), Some(None));
 }

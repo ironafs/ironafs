@@ -750,11 +750,22 @@ fn target_cases(
         script: text(BUILD_SCRIPT),
         lib: text("src/lib.rs"),
     };
+    let result = planted_cases(&planting, unlisted, output);
+    fixture::remove_dir(&planting.scratch)?;
+    result
+}
+
+/// The cases of `target_cases`, in `planting`'s fixture directory.
+fn planted_cases(
+    planting: &Planting<'_>,
+    unlisted: &[String],
+    output: &mut impl Write,
+) -> Result<(), Error> {
     let clean = planting.gate_found("the build script", &planting.script)?;
     if !clean.is_empty() {
         return Err(failure("the build script, unplanted", &clean));
     }
-    extra_cases(&planting, unlisted, output)?;
+    extra_cases(planting, unlisted, output)?;
     for case in GATE_CASES {
         let mut planted = planting.script.clone();
         for (from, to) in case.edits {
@@ -766,9 +777,8 @@ fn target_cases(
         }
         report_caught(output, case.name, &first(&found))?;
     }
-    widened_case(&planting, output)?;
-    crate_attribute_case(&planting, output)?;
-    fixture::remove_dir(&planting.scratch)
+    widened_case(planting, output)?;
+    crate_attribute_case(planting, output)
 }
 
 fn report_caught(output: &mut impl Write, case: &str, found: &str) -> Result<(), Error> {
@@ -811,22 +821,28 @@ fn extra_cases(
     }
     let package = planting.scratch.join("package");
     write_package(&package, planting.originals, &accepting)?;
+    let manifest = package.join("Cargo.toml");
+    let planted = crate::metadata::load(Some(&manifest), &[])?;
     let run = gate::cargo_run(
         planting.context.pinned,
         planting.context.root,
-        &package.join("Cargo.toml"),
+        &manifest,
+        &super::crate_member(&planted)?.id,
         false,
         extra,
         &package.join("target"),
     )?;
+    // Whatever Cargo's exit status (a target whose standard library is
+    // installed may build), the planted script must have run to success
+    // for it, and the check must refuse the result.
     let problem = gate::cargo_problem(&run, extra);
-    let Some(problem) = problem.filter(|_| run.script_accepted && !run.success) else {
+    let Some(problem) = problem.filter(|_| run.script_accepted) else {
         return Err(Error::SelfTest {
             check: CHECK,
             case: ACCEPTED,
             found: vec![format!(
-                "Cargo did not report the planted script run to success for {extra} before the \
-                 build failed: {}",
+                "Cargo did not report the planted script run to success for {extra}, or the \
+                 check accepted the result: {}",
                 crate::pure::first_error(run.stderr.as_bytes())
             )],
         });

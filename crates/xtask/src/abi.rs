@@ -942,7 +942,7 @@ fn check_target(
         Err(problems) => return Err(fail(problems.iter().map(ToString::to_string).collect())),
     };
     let build_dir = workspace.target_dir.join("xtask-check-os");
-    let read = match os::files_for(workspace, &crate_dir, &build_dir, target)? {
+    let read = match os::files_for(None, workspace, &crate_dir, &build_dir, target)? {
         Built::Files(files) => files,
         Built::Refused(error) => return Err(fail(vec![format!("{target}: {error}")])),
     };

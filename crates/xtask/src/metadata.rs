@@ -153,8 +153,7 @@ impl Targets {
         };
         for target in array(package, "targets")? {
             targets.editions.push(string(target, "edition")?.to_owned());
-            for kind in array(target, "kind")? {
-                let kind = kind.as_str().ok_or(Error::UnexpectedOutput(COMMAND))?;
+            for kind in kinds_of(target)? {
                 let source = || string(target, "src_path").map(PathBuf::from);
                 match kind {
                     "lib" => targets.lib_root = Some(source()?),
@@ -293,15 +292,17 @@ fn renamed(node: &Value, packages: &[Value]) -> Result<Vec<String>, Error> {
 fn target_kinds(package: &Value) -> Result<Vec<String>, Error> {
     let mut kinds = Vec::new();
     for target in array(package, "targets")? {
-        for kind in array(target, "kind")? {
-            kinds.push(
-                kind.as_str()
-                    .ok_or(Error::UnexpectedOutput(COMMAND))?
-                    .to_owned(),
-            );
-        }
+        kinds.extend(kinds_of(target)?.into_iter().map(str::to_owned));
     }
     Ok(kinds)
+}
+
+/// The kinds of one target.
+fn kinds_of(target: &Value) -> Result<Vec<&str>, Error> {
+    array(target, "kind")?
+        .iter()
+        .map(|kind| kind.as_str().ok_or(Error::UnexpectedOutput(COMMAND)))
+        .collect()
 }
 
 /// The native library a package links, if any.

@@ -238,6 +238,14 @@ fn build_script_problem_needs_cargo_s_script_to_be_the_crate_s_own_file() {
     );
     #[cfg(unix)]
     {
+        // Another name Cargo could register, a link to the crate's own
+        // regular build.rs.
+        let alias = dir.join("alias.rs");
+        std::os::unix::fs::symlink(&script, &alias).unwrap();
+        assert!(
+            build_script_problem(Some(&alias), &dir)
+                .is_some_and(|problem| problem.contains("registers"))
+        );
         std::fs::remove_file(&script).unwrap();
         std::os::unix::fs::symlink(&elsewhere, &script).unwrap();
         assert!(

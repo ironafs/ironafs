@@ -14,6 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::pure::CLEARED_ENVIRONMENT;
 use crate::{Command, Error};
 
 #[cfg(test)]
@@ -90,14 +91,7 @@ pub(crate) fn resolve(root: &Path) -> Result<Result<Pinned, String>, Error> {
             return Ok(Err(problem));
         }
     }
-    let output = Command::new("rustc")
-        .current_dir(root)
-        .args(["--print", "sysroot"])
-        .output()
-        .map_err(Error::io("run rustc --print sysroot"))?;
-    Error::check_status("rustc --print sysroot", output.status)?;
-    let sysroot = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-    let rustc = sysroot
+    let rustc = crate::pure::toolchain_sysroot(root)?
         .join("bin")
         .join(format!("rustc{}", std::env::consts::EXE_SUFFIX));
     if let Some(problem) = mismatch(
@@ -108,4 +102,20 @@ pub(crate) fn resolve(root: &Path) -> Result<Result<Pinned, String>, Error> {
         return Ok(Err(problem));
     }
     Ok(Ok(Pinned { rustc }))
+}
+
+/// Sets `command`, a Cargo run of `check-os`, to the pinned compiler and
+/// no compiler wrapper, whatever the environment or Cargo's configuration
+/// selects: `RUSTC` names the pinned compiler, and an empty
+/// `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` override a configured
+/// wrapper. The other variables that change what the compiler is given
+/// are removed.
+pub(crate) fn pin_cargo(command: &mut Command, pinned: &Pinned) {
+    for name in CLEARED_ENVIRONMENT {
+        command.env_remove(name);
+    }
+    command
+        .env("RUSTC", &pinned.rustc)
+        .env("RUSTC_WRAPPER", "")
+        .env("RUSTC_WORKSPACE_WRAPPER", "");
 }

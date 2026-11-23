@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 
 use crate::json;
 use crate::metadata::{self, Workspace};
-use crate::pure::{CLEARED_ENVIRONMENT, first_error, matrix, toolchain_targets};
+use crate::pure::{first_error, matrix, toolchain_targets};
 use crate::rust_source;
 use crate::{Command, Error};
 use inventory::{Inventory, Row};
@@ -599,7 +599,15 @@ pub(crate) fn compiled_files(
     let manifest = crate_dir.join("Cargo.toml");
     for target in &targets {
         if !ALLOWLIST.contains(&target.as_str()) {
-            let run = gate::cargo_run(pinned, &workspace.root, &manifest, true, target, build_dir)?;
+            let run = gate::cargo_run(
+                pinned,
+                &workspace.root,
+                &manifest,
+                &crate_member(workspace)?.id,
+                true,
+                target,
+                build_dir,
+            )?;
             if let Some(problem) = gate::cargo_problem(&run, target) {
                 violations.push(Violation::Target {
                     target: target.clone(),
@@ -608,7 +616,7 @@ pub(crate) fn compiled_files(
             }
             continue;
         }
-        match files_for(workspace, crate_dir, build_dir, target)? {
+        match files_for(Some(pinned), workspace, crate_dir, build_dir, target)? {
             Built::Files(files) if built_here(target) => {
                 compiled.insert(target.clone(), files);
             }
@@ -633,13 +641,16 @@ pub(crate) enum Built {
 
 /// Builds the crate's library for `target` and reads which of the crate's
 /// files the compiler read, from its dependency-info file. A build that
-/// does not list the crate's root among them shows nothing.
+/// does not list the crate's root among them shows nothing. `check-os`
+/// gives the pinned compiler (and no wrapper); `check-abi`, which keeps its
+/// own toolchain rules, gives none.
 ///
 /// # Errors
 ///
 /// Returns an error if cargo cannot be started or the crate's directory
 /// cannot be resolved.
 pub(crate) fn files_for(
+    pinned: Option<&pin::Pinned>,
     workspace: &Workspace,
     crate_dir: &Path,
     build_dir: &Path,
@@ -654,8 +665,13 @@ pub(crate) fn files_for(
         .arg(target)
         .arg("--target-dir")
         .arg(build_dir);
-    for name in CLEARED_ENVIRONMENT {
-        command.env_remove(name);
+    match pinned {
+        Some(pinned) => pin::pin_cargo(&mut command, pinned),
+        None => {
+            for name in crate::pure::CLEARED_ENVIRONMENT {
+                command.env_remove(name);
+            }
+        }
     }
     let output = command.output().map_err(Error::io("cargo check"))?;
     if !output.status.success() {
@@ -783,8 +799,8 @@ pub(crate) fn guard_violations(
 
 /// Why the build script Cargo registers for the crate (`registered`, from
 /// Cargo's metadata) is not the gate this check proves, if it is not: it
-/// must be `build.rs` in the crate's directory, a regular file and not a
-/// symbolic link. Checked before the script is compiled or run, alone or
+/// must be `build.rs` in the crate's directory, by that very path, and a
+/// regular file, not a symbolic link. Checked before the script is compiled or run, alone or
 /// by Cargo.
 pub(crate) fn build_script_problem(registered: Option<&Path>, crate_dir: &Path) -> Option<String> {
     let expected = crate_dir.join(gate::BUILD_SCRIPT);
@@ -802,11 +818,10 @@ pub(crate) fn build_script_problem(registered: Option<&Path>, crate_dir: &Path) 
         }
         Err(error) => return Some(format!("cannot read {}: {error}", expected.display())),
     }
-    let same = match (fs::canonicalize(registered), fs::canonicalize(&expected)) {
-        (Ok(registered), Ok(expected)) => registered == expected,
-        _ => false,
-    };
-    if same {
+    // The path Cargo registers, as it registers it: another name for the
+    // same file (a link, or `..` in the path) is not the crate's own
+    // `build.rs`.
+    if registered == expected {
         None
     } else {
         Some(format!(
@@ -824,11 +839,13 @@ pub(crate) fn build_script_problem(registered: Option<&Path>, crate_dir: &Path) 
 /// violations and those targets.
 fn target_violations(
     pinned: &pin::Pinned,
-    root: &Path,
-    crate_dir: &Path,
+    workspace: &Workspace,
     build_dir: &Path,
     cfgs: &BTreeMap<String, allowlist::Cfg>,
 ) -> Result<(Vec<Violation>, Vec<String>), Error> {
+    let root = &workspace.root;
+    let member = crate_member(workspace)?;
+    let crate_dir = &member.dir;
     let targets: Vec<String> = cfgs.keys().cloned().collect();
     // The standalone gate goes to a directory of this process's own.
     let gate_dir = build_dir.join(format!("gate-{}", std::process::id()));
@@ -857,7 +874,7 @@ fn target_violations(
     violations.extend(found);
     let manifest = crate_dir.join("Cargo.toml");
     for target in &unlisted {
-        let run = gate::cargo_run(pinned, root, &manifest, true, target, build_dir)?;
+        let run = gate::cargo_run(pinned, root, &manifest, &member.id, true, target, build_dir)?;
         if let Some(problem) = gate::cargo_problem(&run, target) {
             violations.push(Violation::Target {
                 target: target.clone(),
@@ -971,11 +988,15 @@ pub(crate) fn musl_key_uses(path: &Path, text: &str, keys: &BTreeSet<String>) ->
 
 /// The crate's directory in the workspace.
 pub(crate) fn crate_dir(workspace: &Workspace) -> Result<PathBuf, Error> {
+    crate_member(workspace).map(|member| member.dir.clone())
+}
+
+/// The crate's member entry in the workspace's metadata.
+pub(crate) fn crate_member(workspace: &Workspace) -> Result<&metadata::Member, Error> {
     workspace
         .members
         .iter()
         .find(|member| member.name == CRATE)
-        .map(|member| member.dir.clone())
         .ok_or(Error::UnexpectedOutput(
             "cargo metadata: ironafs-os is not a member",
         ))
@@ -1014,8 +1035,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     };
     let build_dir = workspace.target_dir.join("xtask-check-os");
     let cfgs = allowlist::target_cfgs(&pinned, &workspace.root)?;
-    let (mut violations, unlisted) =
-        target_violations(&pinned, &workspace.root, &crate_dir, &build_dir, &cfgs)?;
+    let (mut violations, unlisted) = target_violations(&pinned, &workspace, &build_dir, &cfgs)?;
     let (compiled, found) = compiled_files(&pinned, &workspace, &crate_dir, &build_dir)?;
     violations.extend(found);
     let inventory = match read_inventory(&workspace.root, &crate_dir)? {
