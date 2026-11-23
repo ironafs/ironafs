@@ -238,9 +238,9 @@ Rx implementations ([ADR 0001](docs/adr/0001-licence-and-dont-copy.md)).
 
 AFS is the Andrew File System. IronAFS is an independent project and is not
 affiliated with or endorsed by IBM, the OpenAFS Foundation or AuriStor. The
-names of OpenAFS, AuriStor and other software belong to their owners, and
-are used here only to identify software discussed in this documentation or
-intended as interoperability targets.
+names of OpenAFS, AuriStor and other software are used here only to
+identify software discussed in this documentation or intended as
+interoperability targets.
 
 IronAFS™ is a trademark of Adrian Ana. [TRADEMARKS.md](TRADEMARKS.md)
 explains how to refer to the project and to modified versions; it does not

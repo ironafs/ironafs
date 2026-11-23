@@ -36,6 +36,8 @@ the project's own releases from other people's builds.
 - **Accurate references are welcome** without asking: in articles,
   documentation, links, talks, and statements such as "works with IronAFS"
   or "based on IronAFS", as long as they are true.
+- **The project's own releases** are labelled, for example, "IronAFS 1.0,
+  released by the IronAFS project".
 - **Packages of an unchanged release** can be called IronAFS. A label that
   also says who built the package, for example "IronAFS 1.0, packaged by
   Example Linux", tells users where it came from.
