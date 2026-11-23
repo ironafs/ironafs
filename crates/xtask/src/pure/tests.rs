@@ -414,6 +414,8 @@ fn workspace(packages: Vec<Package>) -> Workspace {
                 ))),
                 target_kinds: package.target_kinds.clone(),
                 editions: vec!["2024".into()],
+                build_script: None,
+                declared_dependencies: Vec::new(),
                 renamed: Vec::new(),
             })
             .collect(),

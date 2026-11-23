@@ -1192,7 +1192,7 @@ pub(crate) fn lint(
         violations.push(refusal);
         return Ok(found_in_lint(violations));
     }
-    isolated_build(&mut command, &build);
+    isolated_build(&mut command, &build)?;
     let output = command.output().map_err(Error::io("cargo clippy"));
     crate::fixture::remove_dir(&build)?;
     let output = output?;
@@ -1294,17 +1294,42 @@ fn no_wrapper(command: &mut Command) {
 /// workspace's lint builds into, fresh for each run.
 const LINT_BUILD: &str = "check-bans-lint";
 
-/// Builds into `dir`, which is fresh and empty, for both cargo's target
-/// directory and its build directory (`build.build-dir`, which a cargo
-/// configuration can point elsewhere). Cargo reuses an artifact whose key
-/// matches, and no compiler wrapper is part of that key: an artifact an
-/// earlier run built without clippy, under a wrapper, would be reused and
-/// its crate never linted. Set over anything the caller set.
-fn isolated_build(command: &mut Command, dir: &Path) {
+/// Builds into `dir` for both cargo's target directory and its build
+/// directory (`build.build-dir`, which a cargo configuration can point
+/// elsewhere). Cargo reuses an artifact whose key matches, and no compiler
+/// wrapper is part of that key: an artifact an earlier run built without
+/// clippy, under a wrapper, would be reused and its crate never linted.
+/// The lint gives it a fresh, empty `dir`; `check-os` gives its pinned
+/// runs a directory of their own. Set over anything the caller set.
+///
+/// Cargo reads `{` and `}` in a build directory as its path templates
+/// (`{workspace-root}` and others) and documents no escape for them, so a
+/// `dir` holding either is refused, with nothing set, rather than passed
+/// on to mean another directory.
+///
+/// # Errors
+///
+/// Returns an error naming `dir` if its path holds `{` or `}`.
+pub(crate) fn isolated_build(command: &mut Command, dir: &Path) -> Result<(), Error> {
+    if dir
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .any(|byte| matches!(byte, b'{' | b'}'))
+    {
+        return Err(Error::path_io("use as Cargo's build directory", dir)(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the path holds `{` or `}`, which Cargo reads as a build-directory template, \
+                 and Cargo documents no escape",
+            ),
+        ));
+    }
     command
         .arg("--target-dir")
         .arg(dir)
         .env("CARGO_BUILD_BUILD_DIR", dir);
+    Ok(())
 }
 
 /// A refusal for each of `paths` that holds a line break.
