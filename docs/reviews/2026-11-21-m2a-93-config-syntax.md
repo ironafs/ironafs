@@ -651,13 +651,14 @@ GPT is `gpt-6.2-sol` at xhigh.
      - The row records the magic value the specification defines, or
        "none" when it defines none, and the check compares it with the
        specification's.
-   - **Partly, not fixed in this change:** "docs/specs/README.md:476 — PARTLY. The
+   - **Partly, fixed (`f7168d4`):** "docs/specs/README.md:476 — PARTLY. The
      versionless path has its own freeze trigger, baseline and table
      entry. The index still specifies a check only for magic and version
      bytes. Require a check that the table and status line identify the
      same baseline commit."
-     - No rule yet requires a check that the frozen-table row and the
-       status line name the same revision.
+     - The index section's check now also compares a versionless row's
+       revision with the baseline commit the specification's status line
+       names.
 
    The controller first proposed deferring the two majors to a
    follow-up issue on the specs README, and the refutation seat (GLM)
@@ -672,4 +673,4 @@ GPT is `gpt-6.2-sol` at xhigh.
    and no follow-up issue is filed for them.
 
 Final head: the commit that updates this section, on top of
-`c3d0d6d`, which ends the reviewed content.
+`f7168d4`, which ends the reviewed content.
