@@ -295,3 +295,52 @@ Evidence (EXECUTED, macOS 27 on Apple silicon, 2026-11-23, at
 `cargo xtask fuzz` replaying ten seeds of `ironafs-config_syntax` and
 three of `ironafs-xdr_decode`; and a 120-second fuzzing run of
 `ironafs-config_syntax` from its seeds, with no failure.
+
+### Final verification
+
+The same seat (GPT read-only, `gpt-6.2-sol`, xhigh, 2026-11-23) read
+`b996092..9043b80` and passed it: the byte caps, the depth precedence,
+the section 9 wording and the single bidirectional list FIXED; the
+error columns PARTLY; and three minor findings and one recommendation.
+Each was fixed, recorded, and the review stopped under the stop rule,
+with no further round. The fixes are `0424dcf`.
+
+- **Error columns, PARTLY, fixed (`0424dcf`):** "It can still accept a
+  position on a later line after the first invalid sequence in the
+  file, and it allows an extra column on CRLF lines. Use the whole-file
+  valid prefix and exclude CR when it is part of CRLF."
+  - A position is checked against the file's valid UTF-8 prefix, and a
+    CR before LF is not counted as a column. The tests failed first on
+    the CR LF case (column 4 of `ab` CR LF was accepted).
+- **Minor, fixed (`0424dcf`):** "The line-cap check strips a trailing CR
+  from the final line even when no LF follows it."
+  - A CR is stripped only before an LF. The new case, a cap-length
+    comment then a bare CR at the end, failed first.
+- **Minor, fixed (`0424dcf`):** "Section 10.4 now says the fuzz check
+  enforces the character restrictions on the accepted input. The check
+  applies them to parsed keys, segments and strings."
+  - Section 10.4 now says the character check is on the parsed keys,
+    table-path segments and strings, and that a comment's characters are
+    left to the rejection tests.
+- **Minor, fixed (`0424dcf`):** "The new invariant tests use bare
+  `is_err()` assertions despite coding standards rule 15. The moved
+  `refused` helper at line 455 also drops `#[track_caller]`."
+  - Each negative case asserts the exact error the check returns, and
+    `refused` has `#[track_caller]` again.
+- **Recommendation, applied (`0424dcf`):** "Large seeds should be
+  replaced. Generate both exact file sizes with the existing `comments`
+  helper in a deterministic integration test, parse both, and assert
+  acceptance at the cap and unpositioned `FileTooLarge` one byte above
+  it."
+  - `parse_file_cap_at_and_one_above_in_comment_lines` does this; the
+    `file-at-cap` and `file-over-cap` seeds are removed and the
+    line-cap seeds kept. It passed at once: it moves coverage, not
+    behaviour.
+
+Evidence (EXECUTED, macOS 27 on Apple silicon, 2026-11-23, at
+`0424dcf`), each with exit 0: the same commands as above
+(`cargo nextest run` passed 816 tests); the fuzz job's steps, with
+`cargo xtask fuzz` replaying eight seeds of `ironafs-config_syntax` and
+three of `ironafs-xdr_decode`; and a 120-second fuzzing run of
+`ironafs-config_syntax` from its seeds, about 3.6 million inputs, with
+no failure.
