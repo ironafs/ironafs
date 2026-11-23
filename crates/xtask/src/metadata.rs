@@ -181,8 +181,6 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             .iter()
             .find(|node| string(node, "id").is_ok_and(|candidate| candidate == *id))
             .ok_or_else(unexpected)?;
-        let declared_dependencies = declared(package)?;
-        let renamed = renamed(node, packages)?;
         members.push(Member {
             name: string(package, "name")?.to_owned(),
             id: (*id).to_owned(),
@@ -190,8 +188,8 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             lib_root,
             target_kinds,
             editions,
-            declared_dependencies,
-            renamed,
+            declared_dependencies: declared(package)?,
+            renamed: renamed(node, packages)?,
         });
     }
 
