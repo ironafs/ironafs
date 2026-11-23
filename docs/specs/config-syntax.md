@@ -215,16 +215,19 @@ rule for such formats ([README](README.md), "Formats IronAFS defines"):
    write it, in a subset of a standard format, and a version line would
    be one more thing to get wrong, saying nothing point 2 does not
    `[OWN]`.
-2. **It only grows.** From the first release of this syntax, each later
-   release accepts every file an earlier release accepted, with the same
-   meaning, without migration or loss. The subset grows only by
-   accepting TOML it refuses today. Revisions before the first release
-   are not covered: no other party depends on this syntax before then.
-   If one starts to, the syntax is frozen from then ([README](README.md),
-   "Freezing"), and the promise starts at the revision frozen. The
-   promise is stronger than the README's one correction for a
-   versionless format, and stays so: every file an earlier release
-   accepted is accepted, with its meaning, with no exception `[OWN]`.
+2. **It only grows.** From the first release of this syntax, every file
+   this specification accepts, as it stood at that release plus its
+   approved extensions, is accepted with the same meaning by every later
+   release, without migration or loss, with no exception. The subset
+   grows only by accepting TOML it refuses today. A file a release
+   accepted only because of an implementation defect outside this
+   specification (a duplicate key, for example, which §5.4, point 3
+   refuses) may be refused once the defect is fixed, as the README's
+   correction for a versionless format allows ([README](README.md),
+   "Freezing"). Revisions before the first release are not covered: no
+   other party depends on this syntax before then. If one starts to, the
+   syntax is frozen from then, and the promise starts at the revision
+   frozen `[OWN]`.
 3. **Newer input,** syntax this parser refuses, is refused with the first
    error in the check order of §5.4, point 1. The error has a position,
    except for a file over `MAX_FILE_BYTES`, and a hint only for the
