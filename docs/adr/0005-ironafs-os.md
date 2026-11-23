@@ -2639,7 +2639,11 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
     error (such as `ENOBUFS`), and nothing else ends it. A wake whose
     send fails, or whose acknowledgement is lost, can leave an
     otherwise idle worker blocked, and a drop of the handle from a
-    thread other than a worker then waits for it indefinitely (a drop
+    thread other than a worker can then wait for it indefinitely, if
+    no later datagram or error ends the receive (`RouteSocket::receive`
+    in `crates/ironafs-os/src/linux_rtnetlink.rs` at `e6c9eae`, lines
+    140-172, with `receive_message` from line 281: it blocks, retries
+    `EINTR`, and returns on a datagram or an error) (a drop
     on a worker only asks for the stop). A lost barrier acknowledgement
     has no deadline or retry, and can leave the generation unavailable
     until another loss or a stop (open item B1 of that change's review
@@ -2713,8 +2717,9 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
         wait, a wake that needs no netlink acknowledgement, and a
         deadline for each attempt); B1 stays open on PR #143 until its
         redesign implements them, reviewed there.
-    - Files read in full. Every file that states the old row 23 and
-      sheet 23 rules was read in full: `docs/adr/0005-ironafs-os.md` at
+    - Files read. Every file that states the old row 23 and sheet 23
+      rules was read in full, except two read as their diff from a full
+      read of the same file (named below): `docs/adr/0005-ironafs-os.md` at
       `3f73854`, `ff71ace`, `33bc576` and `e6c9eae` (main's text) and at
       `291bc50`; at `33bc576`, `crates/ironafs-os/src/linux_rtnetlink.rs`
       and every file under `crates/ironafs-os/src/linux_rtnetlink/`,
@@ -2726,8 +2731,10 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
       `crates/ironafs-net/src/monitor.rs` and
       `crates/ironafs-netgen/src/monitor.rs`. Read at their diff from
       `33bc576`'s full read: `sites.json` and `ci.yml` at `e6c9eae`.
-      Read at the row 23 entry only: `sites.json` at `ff71ace` and
-      `291bc50`.
+      Read in full at their own pins, since each is a separate copy of
+      the inventory: `crates/ironafs-os/sites.json` at `ff71ace` and at
+      `291bc50`; in each, row 23 appears once, as an approved-only entry
+      with the old text and no code.
     - Actors. The rule binds the maintainer's session, and contributors
       and their agents, who write and review the monitor and the site.
       CI: on the four branches it runs `check-os` (the inventory
@@ -2775,7 +2782,8 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
     - Round 5, the check of the Review entry, the sweep and the issue
       draft, on `dd054a0`: GPT (`gpt-6.2-sol`, xhigh) FAIL, 1 blocker,
       7 major and 1 minor; GLM (`glm-5.3`, max) FAIL, 1 major and 2
-      minor. Fixed in `5b6bacd`.
+      minor. Fixes attempted in `5b6bacd`; each finding's closure is in
+      the review record's table.
     - Round 6, the verification, on `5b6bacd`: GPT (`gpt-6.2-sol`,
       xhigh) FAIL, 3 major and 4 minor; GLM (`glm-5.3`, max) PASS with
       3 minor. A refutation seat, GLM (`glm-5.3`, max), ruled on two of
@@ -2784,4 +2792,15 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
       5.1, point 3, and B1 belong in this record (the move failed;
       added above); how each other pull request reworks its code,
       inventory, tests and CI is that pull request's own change (the
-      move stands). Fixed in the next commit.
+      move stands). Fixes attempted in `d0b358d`; each finding's
+      closure is in the review record's table.
+    - Round 7, the verification of `5b6bacd..d0b358d`: GPT
+      (`gpt-6.2-sol`, xhigh) FAIL, 1 major (two copies of `sites.json`
+      were recorded as read only at their row 23 entry) and 2 minor
+      (the Evidence paragraph's unconditional wording and missing
+      wrapper citation; "fixed in" lines that the table contradicts);
+      GLM (`glm-5.3`, max) PASS with 1 minor (the same read-scope
+      point, and the bullet's opening claimed every file was read in
+      full). The two files were then read in full, the opening says
+      which two were read as diffs, and the wording was fixed in the
+      next commit.
