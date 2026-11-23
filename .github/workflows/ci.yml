@@ -251,7 +251,8 @@ jobs:
       - name: Compare the musl build's own sites with the copy
         # The production library built for this musl target, its sites read
         # from the files that build compiled (ADR 0005, point 6.7), and a
-        # site planted for this target alone caught.
+        # site planted for this target alone caught (a synthetic input: the
+        # planted file added to that build's file list).
         if: matrix.cc == 'musl-gcc'
         run: |
           cargo --locked xtask check-os > check-os.log
@@ -259,7 +260,7 @@ jobs:
           grep -Eq "^check-os: .* on [^;]*${TARGET}[,;]" check-os.log
           cargo --locked xtask check-os --self-test > check-os-self-test.log
           cat check-os-self-test.log
-          grep -qx "caught: a site compiled for a musl target alone: $TARGET" check-os-self-test.log
+          grep -qx "caught: a site planted for a musl target alone (synthetic input: added to its build's file list): $TARGET" check-os-self-test.log
 
   os-linux-glibc-2-28:
     name: os-linux (glibc 2.28, ${{ matrix.target }})

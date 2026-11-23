@@ -359,6 +359,14 @@ pub(super) fn run(
             .to_owned(),
     )?;
 
+    paired_write_case(&originals, &adr, inventory, compiled)?;
+    report(
+        output,
+        "caught: the wipe's write changed in the code and in sites.json alike, to a same-named \
+         write elsewhere"
+            .to_owned(),
+    )?;
+
     let mut emptied = compiled.clone();
     for files in emptied.values_mut() {
         files.retain(|file| file == Path::new("src/lib.rs"));
@@ -409,14 +417,16 @@ pub(super) fn run(
         format!(
             "check-os --self-test: the crate's own files passed and {} planted cases failed as \
              planted",
-            CASES.len() + 3 + BOUNDARY_CASES + TARGET_CASES + musl + cases
+            CASES.len() + 4 + BOUNDARY_CASES + TARGET_CASES + musl + cases
         ),
     )
 }
 
 /// For each musl target the check built (its standard library installed,
-/// as in each native musl CI lane), a site compiled for that target alone:
+/// as in each native musl CI lane), a site planted for that target alone:
 /// the comparison of that target's own build with the copy must catch it.
+/// The input is synthetic: the planted file is added to the file list that
+/// target's real build produced, not compiled by a build of its own.
 /// Returns how many it planted.
 fn musl_cases(
     originals: &BTreeMap<PathBuf, String>,
@@ -424,7 +434,8 @@ fn musl_cases(
     compiled: &BTreeMap<String, BTreeSet<PathBuf>>,
     output: &mut impl Write,
 ) -> Result<usize, Error> {
-    const CASE: &str = "a site compiled for a musl target alone";
+    const CASE: &str =
+        "a site planted for a musl target alone (synthetic input: added to its build's file list)";
     let mut planted = 0;
     for target in compiled.keys().filter(|target| target.ends_with("-musl")) {
         let mut only = compiled.clone();
@@ -508,6 +519,51 @@ fn boundary_cases(
     )?;
 
     Ok(())
+}
+
+/// The wipe's write changed in the code and in `sites.json` alike to a
+/// same-named write elsewhere (`shadow::write_volatile`, the last segment
+/// kept), so the two agree: the comparison finds nothing, and only the
+/// binding of a write block to `core`'s own volatile write refuses it.
+fn paired_write_case(
+    originals: &BTreeMap<PathBuf, String>,
+    adr: &str,
+    inventory: &Inventory,
+    compiled: &BTreeMap<String, BTreeSet<PathBuf>>,
+) -> Result<(), Error> {
+    const CASE: &str = "the wipe's write changed in the code and in sites.json alike";
+    const SUBSTITUTE: &str = "shadow::write_volatile";
+    let edits = [replace(
+        "src/mem_wipe.rs",
+        WIPE_BLOCK,
+        "unsafe { shadow::write_volatile(byte, 0) }",
+    )];
+    let mut changed = inventory.clone();
+    for row in changed.rows.iter_mut().filter(|row| row.id == "mem-wipe") {
+        if let Some(code) = row.code.as_mut() {
+            for block in &mut code.blocks {
+                SUBSTITUTE.clone_into(&mut block.operation);
+            }
+        }
+    }
+    let found = check_edited(originals, &edits, &changed, compiled)?;
+    if !found.is_empty() {
+        return Err(failure(CASE, &found));
+    }
+    let problems = super::inventory::problems(&changed, adr);
+    let caught = !problems.is_empty()
+        && problems
+            .iter()
+            .all(|problem| problem.contains(SUBSTITUTE) || problem.contains("no write block"));
+    if caught {
+        Ok(())
+    } else {
+        Err(Error::SelfTest {
+            check: CHECK,
+            case: CASE,
+            found: problems,
+        })
+    }
 }
 
 /// A change made to the code and to `sites.json` alike, so the two agree:
