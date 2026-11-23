@@ -1812,7 +1812,11 @@ decision and a change to this point (point 7).
 
    `cargo xtask check-os`, which `cargo xtask check` runs beside point
    6.7's inventory, checks both layers:
-   - the gate's seven triples must equal this list exactly;
+   - the gate's seven triples must equal this list exactly. The
+     check's reference copy of the list is kept apart from the gate,
+     never read from the gate's own code, and is tied to this point's
+     text by review: a change to either the gate's list or the
+     reference copy without the other fails the check;
    - the production gate itself must accept each listed triple: an
      affirmative result from the gate's own code for each of the seven,
      obtained before any shim compilation, linking or ABI check (how
