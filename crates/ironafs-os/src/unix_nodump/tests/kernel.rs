@@ -206,25 +206,52 @@ fn status_holds(status: &str, id: &str) -> bool {
 }
 
 /// Whether any thread of any process (`/proc/<pid>/task/<tid>/status`)
-/// holds `id`, by [`status_holds`]. A thread that exits while it is read is
-/// skipped. A snapshot: see [`unused_id`].
+/// holds `id`, by [`status_holds`]. A process or thread that exits while it
+/// is read is skipped: its directory or status is gone (`NotFound`), or the
+/// kernel reports it gone (`ESRCH`). Any other error fails the preflight,
+/// as `Collector::take_image` does, rather than leave a thread unchecked.
+/// Each status is read as bytes, so a thread name that is not UTF-8 is no
+/// error. A snapshot: see [`unused_id`].
 fn held_by_a_thread(id: &str) -> bool {
+    /// `ESRCH`.
+    const ESRCH: i32 = 3;
+    /// `None` for what exited while it was read; a panic for anything else.
+    fn read<T>(result: std::io::Result<T>, what: &std::path::Path) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || error.raw_os_error() == Some(ESRCH) =>
+            {
+                None
+            }
+            Err(error) => panic!("{}: {error}", what.display()),
+        }
+    }
     let numbered = |path: &std::path::Path| {
         path.file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
     };
-    std::fs::read_dir("/proc").unwrap().any(|entry| {
-        let process = entry.unwrap().path();
+    let proc = std::path::Path::new("/proc");
+    std::fs::read_dir(proc).unwrap().any(|entry| {
+        let Some(process) = read(entry, proc).map(|entry| entry.path()) else {
+            return false;
+        };
         if !numbered(&process) {
             return false;
         }
-        let Ok(threads) = std::fs::read_dir(process.join("task")) else {
+        let tasks = process.join("task");
+        let Some(threads) = read(std::fs::read_dir(&tasks), &tasks) else {
             return false;
         };
-        threads.flatten().any(|thread| {
-            std::fs::read_to_string(thread.path().join("status"))
-                .is_ok_and(|status| status_holds(&status, id))
+        threads.into_iter().any(|thread| {
+            let Some(thread) = read(thread, &tasks) else {
+                return false;
+            };
+            let path = thread.path().join("status");
+            read(std::fs::read(&path), &path)
+                .is_some_and(|status| status_holds(&String::from_utf8_lossy(&status), id))
         })
     })
 }
