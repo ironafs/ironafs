@@ -1056,19 +1056,31 @@ are in its sheet below the table, under the same number.
     *Test:* a tmpfs of known size, empty and full (a value under the
     floor); a descriptor on another filesystem measures that one.
 23. **`linux-rtnetlink`.** Amended 2026-11-22: the bounded wait, the
-    wake descriptor and non-blocking sends and receives.
+    wake descriptor and non-blocking sends and receives. **Working.**
+    Revisit this row if: point 5.6's check finds a declaration of the
+    wait or the wake wrong on a target (`nfds_t` among them); a run
+    shows a send to the kernel waiting inside the kernel despite
+    `MSG_DONTWAIT`, a wake lost or a wait not ending at its timeout; or
+    `std` gains a safe way to wait on a socket and a wake together.
+    The owner accepts this amendment before its code is written (point
+    7.1). The network-change monitor's redesign that uses it is a
+    separate class S change: its design is reviewed by a non-author
+    family before code, then its code (point 6.6).
     *Interface:* open a notify socket subscribed to a fixed group set
     (links, the addresses and routes of both families, and the policy
     rules of both families), or a request socket with no groups; send
     one request to the kernel, without waiting; receive one datagram
     into a caller's buffer, without waiting, returning its length,
-    "nothing queued", or a typed error that tells overflow (`ENOBUFS`),
-    truncation and a sender other than the kernel apart; make a wake
-    (one `eventfd`), signal it from any thread, and clear it; and wait
-    on one route socket and one wake together for at most a given
-    `Duration`, returning which of the two is ready, "timed out" or
-    "interrupted". No call of this site blocks except that wait, and
-    the wait always has a finite timeout.
+    "nothing queued", "interrupted", or a typed error that tells
+    overflow (`ENOBUFS`), truncation, an empty datagram and a sender
+    other than the kernel apart; make a wake (one `eventfd`), signal it
+    from any thread, and clear it; and wait on one route socket and one
+    wake together for a given `Duration`, rounded up to whole
+    milliseconds and subject to the kernel's rounding and scheduling
+    delay (Context, poll(2)), returning, for the route socket, which of
+    readable, error and hangup were reported, whether the wake is
+    signalled, "timed out" or "interrupted". No call of this site blocks
+    except that wait, and the wait always has a finite timeout.
     The bytes are not decoded here: the netlink messages go to a pure,
     fuzzed decoder outside this crate (Decision 1, point 3; rules 1 and
     9).
@@ -1076,7 +1088,18 @@ are in its sheet below the table, under the same number.
     - The `sockaddr_nl` values are zero-initialised wrapper-owned locals;
       the group set is a constant (the owner named its members, 2026-11-20; a review also named
       the relevant nexthops, settled with the network-change monitor's
-      design before the row is final). The descriptor is adopted as an `OwnedFd` as in
+      design before the row is final). The members, as the interface
+      above names them: links, the addresses, routes and policy rules
+      of IPv4 and of IPv6. The nexthop group (`RTNLGRP_NEXTHOP`) is
+      proposed by the network-change monitor's specification (PR #143,
+      not yet landed; its 5.1, point 3), with an open question there on
+      binding that bit on a kernel before Linux 5.3. **Open item for
+      the monitor's change:** the group set becomes final, and row 23
+      may be marked implemented for the notify socket (point 6.7), only
+      when that specification is accepted and the set, nexthops
+      included or not, is restated here by amendment (point 7.1); a
+      measurement on a kernel before 5.3 settles the open question.
+      The descriptor is adopted as an `OwnedFd` as in
       sheet 21.
     - `sendto` always names the kernel (port id 0, no groups): that a
       plain write reaches the kernel is UNVERIFIED across the candidate
@@ -1086,7 +1109,8 @@ are in its sheet below the table, under the same number.
       kernel (for a lock the kernel's own handler takes) is not stated
       by netlink(7): UNVERIFIED, and the reason the caller never sends
       under its state lock (below). A short send is an error. `EINTR` is
-      retried.
+      returned as "interrupted", not retried here, so the caller decides
+      again (below).
     - `recvmsg` passes `MSG_DONTWAIT` and uses one `iovec` over the
       caller's slice and a `sockaddr_nl` for the sender. `EAGAIN` is
       "nothing queued", not an error: a ready report from the wait does
@@ -1096,7 +1120,9 @@ are in its sheet below the table, under the same number.
       of `struct sockaddr_nl` and its family must be `AF_NETLINK`, both
       checked before the port id is read; then a sender whose port id is
       not 0 is an error. On any of these the datagram is not returned.
-      `ENOBUFS` is the overflow error. `EINTR` is retried.
+      `ENOBUFS` is the overflow error. A return of 0 bytes is the
+      "empty datagram" error, never a datagram. `EINTR` is returned as
+      "interrupted", not retried here.
     - **The wake** is one `eventfd` made with an initial value of 0 and
       `EFD_CLOEXEC | EFD_NONBLOCK`, adopted as an `OwnedFd` as soon as the
       call returns a non-negative value, then held as a `std::fs::File`.
@@ -1104,8 +1130,10 @@ are in its sheet below the table, under the same number.
       21's socket I/O is, so they need no foreign item: a signal writes
       the 8-byte value 1 in native byte order, and `EAGAIN` (the counter
       at its maximum) means already signalled and is success; a clear
-      reads 8 bytes, and `EAGAIN` means not signalled. Any other error,
-      and a transfer of other than 8 bytes, is an error. The wake is
+      reads 8 bytes, and `EAGAIN` means not signalled. `EINTR`, which a
+      non-blocking transfer is not expected to return, is retried once;
+      a second `EINTR`, any other error, and a transfer of other than 8
+      bytes, are errors. The wake is
       `Send` and `Sync`: any thread may signal it. A signal made before
       the wait starts is kept by the counter, so it is never lost.
     - **The wait** calls `poll` on a wrapper-owned array of two
@@ -1117,15 +1145,17 @@ are in its sheet below the table, under the same number.
       passed. A return of 0 is "timed out". `EINTR` is returned as
       "interrupted" and **not retried here**: the time left is the
       caller's to recompute from its deadline, through the clock seam
-      (below). Any other failure is an error. On a positive return, each
-      entry's `revents` is checked: on the route socket, `POLLIN`,
-      `POLLERR` or `POLLHUP` mark it ready (the following receive reports
-      what it is, an overflow's `ENOBUFS` included); on the wake,
-      `POLLIN` marks it woken. `POLLNVAL` on either, any other bit on
-      the wake (an overflowed counter's `POLLERR` included), or a bit
-      outside those named, is an error. Both may be ready at once, and
-      both are reported. The wait clears nothing: the caller clears the
-      wake.
+      (below). Any other failure is an error. On a positive return, the
+      two `revents` values and the returned count are copied out and
+      checked by a safe validator over those owned values (fuzzed, point
+      6.5): on the route socket, `POLLIN`, `POLLERR` and `POLLHUP` are
+      each reported as they came, never merged; on the wake, `POLLIN`
+      marks it signalled. `POLLNVAL` on either, any other bit on the
+      wake (an overflowed counter's `POLLERR` included), a bit outside
+      those named, or a count that does not equal the number of entries
+      with a non-zero `revents`, is an error. Both may be ready at once,
+      and both are reported. The wait clears nothing: the caller clears
+      the wake.
     - Policy is the caller's (owner, 2026-11-20; the network-change monitor): subscribe before the first
       snapshot and reconcile notifications received during it; on
       overflow, truncation, an interrupted dump or a monitor failure,
@@ -1135,50 +1165,117 @@ are in its sheet below the table, under the same number.
       `AF_NETLINK` (the Linux units).
     - **What the caller must do with the wait** (owner, 2026-11-22; the
       network-change monitor; amended 2026-11-22). These are
-      requirements on the caller's design, reviewed with its code under
-      point 6.6:
-      - **One wake per blocked worker.** Each thread that waits on a
-        route socket has its own wake, and no other thread waits on it.
-        A stop, and anything else that must make a worker look again, is
-        decided under the caller's state lock and then signals that
-        worker's wake. The wake replaces any netlink message sent only to
-        end a receive.
+      requirements on the caller's design, reviewed before its code and
+      with it under point 6.6. They rest on two documents: the seams
+      and scheduling specification (`docs/specs/seams-and-scheduling.md`,
+      5.3) for samples and deadlines, and the network-change monitor's
+      specification (PR #143, not yet landed) for the attempts and the
+      failure count. Where that specification does not yet say what a
+      point below needs, the point is an open item that its change
+      settles before code.
+      - **One wake per blocked worker, cleared only by it.** Each thread
+        that waits on a route socket has its own wake; no other thread
+        waits on it or clears it. A stop, and anything else that must
+        make a worker look again (a new or earlier deadline), is decided
+        under the caller's state lock and then signals that worker's
+        wake. The wake replaces any netlink message sent only to end a
+        receive. Each turn of a worker is, in this order: clear its
+        wake; take the state lock and read what it must act on (a stop,
+        its outstanding attempts and their deadlines); release the lock;
+        wait, with the lock released. So a signal made after the read is
+        still in the counter, and ends the wait. After a wait in which
+        the wake and the route socket are both ready, the worker handles
+        the stop and any deadline change before it receives from the
+        socket. A failed signal or clear is a monitor failure: the
+        source stops, failing closed, as the policy above says.
       - **A finite timeout from an awake-clock deadline.** Each wait's
         timeout is the time left to the worker's earliest outstanding
-        deadline on the awake clock, taken through the clock seam (ADR
-        0004, C37; coding standards rule 7), and never more than a named
-        horizon constant, `ROUTE_WAIT_HORIZON` (proposed: 1 second,
-        confirmed by the owner with this amendment). With nothing due,
-        the worker waits to the horizon and looks again.
+        deadline on the awake clock, taken from the shared `Clock`'s
+        sample (ADR 0004, C37; coding standards rule 7; the seams
+        specification, 5.3), and never more than a named horizon
+        constant, `ROUTE_WAIT_HORIZON` (proposed: 1 second, for the
+        owner's acceptance with this amendment). With nothing due, the
+        worker waits to the horizon and looks again, so an idle worker
+        wakes once per horizon.
       - **The time left is recomputed after every `EINTR`.** After an
-        "interrupted" return, and after any other early return, the next
-        wait's timeout is computed again from the deadline and a fresh
-        clock sample; an earlier timeout is never passed again.
-      - **Sends are non-blocking and never under the state lock.** Every
-        send on a route socket (a dump request, a barrier) is made with
-        the caller's state lock released. A send that fails, "would
-        block" included, is a failed attempt of the request it carries.
-      - **An expiry is bound to its attempt.** Each outstanding dump or
-        barrier attempt carries its sequence number and its own
-        deadline. When the deadline passes, the attempt and its sequence
-        are retired under the state lock before any later datagram is
-        applied; whichever of the expiry and the answer takes the lock
-        first decides the attempt, once. An answer that carries a retired
-        sequence is never accepted, so a late acknowledgement cannot
-        publish.
-      - **Each expired attempt is counted once** as a failed snapshot
-        under the eight-failure policy, however many waits observe it.
-      - **Clock failure** (C37, point 5). A failed clock sample expires
-        every outstanding attempt (each counted once, as above), and no
-        new deadline is set until a valid sample returns. Meanwhile each
-        wait takes `ROUTE_WAIT_HORIZON` as its timeout, the bounded
-        fallback horizon, so a worker still sees its wake, its stop and
-        the clock's return at least once per horizon.
+        "interrupted" return of the wait, a send or a receive, and after
+        any other early return, the worker checks its stop, whether the
+        attempt it was serving is still live, and the time left from a
+        fresh sample, before it calls again; an earlier timeout is never
+        passed again, and a send is retried, if at all, with the lock
+        released.
+      - **Each attempt is registered before its send.** A dump request
+        or a barrier is an attempt with its own id, its sequence number
+        and its own deadline. The attempt is registered under the state
+        lock (sequence and deadline set, from a fresh sample) before
+        its send, which is then made with the lock released and is
+        non-blocking. The deadline's duration for a dump and for a
+        barrier, and the sample it starts from, are named constants of
+        the monitor's specification: **open item**, settled there before
+        code, with the evidence of a dump's and a barrier's round trip
+        on the supported kernels.
+      - **One terminal transition per attempt.** A send failure ("would
+        block" included), an expiry and an answer each end an attempt
+        only through one transition taken under the state lock, which
+        acts once: the first to take it decides; the others find the
+        attempt gone and do nothing. A send failure is charged to the
+        attempt whose id it carries, never to a newer one.
+      - **An answer is accepted only while its attempt is live and in
+        time.** Before an answer is applied, under the state lock, the
+        caller checks that the attempt is live, that the answer came on
+        the socket the attempt was sent on (the same socket instance,
+        not a replacement), that its sequence is the attempt's, and,
+        from a fresh sample, that the attempt's deadline has not passed
+        and that its latched awake-clock doubt has not moved (the seams
+        specification, 5.3, point 2). An answer at or past the deadline,
+        or after a moved doubt count, is not applied: the same
+        transition retires the attempt and counts it as expired. So a
+        late acknowledgement cannot publish, even if it takes the lock
+        before the expiry path does. A retired attempt's sequence is
+        never issued again on the socket that may still carry a reply
+        to it.
+      - **Each expired or failed attempt is counted once** as a failed
+        snapshot under the monitor's failure count: in its
+        specification (PR #143, 5.5, point 4), 8 failed snapshots in a
+        row, with no snapshot completed between them, stop the source,
+        and a completed snapshot resets the run. A dirty snapshot is not
+        a failure there. If that specification changes the count, the
+        once-only rule here still holds.
+      - **Clock failure** (C37, point 5). The monitor uses the shared
+        `Clock`, so C37's own rules (startup refused without a valid
+        pair, callbacks marked suspect, one event per episode) stay in
+        force and are not the monitor's to repeat. A failed sample, and
+        a failure seen by any other user of the clock and cleared before
+        the worker samples again (shown by the awake doubt count having
+        moved past an attempt's latched count), expire every outstanding
+        attempt, each counted once, as above; no new deadline is set
+        until a valid sample returns. Meanwhile each wait takes
+        `ROUTE_WAIT_HORIZON` as its timeout, the bounded fallback
+        horizon, and after every return the worker checks its stop and
+        whether the clock has returned.
+      - **Error and hangup on a route socket.** A wait that reports
+        `POLLERR` or `POLLHUP` on the route socket is followed by a
+        receive. An overflow's `ENOBUFS` takes the overflow path above.
+        If the receive returns "nothing queued" or the empty-datagram
+        error after an error or hangup was reported, the condition is
+        unexplained: it is a failed receive on that socket, so
+        consumers are invalidated at once and the socket is made again
+        before a fresh snapshot, as the monitor's specification already
+        rules for "any other failed receive on the notify socket"
+        (PR #143, section 7). Whether a route socket ever reports an
+        error or hangup that a receive does not explain is UNVERIFIED:
+        **open item**, measured on the supported kernels by the
+        monitor's change.
       - **Deterministic tests.** The caller's design tests, through a
-        seam over this site and a test clock, a lost wake, repeated
-        interruption, a dump that is never answered, a late
-        acknowledgement after its expiry, and a clock that fails and
-        returns.
+        seam over this site and a test clock: a lost wake; a signal made
+        between the state read and the wait; the wake and the route
+        socket ready at once; repeated interruption of the wait, a send
+        and a receive; a dump that is never answered; a late
+        acknowledgement after its expiry, both when the expiry path
+        takes the lock first and when the acknowledgement does; a send
+        failure racing an expiry; a clock that fails and returns between
+        two of the monitor's samples; and an error or hangup followed by
+        an empty receive.
     *Test:* in a network namespace, an address, a route and a rule added
     and removed, each seen on the notify socket; a dump answered on the
     request socket; an overflow provoked with a small receive buffer,
@@ -1186,14 +1283,17 @@ are in its sheet below the table, under the same number.
     overflow error; a
     truncated read; a datagram from a non-kernel sender, where the kernel
     lets one be sent; the stand-in returns a short sender address and a
-    wrong family. For the wait: a wait with nothing ready returns "timed
+    wrong family, and an error or hangup with nothing queued. For the
+    wait: a wait with nothing ready returns "timed
     out"; a wake signalled from another thread ends a blocked wait; a
     wake signalled before the wait starts ends it at once; two signals
     are cleared by one clear; a receive with nothing queued returns
     "nothing queued" without blocking; a timeout below one millisecond is
     not passed as 0. "Interrupted" and the `POLLNVAL` and wake-`POLLERR`
     errors are tested through the stand-in (point 6.5), which returns
-    them on demand; on the OS, delivering a signal to the waiting thread
+    them on demand, and the `revents` validator has its fuzz target
+    (point 6.5: invalid bits, a count that disagrees with the entries,
+    both entries ready); on the OS, delivering a signal to the waiting thread
     needs a handler that the crate does not install (Decision 1, point
     2), so that path is UNVERIFIED on the OS unless a test can do it
     without a new site.
@@ -1830,8 +1930,10 @@ decision and a change to this point (point 7).
    msghdr` and `struct cmsghdr` are declared per C library: glibc and musl
    give the same sizes and offsets on these targets but different field
    types and musl's padding fields (Context), which the wrapper zeroes.
-   `struct pollfd` and `nfds_t` are declared per OS (row 7 on macOS,
-   row 23 on Linux), since `nfds_t` is a different type on each. No
+   `struct pollfd` and `nfds_t` are declared per target: row 7's on
+   macOS, and row 23's per C library on Linux, as `struct msghdr` is,
+   since `nfds_t`'s type differs from macOS's and its width in glibc and
+   musl is UNVERIFIED until point 5.6's check (Context). No
    upstream crate's tests stand behind them.
 3. **A target allowlist.** The crate compiles for these targets only, all
    64-bit, and any other target is a `compile_error!`:
@@ -1987,8 +2089,9 @@ decision and a change to this point (point 7).
    readers of sheets 19 and 20 (short buffers, bad sub-authority counts,
    a SID pointer outside the token buffer); the ancillary-data checks of
    sheet 14 (bad `msg_controllen` and `cmsg_len`, wrong level and type);
-   and the netlink sender check of sheet 23 (short addresses, a wrong
-   family).
+   the netlink sender check of sheet 23 (short addresses, a wrong
+   family); and the `revents` validator of sheet 23's wait (invalid
+   bits, a count that disagrees with the entries, both entries ready).
 6. **Class S** (`docs/workflow.md` §1 lists `unsafe` code as S), for every
    change to a site, a declaration, the shim or the build script, and for
    any change in any crate that adds non-Rust source, or adds or edits
@@ -2082,6 +2185,10 @@ decision and a change to this point (point 7).
   capped (480 octets on the RFC 5424 fallback until a larger limit is
   qualified), so long detail is truncated, marked and counted, and
   reaches the support bundle instead (Decision 1, point 7).
+  The route sockets' bounded wait (row 23; amended 2026-11-22) costs
+  one `eventfd` descriptor per waiting worker (two for the
+  network-change monitor) and one wake per worker per
+  `ROUTE_WAIT_HORIZON` while idle.
 - **Coding standards rule 5 changes** in the same pull request as this ADR:
   "every crate inherits the workspace lints" gains its one named exception.
   Rule 20 is not edited here: it changes with the layout pull request, a
@@ -2293,11 +2400,12 @@ no macOS or Windows component's status: that is the owner's (below).
   (one `setsockopt` and `struct timeval`, a fixed period such as one
   second). Not taken (owner, 2026-11-22): it bounds one receive call
   only, so a retried `EINTR` or a send outside the receive is not
-  bounded by it; every worker wakes once per period while idle; a stop
-  waits up to a period instead of ending the wait at once; and the
-  period is a constant rather than the caller's deadline. `poll` with a
-  wake ends a wait exactly when it must, from the deadline or the wake,
-  for two more foreign items.
+  bounded by it; a stop waits up to a period instead of ending the wait
+  when signalled; and the period is a constant rather than the caller's
+  deadline. Both designs wake an idle worker once per period (here, the
+  horizon). `poll` with a wake ends a wait on a local signal, and
+  chooses each interval from the current deadline, subject to poll's
+  rounding and scheduling delay, for two more foreign items.
 - **A row of its own for the wake** (`eventfd`, and `poll` with it).
   Not taken: the wake serves only the wait on a route socket, and row 7
   keeps its `poll` in the row whose descriptor it waits on. A second
