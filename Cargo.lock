@@ -18,6 +18,13 @@ name = "ironafs-cli"
 version = "0.0.0"
 
 [[package]]
+name = "ironafs-config"
+version = "0.0.0"
+dependencies = [
+ "ironafs-test-support",
+]
+
+[[package]]
 name = "ironafs-crypto"
 version = "0.0.0"
 dependencies = [

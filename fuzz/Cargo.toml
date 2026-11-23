@@ -29,7 +29,15 @@ cargo-fuzz = true
 # NCSA licence exception and build-script entry in fuzz/deny.toml name it.
 [dependencies]
 libfuzzer-sys = "=0.4.13"
+ironafs-config = { path = "../crates/ironafs-config", version = "=0.0.0" }
 ironafs-xdr = { path = "../crates/ironafs-xdr", version = "=0.0.0" }
+
+[[bin]]
+name = "ironafs-config_syntax"
+path = "fuzz_targets/ironafs-config_syntax.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "ironafs-xdr_decode"
