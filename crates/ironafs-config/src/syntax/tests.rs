@@ -299,13 +299,12 @@ fn parse_refuses_control_characters_everywhere() {
     );
 }
 
-/// The Unicode `Bidi_Control` set (`docs/specs/config-syntax.md`, section
-/// 5.1, point 3), written out here so that the test does not read it from
-/// the code it checks.
-const BIDI_CONTROLS: [char; 12] = [
-    '\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}',
-    '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
-];
+/// The bidirectional controls, from the one test-only list the property
+/// tests and the fuzz target share.
+#[path = "../../tests/it/bidi_controls.rs"]
+mod bidi_controls;
+
+use bidi_controls::BIDI_CONTROLS;
 
 #[test]
 fn parse_refuses_bidirectional_controls_in_comments_keys_and_values() {
@@ -930,6 +929,20 @@ fn parse_depth_cap_refuses_a_ninth_segment_before_reading_it() {
     assert_eq!(
         refused_str("[a.b.c.d.e.f.g.h.\"x\\q\"]"),
         (SyntaxErrorKind::TooDeep, 1, 18)
+    );
+    // The forms with their own error and hint keep them at the cap: their
+    // own error is found without storing anything.
+    assert_eq!(
+        refused_str("[a.b.c.d.e.f.g.h.\"\"]"),
+        unsupported(Feature::EmptyKey, 1, 18)
+    );
+    assert_eq!(
+        refused_str("[a.b.c.d.e.f.g.h.\"\"\"x\"\"\"]"),
+        unsupported(Feature::MultiLineString, 1, 18)
+    );
+    assert_eq!(
+        refused_str("[a.b.c.d.e.f.g.h.'x']"),
+        unsupported(Feature::LiteralString, 1, 18)
     );
     // A dot with no segment after it is still a missing key.
     assert_eq!(

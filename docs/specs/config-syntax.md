@@ -171,7 +171,11 @@ Sections keep their numbers once the specification is reviewed.
 
 ### 5.2 Caps
 
-Every cap is checked before the bytes it bounds are stored `[OWN]`.
+Every cap is checked before the bytes it bounds are stored `[OWN]`. A
+header segment past `MAX_DEPTH` is refused at its first character,
+before it is read; `""` there keeps its own error of §5.5 (an empty key
+or a multi-line string), and so does any other character that cannot
+start a segment, since neither stores anything.
 
 | Cap | Value | Applies to | Reason |
 |---|---|---|---|
@@ -345,7 +349,7 @@ use's rule (§2).
 | O18, point 2: line, column, expected, hint | §7 | each §10.3 test asserts the position and kind |
 | rule 1: no panic | the workspace lints; §6 | the property test "arbitrary bytes never panic"; the fuzz target (§10.4) |
 | O47, point 3: the configuration parser is fuzzed | §10.4 | the fuzz target `ironafs-config_syntax`, its seeds replayed by `cargo xtask fuzz` |
-| text displays as it parses | §5.1, point 3 | the bidirectional-control tests of §10.3 |
+| the parser refuses Unicode `Bidi_Control` characters anywhere in the file | §5.1, point 3 | the bidirectional-control tests of §10.3 |
 | rule 3: caps before allocation | §5.2 | the cap tests at the cap and one above |
 | one cell name rule | §5.7, one constructor, private field | the cell-name boundary tests; the compile-fail doc-test |
 
@@ -380,9 +384,12 @@ kind and position.
 `ironafs-config_syntax`, in the top-level `fuzz/` crate, with tracked
 seeds under `fuzz/seeds/ironafs-config_syntax/` that `cargo xtask fuzz`
 replays: any bytes; asserts that the parser returns, that an error's
-position lies within the input, that an accepted document respects every
-cap of §5.2 that a document can show and holds no character §5.1, point
-3 refuses, and that the same input gives the same result. Its checks are
+position lies within the input (its column counted in Unicode scalar
+values), that a file over `MAX_FILE_BYTES` is refused as too large with
+no position, that an accepted input respects every cap of §5.2 (the file
+and line caps on its bytes, the others on its document) and holds no
+character §5.1, point 3 refuses, and that the same input gives the same
+result. Its seeds include each byte cap at its value and one above. Its checks are
 the property tests' own, from
 `crates/ironafs-config/tests/it/invariants.rs`.
 

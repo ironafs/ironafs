@@ -9,7 +9,9 @@
 
 use std::fmt::Write;
 
-use ironafs_config::{MAX_DEFINITIONS, MAX_DEPTH, Scalar, Value, parse};
+use ironafs_config::{
+    MAX_DEFINITIONS, MAX_DEPTH, MAX_FILE_BYTES, MAX_LINE_BYTES, Position, Scalar, Value, parse,
+};
 use ironafs_test_support::{Property, Source};
 
 use crate::invariants;
@@ -388,4 +390,63 @@ fn parse_near_definitions_cap_counts_every_implicit_table() {
                 }
             },
         );
+}
+
+/// Comment lines of `line_bytes` bytes each, ending in LF, up to `total`
+/// bytes; the last line is shorter if it must be.
+fn comments(total: usize, line_bytes: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(total);
+    while bytes.len() < total {
+        let room = total - bytes.len();
+        let line = (line_bytes + 1).min(room);
+        bytes.push(b'#');
+        bytes.extend(std::iter::repeat_n(b'x', line.saturating_sub(2)));
+        if line >= 2 {
+            bytes.push(b'\n');
+        }
+    }
+    bytes
+}
+
+#[test]
+fn invariants_refuse_an_accepted_input_over_the_byte_caps() {
+    let empty = parse(b"");
+    let at_cap = format!("#{}", "x".repeat(MAX_LINE_BYTES - 1));
+    assert_eq!(invariants::check(at_cap.as_bytes(), &empty), Ok(()));
+    let crlf = format!("{at_cap}\r\n{at_cap}\r\n");
+    assert_eq!(invariants::check(crlf.as_bytes(), &empty), Ok(()));
+    let over = format!("{at_cap}x\n");
+    assert!(invariants::check(over.as_bytes(), &empty).is_err());
+
+    let file = comments(MAX_FILE_BYTES, 64);
+    assert_eq!(file.len(), MAX_FILE_BYTES);
+    assert_eq!(invariants::check(&file, &empty), Ok(()));
+    let file = comments(MAX_FILE_BYTES + 1, 64);
+    assert!(invariants::check(&file, &empty).is_err());
+}
+
+#[test]
+fn invariants_require_file_too_large_without_a_position_exactly_over_the_file_cap() {
+    let over = comments(MAX_FILE_BYTES + 1, 64);
+    assert_eq!(invariants::check(&over, &parse(&over)), Ok(()));
+    // Another error, or a document, for a file over the cap is refused.
+    assert!(invariants::check(&over, &parse(b"=")).is_err());
+    // An error without a position for a file within the cap is refused.
+    assert!(invariants::check(b"", &parse(&over)).is_err());
+}
+
+#[test]
+fn invariants_bound_columns_in_unicode_scalar_values() {
+    let at = |line, column| Position { line, column };
+    // Two characters, three bytes: the last column is 3.
+    assert_eq!(
+        invariants::position_within("\u{e9}a".as_bytes(), at(1, 3)),
+        Ok(())
+    );
+    assert!(invariants::position_within("\u{e9}a".as_bytes(), at(1, 4)).is_err());
+    assert!(invariants::position_within(b"a", at(1, 0)).is_err());
+    assert!(invariants::position_within(b"a\n", at(3, 1)).is_err());
+    // Invalid UTF-8: the valid prefix, then the position just after it.
+    assert_eq!(invariants::position_within(b"a\xffbc", at(1, 2)), Ok(()));
+    assert!(invariants::position_within(b"a\xffbc", at(1, 3)).is_err());
 }

@@ -278,14 +278,13 @@ impl Parser<'_> {
             self.cursor.skip_whitespace();
             let position = self.cursor.position();
             // A segment past the cap is refused before it is decoded. What
-            // cannot start a segment is left to `segment`, which names
-            // what was expected.
-            if segments.len() >= MAX_DEPTH
-                && self
-                    .cursor
-                    .peek()
-                    .is_some_and(|character| is_bare(character) || character == '"')
-            {
+            // `segment` refuses without storing anything, `""` (an empty
+            // key or a multi-line string) and what cannot start a segment,
+            // is left to it, for its own error and hint.
+            let rest = self.cursor.rest();
+            let decoded =
+                rest.starts_with(is_bare) || (rest.starts_with('"') && !rest.starts_with("\"\""));
+            if segments.len() >= MAX_DEPTH && decoded {
                 return Err(SyntaxError::at(position, SyntaxErrorKind::TooDeep));
             }
             let text = self.segment()?;
