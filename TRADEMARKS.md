@@ -3,13 +3,15 @@
 
 # Name and trademark use
 
-IronAFS™ is a trademark of Adrian Ana. It is not registered. This page
-explains how to refer to the project so that people can tell what is the
-IronAFS project and what is not. It is about the name only.
+IronAFS™ and the IronAFS logo are trademarks of Adrian Ana. Neither is
+registered. This page explains how to refer to the project so that people
+can tell what is the IronAFS project and what is not. It is about the name
+and the logo only.
 
 ## What is claimed
 
-The claim covers the complete name **IronAFS**. It does not cover AFS,
+The claim covers the complete name **IronAFS** and the IronAFS logo, the
+IronAFS wordmark with the cube "o". It does not cover AFS,
 AFS-3, OpenAFS or any other protocol or product name, which this project
 only refers to.
 
@@ -21,7 +23,8 @@ commands, URLs or crate names.
 ## Your rights under the licence
 
 The software is licensed under GPL-3.0-or-later ([LICENSING.md](LICENSING.md)).
-The licence grants no trademark rights; this page is about the name only.
+The licence grants no trademark rights; this page is about the name and
+the logo only.
 Nothing on it adds a condition to the licence, takes away any right the
 licence grants, or restricts any use the law allows without permission.
 The licence itself is the permission to use, study, change, fork, sell and
