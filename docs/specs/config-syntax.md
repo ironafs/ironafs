@@ -66,8 +66,9 @@ Sections keep their numbers once the specification is reviewed.
    `[a.b]`, or one `key = value`, each with an optional comment.
 2. A value is a string, a decimal integer, a boolean, or an array of
    values of one of those types.
-3. Every other TOML construct is refused with its position and a hint. A
-   file this parser accepts is a valid TOML 1.0.0 document with the same
+3. Every other TOML construct is refused, with the error and position of
+   §7; the constructs of §5.5 also carry a hint. A file this parser
+   accepts is a valid TOML 1.0.0 document with the same
    meaning; a file it refuses may be valid TOML. Nothing is skipped or
    repaired.
 4. The result is a document: the tables declared by headers, and the
@@ -93,10 +94,13 @@ Sections keep their numbers once the specification is reviewed.
 ### 5.1 Layout
 
 1. **Encoding.** The file is UTF-8 `[S1 "Spec": CONFIRMED]`. A file that
-   starts with the byte order mark (EF BB BF) is refused. TOML 1.0.0 does
-   not say whether one is allowed: its "Spec" section requires UTF-8, and
-   no section names a byte order mark `[S1 "Spec": CONFIRMED]`. So the
-   subset does not accept one `[OWN]`.
+   starts with the byte order mark (EF BB BF) is refused. TOML 1.0.0's
+   prose names no byte order mark; its "Spec" section requires UTF-8
+   `[S1 "Spec": CONFIRMED]`. Its formal grammar admits none: a document
+   starts with an expression, which starts with space or tab
+   `[S1 toml.abnf, toml, expression, ws: CONFIRMED]`. The subset refuses
+   one, with its own error and hint (§5.5), rather than a generic one
+   `[OWN]`.
 2. **Lines.** A line ends at LF or at CR LF `[S1 "Spec": CONFIRMED]`. The
    last line may end without one. A CR not followed by LF is refused.
 3. **Characters.** No control character appears anywhere in the file
@@ -442,7 +446,7 @@ two final dots refused; mixed-case input stored lower-cased.
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| S1 | SPECIFICATION | TOML v1.0.0, register of editions row E57 ([README](README.md)), <https://toml.io/en/v1.0.0>, sections "Spec", "Comment", "Keys", "String", "Integer", "Boolean", "Array", "Table" (read 2026-11-21) | §5.1, §5.4 |
+| S1 | SPECIFICATION | TOML v1.0.0, register of editions row E57 ([README](README.md)), <https://toml.io/en/v1.0.0>, sections "Spec", "Comment", "Keys", "String", "Integer", "Boolean", "Array", "Table" (read 2026-11-21); its grammar `toml.abnf` at tag 1.0.0, <https://github.com/toml-lang/toml/blob/1.0.0/toml.abnf>, productions `toml`, `expression` and `ws` (read 2026-11-23) | §5.1, §5.4 |
 | S2 | SPECIFICATION | Unicode Character Database 18.0.0, `PropList.txt`, property `Bidi_Control`, register of editions row E58 ([README](README.md)), <https://www.unicode.org/Public/18.0.0/ucd/PropList.txt> (read 2026-11-23) | §5.1 |
 | DEC-1 | DECISION | Issue #93, the canonical cell-name rule (owner's decision, 2026-11-20) | §1, §5.7 |
 | ADR | DECISION | ADR 0004, C4, O17, O18, O19, O47 | §1, §2 |

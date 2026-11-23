@@ -419,7 +419,7 @@ specification cites it.
 | E54 | M. Benjamin, "AFS Callback Extensions (Draft 14)", Internet-Draft draft-benjamin-extendedcallbackinfo-02, 10 December 2011; Informational, expired 10 June 2012 | IETF Internet-Draft archive, <https://www.ietf.org/archive/id/draft-benjamin-extendedcallbackinfo-02.txt> (SHA-256 of the text read: `ec0e6608849440b315f6c412191b842bc1d45d99809390efe9184027b492bde2`). Published through the IETF, not obtained from any implementation's repository; claim record row `[DES-057]` cites the draft | 2026-11-21 | © 2011 IETF Trust and the persons identified as the document authors, under BCP 78. No licence for reuse of its prose or figures is assumed: cited for facts only, and not quoted (rule 6). No part of it carries another licence's notice | 2026-11-21: -02 is the latest revision (datatracker); the AFS-3 standardisation group's draft list shows its comment period as pending | None. Two remarks in §3.1 and §3.2 rest on another implementation's source or code; they are not used | None: a lead only (rule 14). Read and used: §1, §2, §3, §4.1, §4.2.1, the prose of §4.5 before §4.5.1, and §5 to §7. **Excluded by name: §4.2.2 to §4.4, §4.5.1, §4.5.2 and Appendix A**, the draft's type definitions, constants and grammar; they were not read, and no wire fact is taken from a type definition by any route (ADR 0004, N31, point 2) | [callbacks.md](callbacks.md) |
 | E55 | J. Altman, "AFS Dump Stream Format", last updated 4 August 2024 | AFS Assigned Numbers Registry, <https://registrar.central.org/dump/dump_format.txt> (SHA-256 of the file read: `14e5d5ab74fbeed85e771953e7e8f04b8ab0e1af8cbbc6d8fc7776b232de8d2c`). A document kept by the AFS registrar, as row E7, not an implementation's repository; prose and tables, with no code. [vl-fs-read.md](vl-fs-read.md), section 13, Q4, names it as a lead to be registered when used | 2026-11-21 | No licence notice in the file: cited for facts only, and not quoted (rule 6) | 2026-11-21: the file as served; the registry keeps no editions, so a later change is registered as a new row | Not an older AFS document. Behaviour leads only: what a dump carries, and so what a restore can repeat. Waits on [volume-incarnation.md](volume-incarnation.md), section 13, Q1 and Q9 | None: a lead only (rule 14). Used: "Summary", "Volume ID", "Volume Name", "Volume IDs", "Volume Timestamps", "Volume Next Uniquifier", "Full vs Incremental Volume dumps", "Vnode Data Version". Not used: its statements on one vendor's extensions (wider ids, finer timestamps, other header fields) | [volume-incarnation.md](volume-incarnation.md) |
 | E56 | RFC 4787, "Network Address Translation (NAT) Behavioral Requirements for Unicast UDP", F. Audet (ed.) and C. Jennings, January 2007; BCP 127, Best Current Practice | RFC Editor, <https://www.rfc-editor.org/rfc/rfc4787.txt> (SHA-256 of the text read: `5db82ec5f0d6b9b0fc0a37ce7d5b40592e4e6f41562ba8fbc55f1daa52648405`); ADR 0004, C32, "Why", cites its REQ-5 | 2026-11-21 | © The IETF Trust (2007), under BCP 78. No licence for reuse of its text is assumed: cited for facts only, and not quoted in a specification (rule 6) | 2026-11-21: obsoleted by none; updated by RFC 6888 and RFC 7857 (the RFC Editor's record), which were not read, and none is cited; the RFC Editor's errata page, as served, listed no entry | Not an AFS document, and not a source of AFS wire facts: it states requirements on NATs, which the keepalive's interval rests on | §4.3 (REQ-5 and REQ-6) and §5, for facts about NAT mapping timers, refresh and filtering only | [keepalive-and-server-time.md](keepalive-and-server-time.md) |
-| E57 | "TOML: Tom's Obvious, Minimal Language", v1.0.0, Tom Preston-Werner, Pradyun Gedam, et al., published 2021-01-11 | toml.io, <https://toml.io/en/v1.0.0> (SHA-256 of the page read: `728a5c13aef1c14d9e3f2ef7ec7f6bcc9f06f51d770101e50ab365307eb219fe`) | 2026-11-21; rechecked 2026-11-23 | The toml-lang/toml repository's `LICENSE` at tag 1.0.0 is the MIT License. Cited for facts only, and not quoted in a specification (rule 6) | 2026-11-23: v1.1.0 (2025-12-18) is listed on toml.io and was not read; v1.0.0 is the edition cited. No errata page. The publisher's changelog, <https://github.com/toml-lang/toml/blob/main/CHANGELOG.md>, read 2026-11-23: its unreleased entries clarify that a parser may read a byte order mark (allowed but discouraged) and must never write one. That postdates v1.0.0, which says nothing of one; IronAFS's refusal of a byte order mark is its own choice either way | Not an AFS document, and not a source of AFS wire facts | Sections "Spec", "Comment", "Keys", "String", "Integer", "Boolean", "Array" and "Table", for facts about TOML documents only | [config-syntax.md](config-syntax.md) |
+| E57 | "TOML: Tom's Obvious, Minimal Language", v1.0.0, Tom Preston-Werner, Pradyun Gedam, et al., published 2021-01-11 | toml.io, <https://toml.io/en/v1.0.0> (SHA-256 of the page read: `728a5c13aef1c14d9e3f2ef7ec7f6bcc9f06f51d770101e50ab365307eb219fe`) | 2026-11-21; rechecked 2026-11-23 | The toml-lang/toml repository's `LICENSE` at tag 1.0.0 is the MIT License. Cited for facts only, and not quoted in a specification (rule 6) | 2026-11-23: v1.1.0 (2025-12-18) is listed on toml.io and was not read; v1.0.0 is the edition cited. No errata page. The publisher's changelog, <https://github.com/toml-lang/toml/blob/main/CHANGELOG.md>, read 2026-11-23: its unreleased entries clarify that a parser may read a byte order mark (allowed but discouraged) and must never write one. That postdates v1.0.0. Its prose says nothing of a byte order mark; its formal grammar, `toml.abnf` at tag 1.0.0, <https://github.com/toml-lang/toml/blob/1.0.0/toml.abnf> (SHA-256 of the file read: `a5d3f9979fd651a878634d404efbdfbc935a68550c0b19520a19c77ba5250e3e`, read 2026-11-23), admits none: its document starts with `expression`, which starts with `ws`, space or tab. IronAFS's refusal of a byte order mark, with its own error, is its own choice | Not an AFS document, and not a source of AFS wire facts | Sections "Spec", "Comment", "Keys", "String", "Integer", "Boolean", "Array" and "Table", and the productions `toml`, `expression`, `ws` and `wschar` of `toml.abnf` at tag 1.0.0, for facts about TOML documents only | [config-syntax.md](config-syntax.md) |
 | E58 | Unicode Character Database 18.0.0, `PropList.txt` (dated 2026-08-07), Unicode, Inc. | Unicode, Inc., <https://www.unicode.org/Public/18.0.0/ucd/PropList.txt> (SHA-256 of the file read: `f438f532e8737bb8a2702126cdf9c4af5e357c58c7acf9d9eb2fc7c1a1d955d6`) | 2026-11-23 | © 2026 Unicode, Inc., under the Unicode License v3, <https://www.unicode.org/license.txt>, which permits copying the data files provided its copyright and permission notice appears with the copies or in their documentation. Cited for facts only, and not quoted or copied in a specification (rule 6) | 2026-11-23: 18.0.0 is the latest version served; Unicode's errata page, <https://www.unicode.org/errata/>, listed no current errata for 18.0 | Not an AFS document | The property `Bidi_Control` (its four ranges) | [config-syntax.md](config-syntax.md) |
 
 ## Formats: versions and freezing
@@ -450,7 +450,10 @@ standards rules 1 to 3 and 9 apply with them.
 
 ### Formats IronAFS defines
 
-A format that IronAFS writes and a later version must read:
+Who produces the bytes decides which rules a format follows.
+
+**A format IronAFS writes,** stored or sent on the wire, follows all of
+these, with no exception:
 
 - starts with a magic value and a version;
 - states which versions the current code reads and which it writes;
@@ -461,8 +464,10 @@ A format that IronAFS writes and a later version must read:
 - says how it can be extended without a new version (reserved space,
   skippable records), if it can.
 
-A format that people write and IronAFS only reads, such as a
-configuration file, states instead:
+**A format IronAFS only reads,** written by people or produced by
+another system, follows the same points, or, if its specification opts
+in by stating each of these, these instead (a configuration file is an
+example):
 
 - that it carries no version;
 - that it only ever grows, by accepting input it refuses today, never by
@@ -486,6 +491,14 @@ configuration file, states instead:
   and tolerance never change. A defect is fixed by a new version. The one
   exception is a change that only rejects input the frozen text already
   called invalid.
+- A read-only format under the versionless points above is frozen when
+  the first release that reads it ships, or earlier when another party
+  starts to depend on it. After that, its accepted input only grows, as
+  those points say: a defect is fixed by accepting more input, or by a
+  specification change made under these freeze rules, never by changing
+  the meaning of input already accepted. It has no versions, so the
+  magic value and version its frozen formats row would hold do not
+  apply.
 - A new version is a new section beside the old one. The old section
   stays, marked with the versions that used it.
 - A correction to wording that changes no byte and no accepted input is
