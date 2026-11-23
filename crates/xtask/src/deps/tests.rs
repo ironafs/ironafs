@@ -6,9 +6,9 @@
 use std::path::PathBuf;
 
 use super::{
-    CRATES, Kind, OWN_LINTS, Rule, THIRD_PARTY, ThirdPartyLists, Violation, dependency_line,
-    edition_violations, graph_violations, inherits_workspace_edition, inherits_workspace_lints,
-    kind_of, lint_violations, own_lints_differences,
+    CRATES, Kind, OWN_LINTS, Rule, THIRD_PARTY, ThirdPartyLists, Violation,
+    dependency_table_violations, edition_violations, graph_violations, inherits_workspace_edition,
+    inherits_workspace_lints, kind_of, lint_violations, own_lints_differences,
 };
 use crate::metadata::{Member, Package, Workspace};
 
@@ -701,18 +701,33 @@ fn edition_violations_want_the_inherited_edition_and_the_edition_the_reader_foll
 }
 
 #[test]
-fn dependency_line_finds_every_kind_of_dependency_table() {
-    for manifest in [
-        "[package]\nname = \"a\"\n[dependencies]\n",
-        "[package]\n[dev-dependencies]\nx = \"1\"\n",
-        "[package]\n[build-dependencies]\n",
-        "[package]\n[target.'cfg(unix)'.dependencies]\n",
-        "[package]\ndependencies.x = \"1\"\n",
-    ] {
-        assert!(dependency_line(manifest).is_some(), "{manifest}");
+fn dependency_tables_are_cargo_s_declared_dependencies_not_manifest_text() {
+    // Cargo's parse of the manifest is the rule: a declared dependency of any
+    // kind is refused, and text that only mentions the word is not.
+    let root = std::env::temp_dir().join(format!("ironafs-xtask-tables-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut graph = workspace(&[("ironafs-os", &[])]);
+    graph.root.clone_from(&root);
+    for member in &mut graph.members {
+        member.dir = root.join("crates").join(&member.name);
+        std::fs::create_dir_all(&member.dir).unwrap();
+        std::fs::write(
+            member.dir.join("Cargo.toml"),
+            "[package]\nname = \"ironafs-os\"\ndescription = \"no dependencies\"\n",
+        )
+        .unwrap();
+    }
+    assert_eq!(dependency_table_violations(&graph, &["ironafs-os"]), []);
+    if let Some(member) = graph.members.first_mut() {
+        member.declared_dependencies = vec!["dev ironafs-time".into()];
     }
     assert_eq!(
-        dependency_line("[package]\n# no dependencies here\n[lints.rust]\n"),
-        None
+        dependency_table_violations(&graph, &["ironafs-os"]),
+        [Violation::DependencyTable {
+            name: "ironafs-os".into(),
+            manifest: PathBuf::from("crates/ironafs-os/Cargo.toml"),
+            line: "declares the dev ironafs-time".into(),
+        }]
     );
+    std::fs::remove_dir_all(&root).unwrap();
 }

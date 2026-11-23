@@ -1172,7 +1172,7 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         "\n[\"dev-depend\\u0065ncies\"]\nironafs-time = { path = \"../ironafs-time\" }\n",
     );
     let workspace = escaped.load(&dir.join("escaped"), CHECK, "an escaped dependency key")?;
-    let found = super::dependency_table_violations(&workspace, &["ironafs-os"])?;
+    let found = super::dependency_table_violations(&workspace, &["ironafs-os"]);
     let as_planted = matches!(found.as_slice(), [Violation::DependencyTable { name, line, .. }]
         if name == "ironafs-os" && line == "declares the dev ironafs-time");
     if !as_planted {
