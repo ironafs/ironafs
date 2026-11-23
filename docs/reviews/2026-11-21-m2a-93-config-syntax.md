@@ -163,8 +163,8 @@ Findings, each quoted in its defect line, with its disposition:
     refused as `TooDeep` at its first character, before it is read.
     Anything else after the dot is left to the segment reader, so
     `[a.b.c.d.e.f.g.h.]` still reports a missing key.
-  - The test failed first: an unterminated, an over-long and a
-    badly-escaped ninth segment gave their own errors, not `TooDeep`.
+  - The test failed first, on its first case: an unterminated ninth
+    segment was refused as unterminated, not as too deep.
 - **F3, minor, fixed (`4a457e2`):** "The stated bound on stored path
   bytes omits the explicit table's copy of its full path."
   - Section 5.2 now counts, for one header with decoded segment text P:
@@ -211,10 +211,11 @@ Findings, each quoted in its defect line, with its disposition:
     in a different order than it parses) and the filter's exact scope;
     section 8, point 4 says nothing else is filtered and that a caller
     escapes text that is not printable before echoing it.
-  - The test failed first: every one of the twelve characters in a
-    comment, a quoted key, a table-path segment, a string, an array
-    element and after a bare key or value was accepted or refused with
-    another error. A second test accepts characters next to the set.
+  - The test covers each of the twelve characters in a comment, a quoted
+    key, a table-path segment, a string, an array element, and after a
+    bare key and a value. It failed first, on its first case: U+061C in
+    a comment was accepted. A second test accepts characters next to the
+    set.
 
 Evidence (EXECUTED, macOS 27 on Apple silicon, 2026-11-23, at
 `4a457e2`), each with exit 0:
