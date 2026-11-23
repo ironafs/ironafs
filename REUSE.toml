@@ -3,16 +3,21 @@
 
 version = 1
 
-# Files whose format cannot carry a header (generated, JSON, or front matter
-# that must come first).
+# Files whose format cannot carry a header (generated, JSON, front matter
+# that must come first, or fuzz seeds, which are raw input bytes).
 [[annotations]]
 path = [
   "Cargo.lock",
+  "fuzz/Cargo.lock",
+  "fuzz/seeds/**",
   ".claude/settings.json",
   ".claude/skills/**/SKILL.md",
   ".github/pull_request_template.md",
   "crates/xtask/tests/fixtures/trailers/*.txt",
   "crates/ironafs-os/sites.json",
+  "crates/xtask/tests/fixtures/cell/apt-update-*.txt",
+  "crates/xtask/tests/fixtures/cell/dpkg-query-*.txt",
+  "crates/xtask/tests/fixtures/cell/print-uris-*.txt",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Adrian Ana <adrian@adrianana.com>"

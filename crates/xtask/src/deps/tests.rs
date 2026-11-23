@@ -24,6 +24,7 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
             path: Some(PathBuf::from(format!("/w/crates/{name}"))),
             member: true,
             dependencies: dependencies.iter().map(|name| id(name)).collect(),
+            dev_dependencies: Vec::new(),
             target_kinds: vec!["lib".into()],
             links: None,
             features: Vec::new(),
@@ -38,6 +39,7 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                     path: None,
                     member: false,
                     dependencies: Vec::new(),
+                    dev_dependencies: Vec::new(),
                     target_kinds: vec!["lib".into()],
                     links: None,
                     features: Vec::new(),
@@ -58,6 +60,7 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                 target_kinds: vec!["lib".into()],
                 editions: vec!["2024".into()],
                 declared_dependencies: Vec::new(),
+                renamed: Vec::new(),
             })
             .collect(),
         packages,
@@ -115,6 +118,8 @@ fn crate_table_names_every_crate_of_the_architecture_once() {
         "xtask",
         "ironafs-sim",
         "ironafs-test-support",
+        // check-bans' canary, outside the architecture's list.
+        "ironafs-bans-canary",
     ];
     expected.sort_unstable();
     assert_eq!(names, expected);
@@ -421,6 +426,7 @@ fn graph_violations_let_ironafs_gss_reach_only_the_bindings_its_list_names() {
         path: None,
         member: false,
         dependencies: Vec::new(),
+        dev_dependencies: Vec::new(),
         target_kinds: vec!["lib".into()],
         links: None,
         features: Vec::new(),

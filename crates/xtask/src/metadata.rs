@@ -41,6 +41,11 @@ pub(crate) struct Member {
     /// `<kind> <name>` (`normal` when cargo gives no kind). Unlike the
     /// resolved graph, this keeps development dependencies.
     pub(crate) declared_dependencies: Vec<String>,
+    /// The names the member's source gives dependencies (of every kind)
+    /// that are not the dependency's package name with `-` as `_`: a
+    /// rename in a manifest, whatever its TOML spelling, or a library
+    /// target named otherwise.
+    pub(crate) renamed: Vec<String>,
 }
 
 impl Member {
@@ -63,6 +68,9 @@ pub(crate) struct Package {
     /// and with every feature on. Development dependencies are left out:
     /// they never reach a shipped build.
     pub(crate) dependencies: Vec<String>,
+    /// Package ids reached only as development dependencies, kept apart
+    /// for the checks that refuse any edge at all (the canary's).
+    pub(crate) dev_dependencies: Vec<String>,
     /// The kinds of every target, as for a member.
     pub(crate) target_kinds: Vec<String>,
     /// The native library the package says it links, if any.
@@ -167,12 +175,14 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
                 target_kinds.push(kind.to_owned());
             }
         }
-        // Every member must be in the resolved graph.
-        nodes
+        // Every member must be in the resolved graph. A dependency whose
+        // name there is not its package's name is a rename.
+        let node = nodes
             .iter()
             .find(|node| string(node, "id").is_ok_and(|candidate| candidate == *id))
             .ok_or_else(unexpected)?;
         let declared_dependencies = declared(package)?;
+        let renamed = renamed(node, packages)?;
         members.push(Member {
             name: string(package, "name")?.to_owned(),
             id: (*id).to_owned(),
@@ -181,6 +191,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             target_kinds,
             editions,
             declared_dependencies,
+            renamed,
         });
     }
 
@@ -197,6 +208,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             Some(_) => return Err(unexpected()),
         };
         let mut dependencies = Vec::new();
+        let mut dev_dependencies = Vec::new();
         for dependency in array(node, "deps")? {
             let mut shipped = false;
             for kind in array(dependency, "dep_kinds")? {
@@ -207,10 +219,12 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
                     _ => return Err(unexpected()),
                 }
             }
+            let target = string(dependency, "pkg")?;
+            find_package(target)?;
             if shipped {
-                let target = string(dependency, "pkg")?;
-                find_package(target)?;
                 dependencies.push(target.to_owned());
+            } else {
+                dev_dependencies.push(target.to_owned());
             }
         }
         resolved.push(Package {
@@ -219,6 +233,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             path,
             member: member_ids.contains(&id),
             dependencies,
+            dev_dependencies,
             target_kinds: target_kinds(package)?,
             links: links(package)?,
             features: features(package)?,
@@ -230,6 +245,24 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
         members,
         packages: resolved,
     })
+}
+
+/// The names a resolved node gives its dependencies that are not their
+/// package's name with `-` as `_`.
+fn renamed(node: &Value, packages: &[Value]) -> Result<Vec<String>, Error> {
+    let mut renamed = Vec::new();
+    for dependency in array(node, "deps")? {
+        let name = string(dependency, "name")?;
+        let id = string(dependency, "pkg")?;
+        let package = packages
+            .iter()
+            .find(|package| string(package, "id").is_ok_and(|candidate| candidate == id))
+            .ok_or(Error::UnexpectedOutput(COMMAND))?;
+        if name != string(package, "name")?.replace('-', "_") {
+            renamed.push(name.to_owned());
+        }
+    }
+    Ok(renamed)
 }
 
 /// The kinds of a package's targets.

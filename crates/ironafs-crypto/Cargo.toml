@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# A pure crate (ADR 0004, C4, point 1): no features, no build script, and
+# one dependency, the pure ironafs-time, whose Rng it implements (C4,
+# point 7). The operating system's random source is supplied at
+# composition, never as a dependency.
+[package]
+name = "ironafs-crypto"
+description = "IronAFS's cryptography interface and its cryptographic random source"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+ironafs-time.workspace = true
+
+[lints]
+workspace = true

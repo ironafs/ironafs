@@ -67,6 +67,7 @@ fn package(name: &str, path: bool, member: bool, dependencies: &[&str]) -> Packa
         path: path.then(|| PathBuf::from(format!("/w/crates/{name}"))),
         member,
         dependencies: dependencies.iter().map(|name| id(name)).collect(),
+        dev_dependencies: Vec::new(),
         target_kinds: vec!["lib".into()],
         links: None,
         features: Vec::new(),
@@ -90,11 +91,12 @@ fn member(name: &str, lib: Option<&str>, target_kinds: &[&str]) -> Member {
         target_kinds: target_kinds.iter().map(|kind| (*kind).into()).collect(),
         editions: target_kinds.iter().map(|_| "2024".into()).collect(),
         declared_dependencies: Vec::new(),
+        renamed: Vec::new(),
     }
 }
 
 #[test]
-fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
+fn parse_workspace_follows_package_ids_and_keeps_development_edges_apart() {
     let workspace = parse_workspace(METADATA).unwrap();
 
     assert_eq!(
@@ -103,7 +105,9 @@ fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
             root: PathBuf::from("/w"),
             target_dir: PathBuf::from("/w/target"),
             members: vec![
+                // `bee` is ironafs-b under another name.
                 Member {
+                    renamed: vec!["bee".into()],
                     declared_dependencies: vec![
                         "normal ironafs-b".into(),
                         "dev ironafs-c".into(),
@@ -122,12 +126,15 @@ fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
                 },
             ],
             packages: vec![
-                package(
-                    "ironafs-a",
-                    true,
-                    true,
-                    &["ironafs-b", "outside", "ironafs-d"]
-                ),
+                Package {
+                    dev_dependencies: vec![id("ironafs-c")],
+                    ..package(
+                        "ironafs-a",
+                        true,
+                        true,
+                        &["ironafs-b", "outside", "ironafs-d"],
+                    )
+                },
                 Package {
                     features: vec!["std".into(), "default".into()],
                     ..package("ironafs-b", true, true, &["outside"])

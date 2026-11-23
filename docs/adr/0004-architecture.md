@@ -5,7 +5,8 @@
 
 Status: accepted (2026-11-20), by the owner, after the review rounds
 recorded below. Raised in issue #20. Amended 2026-11-20 (#32) and
-2026-11-21 (#101).
+2026-11-21 (#101). Partly superseded by [ADR 0006](0006-rx-unprotected-packets.md)
+(C30, C31, C32 and O23, as its "What it supersedes" states), 2026-11-21.
 
 ## Context
 
@@ -774,3 +775,11 @@ The full record, with every finding and its disposition, is
     The owner accepted the amendment with ADR 0005 on 2026-11-21. The
     record is
     [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md).
+- **Correction, 2026-11-22:** C13 point 2 now takes its handle
+  operations from C7 point 3 instead of a partial list, so the check it
+  states covers subscription to change notification, which C7 point 3
+  already sends through it; release and release directory (C7 point 4)
+  stay outside it. C13 point 2's main clause already said "every handle
+  operation", and the fix for finding R1-44 of the ADR 0004 review record
+  ([docs/reviews/2026-11-20-adr-0004-review.md](../reviews/2026-11-20-adr-0004-review.md))
+  widened the check to all handle operations. No decision changed.
