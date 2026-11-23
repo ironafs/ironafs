@@ -343,7 +343,8 @@ pub(crate) fn profile_departures(shipped: &str, harness: &str) -> Vec<String> {
 
 /// Builds `ironafs-os` in the workspace itself, under its release profile,
 /// for `target` in a fresh `build_dir`; returns cargo's verbose output, or
-/// why it did not build.
+/// why it did not build. `--locked`, as the other checks build workspace
+/// crates: a stale lock file fails the build instead of being rewritten.
 fn shipped_build(
     workspace: &Workspace,
     build_dir: &Path,
@@ -356,6 +357,7 @@ fn shipped_build(
             "build",
             "--release",
             "--lib",
+            "--locked",
             "--offline",
             "--verbose",
             "-p",
@@ -378,7 +380,10 @@ fn shipped_build(
 }
 
 /// Builds the harness for `target` and returns its assembly and cargo's
-/// verbose output, or why it could not be built.
+/// verbose output, or why it could not be built. Not `--locked`: the
+/// harness is its own workspace in a fresh directory, with no lock file to
+/// keep, and its one dependency is `ironafs-os` by path, which has none; the
+/// lock file cargo writes there is removed with the directory.
 fn assembly(
     workspace: &Workspace,
     harness: &Path,
