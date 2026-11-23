@@ -256,17 +256,24 @@ pub(crate) fn core_limits() -> (String, String) {
     )
 }
 
-/// The size of an ELF64 program header and of a section header.
+/// The size of the ELF64 file header, of a program header and of a section
+/// header.
+const ELF_HEADER: usize = 64;
 const PROGRAM_HEADER: usize = 56;
 const SECTION_HEADER: usize = 64;
+
+/// `PN_XNUM`: the `e_phnum` that says the count is in section zero's
+/// `sh_info`, used only for counts of at least this.
+const PN_XNUM: u16 = 0xffff;
 
 /// The end of the last part of a 64-bit little-endian ELF core file (its
 /// headers, its segments, and the section header table of extended
 /// numbering): the length a whole image has. `None` for what is not such
 /// a file: another class, byte order or type, entry sizes other than
 /// ELF64's, a first section header that is not the null one extended
-/// numbering uses, a header table outside the image, or arithmetic that
-/// overflows.
+/// numbering uses, an extended count below `PN_XNUM`, a nonempty header
+/// table that starts inside the ELF header or ends outside the image, or
+/// arithmetic that overflows.
 fn elf_core_end(image: &[u8]) -> Option<usize> {
     let bytes = |at: usize, length: usize| image.get(at..at.checked_add(length)?);
     let u16_at = |at: usize| Some(u16::from_le_bytes(bytes(at, 2)?.try_into().ok()?));
@@ -295,15 +302,25 @@ fn elf_core_end(image: &[u8]) -> Option<usize> {
     } else {
         sections.checked_add(SECTION_HEADER.checked_mul(section_count)?)?
     };
+    if section_count != 0 && sections < ELF_HEADER {
+        return None;
+    }
     let count = match u16_at(0x38)? {
-        0xffff => {
+        PN_XNUM => {
             if section_count == 0 || u32_at(sections.checked_add(4)?)? != 0 {
                 return None;
             }
-            usize::try_from(u32_at(sections.checked_add(0x2c)?)?).ok()?
+            let extended = u32_at(sections.checked_add(0x2c)?)?;
+            if extended < u32::from(PN_XNUM) {
+                return None;
+            }
+            usize::try_from(extended).ok()?
         }
         count => usize::from(count),
     };
+    if count != 0 && table < ELF_HEADER {
+        return None;
+    }
     let table_end = table.checked_add(PROGRAM_HEADER.checked_mul(count)?)?;
     if table_end > image.len() || sections_end > image.len() {
         return None;
@@ -472,34 +489,49 @@ fn exec_mount(path: &Path) -> bool {
 /// A 64-bit little-endian ELF core image: a header, `segments` program
 /// headers (each a 16-byte segment after the table), and, with
 /// `extended`, the program header count in a section header at the end
-/// (`e_phnum` = `PN_XNUM`, 0xffff), as Linux writes it for many segments.
+/// (`e_phnum` = `PN_XNUM`), as Linux writes it for `PN_XNUM` segments or
+/// more.
 #[cfg(test)]
-fn core_image(segments: u16, extended: bool) -> Vec<u8> {
-    let table = 64_usize;
-    let entry = 56_usize;
-    let data = table + entry * usize::from(segments);
-    let mut image = vec![0_u8; data + 16 * usize::from(segments)];
+fn core_image(segments: u32, extended: bool) -> Vec<u8> {
+    let count = usize::try_from(segments).unwrap();
+    let table = ELF_HEADER;
+    let data = table + PROGRAM_HEADER * count;
+    let mut image = vec![0_u8; data + 16 * count];
     image[..6].copy_from_slice(b"\x7fELF\x02\x01");
     image[16..18].copy_from_slice(&4_u16.to_le_bytes());
     image[0x20..0x28].copy_from_slice(&u64::try_from(table).unwrap().to_le_bytes());
-    image[0x36..0x38].copy_from_slice(&u16::try_from(entry).unwrap().to_le_bytes());
-    let count = if extended { 0xffff } else { segments };
-    image[0x38..0x3a].copy_from_slice(&count.to_le_bytes());
-    for index in 0..usize::from(segments) {
-        let header = table + entry * index;
+    image[0x36..0x38].copy_from_slice(&u16::try_from(PROGRAM_HEADER).unwrap().to_le_bytes());
+    let phnum = if extended {
+        PN_XNUM
+    } else {
+        u16::try_from(segments).unwrap()
+    };
+    image[0x38..0x3a].copy_from_slice(&phnum.to_le_bytes());
+    for index in 0..count {
+        let header = table + PROGRAM_HEADER * index;
         let offset = u64::try_from(data + 16 * index).unwrap();
         image[header + 8..header + 16].copy_from_slice(&offset.to_le_bytes());
         image[header + 0x20..header + 0x28].copy_from_slice(&16_u64.to_le_bytes());
     }
     if extended {
         let section = image.len();
-        image.extend_from_slice(&[0_u8; 64]);
+        image.extend_from_slice(&[0_u8; SECTION_HEADER]);
         image[0x28..0x30].copy_from_slice(&u64::try_from(section).unwrap().to_le_bytes());
-        image[0x3a..0x3c].copy_from_slice(&64_u16.to_le_bytes());
+        image[0x3a..0x3c].copy_from_slice(&u16::try_from(SECTION_HEADER).unwrap().to_le_bytes());
         image[0x3c..0x3e].copy_from_slice(&1_u16.to_le_bytes());
-        image[section + 0x2c..section + 0x30].copy_from_slice(&u32::from(segments).to_le_bytes());
+        image[section + 0x2c..section + 0x30].copy_from_slice(&segments.to_le_bytes());
     }
     image
+}
+
+/// The smallest count extended numbering is used for.
+#[cfg(test)]
+const EXTENDED: u32 = PN_XNUM as u32;
+
+/// Where the section header table of an extended-numbering image starts.
+#[cfg(test)]
+fn section_of(image: &[u8]) -> usize {
+    usize::try_from(u64::from_le_bytes(image[0x28..0x30].try_into().unwrap())).unwrap()
 }
 
 #[test]
@@ -510,66 +542,98 @@ fn elf_core_end_is_the_end_of_the_last_segment() {
 
 #[test]
 fn elf_core_end_counts_an_extended_numbering_section_header() {
-    let image = core_image(3, true);
+    let image = core_image(EXTENDED, true);
     assert_eq!(elf_core_end(&image), Some(image.len()));
 }
 
-/// [`core_image`] with extended numbering and one more segment, whose
-/// data lies after the section header table: only the last program header,
+/// [`core_image`] with extended numbering, whose last segment's data is
+/// moved after the section header table: only the last program header,
 /// which only the count in `sh_info` reaches, says where the image ends.
 #[cfg(test)]
-fn core_image_ending_in_the_last_extended_segment(segments: u16) -> Vec<u8> {
-    let mut image = core_image(segments, true);
-    let section =
-        usize::try_from(u64::from_le_bytes(image[0x28..0x30].try_into().unwrap())).unwrap();
-    let last = 64 + 56 * (usize::from(segments) - 1);
+fn core_image_ending_in_the_last_extended_segment() -> Vec<u8> {
+    let mut image = core_image(EXTENDED + 1, true);
+    let last = ELF_HEADER + PROGRAM_HEADER * usize::try_from(EXTENDED).unwrap();
     let offset = u64::try_from(image.len()).unwrap();
     image[last + 8..last + 16].copy_from_slice(&offset.to_le_bytes());
     image.extend_from_slice(&[0_u8; 16]);
-    // The section table still precedes the moved segment.
-    assert!(section + 64 < image.len());
+    assert!(section_of(&image) + SECTION_HEADER < image.len());
     image
 }
 
 #[test]
 fn elf_core_end_reads_up_to_the_last_program_header_sh_info_names() {
-    let image = core_image_ending_in_the_last_extended_segment(3);
+    let image = core_image_ending_in_the_last_extended_segment();
     assert_eq!(elf_core_end(&image), Some(image.len()));
-    // A count one short ends at the section table instead.
+    // A count one short, still a valid extended count, ends at the section
+    // table instead.
     let mut short = image.clone();
-    let section =
-        usize::try_from(u64::from_le_bytes(short[0x28..0x30].try_into().unwrap())).unwrap();
-    short[section + 0x2c..section + 0x30].copy_from_slice(&2_u32.to_le_bytes());
-    assert_eq!(elf_core_end(&short), Some(section + 64));
+    let section = section_of(&short);
+    short[section + 0x2c..section + 0x30].copy_from_slice(&EXTENDED.to_le_bytes());
+    assert_eq!(elf_core_end(&short), Some(section + SECTION_HEADER));
 }
 
 #[test]
-fn elf_core_end_refuses_bad_entry_sizes_a_non_null_section_zero_and_tables_past_the_image() {
-    let image = core_image(3, true);
-    let section =
-        usize::try_from(u64::from_le_bytes(image[0x28..0x30].try_into().unwrap())).unwrap();
-    let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
-    let mut zero_entry = image.clone();
-    zero_entry[0x36..0x38].copy_from_slice(&0_u16.to_le_bytes());
-    cases.push(("a zero program header size", zero_entry));
-    let mut section_entry = image.clone();
-    section_entry[0x3a..0x3c].copy_from_slice(&40_u16.to_le_bytes());
-    cases.push(("a section header size other than 64", section_entry));
-    let mut typed = image.clone();
-    typed[section + 4..section + 8].copy_from_slice(&1_u32.to_le_bytes());
-    cases.push(("a first section header that is not null", typed));
-    let mut no_sections = image.clone();
-    no_sections[0x3c..0x3e].copy_from_slice(&0_u16.to_le_bytes());
-    cases.push(("PN_XNUM with no section header", no_sections));
-    let mut huge = image.clone();
-    huge[section + 0x2c..section + 0x30].copy_from_slice(&u32::MAX.to_le_bytes());
-    cases.push(("a count whose table runs past the image", huge));
-    let mut far = image.clone();
-    far[0x20..0x28].copy_from_slice(&u64::MAX.to_le_bytes());
-    cases.push(("a table offset that overflows", far));
-    let mut far_sections = image;
-    far_sections[0x28..0x30].copy_from_slice(&(u64::MAX - 8).to_le_bytes());
-    cases.push(("a section table offset that overflows", far_sections));
+fn elf_core_end_refuses_bad_entry_sizes_counts_and_tables() {
+    let image = core_image(EXTENDED, true);
+    let section = section_of(&image);
+    let set = |at: std::ops::Range<usize>, bytes: &[u8]| {
+        let mut changed = image.clone();
+        changed[at].copy_from_slice(bytes);
+        changed
+    };
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "a zero program header size",
+            set(0x36..0x38, &0_u16.to_le_bytes()),
+        ),
+        (
+            "a section header size other than 64",
+            set(0x3a..0x3c, &40_u16.to_le_bytes()),
+        ),
+        (
+            "a first section header that is not null",
+            set(section + 4..section + 8, &1_u32.to_le_bytes()),
+        ),
+        (
+            "PN_XNUM with no section header",
+            set(0x3c..0x3e, &0_u16.to_le_bytes()),
+        ),
+        (
+            "an extended count of zero",
+            set(section + 0x2c..section + 0x30, &0_u32.to_le_bytes()),
+        ),
+        (
+            "an extended count of three",
+            set(section + 0x2c..section + 0x30, &3_u32.to_le_bytes()),
+        ),
+        (
+            "an extended count one below PN_XNUM",
+            set(
+                section + 0x2c..section + 0x30,
+                &(EXTENDED - 1).to_le_bytes(),
+            ),
+        ),
+        (
+            "a count whose table runs past the image",
+            set(section + 0x2c..section + 0x30, &u32::MAX.to_le_bytes()),
+        ),
+        (
+            "a program header table inside the ELF header",
+            set(0x20..0x28, &8_u64.to_le_bytes()),
+        ),
+        (
+            "a section header table inside the ELF header",
+            set(0x28..0x30, &8_u64.to_le_bytes()),
+        ),
+        (
+            "a table offset that overflows",
+            set(0x20..0x28, &u64::MAX.to_le_bytes()),
+        ),
+        (
+            "a section table offset that overflows",
+            set(0x28..0x30, &(u64::MAX - 8).to_le_bytes()),
+        ),
+    ];
     for (case, image) in cases {
         assert_eq!(elf_core_end(&image), None, "{case}");
     }
