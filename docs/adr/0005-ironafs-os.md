@@ -7,7 +7,7 @@ Status: accepted (2026-11-21), by the owner, after the review rounds
 recorded below. Raised in issue #43; the ADR 0004 amendment it needs
 is issue #49, in the same pull request (#101). Amended 2026-11-22
 (#152): point 5.3 and Decision 4, the target gate; and amended
-2026-11-22 (#TBD): row 23 and its sheet, the route sockets' bounded
+2026-11-22 (#153): row 23 and its sheet, the route sockets' bounded
 wait.
 
 ## Context
@@ -1204,8 +1204,8 @@ are in its sheet below the table, under the same number.
         deadline on the awake clock, taken from the shared `Clock`'s
         sample (ADR 0004, C37; coding standards rule 7; the seams
         specification, 5.3), and never more than a named horizon
-        constant, `ROUTE_WAIT_HORIZON` (proposed: 1 second, for the
-        owner's acceptance with this amendment). With nothing due, the
+        constant, `ROUTE_WAIT_HORIZON` (1 second, accepted by the
+        owner with this amendment, 2026-11-22). With nothing due, the
         worker waits to the horizon and looks again, so an idle worker
         wakes once per horizon.
       - **The time left is recomputed after every `EINTR`.** After an
@@ -2838,8 +2838,8 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
     `glm-5.3`, at high in rounds 1 to 3, and at max for the final pass
     over the whole amendment (round 4) and its verification, the
     judgement seat, and rounds 5 and 6. This departure from
-    point 7.2's strongest row is put to the owner with the amendment,
-    for acceptance. Each finding, its disposition and the convergence
+    point 7.2's strongest row was accepted by the owner with the
+    amendment (2026-11-22). Each finding, its disposition and the convergence
     note are in the review record,
     [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md),
     section "Amendment: the target gate".
@@ -2890,8 +2890,8 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
     - Round 8, GPT's scoped check of `a5d0919..07c08f0` (`gpt-6.2-sol`,
       xhigh): all three fixed; 2 record minors, fixed in the next
       commit. Under the stop rule the rounds stop here.
-- **Amendment, 2026-11-22 (#TBD): row 23 and sheet 23, the route
-  sockets' bounded wait.**
+- **Amendment, 2026-11-22 (#153): row 23 and sheet 23, the route
+  sockets' bounded wait.** Design issue #154.
   - What changed: row 23 gains `poll` on one route socket and its
     wake, and `eventfd` for the wake. Its sends and receives pass
     `MSG_DONTWAIT`, which keeps a send from waiting for buffer space
@@ -3034,8 +3034,8 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
     `glm-5.3`, at high in rounds 1 to 3, and at max for the judgement
     seat, the final pass over the whole amendment (round 4), rounds 5
     and 6, and the refutation seat after round 6. This departure
-    from point 7.2's strongest row is put to the owner with the
-    amendment, for acceptance. Each finding, its disposition and the
+    from point 7.2's strongest row was accepted by the owner with
+    the amendment (2026-11-22). Each finding, its disposition and the
     convergence note are in the review record,
     [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md),
     section "Amendment: the route sockets' bounded wait".
