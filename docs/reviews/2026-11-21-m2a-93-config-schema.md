@@ -429,3 +429,25 @@ left blocker 1 partly open. Its fix was then applied:
 | Finding | Seat, severity | Disposition | origin | kind |
 |---|---|---|---|---|
 | Blocker 1, remainder: 5.8, point 2's qualifier "before any file is known" excludes a listing that fails after it has returned entries | GPT, blocker | FIXED: 5.8, point 2: a directory outcome is given whenever the walk or the listing fails there, whether or not the listing has already returned entries; it comes first, and file outcomes already obtained are kept. 13.1, blocker 1, says the same. Test in 10, point 4: a listing that returns a policy entry and then fails | introduced by the scoped round (the qualifier) | contract |
+
+## Security round
+
+Seat: GLM (`glm-5.3`, max), 2026-11-23, a security review of the page at
+`956881c`. It found one major and three minors. Each is quoted as the seat
+wrote it (its title line), then its disposition. The fixes are in commit
+`b85f718`, not yet reviewed: a scoped re-review of the fix diff comes
+next, and the major is listed in the page's 13.1 as blocker 5 until then.
+
+The branch first took in the configuration syntax branch (part (a)) by a
+merge. The syntax page's changes (bidirectional controls refused anywhere
+in a file, the header path bound, the redefinition positions, the fuzz
+target) change nothing this page relies on: the sections it cites keep
+their numbers and meaning, and 5.9, point 3's escaping of report paths
+still holds.
+
+| Finding | Seat, severity | Disposition | origin | kind |
+|---|---|---|---|---|
+| F1: "The F-side interface cannot express an unreadable or byte-less untrusted source, so the spec's own N8.2-survival invariant cannot be implemented." | GLM, major | FIXED as the seat proposed: 5.8, point 1: `validate_local(outcomes)` takes F's outcomes as the caller found them, each `Unreadable`, `Untrusted`, `TooMany` or a trusted file's `Read` bytes, for a file, or for the drop-in directory or a directory above it when the walk or listing fails there; any outcome but `Read` refuses the local configuration and every `Read` source that parses is still scanned for refusal rules. 5.1, point 2: the caller collects F's outcomes without stopping at the first failure. Section 2, point 2, and section 4 ("Source"): an unreadable or untrusted source never carries bytes. 5.5, point 4: unreadable and untrusted sources are not scanned, the rest still are. Section 7: the local refusal names an unreadable source or directory. Tests in 9 and 10, point 4. Blocker 5 in 13.1 | pre-existing (the scoped round gave P typed outcomes, not F) | contract |
+| F2: "`fstatat` failures are unclassified: \"gone when it is opened\", and an Unreadable definition that lists `fstat` but not `fstatat`." | GLM, minor | FIXED: 5.1, point 3: untrusted only when `fstatat` succeeds and shows another type; a failing `fstatat` is classified by point 7. 5.1, point 7: `ENOENT` at `fstatat` on `ironafs.toml` is absent; a listed or `fstatat`-seen file gone at its `fstatat` or `openat` is unreadable; `fstatat` is in the unreadable list. Test cases in 10, point 4 | introduced by the scoped round (blocker 3's `fstatat`) | correctness |
+| F3: "The provisional `dns_interface` range admits \".\" and \"..\"." | GLM, minor | FIXED: 5.2.2's range excludes `.` and `..`; test in 10, point 1 | pre-existing | correctness |
+| F4: "No bound on the number of configuration/policy sources." | GLM, minor | FIXED: `config.sources_max` (64) in 5.2.9. 5.1, point 2: the caller counts sources as it lists, skips other entries unstored, and past the bound stops and reads no file of that directory, giving the directory outcome `TooMany`, which is malformed (5.1, point 7): a local refusal in F, an incompatible policy in P (as for any malformed policy delivery, Q12). 5.8, points 1 and 2: `validate_local` and part (c) refuse a longer list; `validate_local` parses and scans only `ironafs.toml` and the first `config.sources_max` drop-ins. Section 7; test in 10, point 4 | pre-existing | missing mechanism |
