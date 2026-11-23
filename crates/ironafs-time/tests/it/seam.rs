@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::thread;
 
 use ironafs_time::{
-    AwakeInstant, BootInstant, Clock, ClockError, ClockKind, Rng, RngError, WallTime,
+    AwakeInstant, BootInstant, Clock, ClockError, ClockKind, Deadline, Rng, RngError, Stamp,
+    Waited, WallTime, Watch,
 };
 
 /// A clock whose awake clock has failed.
@@ -23,6 +24,12 @@ impl Clock for AwakeFailed {
     }
     fn wall(&self) -> Result<WallTime, ClockError> {
         Ok(WallTime::UNIX_EPOCH)
+    }
+    fn sample(&self) -> Result<Stamp, ClockError> {
+        Err(ClockError::new(ClockKind::Awake))
+    }
+    fn wait(&self, _signal: &dyn Watch, _deadline: &Deadline, _cancel: &dyn Watch) -> Waited {
+        Waited::ClockFailed
     }
 }
 
@@ -43,6 +50,7 @@ fn clock_is_shared_between_threads_as_a_trait_object() {
     let read = thread::spawn(move || shared.awake()).join().unwrap();
     assert_eq!(read, Err(ClockError::new(ClockKind::Awake)));
     assert_eq!(clock.boot(), Ok(BootInstant::from_nanos(5)));
+    assert_eq!(clock.sample(), Err(ClockError::new(ClockKind::Awake)));
 }
 
 #[test]

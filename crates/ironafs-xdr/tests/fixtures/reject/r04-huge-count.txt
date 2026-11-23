@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# An array of unsigned int, count 40000000, and 8 bytes after it: n x s_min is 4 GiB.
+
+type ints
+breaks 5.2, point 6; 5.4, point 4.3
+expect CapExceeded test.ints
+offset 0
+extent none
+requests none
+input 40000000 00000000 00000000

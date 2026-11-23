@@ -7,3 +7,6 @@
 
 # Generated; collapsed in GitHub diffs.
 Cargo.lock linguist-generated=true
+
+# Fuzz seeds are raw input bytes: never converted.
+fuzz/seeds/** -text

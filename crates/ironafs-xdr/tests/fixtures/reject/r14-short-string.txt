@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A label's length word of 5, then only 2 data bytes.
+
+type label
+breaks 5.4, point 3.4
+expect Truncated -
+offset 0
+extent 6
+requests none
+input 00000005 6162
