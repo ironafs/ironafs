@@ -64,6 +64,8 @@ contributor's agent follows its contributor's own approval, as in section 1
   revision being landed.
 - Confirmed correctness and contract findings are resolved, whatever their
   severity.
+- Every fix round past the second has the owner's permission in the review
+  record (`docs/workflow.md` §3, step 7).
 
 **The root commit, instead** (the maintainer's session only, once; ADR 0002):
 a non-author review of the candidate tree, pinned to its tree id; the owner's acceptance of the ADRs

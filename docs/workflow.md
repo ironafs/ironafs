@@ -60,7 +60,7 @@ lanes are not used.
 
 | Role | Who | How |
 |---|---|---|
-| **Controller** | the maintainer's Claude Code session (following the maintainer's private instructions) | Plans, briefs, routes, verifies findings, lands changes after the owner's approval. Writes code itself only for work only it can run; other code comes from the implementers it dispatches. |
+| **Controller** | the maintainer's Claude Code session (following the maintainer's private instructions) | Plans, briefs, routes, verifies findings, asks the owner for any fix round past the second (§3, step 7), lands changes after the owner's approval. Writes code itself only for work only it can run; other code comes from the implementers it dispatches. |
 | **Implementer** | Claude Code subagents, Opus 5.5 | Dispatched by the controller, one task at a time, with a written brief, test first. The default from M2a: the designs are Claude-written, so Claude implementing keeps one author family and leaves GLM and GPT free for the required and security seats. |
 | **Implementer for extra capacity** | codex CLI, `gpt-6.2-sol` | `codex exec` with a written brief, on a task separate from Claude's; `medium` effort for mechanical I/P work, `high` for S and R. Its seats exclude OpenAI and the design's family. |
 | **Implementer when codex is out of quota** | agy CLI (Gemini) | Same brief; a session allowlist that denies git. Brief paths must sit inside `--add-dir`. |
@@ -297,7 +297,8 @@ authoritative.
    - **Acceptance evidence:** the commands and results that prove it.
 
    Settle open design questions before dispatch, not during it. Every brief
-   carries the reuse rule (§3a), and starts with a **re-check**: the claims
+   opens with the two lines of §4, carries the reuse rule (§3a), and then
+   starts with a **re-check**: the claims
    and ADR decisions the task rests on are re-read at their sources first.
    A contradiction stops the task and is raised as a design issue, which
    leads to an amendment of a working decision or a superseding ADR
@@ -311,10 +312,15 @@ authoritative.
    rounds re-check only the changed text and what depends on it. Step 7's
    closure rules apply, and editorial minors are fixed and recorded. After
    two fix rounds a brief is split, redesigned, or its blocker recorded and
-   the work kept gated; a convergence note does not extend it. The review
+   the work kept gated. Step 7's rule after two fix rounds applies to a
+   brief as to a change: a further fix round needs the owner's permission
+   for that brief alone. A brief's permission never
+   covers the code change implemented from it, nor the reverse. The review
    record in `docs/reviews/` for the batch of briefs filed together holds
-   these reviews and two counts: review runs per brief filed, and
-   acceptance defects found later at pickup or in code review.
+   these reviews, two counts (review runs per brief filed, and acceptance
+   defects found later at pickup or in code review), and, for a brief past
+   two fix rounds, its convergence notes and permissions (step 7). Such a
+   brief is filed only once that record holds them.
 
    **Deferring a design point** is allowed only if the current work is
    correct whichever way the point is decided: its acceptance criteria,
@@ -357,25 +363,41 @@ authoritative.
      (pre-existing, or introduced by fix round N) and by kind
      (correctness, contract, consistency between parts, missing
      mechanism, or other).
-   - **A convergence note comes before any round after the second**, and
-     is brought up to date before each further fix round is written. It
-     gives each seat's trend of blocker and major counts, how many of the
-     last round's findings the last fix introduced, and whether the kind of
-     defect found has drifted. It goes in the review record.
-   - **After two fix rounds, stop patching** unless the latest note shows
-     the counts falling, few findings introduced by the fixes, and the kinds
-     narrowing. Otherwise, or whenever the note cannot show it: split the
-     change, move the mechanism into specification items, redesign it, or
-     record the blocker.
+   - **A convergence note is written when round 3 concludes**, and
+     brought up to date after each later verification round; the
+     controller checks it before the next fix round is written. It gives
+     each seat's trend of blocker and major counts and of open confirmed
+     correctness or contract findings of any severity, how many of the
+     last round's findings the last fix introduced, and whether the kind
+     of defect found has drifted. It goes in the review record.
+   - **After two fix rounds, stop patching**: split the change, move the
+     mechanism into specification items, redesign it, or record the
+     blocker. A further fix round needs the owner's permission for that
+     change alone. The controller asks for it with the latest note and a
+     recommendation, and recommends another round only when the note shows
+     the counts falling, few findings introduced by the fixes, and the
+     kinds narrowing. A permission covers the fix rounds the owner names
+     (one, unless they say more) for that change, and never carries to
+     another; before each of them the controller checks the updated note,
+     and asks again if it no longer shows convergence. The
+     request, the recommendation, the owner's answer and its date go in the
+     review record. A convergence note alone never extends the limit.
+   - **What counts.** A scoped fix of an upheld tail, or of a finding still
+     disputed after the fix rounds, counts as a fix round. A part split off
+     unconverged keeps the parent's fix-round count; a redesign starts a
+     new count. Any part split off, converged or not, is a change of its
+     own: the parent's permission does not carry to it.
    - **A single seat's tail**, one or two majors and no blocker from one
-     seat alone, goes to the judgement seat (§2) or, under the rule above,
-     into specification items; never into another full round. The
+     seat alone, goes to the judgement seat (§2) or, through the
+     refutation seat (the specification-item rule above), into
+     specification items; never into another full round. The
      judgement seat rules whether each major holds as a correctness or contract defect in
      what the change decides. One that holds is fixed by a fix scoped to
-     it and verified at its seat's pin, or the change is split, redesigned
-     or its blocker recorded. One that does not hold is closed as ruled,
-     like a refuted finding, and recorded with the ruling; any mechanism
-     it asks for becomes a specification item.
+     it and verified at its seat's pin (a fix round, under the stop rule
+     above), or the change is split, redesigned or its blocker recorded.
+     One that does not hold is closed as ruled, like a refuted finding,
+     and recorded with the ruling; any mechanism it asks for becomes a
+     specification item.
    - **Converged parts are split off.** A part is converged when each
      required seat's last conclusive verdict covered the part's files at a
      pinned sha and no finding in them is open. It is split off from the
@@ -383,18 +405,20 @@ authoritative.
      (a verdict covers a later sha only if every change to the files since
      was a fix verified at its finding seat's pin), as a change of its own,
      with its own class, merge (step 8) and review record, which carries
-     the part's findings and their dispositions; the rest continues.
+     the part's findings and their dispositions; the rest continues with
+     the change's fix-round count.
 8. **Merge** when the class's checks are met, no confirmed correctness or
    contract finding is open (one closed by the refutation seat as a
    specification item, or by a ruling that it does not hold, is closed; a
    specification item stays open in its issue), no judgement is pending or
-   inconclusive (one recorded as moot is closed), and, for class I and
-   above, at least one required seat's final verdict covers the landed tree
-   under ADR 0002's `AI-Reviewed-by:` rule (if none does, a verification
-   round on the final diff comes first): a pull request, squash-merged
-   after the owner's approval, with the trailer block and sign-off of
-   ADR 0002 (the root commit of the public history is the one exception;
-   ADR 0002 gives its checklist). R also needs the owner's decision.
+   inconclusive (one recorded as moot is closed), every fix round past the
+   second has the owner's permission in the review record, and, for class
+   I and above, at least one required seat's final verdict covers the
+   landed tree under ADR 0002's `AI-Reviewed-by:` rule (if none does, a
+   verification round on the final diff comes first): a pull request,
+   squash-merged after the owner's approval, with the trailer block and
+   sign-off of ADR 0002 (the root commit of the public history is the one
+   exception; ADR 0002 gives its checklist). R also needs the owner's decision.
 
 ## 3a. Reuse and consistency
 
@@ -464,8 +488,11 @@ Rules:
 
 - **Send the least it needs**: a commit range pinned by sha and one bounded
   question. Never memory notes, credentials, keys, keytabs or private lab
-  details. A brief that touches credentials says "run no credential command"
-  in its first lines.
+  details.
+- **Every brief opens with** "Run no credential command. Run no command that
+  lists or prints git remotes or configuration.": review, design, research,
+  refutation and judgement briefs, and implementer briefs, fix rounds
+  included.
 - **Check it ran before believing it.** Read the did-it-run line, the served
   model and effort, and the whole output including `uncertain`. A run with no
   final verdict is void, not a pass; a capped run is resumed with more turns.
