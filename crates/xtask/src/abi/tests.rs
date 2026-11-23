@@ -6,6 +6,7 @@
 use super::{
     CType, DataModel, Declarations, Function, Recorded, Struct, c_source, canonical, declarations,
     fact_differences, identity, object_macros, preamble, required_constants, scan_defines,
+    use_paths,
 };
 use crate::rust_source::tokens_with_strings;
 
@@ -444,23 +445,139 @@ fn declarations_refuse_a_type_alias_named_as_a_scalar() {
 
 #[test]
 fn canonical_resolves_each_file_by_its_own_imports() {
+    let none = |name: &str| Err(format!("`{name}` unbound"));
+    let row_s = |name: &str| {
+        if name == "s" {
+            Ok(())
+        } else {
+            Err(format!("`{name}` unbound"))
+        }
+    };
     let importing = read("use core::ffi::c_long;\nconst A: c_long = 1;\n");
-    assert!(canonical(&importing, &[]).is_ok());
+    assert!(canonical(&importing, &none).is_ok());
     let using = read("#[repr(C)]\nstruct s { a: c_long }\n");
     assert_eq!(
-        canonical(&using, &["s".to_owned()]).map(|found| found.structs.len()),
-        Err(
-            "`c_long` is neither imported from core::ffi in its own file, a primitive integer, \
-             nor a struct or type alias of the declaration files"
-                .to_owned()
-        )
+        canonical(&using, &row_s).map(|found| found.structs.len()),
+        Err("`c_long` unbound".to_owned())
     );
     let mut imported = read("use core::ffi::c_long;\n#[repr(C)]\nstruct s { a: c_long }\n");
-    imported = canonical(&imported, &["s".to_owned()]).unwrap();
+    imported = canonical(&imported, &row_s).unwrap();
     assert_eq!(
         imported.structs.first().map(|item| item.fields.clone()),
         Some(vec![("a".into(), CType::Named("core::ffi::c_long".into()))])
     );
+}
+
+#[test]
+fn use_paths_flatten_groups_and_refuse_globs() {
+    let paths = |source: &str| {
+        let tokens = tokens_with_strings(source).unwrap();
+        use_paths(&tokens)
+    };
+    assert_eq!(
+        paths("super::{iovec, socklen_t}"),
+        Some(vec![
+            vec!["super".to_owned(), "iovec".to_owned()],
+            vec!["super".to_owned(), "socklen_t".to_owned()],
+        ])
+    );
+    assert_eq!(
+        paths("core::{ffi::c_int, cell::{self, Cell}}"),
+        Some(vec![
+            vec!["core".to_owned(), "ffi".to_owned(), "c_int".to_owned()],
+            vec!["core".to_owned(), "cell".to_owned()],
+            vec!["core".to_owned(), "cell".to_owned(), "Cell".to_owned()],
+        ])
+    );
+    for refused in ["super::*", "a::{b, *}", "a::{b", "{self}", ""] {
+        assert_eq!(paths(refused), None, "{refused}");
+    }
+    // Read through the declaration reader, a nested core::ffi import
+    // counts as one.
+    assert_eq!(
+        read("use core::{ffi::c_int};\n").ffi_names,
+        ["c_int".to_owned()]
+    );
+}
+
+/// A row `row` whose declaration files are `files` (path under
+/// `src/row/`, text), all read by the compiler unless listed in `unread`:
+/// what `row_declarations` makes of them.
+fn row_of(name: &str, files: &[(&str, &str)], unread: &[&str]) -> Result<Declarations, String> {
+    let root = std::env::temp_dir().join(format!(
+        "ironafs-xtask-abi-row-{name}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut read = std::collections::BTreeSet::new();
+    for (path, text) in files {
+        let file = std::path::Path::new("src").join("row").join(path);
+        std::fs::create_dir_all(root.join(&file).parent().unwrap()).unwrap();
+        std::fs::write(root.join(&file), text).unwrap();
+        if !unread.contains(path) {
+            read.insert(file);
+        }
+    }
+    let found = super::row_declarations(&root, "row", &read, "C").unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    found
+}
+
+/// The row's own `msghdr`, declared in the glibc file and re-exported by
+/// `abi.rs`, as the shipped rows write it.
+const ABI: &str = "use core::ffi::c_int;\n\
+                   pub(super) use gnu::msghdr;\npub(super) use musl::msghdr;\n";
+const GNU: &str = "use core::ffi::c_int;\n#[repr(C)]\npub(crate) struct msghdr { a: c_int }\n";
+
+#[test]
+fn row_declarations_follow_each_import_to_the_row_s_own_declaration() {
+    let foreign = "use core::ffi::c_int;\nuse super::msghdr;\n\
+                   unsafe extern \"C\" {\n    fn recvmsg(m: *mut msghdr) -> c_int;\n}\n";
+    let found = row_of(
+        "clean",
+        &[
+            ("abi.rs", ABI),
+            ("abi/gnu.rs", GNU),
+            ("abi/musl.rs", GNU),
+            ("abi/foreign.rs", foreign),
+        ],
+        &["abi/musl.rs"],
+    )
+    .unwrap();
+    assert_eq!(found.functions.len(), 1);
+    assert_eq!(found.structs.len(), 1);
+}
+
+#[test]
+fn row_declarations_refuse_a_same_named_type_imported_from_elsewhere() {
+    // The row's msghdr is still declared, but the foreign function's file
+    // takes its msghdr from another module.
+    for (name, import) in [
+        ("crate", "use crate::elsewhere::msghdr;"),
+        ("std", "use std::ffi::msghdr;"),
+        ("unimported", ""),
+        ("twice", "use super::msghdr;\nuse super::gnu::msghdr;"),
+    ] {
+        let foreign = format!(
+            "use core::ffi::c_int;\n{import}\n\
+             unsafe extern \"C\" {{\n    fn recvmsg(m: *mut msghdr) -> c_int;\n}}\n"
+        );
+        let found = row_of(
+            name,
+            &[
+                ("abi.rs", ABI),
+                ("abi/gnu.rs", GNU),
+                ("abi/musl.rs", GNU),
+                ("abi/foreign.rs", &foreign),
+            ],
+            &["abi/musl.rs"],
+        );
+        let error = found.unwrap_err();
+        assert!(
+            error.starts_with("src/row/abi/foreign.rs: `msghdr`"),
+            "{name}: {error}"
+        );
+    }
 }
 
 #[test]

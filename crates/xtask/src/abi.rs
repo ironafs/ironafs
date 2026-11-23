@@ -40,6 +40,15 @@
 //! emitted as normalized decimals, and no file of the crate may name an
 //! item `core`, so `core::ffi` is the core crate's.
 //!
+//! Every type name a declaration uses is resolved in its own file: a
+//! primitive, a name imported from `core::ffi`, or a struct or type alias
+//! the file declares or imports, through `super`, `self`, `crate` or child
+//! module paths, from a declaration file of the row that declares or
+//! re-exports it in turn. An import from anywhere else, a glob import, a
+//! name no import binds and a name two imports in effect bind are refused,
+//! so the type checked is the type Rust uses. An import into the other C
+//! library's file, which the compiler did not read, is not in effect.
+//!
 //! The file asks for the POSIX and default declarations
 //! (`_DEFAULT_SOURCE`), not the GNU ones: under `_GNU_SOURCE` glibc
 //! declares `setrlimit`'s resource as an enum, where POSIX and musl declare
@@ -118,6 +127,9 @@ pub(crate) struct Declarations {
     /// The names the declaration files import from `core::ffi`: only these
     /// spell C's types (a `c_int` from anywhere else is not C's `int`).
     pub(crate) ffi_names: Vec<String>,
+    /// Every path the file's `use` items import, each ending in the name
+    /// it binds, `core::ffi`'s included.
+    pub(crate) imports: Vec<Vec<String>>,
 }
 
 /// The sizes of C's integer types on the target.
@@ -214,19 +226,20 @@ pub(crate) fn declarations(
                          it says"
                     ));
                 }
-                let from_ffi = ident(item.first()) == Some("core")
-                    && ident(item.get(2)) == Some("ffi")
-                    && matches!(
-                        item.get(3).map(|token| &token.kind),
-                        Some(TokenKind::PathSep)
-                    );
-                if from_ffi {
-                    found.ffi_names.extend(
-                        item.iter()
-                            .skip(4)
-                            .filter_map(|token| ident(Some(token)))
-                            .map(str::to_owned),
-                    );
+                let paths = use_paths(item).ok_or_else(|| {
+                    format!(
+                        "line {line}: an import this check cannot read, or a glob import, which \
+                         could bind any name"
+                    )
+                })?;
+                for path in paths {
+                    if let [first, second, name] = path.as_slice()
+                        && first == "core"
+                        && second == "ffi"
+                    {
+                        found.ffi_names.push(name.clone());
+                    }
+                    found.imports.push(path);
                 }
                 at = end + 1;
             }
@@ -257,6 +270,73 @@ pub(crate) fn declarations(
         }
     }
     Ok(())
+}
+
+/// The paths a `use` item's tree (`item`, the tokens between `use` and
+/// `;`) imports, each ending in the name it binds: `a::b::{c, d::e}` gives
+/// `a::b::c` and `a::b::d::e`, and `a::{self}` gives `a`. `None` for a
+/// glob, which could bind any name, and for any shape it cannot read.
+pub(crate) fn use_paths(item: &[Token]) -> Option<Vec<Vec<String>>> {
+    let mut paths = Vec::new();
+    let end = use_tree(item, 0, &mut Vec::new(), &mut paths)?;
+    (end == item.len() && !paths.is_empty()).then_some(paths)
+}
+
+/// Reads one use tree at `at` under `prefix` into `paths`; returns the
+/// index after it.
+fn use_tree(
+    item: &[Token],
+    mut at: usize,
+    prefix: &mut Vec<String>,
+    paths: &mut Vec<Vec<String>>,
+) -> Option<usize> {
+    let depth = prefix.len();
+    loop {
+        let token = item.get(at)?;
+        if let Some(name) = ident(Some(token)) {
+            at += 1;
+            if matches!(
+                item.get(at).map(|token| &token.kind),
+                Some(TokenKind::PathSep)
+            ) {
+                prefix.push(name.to_owned());
+                at += 1;
+                continue;
+            }
+            // `self` in a group names the group's own path.
+            if name == "self" && !token.raw {
+                if prefix.is_empty() {
+                    return None;
+                }
+            } else {
+                prefix.push(name.to_owned());
+            }
+            paths.push(prefix.clone());
+            prefix.truncate(depth);
+            return Some(at);
+        }
+        if punct(Some(token)) != Some('{') {
+            return None;
+        }
+        at += 1;
+        loop {
+            if punct(item.get(at)) == Some('}') {
+                at += 1;
+                break;
+            }
+            at = use_tree(item, at, prefix, paths)?;
+            match punct(item.get(at)) {
+                Some(',') => at += 1,
+                Some('}') => {
+                    at += 1;
+                    break;
+                }
+                _ => return None,
+            }
+        }
+        prefix.truncate(depth);
+        return Some(at);
+    }
 }
 
 /// Checks that the attributes before the `struct` at `at` include
@@ -983,36 +1063,37 @@ fn abi_of(model: DataModel) -> &'static str {
 /// One file's declarations with every type name rewritten to its identity
 /// in that file's own scope: a name the file imports from `core::ffi`
 /// becomes `core::ffi::<name>`, a primitive stays itself, and any other
-/// name must be one of the row's structs. So an import in one file never
-/// vouches for a name in another.
-fn canonical(file: &Declarations, structs: &[String]) -> Result<Declarations, String> {
-    // `structs` holds the row's struct and type alias names: the names a
-    // declaration file declares for the whole row.
+/// name must be one `row` binds, by this file's own declarations and
+/// imports, to a struct or type alias of the row's declaration files. So
+/// an import in one file never vouches for a name in another, and a name
+/// imported from elsewhere is never taken for the row's type of that name.
+fn canonical(
+    file: &Declarations,
+    row: &dyn Fn(&str) -> Result<(), String>,
+) -> Result<Declarations, String> {
     let rewrite = |found: &CType| -> Result<CType, String> {
-        fn walk(found: &CType, file: &Declarations, structs: &[String]) -> Result<CType, String> {
+        fn walk(
+            found: &CType,
+            file: &Declarations,
+            row: &dyn Fn(&str) -> Result<(), String>,
+        ) -> Result<CType, String> {
             match found {
                 CType::Pointer { constant, to } => Ok(CType::Pointer {
                     constant: *constant,
-                    to: Box::new(walk(to, file, structs)?),
+                    to: Box::new(walk(to, file, row)?),
                 }),
                 CType::Named(name) => {
                     if name.starts_with("core::ffi::") || PRIMITIVES.contains(&name.as_str()) {
                         Ok(CType::Named(name.clone()))
                     } else if file.ffi_names.iter().any(|imported| imported == name) {
                         Ok(CType::Named(format!("core::ffi::{name}")))
-                    } else if structs.iter().any(|item| item == name) {
-                        Ok(CType::Named(name.clone()))
                     } else {
-                        Err(format!(
-                            "`{name}` is neither imported from core::ffi in its own file, a \
-                             primitive integer, nor a struct or type alias of the declaration \
-                             files"
-                        ))
+                        row(name).map(|()| CType::Named(name.clone()))
                     }
                 }
             }
         }
-        walk(found, file, structs)
+        walk(found, file, row)
     };
     let mut out = Declarations::default();
     for item in &file.structs {
@@ -1164,18 +1245,10 @@ fn row_declarations(
         }
         files.push((file.clone(), one));
     }
-    let structs: Vec<String> = files
-        .iter()
-        .flat_map(|(_, one)| {
-            one.structs
-                .iter()
-                .map(|item| item.name.clone())
-                .chain(one.aliases.iter().map(|(name, _)| name.clone()))
-        })
-        .collect();
     let mut found = Declarations::default();
-    for (file, one) in files {
-        match canonical(&one, &structs) {
+    for (index, (file, one)) in files.iter().enumerate() {
+        let row = |name: &str| bound_in_row(&files, &directory, index, name, 0);
+        match canonical(one, &row) {
             Ok(one) => {
                 found.structs.extend(one.structs);
                 found.aliases.extend(one.aliases);
@@ -1186,6 +1259,125 @@ fn row_declarations(
         }
     }
     Ok(Ok(found))
+}
+
+/// How many re-exports a name is followed through before the chain is
+/// refused.
+const MAX_REEXPORTS: usize = 8;
+
+/// Whether the file `files[at]` binds `name` to a struct or type alias of
+/// the row's declaration files (`files`, under `directory`): it declares
+/// it, or exactly one of its imports that is in effect names it in a
+/// module of the row whose file binds it so in turn. An import naming a
+/// module of the row whose file the compiler did not read (the other C
+/// library's) is not in effect. An import from outside the row, a name
+/// neither declared nor imported, and a name two imports in effect bind
+/// are refused: the type Rust uses there may not be the row's.
+pub(crate) fn bound_in_row(
+    files: &[(PathBuf, Declarations)],
+    directory: &Path,
+    at: usize,
+    name: &str,
+    depth: usize,
+) -> Result<(), String> {
+    let Some((file, one)) = files.get(at) else {
+        return Err(format!("`{name}`: no such declaration file"));
+    };
+    if one.structs.iter().any(|item| item.name == name)
+        || one.aliases.iter().any(|(alias, _)| alias == name)
+    {
+        return Ok(());
+    }
+    if depth > MAX_REEXPORTS {
+        return Err(format!(
+            "`{name}`: a chain of re-exports this check does not follow"
+        ));
+    }
+    let module = module_of(file);
+    let mut bound = Vec::new();
+    for path in one
+        .imports
+        .iter()
+        .filter(|path| path.last().is_some_and(|last| last == name))
+    {
+        let shown = path.join("::");
+        let Some(target) = path
+            .split_last()
+            .and_then(|(_, modules)| import_target(module.as_deref(), modules))
+        else {
+            bound.push(Err(format!(
+                "`{name}` is imported from {shown}, outside the row's declaration files, so \
+                 the type Rust uses may not be the one this check proves"
+            )));
+            continue;
+        };
+        let target_file = Path::new("src").join(format!("{}.rs", target.join("/")));
+        if let Some(index) = files.iter().position(|(file, _)| *file == target_file) {
+            bound.push(bound_in_row(files, directory, index, name, depth + 1));
+        } else if !target_file.starts_with(directory) {
+            bound.push(Err(format!(
+                "`{name}` is imported from {shown}, outside the row's declaration files, so \
+                 the type Rust uses may not be the one this check proves"
+            )));
+        }
+        // Otherwise a module of the row the compiler did not read: an
+        // import the target's cfg leaves out.
+    }
+    match bound.len() {
+        0 => Err(format!(
+            "`{name}` is neither imported from core::ffi in its own file, a primitive integer, \
+             nor a struct or type alias its own file declares or imports from the row's \
+             declaration files"
+        )),
+        1 => bound
+            .pop()
+            .unwrap_or_else(|| Err(format!("`{name}`: unbound"))),
+        _ => Err(format!(
+            "`{name}` is bound by more than one import in effect, so which type Rust uses \
+             is not one this check can name"
+        )),
+    }
+}
+
+/// The module path of a source file of the crate, `src/a/b.rs` giving
+/// `a::b`, as segments; `None` for the crate root or a path not of that
+/// form.
+fn module_of(file: &Path) -> Option<Vec<String>> {
+    let relative = file.strip_prefix("src").ok()?;
+    let stem = relative.with_extension("");
+    let segments: Vec<String> = stem
+        .components()
+        .map(|part| part.as_os_str().to_str().map(str::to_owned))
+        .collect::<Option<_>>()?;
+    (segments.first().is_some_and(|first| first != "lib")).then_some(segments)
+}
+
+/// The module an import's module path (`modules`, without the name)
+/// reaches from `module`: `super` steps up, `self` stays, `crate` starts
+/// at the root and any other leading name is a child module. `None` for a
+/// path into another crate (`core`, `std` or any other), or that leaves
+/// the crate.
+fn import_target(module: Option<&[String]>, modules: &[String]) -> Option<Vec<String>> {
+    let mut at: Vec<String> = module?.to_vec();
+    let mut segments = modules.iter();
+    match segments.as_slice().first().map(String::as_str) {
+        Some("crate") => {
+            at.clear();
+            segments.next();
+        }
+        Some("core" | "std" | "alloc") | None => return None,
+        _ => {}
+    }
+    for segment in segments {
+        match segment.as_str() {
+            "super" => {
+                at.pop()?;
+            }
+            "self" => {}
+            other => at.push(other.to_owned()),
+        }
+    }
+    (!at.is_empty()).then_some(at)
 }
 
 /// Every identifier in the files the compiler read for the row of `module`

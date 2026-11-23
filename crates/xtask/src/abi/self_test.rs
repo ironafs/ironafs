@@ -21,6 +21,9 @@
 //! - by the comparison with sites.json's record: a type alias the
 //!   declarations state but the record leaves out, and one the record
 //!   holds but no declaration states;
+//! - by the import resolver, over a row of two files: a declaration's type
+//!   imported from another module of the crate while the row's own type of
+//!   that name is still declared, and one imported by a glob;
 //! - by the declaration reader, which refuses what C cannot be compared
 //!   with: another ABI string, an attribute on a foreign function (such as
 //!   `link_name`), a `packed` struct, a renaming import, a type alias, and
@@ -35,9 +38,10 @@ use std::path::Path;
 
 use super::{
     DataModel, Declarations, Recorded, applies_here, c_source, compile, declarations,
-    fact_differences, header_macros, required_constants, unnamed,
+    fact_differences, header_macros, required_constants, row_declarations, unnamed,
 };
 use crate::Error;
+use crate::fixture;
 use crate::rust_source::tokens_with_strings;
 
 const CHECK: &str = "check-abi";
@@ -274,13 +278,15 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
             .to_owned(),
     )?;
     recorded_facts_case(output)?;
+    foreign_import_case(dir, output)?;
     report(
         output,
         format!(
             "check-abi --self-test: the fixture compiled; {} planted mismatches failed to compile \
              at their assertions, an unnamed qualified constant was withheld, {} declarations \
              were refused by the reader, a missing fact was found, and a copy that leaves out \
-             or adds a type alias was caught",
+             or adds a type alias was caught, as was a type taken from outside the row's \
+             declaration files",
             COMPILER.len() + 1 + NON_INTEGER.len(),
             READER.len()
         ),
@@ -375,6 +381,66 @@ fn recorded_facts_case(output: &mut impl Write) -> Result<(), Error> {
     writeln!(
         output,
         "caught: a type alias declared but not recorded, and one recorded but not declared"
+    )
+    .map_err(Error::io("report check-abi self-test"))
+}
+
+/// A row of two declaration files: `abi.rs` declares `struct timespec`,
+/// and `abi/foreign.rs` declares a function over a `timespec` it imports.
+/// Imported from `super`, the row's own, it is read; imported from another
+/// module of the crate, or by a glob, the row's own `timespec` is still
+/// declared, but the function's may be another, and it is refused.
+fn foreign_import_case(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    const CASE: &str = "a type imported from outside the row's declaration files";
+    const ABI: &str = "use core::ffi::c_long;\n#[repr(C)]\n\
+                       pub(super) struct timespec {\n    tv_sec: c_long,\n    tv_nsec: c_long,\n}\n";
+    let foreign = |import: &str| {
+        format!(
+            "use core::ffi::c_int;\n{import}\nunsafe extern \"C\" {{\n    \
+             fn clock_gettime(clock: c_int, now: *mut timespec) -> c_int;\n}}\n"
+        )
+    };
+    let crate_dir = dir.join("row-crate");
+    let module = Path::new("src").join("row");
+    let read: std::collections::BTreeSet<_> =
+        [module.join("abi.rs"), module.join("abi").join("foreign.rs")]
+            .into_iter()
+            .collect();
+    let attempt = |import: &str| -> Result<Result<Declarations, String>, Error> {
+        fixture::write_file(&crate_dir.join(&module).join("abi.rs"), ABI)?;
+        fixture::write_file(
+            &crate_dir.join(&module).join("abi").join("foreign.rs"),
+            &foreign(import),
+        )?;
+        row_declarations(&crate_dir, "row", &read, "C")
+    };
+    if let Err(error) = attempt("use super::timespec;")? {
+        return Err(failure(
+            CASE,
+            format!("the row's own import was refused: {error}"),
+        ));
+    }
+    for (import, says) in [
+        (
+            "use crate::elsewhere::timespec;",
+            "imported from crate::elsewhere::timespec",
+        ),
+        ("use crate::elsewhere::*;", "a glob import"),
+    ] {
+        match attempt(import)? {
+            Err(error) if error.contains(says) => {}
+            Err(error) => {
+                return Err(failure(
+                    CASE,
+                    format!("{import}: refused for another reason: {error}"),
+                ));
+            }
+            Ok(_) => return Err(failure(CASE, format!("{import}: accepted"))),
+        }
+    }
+    writeln!(
+        output,
+        "caught: a declaration's type imported from another module of the crate, and by a glob"
     )
     .map_err(Error::io("report check-abi self-test"))
 }
