@@ -22,6 +22,15 @@
 //! - each function's type, by a `_Generic` selection with no default on
 //!   its address against a pointer to the declared prototype.
 //!
+//! Which constants must be asserted comes from the compiled code, not
+//! from the editable `sites.json`: every identifier the files compiled for
+//! the row name (`src/<module>.rs` and `src/<module>/`) that is an
+//! object-like macro of the row's headers (the C preprocessor's `-dM`)
+//! must be declared, and so asserted, in the declaration files. The copy's
+//! recorded facts must equal what those files declare. Constants are
+//! emitted as normalized decimals, and no file of the crate may name an
+//! item `core`, so `core::ffi` is the core crate's.
+//!
 //! The C file is never linked into anything. The check proves the host
 //! target only: a target on which it has not run is MISSING evidence, and
 //! its sites do not ship there. `--self-test` compiles a host-portable
@@ -123,6 +132,12 @@ pub(crate) fn declarations(
     abi: &str,
     found: &mut Declarations,
 ) -> Result<(), String> {
+    if let Some(line) = rust_source::core_shadows(tokens).first() {
+        return Err(format!(
+            "line {line}: an item, import or generic parameter named `core`, under which \
+             `core::ffi` would not be the core crate's"
+        ));
+    }
     let mut at = 0;
     while let Some(token) = tokens.get(at) {
         let line = token.line;
@@ -341,7 +356,10 @@ fn read_constant(tokens: &[Token], at: usize) -> Option<((String, String), usize
     {
         return None;
     }
-    value.push_str(&digits.replace('_', ""));
+    // Rust reads `046` as forty-six, C as an octal thirty-eight: the value
+    // is emitted as its normalized decimal, never as written.
+    let number: u128 = digits.replace('_', "").parse().ok()?;
+    value.push_str(&number.to_string());
     if punct(tokens.get(next + 1)) != Some(';') {
         return None;
     }
@@ -658,6 +676,41 @@ pub(crate) fn c_source(
 ///
 /// Returns an error if the file cannot be written or the compiler cannot
 /// be started.
+/// The object-like macros the C compiler's preprocessor defines once
+/// `headers` are included (`$CC -E -dM`), with the same compiler as
+/// `compile`.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be written or the compiler started;
+/// a preprocessor failure is `Ok(Err(..))`.
+pub(crate) fn header_macros(
+    headers: &[String],
+    file: &Path,
+) -> Result<Result<std::collections::BTreeSet<String>, String>, Error> {
+    let source: String = headers
+        .iter()
+        .map(|header| format!("#include <{header}>\n"))
+        .collect();
+    crate::fixture::write_file(file, &source)?;
+    let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+    let output = Command::new(compiler)
+        .args(["-std=c11", "-E", "-dM"])
+        .arg(file)
+        .output()
+        .map_err(Error::io("run the C preprocessor"))?;
+    if !output.status.success() {
+        return Ok(Err(format!(
+            "the C preprocessor failed on the row's headers: {}",
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .next()
+                .unwrap_or_default()
+        )));
+    }
+    Ok(Ok(object_macros(&String::from_utf8_lossy(&output.stdout))))
+}
+
 pub(crate) fn compile(source: &str, file: &Path) -> Result<Result<(), String>, Error> {
     crate::fixture::write_file(file, source)?;
     let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
@@ -847,6 +900,35 @@ fn row_declarations(
     Ok(Ok(found))
 }
 
+/// Every identifier in the files the compiler read for the row of `module`
+/// (`src/<module>.rs` and everything under `src/<module>/`).
+fn row_identifiers(
+    crate_dir: &Path,
+    module: &str,
+    read: &std::collections::BTreeSet<PathBuf>,
+) -> Result<Result<std::collections::BTreeSet<String>, String>, Error> {
+    let root = Path::new("src").join(format!("{module}.rs"));
+    let directory = Path::new("src").join(module);
+    let mut used = std::collections::BTreeSet::new();
+    for file in read
+        .iter()
+        .filter(|file| **file == root || file.starts_with(&directory))
+    {
+        let path = crate_dir.join(file);
+        let text = fs::read_to_string(&path).map_err(Error::path_io("read source file", &path))?;
+        match rust_source::tokens(&text) {
+            Ok(tokens) => used.extend(
+                tokens
+                    .iter()
+                    .filter_map(|token| ident(Some(token)))
+                    .map(str::to_owned),
+            ),
+            Err(error) => return Ok(Err(format!("{}: {error}", file.display()))),
+        }
+    }
+    Ok(Ok(used))
+}
+
 /// The rows implemented on `target` that hold a foreign item: what this
 /// check proves there. Empty on a target with none, where it has nothing
 /// to prove; `cargo xtask check` then skips it, and a CI lane that runs it
@@ -952,6 +1034,24 @@ fn check_target(
     };
     let mut checked = Vec::new();
     let mut violations = Vec::new();
+    // `core::ffi` names C's types only where no file of the crate shadows
+    // `core`, a glob import from another file included.
+    for file in &read {
+        let path = crate_dir.join(file);
+        let text = fs::read_to_string(&path).map_err(Error::path_io("read source file", &path))?;
+        match rust_source::tokens(&text) {
+            Ok(tokens) => {
+                if let Some(line) = rust_source::core_shadows(&tokens).first() {
+                    violations.push(format!(
+                        "{}:{line}: an item, import or generic parameter named `core`, under \
+                         which `core::ffi` would not be the core crate's",
+                        file.display()
+                    ));
+                }
+            }
+            Err(error) => violations.push(format!("{}: {error}", file.display())),
+        }
+    }
     for row in inventory
         .rows
         .iter()
@@ -993,13 +1093,56 @@ fn prove_row(
         Ok(found) => found,
         Err(error) => return failed(error),
     };
-    let missing = missing_facts(&code.structs, &code.constants, &found);
-    if !missing.is_empty() {
+    // The facts the row must assert come from its compiled code: every C
+    // macro of its headers that a file the compiler read for the row names
+    // (`src/<module>.rs` and everything under `src/<module>/`).
+    let macros = match header_macros(&code.headers, &dir.join(format!("{}-macros.c", row.id)))? {
+        Ok(macros) => macros,
+        Err(error) => return failed(error),
+    };
+    let used = match row_identifiers(crate_dir, &code.module, read)? {
+        Ok(used) => used,
+        Err(error) => return failed(error),
+    };
+    let declared: Vec<&str> = found
+        .constants
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let undeclared: Vec<String> = required_constants(used.iter().map(String::as_str), &macros)
+        .into_iter()
+        .filter(|name| !declared.contains(&name.as_str()))
+        .collect();
+    if !undeclared.is_empty() {
         return failed(format!(
-            "the declaration files the compiler read under src/{}/ state no {}, which \
-             sites.json records as the row's C facts",
+            "the row's code names {}, a C macro of its headers, which no declaration file the \
+             compiler read under src/{}/ declares, so no assertion would prove it",
+            undeclared.join(", "),
+            code.module
+        ));
+    }
+    // The copy records what the compiled declarations state, no more and
+    // no less: it is checked against them, never the source of them.
+    let missing = missing_facts(&code.structs, &code.constants, &found);
+    let unrecorded: Vec<&str> = found
+        .structs
+        .iter()
+        .map(|item| item.name.as_str())
+        .filter(|name| !code.structs.iter().any(|recorded| recorded == name))
+        .chain(
+            declared
+                .iter()
+                .copied()
+                .filter(|name| !code.constants.iter().any(|recorded| recorded == name)),
+        )
+        .collect();
+    if !missing.is_empty() || !unrecorded.is_empty() {
+        return failed(format!(
+            "sites.json's C facts differ from the declaration files the compiler read under \
+             src/{}/: recorded but not declared [{}], declared but not recorded [{}]",
             code.module,
-            missing.join(", ")
+            missing.join(", "),
+            unrecorded.join(", ")
         ));
     }
     let declared: Vec<&str> = code
@@ -1038,4 +1181,38 @@ fn prove_row(
             Err(error) => Err(format!("{}: {error}", row.id)),
         },
     ))
+}
+
+/// The names of the object-like macros a preprocessor's `-dM` `dump`
+/// defines (`#define NAME value`, not `#define NAME(args) ...`).
+pub(crate) fn object_macros(dump: &str) -> std::collections::BTreeSet<String> {
+    dump.lines()
+        .filter_map(|line| line.strip_prefix("#define "))
+        .filter_map(|rest| {
+            let name: String = rest
+                .chars()
+                .take_while(|next| next.is_ascii_alphanumeric() || *next == '_')
+                .collect();
+            let after = rest.get(name.len()..).unwrap_or_default();
+            (!name.is_empty() && !after.starts_with('(')).then_some(name)
+        })
+        .collect()
+}
+
+/// The C facts a row must declare and assert, from its compiled code: each
+/// identifier `used` in the files the compiler read for the row that is an
+/// object-like macro of the row's C headers (`macros`) and has an
+/// upper-case letter (so a Rust `cfg` word such as `unix`, or a variable
+/// such as `errno`, which C also defines, is never taken for one). Sorted,
+/// each once.
+pub(crate) fn required_constants<'a>(
+    used: impl Iterator<Item = &'a str>,
+    macros: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    used.filter(|name| name.bytes().any(|byte| byte.is_ascii_uppercase()))
+        .filter(|name| macros.contains(*name))
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<String>>()
+        .into_iter()
+        .collect()
 }
