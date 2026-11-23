@@ -88,6 +88,10 @@ jobs:
         run: cargo --locked xtask check-seams
       - name: Prove the seam rules catch planted violations
         run: cargo --locked xtask check-seams --self-test
+      - name: Check unsafe stays in ironafs-os and matches ADR 0005's table
+        run: cargo --locked xtask check-os
+      - name: Prove the site inventory catches planted changes
+        run: cargo --locked xtask check-os --self-test
 
   test:
     name: test
@@ -111,6 +115,7 @@ jobs:
           CARGO_BUILD_WARNINGS: deny
         run: |
           cargo clippy --all-targets --workspace --locked
+          cargo clippy --all-targets --workspace --locked --target aarch64-unknown-linux-gnu
           cargo clippy --all-targets --workspace --locked --target x86_64-pc-windows-msvc
           cargo clippy --all-targets --workspace --locked --target aarch64-apple-darwin
       - name: Install cargo-nextest
@@ -130,6 +135,244 @@ jobs:
       - name: Run doc-tests
         timeout-minutes: 5
         run: cargo test --doc --workspace --locked
+
+  os-linux:
+    name: os-linux (${{ matrix.runner }}, ${{ matrix.target }})
+    # The real-call tests and the ABI check of ironafs-os on each Linux
+    # target ADR 0005 allows, each on its own architecture with its own C
+    # library's headers (point 5.6; sheet tests, point 6.4), on Ubuntu
+    # 24.04 and 26.04. Each lane names the target it proves, the sites
+    # check-abi must have proved, and the native tests that must have run;
+    # check-abi also checks that $CC is that target's compiler (its
+    # architecture and C library).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+            cc: musl-gcc
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
+            cc: musl-gcc
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-26.04
+            nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-26.04
+            nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+            cc: musl-gcc
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-26.04-arm
+            nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-26.04-arm
+            nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
+            cc: musl-gcc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      TARGET: ${{ matrix.target }}
+      SITES: linux-clock linux-random
+      NATIVE_TESTS: >-
+        linux_clock::tests::read_clock_boot_advances_and_never_goes_back
+        linux_clock::tests::read_clock_awake_advances_and_never_goes_back
+        linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names
+        linux_random::tests::getrandom_reports_a_full_piece_of_at_most_256_bytes
+        mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust and the target
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustup target add "$TARGET"
+          rustc --version
+      - name: Install musl's C compiler wrapper and headers
+        if: matrix.cc == 'musl-gcc'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+          musl-gcc --version
+      - name: Install cargo-nextest
+        env:
+          ARCHIVE: ${{ matrix.nextest }}
+          ARCHIVE_SHA256: ${{ matrix.nextest_sha256 }}
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          curl --fail --silent --show-error --location --output "$ARCHIVE" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/$ARCHIVE"
+          printf '%s  %s\n' "$ARCHIVE_SHA256" "$ARCHIVE" | sha256sum -c -
+          tar -xzf "$ARCHIVE"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: Run ironafs-os's tests on the target, real system calls included
+        run: |
+          cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked > nextest.log 2>&1
+          cat nextest.log
+          for test in $NATIVE_TESTS; do
+            grep -Eq "PASS .* ironafs-os $test\$" nextest.log
+          done
+      - name: Prove the target's foreign declarations against its C headers
+        env:
+          CC: ${{ matrix.cc || 'cc' }}
+        run: |
+          cargo --locked xtask check-abi --target "$TARGET" > check-abi.log
+          cat check-abi.log
+          grep -q "^check-abi: $TARGET: " check-abi.log
+          for site in $SITES; do
+            grep -q "$site (" check-abi.log
+          done
+      - name: Prove the declaration check catches planted mismatches
+        env:
+          CC: ${{ matrix.cc || 'cc' }}
+        run: cargo --locked xtask check-abi --self-test
+      - name: Compare the musl build's own sites with the copy
+        # The production library built for this musl target, its sites read
+        # from the files that build compiled (ADR 0005, point 6.7), and a
+        # site planted for this target alone caught (a synthetic input: the
+        # planted file added to that build's file list).
+        if: matrix.cc == 'musl-gcc'
+        run: |
+          cargo --locked xtask check-os > check-os.log
+          cat check-os.log
+          grep -Eq "^check-os: .* on [^;]*${TARGET}[,;]" check-os.log
+          cargo --locked xtask check-os --self-test > check-os-self-test.log
+          cat check-os-self-test.log
+          grep -qx "caught: a site planted for a musl target alone (synthetic input: added to its build's file list): $TARGET" check-os-self-test.log
+
+  os-linux-glibc-2-28:
+    name: os-linux (glibc 2.28, ${{ matrix.target }})
+    # The oldest glibc of the build goal (ADR 0004, L42, point 3; ADR 0005,
+    # point 5.5): ironafs-os built and its tests run on AlmaLinux 8, on
+    # each Linux architecture. Each lane proves the target it built and
+    # the runtime it ran on, and requires the named clock, random and wipe
+    # tests. The conditional glibc 2.17 artefact is not offered until it is
+    # qualified separately.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Each lane's own AlmaLinux 8 image, by its architecture's digest
+          # in the same multi-architecture index.
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            runner: ubuntu-24.04
+            image: docker.io/library/almalinux:8@sha256:974135fa35c47f8406ae9f81e8479fe0c372bdd64244a48770848466ceb694ce
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            image: docker.io/library/almalinux:8@sha256:34a85f19e05e28243249d45dd3842621741a43b110865ca80575c9b4e083cc29
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    container:
+      image: ${{ matrix.image }}
+    env:
+      TARGET: ${{ matrix.target }}
+      ARCH: ${{ matrix.arch }}
+      NATIVE_TESTS: >-
+        linux_clock::tests::read_clock_boot_advances_and_never_goes_back
+        linux_clock::tests::read_clock_awake_advances_and_never_goes_back
+        linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names
+        linux_random::tests::getrandom_reports_a_full_piece_of_at_most_256_bytes
+        mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install a C toolchain and Rust
+        run: |
+          dnf --assumeyes install gcc
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs > rustup-init.sh
+          sh rustup-init.sh -y --default-toolchain none --profile minimal
+          "$HOME/.cargo/bin/rustup" toolchain install --profile minimal --no-self-update --no-update
+      - name: Prove the runtime and the target
+        # Each output is read whole into a variable before it is tested, so
+        # no command writes into a pipe that closes early (SIGPIPE under
+        # pipefail).
+        run: |
+          glibc=$(ldd --version | sed -n 1p)
+          echo "$glibc"
+          case "$glibc" in
+            *' 2.28') ;;
+            *) echo "not glibc 2.28: $glibc"; exit 1 ;;
+          esac
+          test "$(uname -m)" = "$ARCH"
+          host=$("$HOME/.cargo/bin/rustc" -vV | sed -n 's/^host: //p')
+          echo "rustc host: $host"
+          test "$host" = "$TARGET"
+      - name: Run ironafs-os's tests on glibc 2.28, real system calls included
+        run: |
+          "$HOME/.cargo/bin/cargo" test -p ironafs-os --locked --target "$TARGET" > test.log 2>&1
+          cat test.log
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' test.log
+          for test in $NATIVE_TESTS; do
+            grep -q "^test $test \.\.\. ok\$" test.log
+          done
+
+  miri:
+    name: miri
+    # The Miri job of coding standards rule 5, with the first crate that
+    # holds unsafe (ADR 0005, point 6.5): each foreign call is replaced by
+    # its in-crate stand-in, so the wrappers' own pointers and checks run
+    # under Miri, and mem-wipe's own block.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned nightly with Miri
+        run: |
+          rustup toolchain install nightly-2026-11-01 --profile minimal --component miri,rust-src --no-self-update
+          cargo +nightly-2026-11-01 miri --version
+      - name: Run ironafs-os under Miri, host and aarch64 Linux
+        # A run that ran nothing, or ignored a test, proves nothing: each
+        # must report every test passed and none ignored, and the named
+        # wrapper and wipe tests must be among them. The random site passes
+        # its buffer's exposed address, as the C call needs, so Miri runs
+        # with permissive provenance, which only silences its warning about
+        # that integer-to-pointer cast (the cast is the design, not a bug).
+        env:
+          MIRIFLAGS: -Zmiri-permissive-provenance
+        run: |
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            cargo +nightly-2026-11-01 miri test --locked -p ironafs-os --lib --target "$target" > "miri-$target.log" 2>&1
+            cat "miri-$target.log"
+            grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "miri-$target.log"
+            for test in \
+              linux_clock::tests::read_clock_boot_advances_and_never_goes_back \
+              linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names \
+              linux_random::tests::arguments_pass_the_buffer_address_and_length_and_zeros_each_as_a_long \
+              mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257; do
+              grep -q "^test $test \.\.\. ok$" "miri-$target.log"
+            done
+          done
 
   trailers:
     name: trailers
@@ -202,19 +445,22 @@ jobs:
 
   ci-ok:
     name: ci-ok
-    needs: [lint, test, trailers, fuzz]
+    needs: [lint, test, os-linux, os-linux-glibc-2-28, miri, trailers, fuzz]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - name: Require lint, test, trailer and fuzz check success
+      - name: Require lint, test, os-linux, glibc 2.28, Miri, trailer and fuzz check success
         env:
           LINT_RESULT: ${{ needs.lint.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          OS_LINUX_RESULT: ${{ needs.os-linux.result }}
+          OLD_GLIBC_RESULT: ${{ needs.os-linux-glibc-2-28.result }}
+          MIRI_RESULT: ${{ needs.miri.result }}
           TRAILERS_RESULT: ${{ needs.trailers.result }}
           FUZZ_RESULT: ${{ needs.fuzz.result }}
         run: |
-          printf 'lint: %s\ntest: %s\ntrailers: %s\nfuzz: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$TRAILERS_RESULT" "$FUZZ_RESULT"
-          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$TRAILERS_RESULT" == success && "$FUZZ_RESULT" == success ]]
+          printf 'lint: %s\ntest: %s\nos-linux: %s\nglibc 2.28: %s\nmiri: %s\ntrailers: %s\nfuzz: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$OS_LINUX_RESULT" "$OLD_GLIBC_RESULT" "$MIRI_RESULT" "$TRAILERS_RESULT" "$FUZZ_RESULT"
+          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$OS_LINUX_RESULT" == success && "$OLD_GLIBC_RESULT" == success && "$MIRI_RESULT" == success && "$TRAILERS_RESULT" == success && "$FUZZ_RESULT" == success ]]

@@ -3,6 +3,7 @@
 
 //! The `cargo xtask` entry point and its diagnostic and exit-status handling.
 
+mod abi;
 mod args;
 mod bans;
 mod cell;
@@ -16,6 +17,7 @@ mod grants;
 mod hooks;
 mod json;
 mod metadata;
+mod os;
 mod pure;
 mod rust_source;
 mod seams;
@@ -170,6 +172,10 @@ fn run_task(
         args::Task::Fuzz { self_test } => fuzz::run(self_test, output),
         args::Task::CheckGrants { self_test } => grants::run(self_test, output),
         args::Task::CheckPure { self_test } => pure::run(self_test, output),
+        args::Task::CheckOs { self_test } => os::run(self_test, output),
+        args::Task::CheckAbi { self_test, target } => {
+            abi::run(self_test, target.as_deref(), output)
+        }
         args::Task::CheckSeams { self_test } => seams::run(self_test, output),
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),

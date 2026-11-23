@@ -48,7 +48,15 @@ pub(crate) const NAMED: &[Named] = &[
                ]\n",
     },
     Named {
-        root: "allow-build-scripts = []\n",
+        // The root's one entry is the workspace's own `ironafs-os`, which
+        // the fuzz crate does not build.
+        root: "allow-build-scripts = [\n  \
+               # The target gate of ADR 0005, point 5.3 and Decision 4: std only, it\n  \
+               # compares Cargo's TARGET with point 5.3's seven triples and refuses any\n  \
+               # other; it runs no program, compiles nothing and writes nothing\n  \
+               # (coding standards rule 20's written reason is that ADR).\n  \
+               { crate = \"ironafs-os@0.0.0\" },\n\
+               ]\n",
         fuzz: "allow-build-scripts = [\n  \
                # Compiles the bundled libFuzzer C++ sources with the cc crate.\n  \
                { crate = \"libfuzzer-sys@0.4.13\" },\n  \

@@ -62,7 +62,7 @@ fn clean() -> Fixture {
                 "ironafs-events",
             ],
         ),
-        ("ironafs-os", &["ironafs-time", "libc"]),
+        ("ironafs-os", &["libc"]),
         ("ironafs-net", &["ironafs-rx", "ironafs-os"]),
         ("ironafs-gss", &["ironafs-time", "gss-ffi"]),
         (
@@ -93,6 +93,7 @@ fn clean() -> Fixture {
     }
     fixture.add_third_party("libc", &[]);
     fixture.add_third_party("gss-ffi", &["libc"]);
+    fixture.lints("ironafs-os", OS_LINTS);
     fixture.manifest_tail(
         "ironafs-cache",
         "\n[dev-dependencies]\nironafs-sim = { path = \"../ironafs-sim\" }\n\
@@ -152,6 +153,10 @@ fn clean_sources(fixture: &mut Fixture) {
     );
 }
 
+/// `ironafs-os`'s own lint table in the fixture: the fixture workspace's
+/// one lint, with unsafe code denied instead of forbidden.
+const OS_LINTS: &str = "\n[lints.rust]\nunsafe_code = \"deny\"\n";
+
 /// The file a planted source case writes, in `ironafs-client`.
 const PLANTED_CRATE: &str = "ironafs-client";
 const PLANTED: &str = "crates/ironafs-client/src/planted.rs";
@@ -195,6 +200,13 @@ fn is_third_party(violation: &Violation, from: &str, to: &str) -> bool {
 fn is_without_lints(violation: &Violation, name: &str) -> bool {
     matches!(violation, Violation::NoWorkspaceLints { name: found, manifest }
         if found == name && manifest == Path::new(&format!("crates/{name}/Cargo.toml")))
+}
+
+fn is_own_lints(violation: &Violation, name: &str) -> bool {
+    matches!(violation, Violation::OwnLints { name: found, manifest, differences }
+        if found == name
+            && manifest == Path::new(&format!("crates/{name}/Cargo.toml"))
+            && differences.len() == 1)
 }
 
 fn is_without_edition(violation: &Violation, name: &str) -> bool {
@@ -1054,6 +1066,26 @@ const CASES: &[Case] = &[
         ],
     },
     Case {
+        name: "ironafs-os allowing unsafe code in its own table",
+        plant: |fixture| fixture.lints("ironafs-os", "\n[lints.rust]\nunsafe_code = \"allow\"\n"),
+        expect: &[|found| is_own_lints(found, "ironafs-os")],
+    },
+    Case {
+        name: "ironafs-os lowering a lint the workspace sets",
+        plant: |fixture| {
+            fixture.lints(
+                "ironafs-os",
+                &format!("{OS_LINTS}unsafe_op_in_unsafe_fn = \"allow\"\n"),
+            );
+        },
+        expect: &[|found| is_own_lints(found, "ironafs-os")],
+    },
+    Case {
+        name: "ironafs-os inheriting the workspace table, which forbids its sites",
+        plant: |fixture| fixture.lints("ironafs-os", "\n[lints]\nworkspace = true\n"),
+        expect: &[|found| is_own_lints(found, "ironafs-os")],
+    },
+    Case {
         name: "a target-scoped lints table",
         plant: |fixture| {
             fixture.lints(
@@ -1115,6 +1147,45 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         }
     }
 
+    // The clean fixture's ironafs-os depends on libc, which its list allows;
+    // under the repository's rule that ironafs-os has no dependency table at
+    // all, that is caught.
+    let workspace = clean().load(&dir.join("tables"), CHECK, "dependency tables")?;
+    let (found, _) = check(&workspace, FIXTURE_THIRD_PARTY, &["ironafs-os"])?;
+    let as_planted = matches!(found.as_slice(), [Violation::DependencyTable { name, .. }] if name == "ironafs-os");
+    if !as_planted {
+        return Err(failure("ironafs-os with a dependency table", &found));
+    }
+    report(
+        output,
+        "caught: ironafs-os with a dependency table".to_owned(),
+    )?;
+
+    // A development dependency under an escaped quoted key, which no text
+    // search for "dependencies" finds, and which the resolved graph drops.
+    let mut escaped = Fixture::default();
+    escaped.add_crate("ironafs-os", &[]);
+    escaped.add_crate("ironafs-time", &[]);
+    escaped.lints("ironafs-os", OS_LINTS);
+    escaped.manifest_tail(
+        "ironafs-os",
+        "\n[\"dev-depend\\u0065ncies\"]\nironafs-time = { path = \"../ironafs-time\" }\n",
+    );
+    let workspace = escaped.load(&dir.join("escaped"), CHECK, "an escaped dependency key")?;
+    let found = super::dependency_table_violations(&workspace, &["ironafs-os"]);
+    let as_planted = matches!(found.as_slice(), [Violation::DependencyTable { name, line, .. }]
+        if name == "ironafs-os" && line == "declares the dev ironafs-time");
+    if !as_planted {
+        return Err(failure(
+            "ironafs-os with a dev-dependency under an escaped key",
+            &found,
+        ));
+    }
+    report(
+        output,
+        "caught: ironafs-os with a dev-dependency under an escaped key".to_owned(),
+    )?;
+
     let empty = Workspace {
         root: dir.to_path_buf(),
         target_dir: dir.to_path_buf(),
@@ -1130,7 +1201,7 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         output,
         format!(
             "check-deps --self-test: the clean fixture passed and {} planted cases failed as planted",
-            CASES.len() + 1
+            CASES.len() + 3
         ),
     )
 }
@@ -1161,5 +1232,5 @@ fn check_fixture(
     case: &'static str,
 ) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
     let workspace = fixture.load(dir, CHECK, case)?;
-    check(&workspace, FIXTURE_THIRD_PARTY)
+    check(&workspace, FIXTURE_THIRD_PARTY, &[])
 }
