@@ -2642,8 +2642,10 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
     thread other than a worker can then wait for it indefinitely, if
     no later datagram or error ends the receive (`RouteSocket::receive`
     in `crates/ironafs-os/src/linux_rtnetlink.rs` at `e6c9eae`, lines
-    140-172, with `receive_message` from line 281: it blocks, retries
-    `EINTR`, and returns on a datagram or an error) (a drop
+    140-172, with `receive_message` from line 281, a single blocking
+    `recvmsg`, and `retried` in `crates/ironafs-os/src/fdpass.rs`,
+    lines 283-290, which retries `EINTR`: so it returns only on a
+    datagram or an error) (a drop
     on a worker only asks for the stop). A lost barrier acknowledgement
     has no deadline or retry, and can leave the generation unavailable
     until another loss or a stop (open item B1 of that change's review
@@ -2803,4 +2805,8 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
       point, and the bullet's opening claimed every file was read in
       full). The two files were then read in full, the opening says
       which two were read as diffs, and the wording was fixed in the
-      next commit.
+      next commit. GPT's scoped check of that commit
+      (`gpt-6.2-sol`, xhigh) found its findings fixed but for 3 record
+      minors (a missing citation of the shared `retried` helper, one
+      origin, one overbroad sentence), fixed in the commit after it;
+      under the stop rule the rounds stop there.
