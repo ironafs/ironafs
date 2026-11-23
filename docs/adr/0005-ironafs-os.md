@@ -2627,5 +2627,7 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
       limited the crate before the built-in-triple qualifier) and 2
       minor (`RUSTC_BOOTSTRAP=1`; the revisit trigger split into two
       conditions); GLM (`glm-5.3`, max) PASS, no findings. All wording,
-      fixed in the next commit; GPT's scoped check of that commit is
-      recorded in the review record.
+      fixed in `07c08f0`.
+    - Round 8, GPT's scoped check of `a5d0919..07c08f0` (`gpt-6.2-sol`,
+      xhigh): all three fixed; 2 record minors, fixed in the next
+      commit. Under the stop rule the rounds stop here.
