@@ -97,10 +97,12 @@ Sections keep their numbers once the specification is reviewed.
    starts with the byte order mark (EF BB BF) is refused. TOML 1.0.0's
    prose names no byte order mark; its "Spec" section requires UTF-8
    `[S1 "Spec": CONFIRMED]`. Its formal grammar admits none: a document
-   starts with an expression, which starts with space or tab
-   `[S1 toml.abnf, toml, expression, ws: CONFIRMED]`. The subset refuses
-   one, with its own error and hint (§5.5), rather than a generic one
-   `[OWN]`.
+   starts with an expression, which starts with zero or more spaces or
+   tabs, and no production admits U+FEFF before it
+   `[S1 toml.abnf, toml, expression, ws: CONFIRMED]`. A later
+   clarification in TOML's changelog lets a parser read one (register row
+   E57, its update check). The subset still refuses one, with its own
+   error and hint (§5.5), rather than a generic one `[OWN]`.
 2. **Lines.** A line ends at LF or at CR LF `[S1 "Spec": CONFIRMED]`. The
    last line may end without one. A CR not followed by LF is refused.
 3. **Characters.** No control character appears anywhere in the file
@@ -217,7 +219,9 @@ rule for such formats ([README](README.md), "Formats IronAFS defines"):
    release accepts every file an earlier release accepted, with the same
    meaning, without migration or loss. The subset grows only by
    accepting TOML it refuses today. Revisions before the first release
-   are not covered `[OWN]`.
+   are not covered: no other party depends on this syntax before then.
+   If one starts to, the syntax is frozen from then ([README](README.md),
+   "Freezing"), and the promise starts at the revision frozen `[OWN]`.
 3. **Newer input,** syntax this parser refuses, is refused with the first
    error in the check order of §5.4, point 1. The error has a position,
    except for a file over `MAX_FILE_BYTES`, and a hint only for the
