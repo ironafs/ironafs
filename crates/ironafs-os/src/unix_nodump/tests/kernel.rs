@@ -90,7 +90,16 @@ fn child() {
         // set-user-id copy named by SET_ID_COPY with no id change of its
         // own, and relay what that child reports.
         "disable-then-exec-set-id" => {
+            // First of all, before it reads SET_ID_COPY or starts
+            // anything: only a process whose real and effective user and
+            // group ids are all the test id may be the helper. The
+            // set-user-id copy (effective uid 0) refuses the role.
             let (real, effective) = user_ids();
+            let (real_group, effective_group) = group_ids();
+            if [real, effective, real_group, effective_group] != [SET_ID_TEST_ID; 4] {
+                println!("refused={real} {effective} {real_group} {effective_group}");
+                panic!("the set-id helper runs only as {SET_ID_TEST_ID} throughout");
+            }
             println!("helper-ids={real} {effective}");
             disable_dumps().unwrap();
             let held = dumpable().unwrap();
@@ -128,9 +137,13 @@ const SET_ID_COPY: &str = "IRONAFS_OS_TEST_SET_ID_COPY";
 /// which no account, group or thread of the machine holds (checked first),
 /// may read and run (see [`binary_copy`]): one plain, for the helper, and
 /// one owned by root and set-user-id. Both are readable to that group, so
-/// neither exec is reset for an unreadable program; the set-user-id one
-/// grants nothing a member of the group could not already do by running it,
-/// and reading it gives only the test binary's bytes.
+/// neither exec is reset for an unreadable program. Making the set-user-id
+/// copy readable adds only reading the test binary's bytes; running it,
+/// which the group could already do, runs this test binary as root, where
+/// the only role that starts a program, the helper, refuses to run unless
+/// its real and effective user and group ids are all the test id. So the
+/// copy starts nothing on another's behalf; the guest it runs on is
+/// disposable all the same.
 fn set_id_copies() -> [(PrivateDir, std::path::PathBuf); 2] {
     assert!(
         unused_id(SET_ID_TEST_ID),
@@ -222,6 +235,18 @@ fn user_ids() -> (u32, u32) {
     let mut ids = status
         .lines()
         .find_map(|line| line.strip_prefix("Uid:"))
+        .unwrap()
+        .split_whitespace()
+        .map(|id| id.parse().unwrap());
+    (ids.next().unwrap(), ids.next().unwrap())
+}
+
+/// This process's real and effective group ids, from `/proc/self/status`.
+fn group_ids() -> (u32, u32) {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let mut ids = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Gid:"))
         .unwrap()
         .split_whitespace()
         .map(|id| id.parse().unwrap());
@@ -382,6 +407,43 @@ fn a_set_id_exec_resets_the_attribute_to_suid_dumpable_and_disable_dumps_restore
         "{run:?}"
     );
     assert_reset_then_restored(&run, &format!("{SET_ID_TEST_ID} 0"), "2");
+}
+
+/// The helper role refuses a process whose ids are not all the test id,
+/// before it reads `SET_ID_COPY` or starts anything: here under the test
+/// runner's own ids, whoever they are (never the test id, which no account
+/// holds). `SET_ID_COPY` names a program that would print if it ran.
+#[test]
+fn the_set_id_helper_refuses_ids_other_than_the_test_id_before_it_starts_anything() {
+    let run = run(command(ENTRY, "disable-then-exec-set-id").env(SET_ID_COPY, "/bin/echo"));
+    assert!(!run.status.success(), "{run:?}");
+    let (real, effective) = user_ids();
+    let (real_group, effective_group) = group_ids();
+    let refused = format!("{real} {effective} {real_group} {effective_group}");
+    assert_eq!(run.value("refused"), Some(refused.as_str()), "{run:?}");
+    assert_eq!(run.value("helper-ids"), None, "{run:?}");
+    assert_eq!(run.value("self"), None, "{run:?}");
+}
+
+/// The case the refusal is for: the set-user-id copy itself, started under
+/// the test id, so its real ids are the test id and its effective uid is
+/// root's, is asked to be the helper. It refuses before it starts
+/// anything.
+#[test]
+#[ignore = "needs root, for a set-user-id copy of the test binary: run as root on a disposable Linux guest"]
+fn the_set_user_id_copy_refuses_to_be_the_set_id_helper() {
+    assert!(is_root(), "run this test as root");
+    let [(_helper_dir, helper), (_copy_dir, copy)] = set_id_copies();
+    let mut command = command_at(&copy, ENTRY, "disable-then-exec-set-id");
+    command
+        .uid(SET_ID_TEST_ID)
+        .gid(SET_ID_TEST_ID)
+        .env(SET_ID_COPY, &helper);
+    let run = run(&mut command);
+    assert!(!run.status.success(), "{run:?}");
+    let refused = format!("{SET_ID_TEST_ID} 0 {SET_ID_TEST_ID} {SET_ID_TEST_ID}");
+    assert_eq!(run.value("refused"), Some(refused.as_str()), "{run:?}");
+    assert_eq!(run.value("self"), None, "{run:?}");
 }
 
 #[test]
