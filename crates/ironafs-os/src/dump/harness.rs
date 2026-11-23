@@ -622,10 +622,6 @@ fn elf_core_end_refuses_bad_entry_sizes_counts_and_tables() {
             set(0x20..0x28, &8_u64.to_le_bytes()),
         ),
         (
-            "a section header table inside the ELF header",
-            set(0x28..0x30, &8_u64.to_le_bytes()),
-        ),
-        (
             "a table offset that overflows",
             set(0x20..0x28, &u64::MAX.to_le_bytes()),
         ),
@@ -637,6 +633,21 @@ fn elf_core_end_refuses_bad_entry_sizes_counts_and_tables() {
     for (case, image) in cases {
         assert_eq!(elf_core_end(&image), None, "{case}");
     }
+}
+
+/// A regular image (three program headers, no extended numbering) with a
+/// one-entry section header table of ELF64's entry size, inside the image,
+/// whose only fault is that it starts inside the ELF header.
+#[test]
+fn elf_core_end_refuses_a_section_table_that_starts_inside_the_elf_header() {
+    let mut image = core_image(3, false);
+    let valid = elf_core_end(&image);
+    image[0x28..0x30].copy_from_slice(&8_u64.to_le_bytes());
+    image[0x3a..0x3c].copy_from_slice(&u16::try_from(SECTION_HEADER).unwrap().to_le_bytes());
+    image[0x3c..0x3e].copy_from_slice(&1_u16.to_le_bytes());
+    assert!(8 + SECTION_HEADER <= image.len());
+    assert_eq!(valid, Some(image.len()));
+    assert_eq!(elf_core_end(&image), None);
 }
 
 #[test]
