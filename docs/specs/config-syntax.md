@@ -93,9 +93,10 @@ Sections keep their numbers once the specification is reviewed.
 ### 5.1 Layout
 
 1. **Encoding.** The file is UTF-8 `[S1 "Spec": CONFIRMED]`. A file that
-   starts with the byte order mark (EF BB BF) is refused: TOML 1.0.0 does
-   not say whether one is allowed `[S1: CONFIRMED]`, so the subset does
-   not accept one `[OWN]`.
+   starts with the byte order mark (EF BB BF) is refused. TOML 1.0.0 does
+   not say whether one is allowed: its "Spec" section requires UTF-8, and
+   no section names a byte order mark `[S1 "Spec": CONFIRMED]`. So the
+   subset does not accept one `[OWN]`.
 2. **Lines.** A line ends at LF or at CR LF `[S1 "Spec": CONFIRMED]`. The
    last line may end without one. A CR not followed by LF is refused.
 3. **Characters.** No control character appears anywhere in the file
@@ -109,11 +110,11 @@ Sections keep their numbers once the specification is reviewed.
    **Bidirectional controls** are refused the same way, wherever they
    appear, comments, keys and values included: the Unicode `Bidi_Control`
    set, U+061C, U+200E, U+200F, U+202A to U+202E and U+2066 to U+2069
-   `[S2: CONFIRMED]`. They make text display in an order other than the
-   order it is read in, so a file, or a key or value echoed from it, could
-   show one thing on screen and mean another `[OWN]`. TOML allows them
-   in comments and strings `[S1 "Comment", "String": CONFIRMED]`. The
-   error is its own kind, a bidirectional control, at the character. No
+   `[S2 Bidi_Control: CONFIRMED]`. They make text display in an order
+   other than the order it is read in, so a file, or a key or value
+   echoed from it, could show one thing on screen and mean another
+   `[OWN]`. TOML allows them in comments and strings
+   `[S1 "Comment", "String": CONFIRMED]`. The error is its own kind, a bidirectional control, at the character. No
    other character is refused by this check: other format characters
    (such as U+200B and U+200D), unassigned code points, and characters
    that look like others are accepted (§8, point 4).
@@ -201,28 +202,28 @@ containers that hold it.
 
 ### 5.3 Versions
 
-The file carries no version. The subset may grow, only by accepting TOML
-that it refuses today, never by changing the meaning of an accepted file
-`[OWN]`.
+People write this file and IronAFS only reads it, so it follows the
+rule for such formats ([README](README.md), "Formats IronAFS defines"):
 
-Against the rules for formats IronAFS defines
-([README](README.md), "Formats IronAFS defines"):
-
-1. **Magic value and version:** none, a named departure from that rule
-   `[OWN]`. People write the file, in a subset of a standard format; a
-   version line would be one more thing to get wrong, and would say
-   nothing the grow-only rule above does not.
-2. **Versions read and written:** every IronAFS version reads every file
-   an earlier version accepted. IronAFS never writes this file: the crate
-   has no encoder (§10.2), and finding and reading files is the caller's
-   (§2).
-3. **Older versions:** nothing to decode differently or migrate, since
-   the subset only grows and an accepted file keeps its meaning.
-4. **A newer file** (TOML this subset refuses) is refused at its first
-   such construct, with its position and hint, and no document is
-   returned (§5.5; §7, points 1 and 2). The parser only reads the bytes.
-5. **Extension without a new version:** by accepting TOML refused today,
-   as above.
+1. **No version.** The file carries no magic value and no version: people
+   write it, in a subset of a standard format, and a version line would
+   be one more thing to get wrong, saying nothing point 2 does not
+   `[OWN]`.
+2. **It only grows.** From the first release of this syntax, each later
+   release accepts every file an earlier release accepted, with the same
+   meaning, without migration or loss. The subset grows only by
+   accepting TOML it refuses today. Revisions before the first release
+   are not covered `[OWN]`.
+3. **Newer input,** syntax this parser refuses, is refused with the first
+   error in the check order of §5.4, point 1. The error has a position,
+   except for a file over `MAX_FILE_BYTES`, and a hint only for the
+   constructs of §5.5; no document is returned (§7, points 1 and 2). The
+   parser writes nothing; it reads the bytes it is given (§2) `[OWN]`.
+4. **Releases and inputs:** no release has shipped. The first release
+   that ships this parser reads the syntax of §5.1 to §5.5 as it then
+   stands, and each later release reads that and what it adds. IronAFS
+   writes no version of these files: the crate has no encoder (§10.2)
+   `[OWN]`.
 
 ### 5.4 Decoding
 
@@ -441,7 +442,7 @@ two final dots refused; mixed-case input stored lower-cased.
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| S1 | SPECIFICATION | TOML v1.0.0, register of editions row E57 ([README](README.md)), <https://toml.io/en/v1.0.0>, sections "Spec", "Comment", "Keys", "String", "Integer", "Boolean", "Array", "Table" (read 2026-11-21) | §5.1, §5.4, §5.5 |
+| S1 | SPECIFICATION | TOML v1.0.0, register of editions row E57 ([README](README.md)), <https://toml.io/en/v1.0.0>, sections "Spec", "Comment", "Keys", "String", "Integer", "Boolean", "Array", "Table" (read 2026-11-21) | §5.1, §5.4 |
 | S2 | SPECIFICATION | Unicode Character Database 18.0.0, `PropList.txt`, property `Bidi_Control`, register of editions row E58 ([README](README.md)), <https://www.unicode.org/Public/18.0.0/ucd/PropList.txt> (read 2026-11-23) | §5.1 |
 | DEC-1 | DECISION | Issue #93, the canonical cell-name rule (owner's decision, 2026-11-20) | §1, §5.7 |
 | ADR | DECISION | ADR 0004, C4, O17, O18, O19, O47 | §1, §2 |
