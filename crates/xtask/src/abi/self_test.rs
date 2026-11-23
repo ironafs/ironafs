@@ -236,7 +236,12 @@ fn missing_fact_case(dir: &Path) -> Result<(), Error> {
     const CASE: &str = "a constant the code names, declared outside the declaration files";
     const ROOT: &str = "fn interrupted(code: c_int) -> bool { code == abi::EINTR }\n";
     let headers: Vec<String> = HEADERS.iter().map(|header| (*header).to_owned()).collect();
-    let macros = match header_macros(&headers, &dir.join("macros.c"))? {
+    let macros = match header_macros(
+        "self-test",
+        &headers,
+        DataModel::Lp64,
+        &dir.join("macros.c"),
+    )? {
         Ok(macros) => macros,
         Err(error) => return Err(failure(CASE, error)),
     };

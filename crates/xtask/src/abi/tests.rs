@@ -5,7 +5,7 @@
 
 use super::{
     CType, DataModel, Declarations, Function, Struct, c_source, canonical, declarations, identity,
-    missing_facts, object_macros, required_constants,
+    missing_facts, object_macros, preamble, required_constants,
 };
 use crate::rust_source::tokens_with_strings;
 
@@ -315,4 +315,13 @@ fn required_constants_are_the_c_macros_the_row_s_code_names() {
     // word or a variable is never taken for one.
     let used = ["EINTR", "FLAGS", "unix", "errno", "c_int"];
     assert_eq!(required_constants(used.iter().copied(), &macros), ["EINTR"]);
+}
+
+#[test]
+fn the_macro_scan_and_the_assertions_share_one_preamble() {
+    let headers = ["time.h".to_owned()];
+    let start = preamble("linux-clock", &headers, DataModel::Lp64);
+    assert!(start.contains("#define _GNU_SOURCE 1\n"));
+    let source = c_source("linux-clock", &headers, &read(CLOCK), DataModel::Lp64).unwrap();
+    assert!(source.starts_with(&start));
 }
