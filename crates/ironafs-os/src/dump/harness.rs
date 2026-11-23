@@ -326,22 +326,24 @@ pub(crate) struct PrivateDir {
 }
 
 impl PrivateDir {
-    /// A new directory under the system's temporary directory, its name
-    /// `prefix`, this process's id and a count, so no two are the same.
+    /// A new directory under the system's temporary directory, named as
+    /// [`Self::named`] names it.
     pub(crate) fn create(prefix: &str) -> io::Result<Self> {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static COUNT: AtomicU32 = AtomicU32::new(0);
-        let count = COUNT.fetch_add(1, Ordering::Relaxed);
-        Self::at(std::env::temp_dir().join(format!("{prefix}-{}-{count}", std::process::id())))
+        Self::named(&std::env::temp_dir(), prefix)
     }
 
     /// A new directory in `parent`, which must be a trusted parent (see
-    /// [`trusted_parent`]), its name `prefix`, this process's id and a
-    /// count.
+    /// [`trusted_parent`]), named as [`Self::named`] names it.
     pub(crate) fn create_in(parent: &Path, prefix: &str) -> io::Result<Self> {
+        trusted_parent(parent)?;
+        Self::named(parent, prefix)
+    }
+
+    /// A new directory in `parent`, its name `prefix`, this process's id
+    /// and a count of this process's directories, so no two are the same.
+    fn named(parent: &Path, prefix: &str) -> io::Result<Self> {
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNT: AtomicU32 = AtomicU32::new(0);
-        trusted_parent(parent)?;
         let count = COUNT.fetch_add(1, Ordering::Relaxed);
         Self::at(parent.join(format!("{prefix}-{}-{count}", std::process::id())))
     }
