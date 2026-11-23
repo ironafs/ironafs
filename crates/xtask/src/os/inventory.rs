@@ -53,7 +53,10 @@ pub(crate) enum BlockKind {
 /// Operations each kind other than a call may name.
 const READS: &[&str] = &["read_unaligned"];
 const ADOPTIONS: &[&str] = &["from_raw_fd", "from_raw_handle", "from_raw"];
-const WRITES: &[&str] = &["write_volatile"];
+/// The one write: `core`'s own volatile write, by its whole path, never a
+/// same-named item elsewhere. That `core` here is the real crate is
+/// `check-os`'s rule that no file of the crate names an item `core`.
+const WRITES: &[&str] = &["core::ptr::write_volatile", "::core::ptr::write_volatile"];
 
 /// One `unsafe` block of an implemented row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -508,7 +511,7 @@ fn row_problems(row: &Row) -> Vec<String> {
                 BlockKind::Read => READS.contains(&callee),
                 BlockKind::Adopt => ADOPTIONS.contains(&callee),
                 BlockKind::Write => {
-                    WRITES.contains(&callee)
+                    WRITES.contains(&block.operation.as_str())
                         && block.arguments.last().map(String::as_str) == Some("0")
                 }
             };
@@ -608,7 +611,7 @@ fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
     let volatile = foreign.contains("write_volatile");
     let writes = code.blocks.iter().any(|block| {
         block.kind == BlockKind::Write
-            && block.callee() == "write_volatile"
+            && WRITES.contains(&block.operation.as_str())
             && block.arguments.last().map(String::as_str) == Some("0")
     });
     if volatile && !writes {
@@ -618,7 +621,11 @@ fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
     }
     // `syscall` reads up to six `long`s after the number, so a call passes
     // all six (the declaration's argument, in `linux_random::abi`); the
-    // count is held here, not in the editable copy.
+    // count is held here, not in the editable copy. What this establishes
+    // is the operand count only. That each operand is a `c_long` is the
+    // production code's own typing (the number a `c_long`, the six others
+    // the elements of a `[c_long; 6]`), which the compiler checks and
+    // review reads; this check does not prove operand types.
     for block in code
         .blocks
         .iter()

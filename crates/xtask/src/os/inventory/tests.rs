@@ -163,7 +163,16 @@ fn assert_caught(text: &str, cases: &[(&str, String, &str)]) {
 #[test]
 fn problems_bind_the_recorded_code_to_the_adr_row() {
     let text = inventory_text();
-    let cases: [(&str, String, &str); 8] = [
+    let cases: [(&str, String, &str); 9] = [
+        (
+            "a same-named write of another path, the last segment kept, recorded alike",
+            text.replacen(
+                "\"operation\": \"core::ptr::write_volatile\"",
+                "\"operation\": \"crate::shadow::write_volatile\"",
+                1,
+            ),
+            "cannot hold `crate::shadow::write_volatile(byte, 0)`",
+        ),
         (
             "the volatile write swapped for an unsafe impl, recorded alike",
             text.replacen(

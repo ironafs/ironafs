@@ -3,7 +3,9 @@
 
 //! Tests for the Rust token reader and the `std` paths it finds.
 
-use super::{LexError, Token, TokenKind, std_paths, tokens, tokens_with_strings, use_paths};
+use super::{
+    LexError, Token, TokenKind, core_shadows, std_paths, tokens, tokens_with_strings, use_paths,
+};
 
 fn idents(source: &str) -> Vec<String> {
     tokens(source)
@@ -377,4 +379,42 @@ fn tokens_with_strings_keep_the_text_of_plain_and_raw_strings_only() {
             .iter()
             .all(|token| !matches!(token.kind, TokenKind::Str(_)))
     );
+}
+
+#[test]
+fn core_shadows_finds_every_item_or_import_named_core() {
+    for source in [
+        "mod core { pub mod ffi {} }\n",
+        "mod core;\n",
+        "pub(crate) struct core;\n",
+        "enum core {}\n",
+        "fn core() {}\n",
+        "const core: u8 = 0;\n",
+        "static core: u8 = 0;\n",
+        "type core = u8;\n",
+        "trait core {}\n",
+        "union core { a: u8 }\n",
+        "extern crate std as core;\n",
+        "use other::thing as core;\n",
+        "use crate::shadow::core;\n",
+        "use crate::shadow::{core, other};\n",
+        "macro_rules! core { () => {} }\n",
+        "fn f<core>() {}\n",
+        "mod r#core {}\n",
+    ] {
+        let found = core_shadows(&tokens(source).unwrap());
+        assert_eq!(found, [1], "{source}");
+    }
+    for source in [
+        "use core::ffi::{c_int, c_long};\n",
+        "use core::ptr;\nfn f() { core::ptr::null::<u8>(); }\n",
+        "let x = ::core::mem::size_of::<u8>();\n",
+        "// mod core\n",
+    ] {
+        assert_eq!(
+            core_shadows(&tokens(source).unwrap()),
+            Vec::<usize>::new(),
+            "{source}"
+        );
+    }
 }

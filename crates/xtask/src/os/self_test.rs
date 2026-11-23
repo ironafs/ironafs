@@ -17,7 +17,7 @@ use super::allowlist::{Cfg, guard_of};
 use super::gate::{self, BUILD_SCRIPT};
 use super::inventory::Inventory;
 use super::pin::{self, Pinned};
-use super::scan::{self, BLOCK_BODY, CFG, TARGET_ENV};
+use super::scan::{self, BLOCK_BODY, CFG, CORE, TARGET_ENV};
 use super::{
     ALLOWLIST, CrateFile, Violation, compare, gate_violations, guard_violations,
     outside_violations, rust_files,
@@ -260,6 +260,17 @@ const CASES: &[Case] = &[
             |found| matches!(found, Violation::OutsideModule { id, .. } if id == "mem-wipe"),
             |found| mismatch(found, "mem-wipe"),
         ],
+    },
+    Case {
+        name: "a module named core, beside a site",
+        edits: &[replace(
+            "src/mem_wipe.rs",
+            "fn zero(byte: &mut u8) {",
+            "mod core {\n    pub(super) mod ptr {\n        pub(in crate::mem_wipe) fn \
+             write_volatile(byte: *mut u8, value: u8) {\n            let _ = (byte, value);\n        \
+             }\n    }\n}\n\nfn zero(byte: &mut u8) {",
+        )],
+        expect: &[|found| rule(found, CORE)],
     },
     Case {
         name: "a site in a file no target compiles",
