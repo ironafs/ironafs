@@ -60,9 +60,10 @@ pub(crate) const TARGET_ENV: &str = "target_env is named only in the crate root'
                                      `#[cfg(target_env = \"<gnu|musl>\")]` on that library's \
                                      `mod` or `pub(super) use`, so a musl build compiles the \
                                      glibc build's sites, less the rows withheld on musl";
-pub(crate) const LIBRARY_SITE: &str = "a C library's declaration file (abi/gnu.rs, abi/musl.rs) \
-                                       holds no site, so a musl build's sites are the glibc \
-                                       build's (ADR 0005, points 5.2 and 6.7)";
+pub(crate) const LIBRARY_SITE: &str = "a C library's declaration file (abi/gnu.rs, abi/musl.rs, \
+                                       or a file below abi/gnu/ or abi/musl/) holds no site, so \
+                                       a musl build's sites are the glibc build's (ADR 0005, \
+                                       points 5.2 and 6.7)";
 pub(crate) const CORE: &str = "an item, import or generic parameter named `core`, under which \
                                `core::...` in this crate could name something other than the \
                                core crate (ADR 0005, point 6.7)";
@@ -152,21 +153,30 @@ pub(crate) enum Place {
     Root,
     /// A row module's `abi.rs`.
     Abi,
-    /// A C library's declaration file under it: `abi/gnu.rs`, `abi/musl.rs`.
+    /// A C library's declaration file under it, `abi/gnu.rs` or
+    /// `abi/musl.rs`, or any file of that library's module below them
+    /// (`abi/gnu/...`, `abi/musl/...`).
     Library,
     Other,
 }
 
-/// The place of the file at `path`, relative to the crate.
+/// The place of the file at `path`, relative to the crate. A path with a
+/// component that is not UTF-8 is [`Place::Other`] as a whole, never read
+/// with that component dropped.
 pub(crate) fn place_of(path: &std::path::Path) -> Place {
-    let parts: Vec<&str> = path
+    let Some(parts) = path
         .components()
-        .filter_map(|part| part.as_os_str().to_str())
-        .collect();
+        .map(|part| part.as_os_str().to_str())
+        .collect::<Option<Vec<&str>>>()
+    else {
+        return Place::Other;
+    };
     match parts.as_slice() {
         ["src", "lib.rs"] => Place::Root,
         ["src", _, "abi.rs"] => Place::Abi,
-        ["src", _, "abi", "gnu.rs" | "musl.rs"] => Place::Library,
+        ["src", _, "abi", "gnu.rs" | "musl.rs"] | ["src", _, "abi", "gnu" | "musl", ..] => {
+            Place::Library
+        }
         _ => Place::Other,
     }
 }

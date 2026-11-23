@@ -304,6 +304,19 @@ const CASES: &[Case] = &[
         ],
     },
     Case {
+        name: "a site in a file under a C library's declaration directory",
+        edits: &[add(
+            "src/linux_fdpass/abi/gnu/planted.rs",
+            "fn planted() {\n    #[expect(unsafe_code, reason = \"linux-fdpass\")]\n    \
+             // SAFETY: planted.\n    let () = unsafe { core::hint::unreachable_unchecked() };\n}\n",
+            LINUX,
+        )],
+        expect: &[
+            |found| rule(found, super::scan::LIBRARY_SITE),
+            |found| mismatch(found, "linux-fdpass"),
+        ],
+    },
+    Case {
         name: "a target_env gate in an abi.rs on a module not named for its library",
         edits: &[replace(
             "src/linux_fdpass/abi.rs",

@@ -399,4 +399,31 @@ fn place_of_names_the_root_the_abi_files_and_the_library_files() {
         Place::Other
     );
     assert_eq!(place_of(Path::new("src/abi.rs")), Place::Other);
+    // A library's module may have children, or be written `gnu/mod.rs`:
+    // every file below it is that library's.
+    for library_file in [
+        "src/linux_fdpass/abi/gnu/mod.rs",
+        "src/linux_fdpass/abi/gnu/planted.rs",
+        "src/linux_fdpass/abi/musl/deeper/planted.rs",
+    ] {
+        assert_eq!(
+            place_of(Path::new(library_file)),
+            Place::Library,
+            "{library_file}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn place_of_a_path_with_a_component_that_is_not_utf_8_is_other() {
+    use super::place_of;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    // Dropping the component would read `src/lib.rs`, the crate root.
+    let path = Path::new("src")
+        .join(OsStr::from_bytes(b"\xff"))
+        .join("lib.rs");
+    assert_eq!(place_of(&path), Place::Other);
 }
