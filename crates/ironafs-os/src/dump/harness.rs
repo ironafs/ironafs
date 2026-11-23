@@ -62,6 +62,23 @@ pub(crate) const SIGABRT: i32 = 6;
 /// user.
 pub(crate) const NOBODY: u32 = 65_534;
 
+/// This process's `/proc/self/status`.
+pub(crate) fn own_status() -> String {
+    fs::read_to_string("/proc/self/status").unwrap()
+}
+
+/// Every id of a `status` text's `key` line (`Uid:` or `Gid:`), in its
+/// order: real, effective, saved and filesystem.
+pub(crate) fn status_ids(status: &str, key: &str) -> Vec<u32> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix(key))
+        .unwrap()
+        .split_whitespace()
+        .map(|id| id.parse().unwrap())
+        .collect()
+}
+
 /// The role this process was started with, if it is a child.
 pub(crate) fn role() -> Option<String> {
     std::env::var(ROLE).ok()

@@ -16,7 +16,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use super::super::{disable_dumps, dumpable};
 use crate::dump::harness::{
     Collector, NOBODY, PrivateDir, Run, SIGABRT, binary_copy, command, command_at, contains,
-    core_limits, marker, nobody_copy, plant, role, run, trusted_parent,
+    core_limits, marker, nobody_copy, own_status, plant, role, run, status_ids, trusted_parent,
 };
 
 /// This file's entry test, which a child runs.
@@ -265,13 +265,13 @@ struct Ids {
 impl Ids {
     /// This process's ids, from one read of `/proc/self/status`.
     fn own() -> Self {
-        Self::from_status(&std::fs::read_to_string("/proc/self/status").unwrap())
+        Self::from_status(&own_status())
     }
 
     /// The ids a `status` text gives, from its `Uid:` and `Gid:` lines.
     fn from_status(status: &str) -> Self {
         let pair = |key| {
-            let ids = id_fields(status, key);
+            let ids = status_ids(status, key);
             (ids[0], ids[1])
         };
         Self {
@@ -287,18 +287,6 @@ impl Ids {
             self.user.0, self.user.1, self.group.0, self.group.1
         )
     }
-}
-
-/// Every id of a `status` text's `key` line (`Uid:` or `Gid:`): real,
-/// effective, saved and filesystem.
-fn id_fields(status: &str, key: &str) -> Vec<u32> {
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix(key))
-        .unwrap()
-        .split_whitespace()
-        .map(|id| id.parse().unwrap())
-        .collect()
 }
 
 /// Whether `ids` may be the set-id helper: its real and effective user and
@@ -318,8 +306,7 @@ fn suid_dumpable() -> String {
 }
 
 fn is_root() -> bool {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap();
-    id_fields(&status, "Uid:").iter().all(|id| *id == 0)
+    status_ids(&own_status(), "Uid:").iter().all(|id| *id == 0)
 }
 
 #[track_caller]

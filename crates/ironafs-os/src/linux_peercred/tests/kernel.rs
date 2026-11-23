@@ -17,7 +17,9 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 
 use super::super::peer_credentials;
-use crate::dump::harness::{NOBODY, PrivateDir, command_at, nobody_copy, role};
+use crate::dump::harness::{
+    NOBODY, PrivateDir, command_at, nobody_copy, own_status, role, status_ids,
+};
 use crate::peer::PeerError;
 
 /// This file's entry test, which a child runs.
@@ -30,17 +32,11 @@ const SOCKET: &str = "IRONAFS_OS_TEST_SOCKET";
 /// `/proc/self/status` (`Uid:` and `Gid:` give real, effective, saved and
 /// filesystem ids).
 fn effective_ids() -> (u32, u32) {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap();
-    let effective = |key: &str| -> u32 {
-        status
-            .lines()
-            .find_map(|line| line.strip_prefix(key))
-            .and_then(|ids| ids.split_whitespace().nth(1))
-            .unwrap()
-            .parse()
-            .unwrap()
-    };
-    (effective("Uid:"), effective("Gid:"))
+    let status = own_status();
+    (
+        status_ids(&status, "Uid:")[1],
+        status_ids(&status, "Gid:")[1],
+    )
 }
 
 /// The entry test a child runs; it does nothing without a role.
