@@ -2658,9 +2658,16 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
       Within it, sheets 8 and 14 and Decision 3.3 retry `EINTR` for
       their own calls, unchanged; the other "is retried" hits are
       other rules. Unchanged.
-    - On the four branches, each a follow-up for its pull request, not
-      edited here. Each carries main's ADR 0005, which takes this
-      amendment when it is merged.
+    - On the four branches: each hit below is annotated on its pull
+      request as a follow-up; how that pull request reworks its code,
+      inventory, tests and CI is its own change, reviewed there. These
+      branches are not edited here. Each carries main's row 23 and sheet
+      23 unchanged, which take this amendment when it is merged. Three
+      carry main's ADR 0005 exactly; PR #132's branch (`291bc50`) is the
+      exception: it carries its own amendment of rows and sheets 13 and
+      14. The two amendments touch different rows and sheets, and
+      combine on merge; both edit only the status line and the Review
+      section in common, which that pull request reconciles.
       - `crates/ironafs-os/sites.json`, the machine-readable copy of
         point 6.7, holds the old row 23 on all four: approved-only on
         `m2a-57-os` and `m2a-57-osc`; implemented on every Linux target
@@ -2680,14 +2687,47 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
       - `crates/xtask/src/os.rs` and its inventory and ABI checks on
         all four branches: unchanged in rule, but they check the copy
         above, so they follow it.
+      - On `m2a-57-ose`: `docs/reviews/2026-11-21-m2a-57-os-part-e.md`,
+        the review record of row 23's first implementation under the
+        old sheet, including its open item O2 (the group set without
+        nexthops). A dated record, not rewritten; PR #136 notes the
+        amendment in it when the branch takes it.
       - On `m2a-97-netgen` only: the monitor's specification,
         `docs/specs/network-generation.md`, section 1 (its quotation of
-        sheet 23's caller obligations), 5.7, point 7 (the netlink wake,
-        and "needs no call beyond `linux-rtnetlink`'s"), section 6 (the
-        sequence number 0 kept for the wake) and section 13, Q6; and
+        sheet 23's caller obligations), 5.1, point 3 (it decides the
+        nexthop group and says "the sheet's text is left as accepted"),
+        5.7, point 7 (the netlink wake, and "needs no call beyond
+        `linux-rtnetlink`'s"), section 6 (the sequence number 0 kept
+        for the wake) and section 13, Q6; and
         `crates/ironafs-net/src/monitor.rs` and
         `crates/ironafs-netgen/src/monitor.rs` (the netlink wake).
-        Rewritten by that pull request's class S redesign.
+        Rewritten by that pull request's class S redesign. For 5.1,
+        point 3: under the amended sheet the group set becomes final
+        only by an amendment of row 23, so that point's decision, which
+        that branch's code and inventory already implement, becomes the
+        proposal that amendment restates, and row 23 stays
+        approved-only until it is accepted.
+      - On `m2a-97-netgen`: open item B1 of
+        `docs/reviews/2026-11-21-m2a-97-netgen.md`, an open blocker.
+        This amendment supplies the calls B1's fix needs (a bounded
+        wait, a wake that needs no netlink acknowledgement, and a
+        deadline for each attempt); B1 stays open on PR #143 until its
+        redesign implements them, reviewed there.
+    - Files read in full. Every file that states the old row 23 and
+      sheet 23 rules was read in full: `docs/adr/0005-ironafs-os.md` at
+      `3f73854`, `ff71ace`, `33bc576` and `e6c9eae` (main's text) and at
+      `291bc50`; at `33bc576`, `crates/ironafs-os/src/linux_rtnetlink.rs`
+      and every file under `crates/ironafs-os/src/linux_rtnetlink/`,
+      `crates/ironafs-os/sites.json`, `.github/workflows/ci.yml` and
+      `docs/reviews/2026-11-21-m2a-57-os-part-e.md`; at `e6c9eae`, the
+      four `linux_rtnetlink` files that differ from `33bc576`,
+      `docs/specs/network-generation.md`,
+      `docs/reviews/2026-11-21-m2a-97-netgen.md`,
+      `crates/ironafs-net/src/monitor.rs` and
+      `crates/ironafs-netgen/src/monitor.rs`. Read at their diff from
+      `33bc576`'s full read: `sites.json` and `ci.yml` at `e6c9eae`.
+      Read at the row 23 entry only: `sites.json` at `ff71ace` and
+      `291bc50`.
     - Actors. The rule binds the maintainer's session, and contributors
       and their agents, who write and review the monitor and the site.
       CI: on the four branches it runs `check-os` (the inventory
@@ -2701,15 +2741,18 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
     `gpt-6.2-sol` (xhigh), not the strongest row's `gpt-6.2-astra`,
     by the owner's standing choice to conserve GPT quota; ADR 0005's
     own rounds 16 and 17 used the same pin. The security seat was GLM
-    `glm-5.3`, at high in rounds 1 to 3 and at max for the judgement
-    seat and the final pass over the whole amendment. This departure
+    `glm-5.3`, at high in rounds 1 to 3, and at max for the judgement
+    seat, the final pass over the whole amendment (round 4), rounds 5
+    and 6, and the refutation seat after round 6. This departure
     from point 7.2's strongest row is put to the owner with the
     amendment, for acceptance. Each finding, its disposition and the
     convergence note are in the review record,
     [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md),
     section "Amendment: the route sockets' bounded wait".
     - Round 1 on `3f73854..dca6340`: GPT FAIL, 1 blocker, 8 major and
-      1 minor; GLM FAIL, 1 major and 3 minor. Fixed in `e74a38c`; four
+      1 minor (an earlier version of this entry said 7 major, a
+      miscount corrected here; the round's output lists 8); GLM FAIL,
+      1 major and 3 minor. Fixed in `e74a38c`; four
       points were moved to open items or citations of the monitor's
       specification (M1 to M4).
     - Round 2 on `dca6340..e74a38c`: GLM PASS with 2 minor and, as
@@ -2719,13 +2762,26 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
       (`POLLERR` followed by an interrupted receive). The judgement
       seat, GLM (`glm-5.3`, max), ruled that the finding does not hold
       and that the asked fix would replace healthy sockets on every
-      signal. Its ruling, qualified as its sources support: a pending
-      socket error is cleared when a receive returns it or when
-      `SO_ERROR` is read, and this site never reads `SO_ERROR`; under
-      `MSG_DONTWAIT` a receive never sleeps, so an interrupted return
-      after `POLLERR` is not expected; if one did occur, the error
-      stays pending and the next wait reports it again. The controller
-      checked these premises against poll(2), recv(2) and socket(7),
-      and the finding is closed as ruled.
+      signal. What its sources support: `MSG_DONTWAIT` stops the
+      receive from waiting for a datagram; a pending socket error is
+      cleared when a receive returns it or when `SO_ERROR` is read, and
+      this site never reads `SO_ERROR`. That on a route socket an
+      interrupted receive after `POLLERR` leaves the error pending, so
+      that the next wait reports it again, is UNVERIFIED by poll(2),
+      recv(2) and socket(7); the judgement seat reasoned it from the
+      kernel's source. The finding is closed as ruled.
     - Round 4, the final pass over the whole amendment,
       `3f73854..86cc6f6`, GLM (`glm-5.3`, max): PASS, no findings.
+    - Round 5, the check of the Review entry, the sweep and the issue
+      draft, on `dd054a0`: GPT (`gpt-6.2-sol`, xhigh) FAIL, 1 blocker,
+      7 major and 1 minor; GLM (`glm-5.3`, max) FAIL, 1 major and 2
+      minor. Fixed in `5b6bacd`.
+    - Round 6, the verification, on `5b6bacd`: GPT (`gpt-6.2-sol`,
+      xhigh) FAIL, 3 major and 4 minor; GLM (`glm-5.3`, max) PASS with
+      3 minor. A refutation seat, GLM (`glm-5.3`, max), ruled on two of
+      the controller's moves: the full-file read-through, PR #132's own
+      amendment, PR #136's review record, the monitor specification's
+      5.1, point 3, and B1 belong in this record (the move failed;
+      added above); how each other pull request reworks its code,
+      inventory, tests and CI is that pull request's own change (the
+      move stands). Fixed in the next commit.
