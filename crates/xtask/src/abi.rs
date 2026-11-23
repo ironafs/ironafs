@@ -44,7 +44,10 @@
 //! declares `setrlimit`'s resource as an enum, where POSIX and musl declare
 //! `int`. A row whose declarations C shows only under `_GNU_SOURCE`
 //! (`struct ucred`, in glibc and musl) names it in sites.json's `defines`,
-//! the only feature macro the copy accepts. The C file is never linked into anything. The check proves the host
+//! the only feature macro the copy accepts. The macro scan alone adds
+//! `_GNU_SOURCE` for every row: it only preprocesses, and so it finds a
+//! GNU-only macro the code names even in a row that has not opted in.
+//! The C file is never linked into anything. The check proves the host
 //! target only: a target on which it has not run is MISSING evidence, and
 //! its sites do not ship there. A constant sites.json lists as `qualified`
 //! (one a target's headers may not name, such as `SCM_PIDFD`) is proved by
@@ -847,10 +850,12 @@ pub(crate) fn c_source(
 }
 
 /// The start of every generated C file of a row, the macro scan's and the
-/// assertions' alike: the row's feature macros (`defines`), the POSIX and
+/// assertions' alike: the feature macros (`defines`), the POSIX and
 /// default declarations (`_DEFAULT_SOURCE`), the common headers and the
-/// row's own. Both read the same definitions, so a constant the assertions
-/// see is one the scan sees.
+/// row's own. The scan's `defines` are the assertions' plus `_GNU_SOURCE`
+/// ([`scan_defines`]), so the macros the assertions see are a subset of
+/// those the scan sees: a constant the assertions could prove is one the
+/// scan finds.
 pub(crate) fn preamble(
     row: &str,
     defines: &[String],
@@ -876,8 +881,25 @@ pub(crate) fn preamble(
     source
 }
 
+/// The feature macros of the macro scan: the row's `defines`, which the
+/// assertions also read, and `_GNU_SOURCE` if the row does not name it. The
+/// scan only preprocesses, so the widest feature set costs nothing there,
+/// and a macro glibc exposes only under `_GNU_SOURCE` (`O_PATH`) that the
+/// row's code names is found even when the row has not opted in; the
+/// assertions then fail to compile until it does. The assertions keep the
+/// row's own set: a global `_GNU_SOURCE` would change which prototypes
+/// they are proved against (glibc's `setrlimit` takes an enum under it).
+pub(crate) fn scan_defines(defines: &[String]) -> Vec<String> {
+    let mut scanned = defines.to_vec();
+    if !scanned.iter().any(|define| define == "_GNU_SOURCE") {
+        scanned.push("_GNU_SOURCE".to_owned());
+    }
+    scanned
+}
+
 /// The object-like macros the C compiler's preprocessor defines after the
-/// row's `preamble` (`$CC -E -dM`), with the same compiler as `compile`.
+/// row's `preamble` with the scan's feature macros ([`scan_defines`])
+/// (`$CC -E -dM`), with the same compiler as `compile`.
 ///
 /// # Errors
 ///
@@ -890,7 +912,7 @@ pub(crate) fn header_macros(
     model: DataModel,
     file: &Path,
 ) -> Result<Result<std::collections::BTreeSet<String>, String>, Error> {
-    crate::fixture::write_file(file, &preamble(row, defines, headers, model))?;
+    crate::fixture::write_file(file, &preamble(row, &scan_defines(defines), headers, model))?;
     let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
     let output = Command::new(compiler)
         .args(["-std=c11", "-E", "-dM"])

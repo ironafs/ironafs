@@ -5,7 +5,7 @@
 
 use super::{
     CType, DataModel, Declarations, Function, Struct, c_source, canonical, declarations, identity,
-    missing_facts, object_macros, preamble, required_constants,
+    missing_facts, object_macros, preamble, required_constants, scan_defines,
 };
 use crate::rust_source::tokens_with_strings;
 
@@ -525,18 +525,153 @@ fn required_constants_are_the_c_macros_the_row_s_code_names() {
 }
 
 #[test]
-fn the_macro_scan_and_the_assertions_share_one_preamble() {
+fn the_macro_scan_reads_every_definition_the_assertions_read_and_gnu_s() {
     let headers = ["time.h".to_owned()];
-    let start = preamble("linux-clock", &[], &headers, DataModel::Lp64);
-    assert!(start.contains("#define _DEFAULT_SOURCE 1\n"));
+    for defines in [vec![], vec!["_GNU_SOURCE".to_owned()]] {
+        let start = preamble("linux-clock", &defines, &headers, DataModel::Lp64);
+        assert!(start.contains("#define _DEFAULT_SOURCE 1\n"));
+        let source = c_source(
+            "linux-clock",
+            &defines,
+            &headers,
+            &[],
+            &read(CLOCK),
+            DataModel::Lp64,
+        )
+        .unwrap();
+        assert!(source.starts_with(&start));
+        // The scan's preamble holds every line of the assertions' and
+        // defines `_GNU_SOURCE` once, so the macros the assertions see are
+        // among those the scan sees.
+        let scanned = preamble(
+            "linux-clock",
+            &scan_defines(&defines),
+            &headers,
+            DataModel::Lp64,
+        );
+        assert!(
+            start
+                .lines()
+                .all(|line| scanned.lines().any(|seen| seen == line)),
+            "{scanned}"
+        );
+        assert_eq!(
+            scanned
+                .lines()
+                .filter(|line| *line == "#define _GNU_SOURCE 1")
+                .count(),
+            1,
+            "{scanned}"
+        );
+    }
+}
+
+/// A crate directory holding `src/<module>.rs` with `text`, the files the
+/// compiler read for the row, and the directory for the generated C.
+#[cfg(target_os = "linux")]
+fn row_files(
+    name: &str,
+    module: &str,
+    text: &str,
+) -> (
+    std::path::PathBuf,
+    std::collections::BTreeSet<std::path::PathBuf>,
+) {
+    let root =
+        std::env::temp_dir().join(format!("ironafs-xtask-abi-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let file = std::path::Path::new("src").join(format!("{module}.rs"));
+    std::fs::write(root.join(&file), text).unwrap();
+    (root, [file].into_iter().collect())
+}
+
+/// A row's code with these `headers` and `defines`, and no recorded facts.
+#[cfg(target_os = "linux")]
+fn row_code(module: &str, headers: &[&str], defines: &[&str]) -> crate::os::inventory::Code {
+    crate::os::inventory::Code {
+        module: module.to_owned(),
+        headers: headers.iter().map(|header| (*header).to_owned()).collect(),
+        defines: defines.iter().map(|define| (*define).to_owned()).collect(),
+        expressions: Vec::new(),
+        qualified: Vec::new(),
+        extern_blocks: Vec::new(),
+        blocks: Vec::new(),
+        impls: 0,
+        structs: Vec::new(),
+        constants: Vec::new(),
+        stand_in: None,
+    }
+}
+
+/// A row whose code names `O_PATH`, which glibc's `<fcntl.h>` defines only
+/// under `_GNU_SOURCE`, and declares nothing: the fact is missing whether or
+/// not the row opts in to `_GNU_SOURCE` itself.
+#[cfg(target_os = "linux")]
+#[test]
+fn fact_problem_finds_a_gnu_only_macro_the_code_names_with_or_without_the_row_s_opt_in() {
+    let (root, compiled) = row_files("gnu-macro", "row", "const PATH: c_int = O_PATH;\n");
+    for defines in [&[][..], &["_GNU_SOURCE"][..]] {
+        let code = row_code("row", &["fcntl.h"], defines);
+        let found = super::fact_problem(
+            "row",
+            &code,
+            &Declarations::default(),
+            &root,
+            &compiled,
+            DataModel::Lp64,
+            &root,
+        )
+        .unwrap();
+        assert!(
+            found.as_deref().is_some_and(
+                |problem| problem.starts_with("the row's code names O_PATH, a C macro")
+            ),
+            "{defines:?}: {found:?}"
+        );
+    }
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// `CLOCK_BOOTTIME`, which glibc's `<time.h>` defines under
+/// `_DEFAULT_SOURCE`: the scan requires it of a row that names it, and the
+/// assertions' preamble, without `_GNU_SOURCE`, compiles the assertion of
+/// its value.
+#[cfg(target_os = "linux")]
+#[test]
+fn clock_boottime_is_a_required_fact_and_asserted_under_the_default_source() {
+    let (root, compiled) = row_files("boottime", "clock", "const BOOT: c_int = CLOCK_BOOTTIME;\n");
+    let code = row_code("clock", &["time.h"], &[]);
+    let found = super::fact_problem(
+        "clock",
+        &code,
+        &Declarations::default(),
+        &root,
+        &compiled,
+        DataModel::Lp64,
+        &root,
+    )
+    .unwrap();
+    assert!(
+        found.as_deref().is_some_and(
+            |problem| problem.starts_with("the row's code names CLOCK_BOOTTIME, a C macro")
+        ),
+        "{found:?}"
+    );
+    let declared = read("use core::ffi::c_int;\nconst CLOCK_BOOTTIME: c_int = 7;\n");
     let source = c_source(
-        "linux-clock",
+        "clock",
         &[],
-        &headers,
+        &["time.h".to_owned()],
         &[],
-        &read(CLOCK),
+        &declared,
         DataModel::Lp64,
     )
     .unwrap();
-    assert!(source.starts_with(&start));
+    assert!(!source.contains("_GNU_SOURCE"), "{source}");
+    assert_eq!(
+        super::compile(&source, &root.join("boottime.c")).unwrap(),
+        Ok(())
+    );
+    std::fs::remove_dir_all(&root).unwrap();
 }
