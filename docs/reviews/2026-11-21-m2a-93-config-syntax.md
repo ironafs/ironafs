@@ -639,8 +639,8 @@ GPT is `gpt-6.2-sol` at xhigh.
        specification; input the baseline or an approved extension
        admits keeps its meaning and is never rejected again. The status
        table, the status rule and the versionless points say the same.
-       `config-syntax.md` §5.3 keeps a stronger promise, with no
-       exception.
+       `config-syntax.md` §5.3 first claimed a stronger promise, with no
+       exception; the next verification found that wrong (below).
    - **Major, fixed (`c3d0d6d`):** "docs/specs/README.md:737. Defect: The table
      requires every versionless read-only format to record `none` for
      magic. The opt-in at line 477 permits a format with a magic value
@@ -672,5 +672,20 @@ GPT is `gpt-6.2-sol` at xhigh.
    GPT is right, so both majors are fixed in this change (`c3d0d6d`),
    and no follow-up issue is filed for them.
 
+   The verification of `52c090c..a41e815` (GPT) found every README item
+   FIXED and one new major, quoted as written:
+   - **Major, fixed (`f15f16e`):** "docs/specs/config-syntax.md:225 —
+     Section 5.3 explicitly rules out the README's correction for
+     out-of-spec acceptance, while the same paragraph limits growth to
+     valid TOML. Section 5.4, point 3 requires the parser to reject
+     duplicate keys. [TOML 1.0.0, Keys]"
+     - §5.3, point 2 now promises that every file the specification
+       accepts, as at a release plus its approved extensions, is
+       accepted with the same meaning by every later release, with no
+       exception. A file accepted only through an implementation defect
+       outside the specification, such as a duplicate key, may be
+       refused once the defect is fixed, as the README's correction
+       allows.
+
 Final head: the commit that updates this section, on top of
-`f7168d4`, which ends the reviewed content.
+`f15f16e`, which ends the reviewed content.
