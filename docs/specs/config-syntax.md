@@ -215,10 +215,11 @@ rule for such formats ([README](README.md), "Formats IronAFS defines"):
    write it, in a subset of a standard format, and a version line would
    be one more thing to get wrong, saying nothing point 2 does not
    `[OWN]`.
-2. **It only grows.** From the first release of this syntax, every file
-   this specification accepts, as it stood at that release plus its
-   approved extensions, is accepted with the same meaning by every later
-   release, without migration or loss, with no exception. The subset
+2. **It only grows.** For each release R, from the first release of
+   this syntax, a file this specification accepts as of R (the baseline,
+   plus the extensions approved by R) is accepted with the same meaning
+   by R and every release after it, without migration or loss, with no
+   exception. The subset
    grows only by accepting TOML it refuses today. A file a release
    accepted only because of an implementation defect outside this
    specification (a duplicate key, for example, which §5.4, point 3
