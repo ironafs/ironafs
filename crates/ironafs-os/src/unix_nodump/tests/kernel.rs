@@ -127,17 +127,15 @@ fn set_id_copy() -> (PrivateDir, std::path::PathBuf) {
 /// id, in `/etc/passwd` and `/etc/group` (fields 3 and 4, and 3), whether
 /// the name service (`getent`, which also asks systemd's and directory
 /// services' sources) knows no user or group of that id, and whether no
-/// running process holds it among its user, group or supplementary group
-/// ids (a process keeps an id whose account entry was removed).
+/// thread of a running process holds it (a process keeps an id whose
+/// account entry was removed). Called only by the privileged case, on the
+/// disposable guest it is for: the scan is a snapshot taken before the
+/// set-id copy is made, so a process that gains the id later is not ruled
+/// out; the guest, not this check, is the access boundary.
 fn unused_id(id: u32) -> bool {
     let id = id.to_string();
     let named = |file: &str, fields: &[usize]| {
-        std::fs::read_to_string(file).unwrap().lines().any(|line| {
-            let line: Vec<&str> = line.split(':').collect();
-            fields
-                .iter()
-                .any(|field| line.get(*field) == Some(&id.as_str()))
-        })
+        account_names(&std::fs::read_to_string(file).unwrap(), fields, &id)
     };
     // `getent` exits 2 when the key is not found.
     let known = |database: &str| {
@@ -152,30 +150,49 @@ fn unused_id(id: u32) -> bool {
         && !named("/etc/group", &[2])
         && !known("passwd")
         && !known("group")
-        && !held_by_a_process(&id)
+        && !held_by_a_thread(&id)
 }
 
-/// Whether any process in `/proc` has `id` among the real, effective,
-/// saved or filesystem user or group ids, or the supplementary groups, of
-/// its `status`. A process that exits while it is read is skipped.
-fn held_by_a_process(id: &str) -> bool {
-    std::fs::read_dir("/proc").unwrap().any(|entry| {
-        let path = entry.unwrap().path();
-        let is_pid = path
-            .file_name()
+/// Whether a line of an account file (`text`, colon-separated) has `id` in
+/// one of `fields`.
+fn account_names(text: &str, fields: &[usize], id: &str) -> bool {
+    text.lines().any(|line| {
+        let line: Vec<&str> = line.split(':').collect();
+        fields.iter().any(|field| line.get(*field) == Some(&id))
+    })
+}
+
+/// Whether a `status` file's text has `id` among the real, effective,
+/// saved or filesystem user or group ids, or the supplementary groups.
+fn status_holds(status: &str, id: &str) -> bool {
+    status.lines().any(|line| {
+        ["Uid:", "Gid:", "Groups:"].iter().any(|key| {
+            line.strip_prefix(key)
+                .is_some_and(|ids| ids.split_whitespace().any(|held| held == id))
+        })
+    })
+}
+
+/// Whether any thread of any process (`/proc/<pid>/task/<tid>/status`)
+/// holds `id`, by [`status_holds`]. A thread that exits while it is read is
+/// skipped. A snapshot: see [`unused_id`].
+fn held_by_a_thread(id: &str) -> bool {
+    let numbered = |path: &std::path::Path| {
+        path.file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit()));
-        if !is_pid {
+            .is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
+    };
+    std::fs::read_dir("/proc").unwrap().any(|entry| {
+        let process = entry.unwrap().path();
+        if !numbered(&process) {
             return false;
         }
-        let Ok(status) = std::fs::read_to_string(path.join("status")) else {
+        let Ok(threads) = std::fs::read_dir(process.join("task")) else {
             return false;
         };
-        status.lines().any(|line| {
-            ["Uid:", "Gid:", "Groups:"].iter().any(|key| {
-                line.strip_prefix(key)
-                    .is_some_and(|ids| ids.split_whitespace().any(|held| held == id))
-            })
+        threads.flatten().any(|thread| {
+            std::fs::read_to_string(thread.path().join("status"))
+                .is_ok_and(|status| status_holds(&status, id))
         })
     })
 }
@@ -238,14 +255,21 @@ fn a_trusted_parent_is_a_root_owned_directory_only_root_may_change() {
 }
 
 #[test]
-fn the_set_id_test_s_id_belongs_to_no_account_or_group() {
-    assert!(unused_id(SET_ID_TEST_ID), "{SET_ID_TEST_ID}");
-    // Root's id is in use, as a control.
-    assert!(!unused_id(0));
-    // This process's own ids are held by a running process.
-    let (real, _) = user_ids();
-    assert!(held_by_a_process(&real.to_string()));
-    assert!(!held_by_a_process(&SET_ID_TEST_ID.to_string()));
+fn the_account_and_status_readers_find_an_id_in_each_field_they_read() {
+    let passwd = "root:x:0:0:root:/root:/bin/sh\nsvc:x:900:901::/:/bin/false\n";
+    assert!(account_names(passwd, &[2, 3], "900"));
+    assert!(account_names(passwd, &[2, 3], "901"));
+    // The home directory field is not read.
+    assert!(!account_names("a:x:1:1::900:/bin/sh\n", &[2, 3], "900"));
+    assert!(account_names("grp:x:902:\n", &[2], "902"));
+    assert!(!account_names("grp:x:902:\n", &[2], "90"));
+    let status = "Name:\tx\nUid:\t1\t2\t3\t4\nGid:\t5\t6\t7\t8\nGroups:\t9 10\n";
+    for id in ["1", "4", "5", "8", "9", "10"] {
+        assert!(status_holds(status, id), "{id}");
+    }
+    // A number elsewhere in the file, or part of an id, is not held.
+    assert!(!status_holds("Pid:\t11\nUid:\t1\t1\t1\t1\n", "11"));
+    assert!(!status_holds(status, "0"));
 }
 
 #[test]
