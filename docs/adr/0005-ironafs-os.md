@@ -1660,22 +1660,26 @@ site.
 non-macro entry point for unified logging, the build fails on a
 supported Xcode (L37, point 2), a build of the crate is found that
 does not run its build script (then point 5.3's gate has a gap), or
-Cargo's custom-target handling or the toolchain pin changes so that a
-custom target can reach the script under the pinned toolchain.
+Cargo's custom-target handling, the toolchain pin, or the way the
+workspace's builds enable unstable features changes so that a custom
+target can reach the script in the pinned toolchain's normal stable
+mode.
 
 The crate's one build script, `build.rs`, does two things, in this
-order: it refuses every target outside point 5.3's list (the target
-gate, amended 2026-11-22), and on a macOS host building for macOS it
+order: of the targets Cargo selects by a built-in triple, it refuses
+every one outside point 5.3's list (the target gate, amended
+2026-11-22; its scope is below), and on a macOS host building for macOS it
 builds the shim. It is written in IronAFS's own Rust with the standard
 library only: it has no `[build-dependencies]` (point 1.4 covers every
 dependency table), runs no other program but the two `xcrun` commands
 below, and compiles or runs no foreign code but the shim (point 1.1).
 
 - **The target gate** (amended 2026-11-22). The script reads Cargo's
-  `TARGET` variable, the target triple (for a custom JSON target,
-  Cargo passes the stem of the specification file's name, `foo` out of
-  `foo.json`, never its path), and compares it, as an exact
-  string, with the seven triples of point 5.3. On any other value, an
+  `TARGET` variable, the short name Cargo reports for the target: the
+  triple of a built-in target, or, for a custom JSON target, the stem
+  of the specification file's name (`foo` out of `foo.json`), never
+  its path. It compares that name, as an exact string, with the seven
+  triples of point 5.3. On any other value, an
   absent or non-UTF-8 one included, it prints one
   `cargo::error=` line naming the triple and point 5.3, and exits with
   a nonzero status, so Cargo fails the build before the crate is
@@ -1688,14 +1692,16 @@ below, and compiles or runs no foreign code but the shim (point 1.1).
   line; an absent value is printed as "unset" and a non-UTF-8 one as
   "not UTF-8", with none of its bytes. **Scope.** The comparison
   identifies the target by the value Cargo reports, which is the
-  target itself only when Cargo selects it by a built-in triple. Cargo
-  accepts a `.json` target only on a nightly toolchain with
-  `-Z json-target-spec` (usually with `-Z build-std`), so under the
-  pinned toolchain no custom target reaches the script. A builder who
-  switches to such a toolchain can name a specification after a listed
-  triple and copy its cfg values, and neither the gate nor point 5.3's
-  `compile_error!` guard can tell it apart. The refusal is guaranteed
-  for targets Cargo selects by triple. The gate compiles nothing,
+  target itself only when Cargo selects it by a built-in triple. The
+  pinned toolchain rejects custom JSON targets in its normal stable
+  mode: Cargo accepts a `.json` target only with unstable target
+  support enabled (`-Z json-target-spec`, usually with
+  `-Z build-std`), on a nightly toolchain or with `RUSTC_BOOTSTRAP`
+  set. Whenever unstable target support is enabled, a builder can name
+  a specification after a listed triple and copy its cfg values, and
+  neither the gate nor point 5.3's `compile_error!` guard can tell it
+  apart. The refusal is guaranteed for targets Cargo selects by a
+  built-in triple; custom targets are outside it. The gate compiles nothing,
   writes nothing and reads no
   other variable, so it runs the same on every host, for `cargo build`,
   `cargo check`, `cargo clippy`, `cargo doc` and Miri alike.
@@ -1786,7 +1792,8 @@ decision and a change to this point (point 7).
    types and musl's padding fields (Context), which the wrapper zeroes. No
    upstream crate's tests stand behind them.
 3. **A target allowlist.** The crate compiles for these targets only, all
-   64-bit, and any other target is refused by the build (amended
+   64-bit, and any other target that Cargo selects by a built-in
+   triple is refused by the build (amended
    2026-11-22; the refusal is below the list):
    - `x86_64-` and `aarch64-unknown-linux-gnu` (L37, point 1; L42, point 3);
    - `x86_64-` and `aarch64-unknown-linux-musl` (the static musl candidate,
@@ -1812,7 +1819,8 @@ decision and a change to this point (point 7).
 
    **The refusal has two parts, and both stay** (amended 2026-11-22).
    Both cover the targets Cargo selects by a built-in triple; a custom
-   target, which only a nightly toolchain accepts, is outside the
+   target, which Cargo accepts only with unstable target support
+   enabled, is outside the
    guarantee (Decision 4, "Scope"):
    - **The target gate** of Decision 4 refuses, by exact triple, every
      target not on the list that Cargo selects by triple. It is the part that makes the refusal
@@ -2492,8 +2500,8 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
     the crate's build script refuses, by exact triple, every target
     outside the list that Cargo selects by triple, the targets whose cfg
     set equals a listed one's included; the `compile_error!` guard
-    stays as a second net. A custom target, which only a nightly
-    toolchain accepts, is outside the guarantee.
+    stays as a second net. A custom target, which Cargo accepts only
+    with unstable target support enabled, is outside the guarantee.
     `cargo xtask check-os` checks both layers: the gate's list against
     a reference copy kept apart from it, the gate's acceptance of each
     listed triple, the guard's verdict against one derived from the
@@ -2541,8 +2549,13 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
       workspace crates; that entry comes with the follow-up code, as
       Consequences say. Unchanged.
     - On the four branches, each a follow-up for its pull request, not
-      edited here. Each carries main's ADR 0005, which takes this
-      amendment when it is merged. Each also carries:
+      edited here. Each carries main's point 5.3 and Decision 4
+      unchanged, which take this amendment when it is merged. Three
+      carry main's ADR 0005 exactly; PR #132's branch (`291bc50`) is
+      the exception: it carries its own amendment of rows and sheets
+      13 and 14, which touches neither point 5.3 nor Decision 4, and
+      that pull request must reconcile both amendments in the ADR's
+      status line and Review section on merge. Each also carries:
       `crates/ironafs-os/Cargo.toml` ("no build script (ADR 0005,
       point 1.4)") and `crates/ironafs-os/src/lib.rs` (the cfg-equal
       targets stated as a limit, citing point 1.4), corrected by the
@@ -2564,8 +2577,9 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
     `gpt-6.2-sol` (xhigh), not the strongest row's `gpt-6.2-astra`,
     by the owner's standing choice to conserve GPT quota; ADR 0005's
     own rounds 16 and 17 used the same pin. The security seat was GLM
-    `glm-5.3`, at high in rounds 1 to 3 and at max for the final pass
-    over the whole amendment and its verification. This departure from
+    `glm-5.3`, at high in rounds 1 to 3, and at max for the final pass
+    over the whole amendment (round 4) and its verification, the
+    judgement seat, and rounds 5 and 6. This departure from
     point 7.2's strongest row is put to the owner with the amendment,
     for acceptance. Each finding, its disposition and the convergence
     note are in the review record,
@@ -2584,18 +2598,28 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
       check's reference list must be kept apart from the gate), fixed
       in `cdc8cb3` and verified by GLM at max.
     - Round 5, the check of the Review entry, the sweep and the issue
-      draft on `a9f3886`: GPT FAIL, among its findings I-GPT-A-2: for
-      a custom JSON target, `TARGET` holds the specification file's
-      stem, not a path, and the gate cannot tell such a target from a
-      listed one. The judgement seat, GLM (`glm-5.3`, max), ruled A,
-      with high confidence: a defect of wording and scope, not a
-      bypass possible under the pinned toolchain. The controller
-      checked its premises in Cargo's source at commit
-      `3acc79c0c841844675bc53a605922dbfc441e750`: `TARGET` is set from
-      the target's short name (`src/compiler/custom_build.rs:375`),
-      which is the triple or a JSON target's file stem
-      (`src/compiler/compile_kind.rs:241-245`), and a `.json` target is
-      refused without `-Zjson-target-spec`, a nightly-only flag
-      (`compile_kind.rs:204-205`). Fixed in the next commit: the
-      description of `TARGET`, the basis of the no-raw-print rule, a
-      scope sentence in Decision 4 and point 5.3, and a new trigger.
+      draft, on `a9f3886`: GPT (`gpt-6.2-sol`, xhigh) FAIL, 1 blocker,
+      3 major and 2 minor; GLM (`glm-5.3`, max) PASS with 1 minor.
+      (An earlier version of this entry used "Round 5" for this round
+      and the judgement below together; they are now listed apart.)
+    - Judgement on I-GPT-A-2 (for a custom JSON target, `TARGET` holds
+      the specification file's stem, not a path, and the gate cannot
+      tell such a target from a listed one): the judgement seat, GLM
+      (`glm-5.3`, max), ruled A, with high confidence: a defect of
+      wording and scope, not a bypass possible under the pinned
+      toolchain. The controller checked its premises in Cargo's source
+      at commit `3acc79c0c841844675bc53a605922dbfc441e750`: `TARGET` is
+      set from the target's short name
+      (`src/compiler/custom_build.rs:375`), which is the triple or a
+      JSON target's file stem (`src/compiler/compile_kind.rs:241-245`),
+      and a `.json` target is refused without `-Zjson-target-spec`, an
+      unstable flag (`compile_kind.rs:204-205`). Fixed in `8a529d9`:
+      the description of `TARGET`, the basis of the no-raw-print rule,
+      a scope sentence in Decision 4 and point 5.3, and a new trigger.
+    - Round 6, the verification of the fixes, on `8a529d9`: GPT
+      (`gpt-6.2-sol`, xhigh) FAIL, 1 major (the opening rules still
+      stated an unconditional refusal) and 4 minor (unstable target
+      support is also enabled by `RUSTC_BOOTSTRAP`, not only on
+      nightly; PR #132's branch carries its own amendment; two on the
+      issue draft); GLM (`glm-5.3`, max) PASS with 1 minor (the same
+      PR #132 point). Fixed in the next commit.
