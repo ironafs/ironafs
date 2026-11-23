@@ -1658,8 +1658,10 @@ site.
 
 **Working.** Revisit if: O8's shim decision is revisited, Apple ships a
 non-macro entry point for unified logging, the build fails on a
-supported Xcode (L37, point 2), or a build of the crate is found that
-does not run its build script (then point 5.3's gate has a gap).
+supported Xcode (L37, point 2), a build of the crate is found that
+does not run its build script (then point 5.3's gate has a gap), or
+Cargo's custom-target handling or the toolchain pin changes so that a
+custom target can reach the script under the pinned toolchain.
 
 The crate's one build script, `build.rs`, does two things, in this
 order: it refuses every target outside point 5.3's list (the target
@@ -1670,18 +1672,30 @@ dependency table), runs no other program but the two `xcrun` commands
 below, and compiles or runs no foreign code but the shim (point 1.1).
 
 - **The target gate** (amended 2026-11-22). The script reads Cargo's
-  `TARGET` variable, the target triple, and compares it, as an exact
+  `TARGET` variable, the target triple (for a custom JSON target,
+  Cargo passes the stem of the specification file's name, `foo` out of
+  `foo.json`, never its path), and compares it, as an exact
   string, with the seven triples of point 5.3. On any other value, an
   absent or non-UTF-8 one included, it prints one
   `cargo::error=` line naming the triple and point 5.3, and exits with
   a nonzero status, so Cargo fails the build before the crate is
-  compiled. The value is never printed raw: `TARGET` can be a path to
-  a target specification file, which may hold a line break, and a raw
-  line break would let the rest of the value become a Cargo directive.
+  compiled. The value is never printed raw: `TARGET` can be the stem
+  of a target specification file's name, which may itself hold a line
+  break, and a raw line break would let the rest of the value become a
+  Cargo directive.
   A UTF-8 value is printed in Rust's debug form (`{:?}`), which escapes
   every line break and control character, so the refusal is always one
   line; an absent value is printed as "unset" and a non-UTF-8 one as
-  "not UTF-8", with none of its bytes. The gate compiles nothing,
+  "not UTF-8", with none of its bytes. **Scope.** The comparison
+  identifies the target by the value Cargo reports, which is the
+  target itself only when Cargo selects it by a built-in triple. Cargo
+  accepts a `.json` target only on a nightly toolchain with
+  `-Z json-target-spec` (usually with `-Z build-std`), so under the
+  pinned toolchain no custom target reaches the script. A builder who
+  switches to such a toolchain can name a specification after a listed
+  triple and copy its cfg values, and neither the gate nor point 5.3's
+  `compile_error!` guard can tell it apart. The refusal is guaranteed
+  for targets Cargo selects by triple. The gate compiles nothing,
   writes nothing and reads no
   other variable, so it runs the same on every host, for `cargo build`,
   `cargo check`, `cargo clippy`, `cargo doc` and Miri alike.
@@ -1796,9 +1810,12 @@ decision and a change to this point (point 7).
    in suspend, so C37's pair for it needs its own evidence first.
    Adding a target is a change to the list (point 7).
 
-   **The refusal has two parts, and both stay** (amended 2026-11-22):
+   **The refusal has two parts, and both stay** (amended 2026-11-22).
+   Both cover the targets Cargo selects by a built-in triple; a custom
+   target, which only a nightly toolchain accepts, is outside the
+   guarantee (Decision 4, "Scope"):
    - **The target gate** of Decision 4 refuses, by exact triple, every
-     target not on the list. It is the part that makes the refusal
+     target not on the list that Cargo selects by triple. It is the part that makes the refusal
      exact. Some of the compiler's targets have exactly the cfg set of a
      listed one (vendor variants, `arm64e`, and sanitizer variants of
      `x86_64` glibc: six on the pinned compiler, as the review of the
@@ -2473,8 +2490,10 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
   target gate.**
   - What changed: point 5.3's refusal has two parts. A target gate in
     the crate's build script refuses, by exact triple, every target
-    outside the list, the targets whose cfg set equals a listed one's
-    included; the `compile_error!` guard stays as a second net.
+    outside the list that Cargo selects by triple, the targets whose cfg
+    set equals a listed one's included; the `compile_error!` guard
+    stays as a second net. A custom target, which only a nightly
+    toolchain accepts, is outside the guarantee.
     `cargo xtask check-os` checks both layers: the gate's list against
     a reference copy kept apart from it, the gate's acceptance of each
     listed triple, the guard's verdict against one derived from the
@@ -2564,3 +2583,19 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
       `3f73854..26ee981`: GLM (`glm-5.3`, max) PASS with 1 minor (the
       check's reference list must be kept apart from the gate), fixed
       in `cdc8cb3` and verified by GLM at max.
+    - Round 5, the check of the Review entry, the sweep and the issue
+      draft on `a9f3886`: GPT FAIL, among its findings I-GPT-A-2: for
+      a custom JSON target, `TARGET` holds the specification file's
+      stem, not a path, and the gate cannot tell such a target from a
+      listed one. The judgement seat, GLM (`glm-5.3`, max), ruled A,
+      with high confidence: a defect of wording and scope, not a
+      bypass possible under the pinned toolchain. The controller
+      checked its premises in Cargo's source at commit
+      `3acc79c0c841844675bc53a605922dbfc441e750`: `TARGET` is set from
+      the target's short name (`src/compiler/custom_build.rs:375`),
+      which is the triple or a JSON target's file stem
+      (`src/compiler/compile_kind.rs:241-245`), and a `.json` target is
+      refused without `-Zjson-target-spec`, a nightly-only flag
+      (`compile_kind.rs:204-205`). Fixed in the next commit: the
+      description of `TARGET`, the basis of the no-raw-print rule, a
+      scope sentence in Decision 4 and point 5.3, and a new trigger.
