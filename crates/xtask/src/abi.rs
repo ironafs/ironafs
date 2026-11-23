@@ -769,12 +769,20 @@ pub(crate) fn c_source(
         let Resolved::Scalar(scalar_name) = resolve(aliased_name, declarations)? else {
             return Err(format!("`{name}` aliases a type that is not a scalar"));
         };
+        // Every alias names an integer: `^` is a constraint violation on a
+        // floating or pointer type under every flag, and `2 != 1` after the
+        // casts refuses `_Bool`, which a cast of -1 would let pass as
+        // unsigned. The operands of each comparison have one type, so no
+        // sign-comparison warning arises.
+        assert(
+            format!("(({name})0 ^ ({name})0) == ({name})0 && ({name})2 != ({name})1"),
+            format!("{name} is an integer type other than _Bool"),
+        );
         match unsigned(scalar_name) {
             Some(true) => assert(format!("({name})-1 > 0"), format!("{name} is unsigned")),
             Some(false) => assert(format!("({name})-1 < 0"), format!("{name} is signed")),
             // `c_char`: the generated file is compiled for the target
-            // proved, where C's `char` has `c_char`'s sign. The cast is
-            // also what requires an integer type.
+            // proved, where C's `char` has `c_char`'s sign.
             None => assert(
                 format!("(({name})-1 > 0) == ((char)-1 > 0)"),
                 format!("{name} has char's sign"),

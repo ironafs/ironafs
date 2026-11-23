@@ -12,8 +12,9 @@
 //!   size and offset, a member's size changed, a constant changed by one
 //!   (one compared with a C expression too), a
 //!   parameter's type changed, a return type changed, an alias of the
-//!   wrong size or sign, and an alias of `c_char` naming a typedef of the
-//!   other sign. Each must fail with the assertion that names it;
+//!   wrong size or sign, an alias of `c_char` naming a typedef of the
+//!   other sign, and aliases of integers naming typedefs of `_Bool` and
+//!   `double`. Each must fail with the assertion that names it;
 //! - by the probe of qualified constants: a name the headers do not define
 //!   is reported unnamed (so its row is withheld), and one they define is
 //!   not;
@@ -246,6 +247,7 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         }
     }
     char_sign_and_probe(dir, output)?;
+    non_integer_aliases(dir, output)?;
     for (name, from, to, phrase) in READER {
         let planted = plant(name, from, to)?;
         match stage(&planted, &dir.join("reader.c"))? {
@@ -274,7 +276,7 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
             "check-abi --self-test: the fixture compiled; {} planted mismatches failed to compile \
              at their assertions, an unnamed qualified constant was withheld, {} declarations \
              were refused by the reader, and a missing fact was found",
-            COMPILER.len() + 1,
+            COMPILER.len() + 1 + NON_INTEGER.len(),
             READER.len()
         ),
     )
@@ -375,6 +377,46 @@ fn char_sign_and_probe(dir: &Path, output: &mut impl Write) -> Result<(), Error>
     Ok(())
 }
 
+/// Aliases of integers the size and sign of a C typedef that is not an
+/// integer: the case, the typedef, and the alias planted against it. The
+/// headers have no typedef of `_Bool` or `double`, so the generated file
+/// gets the typedef after its preamble.
+const NON_INTEGER: &[(&str, &str, &str)] = &[
+    (
+        "an alias of u8 naming a typedef of _Bool",
+        "typedef _Bool flag_t;",
+        "type flag_t = u8;",
+    ),
+    (
+        "an alias of i64 naming a typedef of double",
+        "typedef double real_t;",
+        "type real_t = i64;",
+    ),
+];
+
+/// Each of [`NON_INTEGER`]'s aliases, which pass the size, alignment and
+/// sign assertions, must fail at the integer-type assertion.
+fn non_integer_aliases(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    let report = |output: &mut dyn Write, line: String| {
+        writeln!(output, "{line}").map_err(Error::io("report check-abi self-test"))
+    };
+    let label = "is an integer type other than _Bool";
+    for (index, (name, typedef, alias)) in NON_INTEGER.iter().enumerate() {
+        let planted = plant(name, "const EINTR", &format!("{alias}\nconst EINTR"))?;
+        let file = dir.join(format!("non-integer-{index}.c"));
+        match stage_with(&planted, &file, typedef)? {
+            Stage::Compiler(error, at) if at.contains(label) => {
+                report(output, format!("caught by the C compiler: {name}: {error}"))?;
+            }
+            Stage::Compiler(error, _) | Stage::Reader(error) | Stage::Generator(error) => {
+                return Err(failure(name, format!("not refused at `{label}`: {error}")));
+            }
+            Stage::Compiled => return Err(failure(name, "the C compiler accepted it".to_owned())),
+        }
+    }
+    Ok(())
+}
+
 fn plant(name: &'static str, from: &str, to: &str) -> Result<String, Error> {
     if FIXTURE.contains(from) {
         Ok(FIXTURE.replacen(from, to, 1))
@@ -388,6 +430,12 @@ fn plant(name: &'static str, from: &str, to: &str) -> Result<String, Error> {
 
 /// Reads, generates and compiles one fixture, and says where it stopped.
 fn stage(source: &str, file: &Path) -> Result<Stage, Error> {
+    stage_with(source, file, "")
+}
+
+/// [`stage`], with `typedefs` (C text) placed in the generated file after
+/// its preamble, before the first assertion.
+fn stage_with(source: &str, file: &Path, typedefs: &str) -> Result<Stage, Error> {
     let tokens = tokens_with_strings(source).map_err(|error| Error::SelfTest {
         check: CHECK,
         case: "reading the fixture",
@@ -410,7 +458,7 @@ fn stage(source: &str, file: &Path) -> Result<Stage, Error> {
         &found,
         DataModel::Lp64,
     ) {
-        Ok(c) => c,
+        Ok(c) => c.replacen("_Static_assert", &format!("{typedefs}\n_Static_assert"), 1),
         Err(error) => return Ok(Stage::Generator(error)),
     };
     Ok(match compile(&c, file)? {
