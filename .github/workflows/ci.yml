@@ -250,17 +250,38 @@ jobs:
         run: cargo --locked xtask check-abi --self-test
 
   os-linux-glibc-2-28:
-    name: os-linux (glibc 2.28, aarch64)
+    name: os-linux (glibc 2.28, ${{ matrix.target }})
     # The oldest glibc of the build goal (ADR 0004, L42, point 3; ADR 0005,
-    # point 5.5): ironafs-os built and its tests run on AlmaLinux 8. The
-    # conditional glibc 2.17 artefact is qualified separately, before it is
-    # offered.
-    runs-on: ubuntu-24.04-arm
+    # point 5.5): ironafs-os built and its tests run on AlmaLinux 8, on
+    # each Linux architecture. Each lane proves the target it built and
+    # the runtime it ran on, and requires the named clock, random and wipe
+    # tests. The conditional glibc 2.17 artefact is not offered until it is
+    # qualified separately.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
     container:
       image: docker.io/library/almalinux:8@sha256:34a85f19e05e28243249d45dd3842621741a43b110865ca80575c9b4e083cc29
+    env:
+      TARGET: ${{ matrix.target }}
+      ARCH: ${{ matrix.arch }}
+      NATIVE_TESTS: >-
+        linux_clock::tests::read_clock_boot_advances_and_never_goes_back
+        linux_clock::tests::read_clock_awake_advances_and_never_goes_back
+        linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names
+        linux_random::tests::getrandom_reports_a_full_piece_of_at_most_256_bytes
+        mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -268,16 +289,23 @@ jobs:
       - name: Install a C toolchain and Rust
         run: |
           dnf --assumeyes install gcc
-          ldd --version | head -n 1 | grep -q ' 2\.28$'
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs > rustup-init.sh
           sh rustup-init.sh -y --default-toolchain none --profile minimal
           "$HOME/.cargo/bin/rustup" toolchain install --profile minimal --no-self-update --no-update
-      - name: Run ironafs-os's tests on glibc 2.28
+      - name: Prove the runtime and the target
         run: |
-          "$HOME/.cargo/bin/cargo" test -p ironafs-os --locked > test.log 2>&1
+          ldd --version | head -n 1
+          ldd --version | head -n 1 | grep -q ' 2\.28$'
+          test "$(uname -m)" = "$ARCH"
+          "$HOME/.cargo/bin/rustc" -vV | grep -qx "host: $TARGET"
+      - name: Run ironafs-os's tests on glibc 2.28, real system calls included
+        run: |
+          "$HOME/.cargo/bin/cargo" test -p ironafs-os --locked --target "$TARGET" > test.log 2>&1
           cat test.log
           grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' test.log
-          grep -q '^test linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names \.\.\. ok$' test.log
+          for test in $NATIVE_TESTS; do
+            grep -q "^test $test \.\.\. ok\$" test.log
+          done
 
   miri:
     name: miri
