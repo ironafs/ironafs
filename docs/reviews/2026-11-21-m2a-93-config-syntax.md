@@ -253,9 +253,9 @@ fixed, and one major and four minor findings in the fixes. The fixes are
     5.2, the byte caps on the input and the others on the document.
   - Four new seeds hold the line cap and the file cap each at its value
     and one above.
-  - Tests of the check itself failed first (it passed an over-cap input
-    with an empty document, and an error with no position for a small
-    input). With the parser's line cap, then its file cap, planted one
+  - Tests of the check itself failed first: it passed a line over the
+    cap with an empty document, and a positioned error for a file over
+    the file cap. With the parser's line cap, then its file cap, planted one
     byte too high, `cargo xtask fuzz` failed on the matching over-cap
     seed each time.
 - **Minor, fixed (`20770d7`):** "The new fuzz target inherits a
