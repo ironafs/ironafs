@@ -124,7 +124,16 @@ pub(crate) fn pin_cargo(command: &mut Command, pinned: &Pinned) {
 /// no wrapper (`pin_cargo`), building into `build_dir` for both Cargo's
 /// target directory and its build directory (`bans::isolated_build`), so
 /// no configured `build.build-dir` shares artifacts with other builds.
-pub(crate) fn pinned_build(command: &mut Command, pinned: &Pinned, build_dir: &Path) {
+///
+/// # Errors
+///
+/// Returns an error if `build_dir` cannot be Cargo's build directory as
+/// written (`bans::isolated_build`).
+pub(crate) fn pinned_build(
+    command: &mut Command,
+    pinned: &Pinned,
+    build_dir: &Path,
+) -> Result<(), Error> {
     pin_cargo(command, pinned);
-    crate::bans::isolated_build(command, build_dir);
+    crate::bans::isolated_build(command, build_dir)
 }

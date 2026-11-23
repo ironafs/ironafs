@@ -670,7 +670,7 @@ pub(crate) fn files_for(
         .args(["--message-format", "json-render-diagnostics", "--target"])
         .arg(target);
     if let Some(pinned) = pinned {
-        pin::pinned_build(&mut command, pinned, build_dir);
+        pin::pinned_build(&mut command, pinned, build_dir)?;
     } else {
         command.arg("--target-dir").arg(build_dir);
         for name in crate::pure::CLEARED_ENVIRONMENT {

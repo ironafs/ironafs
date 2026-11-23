@@ -271,7 +271,7 @@ fn pinned_runs_build_apart_from_check_abi() {
     let private = PathBuf::from("/w/target").join(super::PINNED_BUILD_DIR);
     let mut command = crate::Command::new("cargo");
     command.arg("check");
-    super::pin::pinned_build(&mut command, &pinned, &private);
+    super::pin::pinned_build(&mut command, &pinned, &private).unwrap();
     let arguments: Vec<&std::ffi::OsStr> = command.get_args().collect();
     assert_eq!(
         arguments,

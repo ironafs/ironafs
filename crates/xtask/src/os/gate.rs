@@ -366,7 +366,7 @@ pub(crate) fn cargo_run(
             "--target",
             target,
         ]);
-    pinned_build(&mut command, pinned, build_dir);
+    pinned_build(&mut command, pinned, build_dir)?;
     let output = command.output().map_err(Error::io("cargo check"))?;
     Ok(CargoRun {
         success: output.status.success(),
