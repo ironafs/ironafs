@@ -166,3 +166,49 @@ fn compare_fails_unnamed_unknown_and_misplaced_sites() {
         assert!(check(&found), "{name}: {found:?}");
     }
 }
+
+fn cfg_of(lines: &str) -> super::allowlist::Cfg {
+    super::allowlist::parse_cfg(lines)
+}
+
+#[test]
+fn guard_violations_compare_the_guard_with_the_list_s_verdict_by_whole_cfg_set() {
+    use super::allowlist::guard_of;
+    use super::guard_violations;
+
+    const ROOT: &str = "#[cfg(not(all(target_os = \"linux\", target_arch = \"x86_64\")))]\n\
+                        compile_error!(\"no\");\n";
+    let listed = "target_os=\"linux\"\ntarget_arch=\"x86_64\"\ntarget_vendor=\"unknown\"\n";
+    let cfgs = BTreeMap::from([
+        (LINUX.to_owned(), cfg_of(listed)),
+        // The same cfg set under another name: the list's verdict passes it.
+        ("x86_64-twin-linux-gnu".to_owned(), cfg_of(listed)),
+        // Another vendor: the list's verdict refuses it, the guard does not.
+        (
+            "x86_64-other-linux-gnu".to_owned(),
+            cfg_of(&listed.replace("unknown", "other")),
+        ),
+        (WINDOWS.to_owned(), cfg_of("target_os=\"windows\"\n")),
+    ]);
+    let guard = guard_of(ROOT).unwrap();
+    let (violations, unlisted) = guard_violations(&guard, &cfgs, &[LINUX, WINDOWS]);
+    assert_eq!(
+        unlisted,
+        ["x86_64-other-linux-gnu", "x86_64-twin-linux-gnu"]
+    );
+    let targets: Vec<&str> = violations
+        .iter()
+        .map(|violation| match violation {
+            Violation::Target { target, .. } => target.as_str(),
+            _ => "",
+        })
+        .collect();
+    assert_eq!(targets, ["x86_64-other-linux-gnu", WINDOWS]);
+
+    let (violations, _) = guard_violations(&guard, &cfgs, &[LINUX, "aarch64-unknown-unknown"]);
+    assert!(violations.iter().any(|violation| matches!(
+        violation,
+        Violation::Target { target, what } if target == "aarch64-unknown-unknown"
+            && what.contains("does not know")
+    )));
+}

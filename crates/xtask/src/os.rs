@@ -16,13 +16,20 @@
 //!   what the copy records for each row implemented on that target, and
 //!   hold nothing of a row only approved there or of no row. A site must
 //!   sit in its row's module and in a file some target compiles.
-//! - **Targets.** Every allowlisted target the toolchain names builds; any
-//!   other target the toolchain names fails with the crate's allowlist
-//!   error. The musl targets are not built here: the copy gives them the
-//!   glibc targets' statuses, and the crate names `target_env` only in its
-//!   allowlist, so a musl build compiles the glibc build's files.
+//! - **Targets** (point 5.3, both layers of the refusal). The target gate
+//!   in the build script lists exactly point 5.3's triples, accepts each
+//!   of them and refuses every other built-in target (`gate`). The crate
+//!   root's guard gives, for every built-in target, the verdict derived
+//!   from the list by whole cfg set (`allowlist`). Each target the guard
+//!   accepts but the list does not name is refused by Cargo in the build
+//!   script. Every allowlisted target the toolchain names builds; any
+//!   other target the toolchain names is refused by the gate. The musl
+//!   targets are not built here: the copy gives them the glibc targets'
+//!   statuses, and the crate names `target_env` only in its allowlist, so
+//!   a musl build compiles the glibc build's files.
 
 mod allowlist;
+mod gate;
 pub(crate) mod inventory;
 pub(crate) mod scan;
 mod self_test;
@@ -52,7 +59,10 @@ pub(crate) const CRATE: &str = "ironafs-os";
 /// The copy of the ADR's table, relative to the crate's directory.
 pub(crate) const SITES: &str = "sites.json";
 
-/// The targets of ADR 0005, point 5.3.
+/// The targets of ADR 0005, point 5.3: the check's reference copy of the
+/// list, kept apart from the build script's gate and never read from it.
+/// Review ties it to the point's text; a change to it or to the gate's
+/// list without the other fails the check.
 pub(crate) const ALLOWLIST: &[&str] = &[
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
@@ -63,8 +73,9 @@ pub(crate) const ALLOWLIST: &[&str] = &[
     "aarch64-pc-windows-msvc",
 ];
 
-/// The text of the crate's allowlist error, which a build for any other
-/// target must report.
+/// The text of the crate root's guard, which a build for a target whose
+/// cfg set differs from every listed one's reports where the gate is not
+/// run.
 const ALLOWLIST_ERROR: &str = "ironafs-os builds only for the targets of ADR 0005, point 5.3";
 
 /// Whether the check builds `target` itself: every allowlisted target but
@@ -561,8 +572,8 @@ const SYMLINK: &str = "a symbolic link in ironafs-os: the compiler could read th
 /// returns, for each allowlisted target built here, the files the compiler
 /// read (relative to the crate), with the violations: an allowlisted
 /// target missing from the toolchain, a build that failed or read nothing,
-/// and a build for another target that did not fail with the allowlist's
-/// error.
+/// and a build for another target that the gate did not refuse in the
+/// build script.
 pub(crate) fn compiled_files(
     workspace: &Workspace,
     crate_dir: &Path,
@@ -583,23 +594,28 @@ pub(crate) fn compiled_files(
         })
         .collect();
     let mut compiled = BTreeMap::new();
+    let manifest = crate_dir.join("Cargo.toml");
     for target in &targets {
+        if !ALLOWLIST.contains(&target.as_str()) {
+            if let Some(problem) =
+                gate::cargo_problem(&workspace.root, &manifest, true, target, build_dir)?
+            {
+                violations.push(Violation::Target {
+                    target: target.clone(),
+                    what: format!("is outside ADR 0005's allowlist, but {problem}"),
+                });
+            }
+            continue;
+        }
         match files_for(workspace, crate_dir, build_dir, target)? {
             Built::Files(files) if built_here(target) => {
                 compiled.insert(target.clone(), files);
             }
-            Built::Refused(error) if !built_here(target) && error.contains(ALLOWLIST_ERROR) => {}
             Built::Refused(error) if built_here(target) => violations.push(Violation::Target {
                 target: target.clone(),
                 what: error,
             }),
-            _ if ALLOWLIST.contains(&target.as_str()) => {}
-            _ => violations.push(Violation::Target {
-                target: target.clone(),
-                what: "is outside ADR 0005's allowlist, but the crate's build did not fail \
-                       with the allowlist's error"
-                    .to_owned(),
-            }),
+            _ => {}
         }
     }
     Ok((compiled, violations))
@@ -715,61 +731,139 @@ pub(crate) fn read_inventory(
     }
 }
 
-/// The crate root's guard must accept exactly the allowlist among every
-/// target the pinned compiler knows.
-fn allowlist_violations(
-    root: &Path,
-    crate_dir: &Path,
-) -> Result<(Vec<Violation>, Vec<String>), Error> {
-    let lib = crate_dir.join("src").join("lib.rs");
-    let text = fs::read_to_string(&lib).map_err(Error::path_io("read crate root", &lib))?;
-    let accepted = match allowlist::accepted_targets(root, &text)? {
-        Ok(accepted) => accepted,
-        Err(error) => {
-            return Ok((
-                vec![Violation::Target {
-                    target: "every target".to_owned(),
-                    what: format!("the crate root's allowlist cannot be evaluated: {error}"),
-                }],
-                Vec::new(),
-            ));
-        }
-    };
-    let expected: BTreeSet<String> = ALLOWLIST
+/// The crate root's guard, evaluated on every built-in target's cfg set
+/// (`cfgs`), must give the verdict derived from `reference`: a target
+/// passes exactly when its whole cfg set equals a listed target's. Returns
+/// the disagreements, in either direction, and a listed target the
+/// compiler does not know, with the targets the guard accepts that the
+/// list does not name.
+pub(crate) fn guard_violations(
+    guard: &allowlist::Expression,
+    cfgs: &BTreeMap<String, allowlist::Cfg>,
+    reference: &[&str],
+) -> (Vec<Violation>, Vec<String>) {
+    let mut violations: Vec<Violation> = reference
         .iter()
-        .map(|target| (*target).to_owned())
-        .collect();
-    let allowed_cfgs: Vec<&allowlist::Cfg> = accepted
-        .iter()
-        .filter(|(target, _)| expected.contains(*target))
-        .map(|(_, cfg)| cfg)
-        .collect();
-    let mut violations: Vec<Violation> = accepted
-        .iter()
-        .filter(|(target, cfg)| !expected.contains(*target) && !allowed_cfgs.contains(cfg))
-        .map(|(target, _)| Violation::Target {
-            target: target.clone(),
-            what: "the crate root's guard accepts it, but it is not in ADR 0005's allowlist and \
-                   its cfg set differs from every allowlisted target's"
-                .to_owned(),
+        .filter(|target| !cfgs.contains_key(**target))
+        .map(|target| Violation::Target {
+            target: (*target).to_owned(),
+            what: "is in ADR 0005's allowlist, but the pinned compiler does not know it".to_owned(),
         })
         .collect();
-    violations.extend(
-        expected
-            .iter()
-            .filter(|target| !accepted.contains_key(*target))
-            .map(|target| Violation::Target {
-                target: target.clone(),
-                what: "is in ADR 0005's allowlist, but the crate root's guard refuses it"
-                    .to_owned(),
-            }),
-    );
-    let equivalent = accepted
+    let listed: Vec<&allowlist::Cfg> = reference
         .iter()
-        .filter(|(target, cfg)| !expected.contains(*target) && allowed_cfgs.contains(cfg))
-        .map(|(target, _)| target.clone())
+        .filter_map(|target| cfgs.get(*target))
         .collect();
-    Ok((violations, equivalent))
+    let mut unlisted = Vec::new();
+    for (target, cfg) in cfgs {
+        let expected = listed.contains(&cfg);
+        let accepted = allowlist::accepts(guard, cfg);
+        if accepted && !reference.contains(&target.as_str()) {
+            unlisted.push(target.clone());
+        }
+        let what = match (expected, accepted) {
+            (true, false) => {
+                "its cfg set equals a target of ADR 0005's allowlist, but the crate \
+                              root's guard refuses it"
+            }
+            (false, true) => {
+                "its cfg set differs from every target of ADR 0005's allowlist, but \
+                              the crate root's guard accepts it"
+            }
+            _ => continue,
+        };
+        violations.push(Violation::Target {
+            target: target.clone(),
+            what: what.to_owned(),
+        });
+    }
+    (violations, unlisted)
+}
+
+/// Point 5.3's check of both layers of the refusal, before anything is
+/// built: the gate's list and verdicts (`gate`), the guard's verdict on
+/// every built-in target, and Cargo's refusal, in the build script, of
+/// each target the guard accepts but the list does not name. Returns the
+/// violations and those targets.
+fn target_violations(
+    root: &Path,
+    crate_dir: &Path,
+    build_dir: &Path,
+    cfgs: &BTreeMap<String, allowlist::Cfg>,
+) -> Result<(Vec<Violation>, Vec<String>), Error> {
+    let targets: Vec<String> = cfgs.keys().cloned().collect();
+    let mut violations = gate_violations(root, crate_dir, &build_dir.join("gate"), &targets)?;
+    let lib = crate_dir.join("src").join("lib.rs");
+    let text = fs::read_to_string(&lib).map_err(Error::path_io("read crate root", &lib))?;
+    let guard = match allowlist::guard_of(&text) {
+        Ok(guard) => guard,
+        Err(error) => {
+            violations.push(Violation::Target {
+                target: "every target".to_owned(),
+                what: format!("the crate root's guard cannot be evaluated: {error}"),
+            });
+            return Ok((violations, Vec::new()));
+        }
+    };
+    let (found, unlisted) = guard_violations(&guard, cfgs, ALLOWLIST);
+    violations.extend(found);
+    let manifest = crate_dir.join("Cargo.toml");
+    for target in &unlisted {
+        if let Some(problem) = gate::cargo_problem(root, &manifest, true, target, build_dir)? {
+            violations.push(Violation::Target {
+                target: target.clone(),
+                what: format!(
+                    "the crate root's guard accepts it and the list does not name it: {problem}"
+                ),
+            });
+        }
+    }
+    Ok((violations, unlisted))
+}
+
+/// The gate's list against the reference copy, and its verdicts, from its
+/// own code compiled alone into `out_dir`, on each of `targets` and the
+/// special values.
+pub(crate) fn gate_violations(
+    root: &Path,
+    crate_dir: &Path,
+    out_dir: &Path,
+    targets: &[String],
+) -> Result<Vec<Violation>, Error> {
+    let script = crate_dir.join(gate::BUILD_SCRIPT);
+    let gate_error = |what: String| Violation::Target {
+        target: "the build script's gate".to_owned(),
+        what,
+    };
+    let text = match fs::read_to_string(&script) {
+        Ok(text) => text,
+        Err(error) => {
+            return Ok(vec![gate_error(format!(
+                "cannot read {}: {error}",
+                script.display()
+            ))]);
+        }
+    };
+    let mut violations: Vec<Violation> = match gate::listed(&text) {
+        Ok(listed) => gate::list_problems(&listed, ALLOWLIST)
+            .into_iter()
+            .map(gate_error)
+            .collect(),
+        Err(error) => vec![gate_error(error)],
+    };
+    let gate = match gate::Gate::compile(root, &script, out_dir)? {
+        Ok(gate) => gate,
+        Err(error) => {
+            violations.push(gate_error(error));
+            return Ok(violations);
+        }
+    };
+    violations.extend(
+        gate::verdict_problems(&gate, ALLOWLIST, targets)?
+            .into_iter()
+            .map(|(target, what)| Violation::Target { target, what }),
+    );
+    Ok(violations)
 }
 
 /// Why naming a key that tells musl from glibc is refused.
@@ -826,44 +920,6 @@ pub(crate) fn musl_key_uses(path: &Path, text: &str, keys: &BTreeSet<String>) ->
         .collect()
 }
 
-/// The repository's build matrix (the targets in `rust-toolchain.toml` and
-/// every workflow file) names none of the targets whose cfg set equals an
-/// allowlisted one's: the crate's source cannot refuse them, so nothing
-/// the repository builds or ships may target them.
-fn matrix_violations(root: &Path, equivalent: &[String]) -> Result<Vec<Violation>, Error> {
-    let mut sources = vec![root.join("rust-toolchain.toml")];
-    let workflows = root.join(".github").join("workflows");
-    if workflows.is_dir() {
-        let (files, _) = crate::pure::package_files(&workflows, &workflows.join("none"))?;
-        sources.extend(files);
-    }
-    let mut violations = Vec::new();
-    for source in sources {
-        let text = fs::read_to_string(&source).map_err(Error::path_io("read", &source))?;
-        violations.extend(matrix_uses(&source, &text, equivalent));
-    }
-    Ok(violations)
-}
-
-/// The equivalent targets `text` names, as whole words.
-pub(crate) fn matrix_uses(source: &Path, text: &str, equivalent: &[String]) -> Vec<Violation> {
-    let words: BTreeSet<&str> = text
-        .split(|next: char| !(next.is_ascii_alphanumeric() || next == '_' || next == '-'))
-        .collect();
-    equivalent
-        .iter()
-        .filter(|target| words.contains(target.as_str()))
-        .map(|target| Violation::Target {
-            target: target.clone(),
-            what: format!(
-                "named in {}: the crate's guard cannot refuse this target (its cfg set equals \
-                 an allowlisted one's), so nothing in the repository may build for it",
-                source.display()
-            ),
-        })
-        .collect()
-}
-
 /// The crate's directory in the workspace.
 pub(crate) fn crate_dir(workspace: &Workspace) -> Result<PathBuf, Error> {
     workspace
@@ -886,7 +942,11 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     let workspace = metadata::load(None, &[])?;
     let crate_dir = crate_dir(&workspace)?;
     let build_dir = workspace.target_dir.join("xtask-check-os");
-    let (compiled, mut violations) = compiled_files(&workspace, &crate_dir, &build_dir)?;
+    let cfgs = allowlist::target_cfgs(&workspace.root)?;
+    let (mut violations, unlisted) =
+        target_violations(&workspace.root, &crate_dir, &build_dir, &cfgs)?;
+    let (compiled, found) = compiled_files(&workspace, &crate_dir, &build_dir)?;
+    violations.extend(found);
     let inventory = match read_inventory(&workspace.root, &crate_dir)? {
         Ok(inventory) => inventory,
         Err(problems) => {
@@ -898,22 +958,17 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         if !violations.is_empty() {
             return Err(rules(&violations));
         }
-        let adr_path = workspace.root.join(inventory::ADR);
-        let adr = fs::read_to_string(&adr_path).map_err(Error::path_io("read ADR", &adr_path))?;
         return self_test::run(
             &workspace.root,
             &workspace.target_dir,
             &crate_dir,
-            &adr,
             &inventory,
             &compiled,
+            &cfgs,
             output,
         );
     }
     violations.extend(outside_violations(&workspace.root, &crate_dir)?);
-    let (found, equivalent) = allowlist_violations(&workspace.root, &crate_dir)?;
-    violations.extend(found);
-    violations.extend(matrix_violations(&workspace.root, &equivalent)?);
     let keys = allowlist::musl_keys(&workspace.root)?;
     violations.extend(musl_key_violations(&crate_dir, &keys)?);
     let (files, unreadable) = crate_files(&crate_dir)?;
@@ -932,14 +987,15 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     writeln!(
         output,
         "check-os: no unsafe outside {CRATE}; {} rows in sites.json match ADR 0005's table; \
-         {sites} sites in {} files match the implemented rows ({}) on {}; the crate's guard \
-         accepts exactly the allowlist among the compiler's targets, and also {}, whose cfg sets \
-         equal an allowlisted target's",
+         {sites} sites in {} files match the implemented rows ({}) on {}; the build script's gate \
+         lists, accepts and refuses as ADR 0005 point 5.3 says; the crate root's guard gives the \
+         list's verdict on every built-in target; Cargo refuses in the build script each target \
+         whose cfg set equals a listed one's: {}",
         inventory.rows.len(),
         files.len(),
         implemented.join(", "),
         compiled.keys().cloned().collect::<Vec<_>>().join(", "),
-        equivalent.join(", ")
+        unlisted.join(", ")
     )
     .map_err(Error::io("report check-os"))
 }

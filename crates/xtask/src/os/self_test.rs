@@ -13,9 +13,14 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use super::allowlist::{Cfg, guard_of};
+use super::gate::{self, BUILD_SCRIPT};
 use super::inventory::Inventory;
 use super::scan::{self, BLOCK_BODY, CFG, TARGET_ENV};
-use super::{CrateFile, Violation, compare, outside_violations, rust_files};
+use super::{
+    ALLOWLIST, CrateFile, Violation, compare, gate_violations, guard_violations,
+    outside_violations, rust_files,
+};
 use crate::rust_source::tokens_with_strings;
 use crate::{Error, fixture};
 
@@ -289,15 +294,17 @@ pub(super) fn run(
     root: &Path,
     target_dir: &Path,
     crate_dir: &Path,
-    adr: &str,
     inventory: &Inventory,
     compiled: &BTreeMap<String, BTreeSet<PathBuf>>,
+    cfgs: &BTreeMap<String, Cfg>,
     output: &mut impl Write,
 ) -> Result<(), Error> {
     let report = |output: &mut dyn Write, line: String| {
         writeln!(output, "{line}").map_err(Error::io("report check-os self-test"))
     };
     let originals = read_crate(crate_dir)?;
+    let adr_path = root.join(super::inventory::ADR);
+    let adr = fs::read_to_string(&adr_path).map_err(Error::path_io("read ADR", &adr_path))?;
 
     let clean = check_edited(&originals, &[], inventory, compiled)?;
     if !clean.is_empty() {
@@ -317,7 +324,7 @@ pub(super) fn run(
         }
     }
 
-    paired_case(&originals, adr, inventory, compiled)?;
+    paired_case(&originals, &adr, inventory, compiled)?;
     report(
         output,
         "caught: a declaration and its call changed in the code and in sites.json alike, to one \
@@ -347,11 +354,18 @@ pub(super) fn run(
 
     boundary_cases(root, &originals, inventory, compiled, output)?;
 
-    allowlist_case(root, crate_dir)?;
+    let lib = originals
+        .get(Path::new("src/lib.rs"))
+        .cloned()
+        .unwrap_or_default();
+    allowlist_case(&lib, cfgs)?;
     report(
         output,
         "caught: a crate root guard without its vendor and pointer-width predicates".to_owned(),
     )?;
+
+    let scratch = target_dir.join("xtask-check-os").join("self-test");
+    target_cases(root, &scratch, &originals, cfgs, output)?;
 
     let cases = outside_cases(target_dir)?;
     report(
@@ -359,17 +373,16 @@ pub(super) fn run(
         format!(
             "check-os --self-test: the crate's own files passed and {} planted cases failed as \
              planted",
-            CASES.len() + 3 + BOUNDARY_CASES + cases
+            CASES.len() + 3 + BOUNDARY_CASES + TARGET_CASES + cases
         ),
     )
 }
 
 /// How many cases `boundary_cases` plants.
-const BOUNDARY_CASES: usize = 3;
+const BOUNDARY_CASES: usize = 2;
 
 /// The cases at the check's boundaries: a file the compiler read that was
-/// not scanned, a cfg key that tells musl from glibc, and a build matrix
-/// that names a target the guard cannot refuse.
+/// not scanned, and a cfg key that tells musl from glibc.
 fn boundary_cases(
     root: &Path,
     originals: &BTreeMap<PathBuf, String>,
@@ -418,23 +431,6 @@ fn boundary_cases(
     report(
         output,
         "caught: a module gated on crt-static, which only musl targets set".to_owned(),
-    )?;
-
-    let found = super::matrix_uses(
-        Path::new("rust-toolchain.toml"),
-        "targets = [\"x86_64-unknown-linux-gnu\", \"x86_64-unknown-linux-gnuasan\"]\n",
-        &["x86_64-unknown-linux-gnuasan".to_owned()],
-    );
-    if !matches!(found.as_slice(), [Violation::Target { target, .. }] if target == "x86_64-unknown-linux-gnuasan")
-    {
-        return Err(failure(
-            "a build matrix naming a target the guard cannot refuse",
-            &found,
-        ));
-    }
-    report(
-        output,
-        "caught: a build matrix naming a target the guard cannot refuse".to_owned(),
     )?;
 
     Ok(())
@@ -510,11 +506,9 @@ fn paired_case(
 /// predicates removed must accept targets outside the allowlist whose cfg
 /// sets differ from every allowlisted one (32-bit, big-endian, other
 /// vendors), which `check-os` refuses.
-fn allowlist_case(root: &Path, crate_dir: &Path) -> Result<(), Error> {
+fn allowlist_case(lib: &str, cfgs: &BTreeMap<String, Cfg>) -> Result<(), Error> {
     const CASE: &str = "a crate root guard without its vendor and pointer-width predicates";
-    let lib = crate_dir.join("src/lib.rs");
-    let text = fs::read_to_string(&lib).map_err(Error::path_io("read crate root", &lib))?;
-    let mut weakened = text.clone();
+    let mut weakened = lib.to_owned();
     for predicate in [
         "target_pointer_width = \"64\",",
         "target_endian = \"little\",",
@@ -523,35 +517,291 @@ fn allowlist_case(root: &Path, crate_dir: &Path) -> Result<(), Error> {
     ] {
         weakened = weakened.replace(predicate, "");
     }
-    if weakened == text {
+    if weakened == lib {
         return Err(Error::SelfTest {
             check: CHECK,
             case: CASE,
             found: vec!["the crate root has none of the predicates to remove".to_owned()],
         });
     }
-    let accepted = match super::allowlist::accepted_targets(root, &weakened)? {
-        Ok(accepted) => accepted,
-        Err(error) => {
-            return Err(Error::SelfTest {
-                check: CHECK,
-                case: CASE,
-                found: vec![error],
-            });
-        }
-    };
+    let found = guard_found(&weakened, cfgs, CASE)?;
     let caught = ["x86_64-unikraft-linux-musl", "x86_64-win7-windows-msvc"]
         .iter()
-        .all(|target| accepted.contains_key(*target));
+        .all(|target| found.iter().any(|violation| names(violation, target)));
     if caught {
         Ok(())
     } else {
+        Err(failure(CASE, &found))
+    }
+}
+
+/// The guard violations of crate root `lib` on `cfgs`.
+fn guard_found(
+    lib: &str,
+    cfgs: &BTreeMap<String, Cfg>,
+    case: &'static str,
+) -> Result<Vec<Violation>, Error> {
+    let guard = guard_of(lib).map_err(|error| Error::SelfTest {
+        check: CHECK,
+        case,
+        found: vec![error],
+    })?;
+    Ok(guard_violations(&guard, cfgs, ALLOWLIST).0)
+}
+
+fn names(violation: &Violation, name: &str) -> bool {
+    matches!(violation, Violation::Target { target, .. } if target == name)
+}
+
+/// The listed triple a planted gate drops or refuses.
+const DROPPED: &str = "aarch64-pc-windows-msvc";
+
+/// A planted copy of the build script, by its edits (each `from`, there
+/// once, replaced by `to`), and whether what the check found is what was
+/// planted.
+struct GateCase {
+    name: &'static str,
+    edits: &'static [(&'static str, &'static str)],
+    caught: fn(&[Violation]) -> bool,
+}
+
+const GATE_CASES: &[GateCase] = &[
+    GateCase {
+        name: "a gate list missing one listed triple",
+        edits: &[
+            ("[&str; 7]", "[&str; 6]"),
+            ("    \"aarch64-pc-windows-msvc\",\n", ""),
+        ],
+        caught: |found| {
+            !found.is_empty() && found.iter().all(|violation| gate_names(violation, DROPPED))
+        },
+    },
+    GateCase {
+        name: "a gate that refuses one listed triple",
+        edits: &[(
+            "TARGETS.contains(&target.as_str())",
+            "TARGETS.contains(&target.as_str()) && target != \"aarch64-pc-windows-msvc\"",
+        )],
+        caught: |found| {
+            !found.is_empty() && found.iter().all(|violation| names(violation, DROPPED))
+        },
+    },
+    GateCase {
+        name: "a gate that prints the target unescaped",
+        edits: &[("format!(\"{target:?}\")", "target")],
+        caught: |found| {
+            found
+                .iter()
+                .any(|violation| names(violation, "a TARGET holding a line break"))
+        },
+    },
+    GateCase {
+        name: "a gate whose rerun rule names more than the build script",
+        edits: &[(
+            "    println!(\"cargo::rerun-if-changed=build.rs\");\n",
+            "    println!(\"cargo::rerun-if-changed=build.rs\");\n    \
+             println!(\"cargo::rerun-if-changed=src\");\n",
+        )],
+        caught: |found| {
+            ALLOWLIST
+                .iter()
+                .all(|target| found.iter().any(|violation| names(violation, target)))
+        },
+    },
+];
+
+/// How many cases `target_cases` plants.
+const TARGET_CASES: usize = GATE_CASES.len() + 2;
+
+/// What point 5.3's cases are planted in and checked against.
+struct Planting<'a> {
+    root: &'a Path,
+    scratch: &'a Path,
+    originals: &'a BTreeMap<PathBuf, String>,
+    cfgs: &'a BTreeMap<String, Cfg>,
+    targets: Vec<String>,
+    script: String,
+    lib: String,
+}
+
+impl Planting<'_> {
+    /// What the gate's check finds in `planted`, a build script written
+    /// under the scratch directory for `case`.
+    fn gate_found(&self, case: &str, planted: &str) -> Result<Vec<Violation>, Error> {
+        let dir = self.scratch.join(case.replace(' ', "-"));
+        fs::create_dir_all(&dir).map_err(Error::path_io("create directory", &dir))?;
+        let script = dir.join(BUILD_SCRIPT);
+        fs::write(&script, planted).map_err(Error::path_io("write", &script))?;
+        gate_violations(self.root, &dir, &dir.join("gate"), &self.targets)
+    }
+}
+
+/// Point 5.3's negative tests, each run through the check's own functions
+/// on a planted copy of the build script or the crate root: a gate that
+/// accepts one cfg-equal extra triple (also built through Cargo), a gate
+/// list missing one listed triple, a gate that refuses one listed triple,
+/// and a guard widened by one target; with a gate that prints the target
+/// unescaped and one that names more than itself in its rerun rule.
+fn target_cases(
+    root: &Path,
+    scratch: &Path,
+    originals: &BTreeMap<PathBuf, String>,
+    cfgs: &BTreeMap<String, Cfg>,
+    output: &mut impl Write,
+) -> Result<(), Error> {
+    let text = |path: &str| originals.get(Path::new(path)).cloned().unwrap_or_default();
+    let planting = Planting {
+        root,
+        scratch,
+        originals,
+        cfgs,
+        targets: cfgs.keys().cloned().collect(),
+        script: text(BUILD_SCRIPT),
+        lib: text("src/lib.rs"),
+    };
+    let clean = planting.gate_found("the build script", &planting.script)?;
+    let guard = guard_of(&planting.lib).map_err(|error| Error::SelfTest {
+        check: CHECK,
+        case: "the crate root's guard",
+        found: vec![error],
+    })?;
+    let (guard_clean, unlisted) = guard_violations(&guard, cfgs, ALLOWLIST);
+    if !clean.is_empty() || !guard_clean.is_empty() {
+        let mut found = clean;
+        found.extend(guard_clean);
+        return Err(failure(
+            "the build script and crate root, unplanted",
+            &found,
+        ));
+    }
+    extra_case(&planting, &unlisted, output)?;
+    for case in GATE_CASES {
+        let mut planted = planting.script.clone();
+        for (from, to) in case.edits {
+            planted = plant(&planted, from, to, case.name)?;
+        }
+        let found = planting.gate_found(case.name, &planted)?;
+        if !(case.caught)(&found) {
+            return Err(failure(case.name, &found));
+        }
+        report_caught(output, case.name, &first(&found))?;
+    }
+    widened_case(&planting, output)
+}
+
+fn report_caught(output: &mut impl Write, case: &str, found: &str) -> Result<(), Error> {
+    writeln!(output, "caught: {case}: {found}").map_err(Error::io("report check-os self-test"))
+}
+
+/// A gate that also accepts one target whose cfg set equals a listed one's
+/// (the first of `unlisted`): caught by the list and verdict checks, and,
+/// through Cargo, by a build of a package holding the planted script.
+fn extra_case(
+    planting: &Planting<'_>,
+    unlisted: &[String],
+    output: &mut impl Write,
+) -> Result<(), Error> {
+    const CASE: &str = "a gate that accepts one cfg-equal extra triple";
+    let extra = unlisted.first().ok_or(Error::SelfTest {
+        check: CHECK,
+        case: CASE,
+        found: vec!["no target has the cfg set of a listed one to plant".to_owned()],
+    })?;
+    let planted = plant(
+        &planting.script,
+        "const TARGETS: [&str; 7] = [",
+        &format!("const TARGETS: [&str; 8] = [\n    \"{extra}\","),
+        CASE,
+    )?;
+    let found = planting.gate_found(CASE, &planted)?;
+    if found.is_empty() || !found.iter().all(|violation| gate_names(violation, extra)) {
+        return Err(failure(CASE, &found));
+    }
+    let package = planting.scratch.join("package");
+    write_package(&package, planting.originals, &planted)?;
+    let problem = gate::cargo_problem(
+        planting.root,
+        &package.join("Cargo.toml"),
+        false,
+        extra,
+        &package.join("target"),
+    )?;
+    let Some(problem) = problem else {
+        return Err(failure(CASE, &[]));
+    };
+    report_caught(
+        output,
+        CASE,
+        &format!("{extra}: {}; through Cargo: {problem}", first(&found)),
+    )
+}
+
+/// The crate root's guard widened by one target, `x86_64-unknown-freebsd`:
+/// the guard's verdict disagrees with the list's on that target alone.
+fn widened_case(planting: &Planting<'_>, output: &mut impl Write) -> Result<(), Error> {
+    const CASE: &str = "a guard widened by one target";
+    let planted = plant(
+        &planting.lib,
+        "        all(\n            target_os = \"macos\",",
+        "        all(target_os = \"freebsd\", target_arch = \"x86_64\"),\n        all(\n            \
+         target_os = \"macos\",",
+        CASE,
+    )?;
+    let found = guard_found(&planted, planting.cfgs, CASE)?;
+    if !matches!(found.as_slice(), [violation] if names(violation, "x86_64-unknown-freebsd")) {
+        return Err(failure(CASE, &found));
+    }
+    report_caught(output, CASE, &first(&found))
+}
+
+/// `text` with its one `from` replaced by `to`.
+fn plant(text: &str, from: &str, to: &str, case: &'static str) -> Result<String, Error> {
+    if text.matches(from).count() == 1 {
+        Ok(text.replacen(from, to, 1))
+    } else {
         Err(Error::SelfTest {
             check: CHECK,
-            case: CASE,
-            found: accepted.keys().cloned().collect(),
+            case,
+            found: vec![format!("the text to replace is not there once: {from:?}")],
         })
     }
+}
+
+/// Whether `violation` is about the gate and names `name`.
+fn gate_names(violation: &Violation, name: &str) -> bool {
+    match violation {
+        Violation::Target { target, what } => target == name || what.contains(name),
+        _ => false,
+    }
+}
+
+fn first(found: &[Violation]) -> String {
+    found.first().map_or_else(String::new, ToString::to_string)
+}
+
+/// Writes a package of its own at `dir`: the crate's sources and the
+/// planted build script, under a manifest that names it `ironafs-os`.
+fn write_package(
+    dir: &Path,
+    originals: &BTreeMap<PathBuf, String>,
+    script: &str,
+) -> Result<(), Error> {
+    for (path, text) in originals {
+        let file = dir.join(path);
+        if let Some(parent) = file.parent() {
+            fs::create_dir_all(parent).map_err(Error::path_io("create directory", parent))?;
+        }
+        fs::write(&file, text).map_err(Error::path_io("write", &file))?;
+    }
+    let script_path = dir.join(BUILD_SCRIPT);
+    fs::write(&script_path, script).map_err(Error::path_io("write", &script_path))?;
+    let manifest = dir.join("Cargo.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"ironafs-os\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
+         build = \"build.rs\"\npublish = false\n\n[workspace]\n",
+    )
+    .map_err(Error::path_io("write", &manifest))
 }
 
 /// The crate's `.rs` files, relative to its directory, with their text.

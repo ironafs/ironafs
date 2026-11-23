@@ -1,19 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The crate's target allowlist, evaluated against every target the pinned
-//! compiler knows (ADR 0005, point 5.3).
+//! The crate root's `compile_error!` guard, evaluated against every target
+//! the pinned compiler knows (ADR 0005, point 5.3).
 //!
 //! The crate root's `#[cfg(not(<guard>))] compile_error!(...)` is read from
 //! its tokens, and `<guard>` (`all`, `any`, `not`, names and `key =
 //! "value"` predicates) is evaluated on each target's cfg set, as `rustc
-//! --print cfg --target <triple>` reports it. The targets it accepts must
-//! be exactly the allowlist, except a target whose whole cfg set equals an
-//! allowlisted target's: source cannot tell the two apart (only a build
-//! script could read the triple, and the crate has none, ADR 0005, point
-//! 1.4), so such a target is reported by name, never silently accepted. A
-//! target that differs in any cfg value (another vendor, a 32-bit ABI,
-//! big-endian, another ABI) must be refused by the build itself.
+//! --print cfg --target <triple>` reports it. The verdict it must give is
+//! derived from point 5.3's list, never from the guard: a target passes
+//! exactly when its whole cfg set equals a listed target's. The guard is
+//! the second net; the target gate in the build script (`gate`) is the part
+//! that refuses, by triple, the targets whose cfg set equals a listed one's.
 
 use std::collections::BTreeSet;
 
@@ -213,25 +211,27 @@ fn read(tokens: &[Token], at: usize) -> Result<(Expression, usize), String> {
     Ok((expression, close + 1))
 }
 
-/// Each target the pinned compiler knows that the crate root's guard
-/// accepts, with its cfg set, read with that compiler from `root`.
+/// The guard of the crate root `lib_rs`.
 ///
 /// # Errors
 ///
-/// Returns an error if `rustc` cannot be run or reports failure, or the
-/// root's guard cannot be read.
-pub(crate) fn accepted_targets(
+/// Returns why the root cannot be read, or has no guard this reader can
+/// evaluate exactly.
+pub(crate) fn guard_of(lib_rs: &str) -> Result<Expression, String> {
+    let tokens =
+        crate::rust_source::tokens_with_strings(lib_rs).map_err(|error| error.to_string())?;
+    guard(&tokens)
+}
+
+/// Every target the pinned compiler knows, with its cfg set, read with that
+/// compiler from `root`.
+///
+/// # Errors
+///
+/// Returns an error if `rustc` cannot be run or reports failure.
+pub(crate) fn target_cfgs(
     root: &std::path::Path,
-    lib_rs: &str,
-) -> Result<Result<std::collections::BTreeMap<String, Cfg>, String>, crate::Error> {
-    let tokens = match crate::rust_source::tokens_with_strings(lib_rs) {
-        Ok(tokens) => tokens,
-        Err(error) => return Ok(Err(error.to_string())),
-    };
-    let expression = match guard(&tokens) {
-        Ok(expression) => expression,
-        Err(error) => return Ok(Err(error)),
-    };
+) -> Result<std::collections::BTreeMap<String, Cfg>, crate::Error> {
     let rustc = |arguments: &[&str]| -> Result<String, crate::Error> {
         let output = crate::Command::new("rustc")
             .current_dir(root)
@@ -241,12 +241,10 @@ pub(crate) fn accepted_targets(
         crate::Error::check_status("rustc --print", output.status)?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     };
-    let mut accepted = std::collections::BTreeMap::new();
+    let mut cfgs = std::collections::BTreeMap::new();
     for target in rustc(&["--print", "target-list"])?.lines() {
         let cfg = parse_cfg(&rustc(&["--print", "cfg", "--target", target])?);
-        if accepts(&expression, &cfg) {
-            accepted.insert(target.to_owned(), cfg);
-        }
+        cfgs.insert(target.to_owned(), cfg);
     }
-    Ok(Ok(accepted))
+    Ok(cfgs)
 }

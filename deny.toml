@@ -39,7 +39,13 @@ wildcards = "deny"
 # (ADR 0001); bundled C sources are checked by hand.
 [bans.build]
 include-workspace = true
-allow-build-scripts = []
+allow-build-scripts = [
+  # The target gate of ADR 0005, point 5.3 and Decision 4: std only, it
+  # compares Cargo's TARGET with point 5.3's seven triples and refuses any
+  # other; it runs no program, compiles nothing and writes nothing
+  # (coding standards rule 20's written reason is that ADR).
+  { crate = "ironafs-os@0.0.0" },
+]
 
 [sources]
 unknown-registry = "deny"
