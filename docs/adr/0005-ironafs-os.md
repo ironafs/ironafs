@@ -1675,12 +1675,23 @@ below, and compiles or runs no foreign code but the shim (point 1.1).
   absent or non-UTF-8 one included, it prints one
   `cargo::error=` line naming the triple and point 5.3, and exits with
   a nonzero status, so Cargo fails the build before the crate is
-  compiled. The gate compiles nothing, writes nothing and reads no
+  compiled. The value is never printed raw: `TARGET` can be a path to
+  a target specification file, which may hold a line break, and a raw
+  line break would let the rest of the value become a Cargo directive.
+  A UTF-8 value is printed in Rust's debug form (`{:?}`), which escapes
+  every line break and control character, so the refusal is always one
+  line; an absent value is printed as "unset" and a non-UTF-8 one as
+  "not UTF-8", with none of its bytes. The gate compiles nothing,
+  writes nothing and reads no
   other variable, so it runs the same on every host, for `cargo build`,
-  `cargo check`, `cargo clippy`, `cargo doc` and Miri alike. It tells
-  Cargo to rerun it only when `build.rs` changes
+  `cargo check`, `cargo clippy`, `cargo doc` and Miri alike.
+- **When Cargo reruns the script.** While the script holds the gate
+  alone, it tells Cargo to rerun it only when `build.rs` changes
   (`cargo::rerun-if-changed=build.rs`); a new `TARGET` is a new build
-  in any case.
+  in any case. When the shim is added (M4), the same script also names
+  the shim's C file and every other file it reads in
+  `cargo::rerun-if-changed=` lines, so an edit to any of them reruns
+  the script and rebuilds the shim; a stale archive is never linked.
 
 The macOS C shim:
 
@@ -1791,18 +1802,33 @@ decision and a change to this point (point 7).
      kept as a second net: it holds even where a build script is not
      run, and it names the property that differs.
 
-   `cargo xtask check` checks both, beside point 6.7's inventory: the
-   gate's seven triples must equal this list exactly; for every target
-   the pinned compiler knows, the guard's verdict is evaluated on the
-   target's cfg set, and the guard must accept every listed target;
-   and every target the guard accepts but the list
-   does not name (the cfg-equal targets above) is built, and must fail
-   in the build script with the gate's message, not later and not for
-   another reason. A target that fails that way is refused; one that
-   builds, or fails for another reason, fails the check. Its negative
-   tests: a gate that accepts one cfg-equal extra triple, a gate list
-   missing one listed triple, and a guard widened by one target, each
-   make it fail. Until this check has run on the pinned compiler, the
+   `cargo xtask check-os`, which `cargo xtask check` runs beside point
+   6.7's inventory, checks both layers:
+   - the gate's seven triples must equal this list exactly;
+   - the production gate itself must accept each listed triple: an
+     affirmative result from the gate's own code for each of the seven,
+     obtained before any shim compilation, linking or ABI check (how
+     the check isolates the gate is the follow-up change's, reviewed
+     under point 6.6);
+   - the guard's expected verdict is derived from this list, not from
+     the guard: a target is expected to pass the guard exactly when its
+     whole cfg set (every name and every `key = "value"` pair that
+     `rustc --print cfg --target` reports on the pinned compiler)
+     equals a listed target's. For every built-in target of the pinned
+     compiler, the guard's evaluated verdict is compared with the
+     expected one, and any disagreement, in either direction, fails the
+     check. So the guard must accept every listed target and refuse
+     every target whose cfg set differs from every listed one's;
+   - every target the guard accepts but the list does not name (the
+     cfg-equal targets above) is built through Cargo, which must reach
+     the gate and fail in the build script with the gate's message, not
+     later and not for another reason. A target that fails that way is
+     refused; one that builds, or fails for another reason, fails the
+     check.
+
+   Its negative tests: a gate that accepts one cfg-equal extra triple, a
+   gate list missing one listed triple, a gate that refuses one listed
+   triple, and a guard widened by one target, each make it fail. Until this check has run on the pinned compiler, the
    cfg-equal targets are MISSING evidence of refusal
    (`docs/workflow.md` §3c), and a compiler update reruns it (as point
    5.7 does for headers).
@@ -2044,7 +2070,7 @@ decision and a change to this point (point 7).
   so neither forbids the gate. The gate comes as its own class S change
   (point 6.6) after the owner accepts this amendment, not inside
   another change's fix round. That change writes the build script,
-  teaches `cargo xtask` the check of point 5.3, corrects the crate's
+  teaches `cargo xtask check-os` the check of point 5.3, corrects the crate's
   comments that cite point 1.4 for "no build script" and state the
   limit, and adds the crate's own build script to `deny.toml`'s
   build-script allowlist (`[bans.build]`, which covers workspace
