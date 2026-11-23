@@ -435,8 +435,8 @@ left blocker 1 partly open. Its fix was then applied:
 Seat: GLM (`glm-5.3`, max), 2026-11-23, a security review of the page at
 `956881c`. It found one major and three minors. Each is quoted as the seat
 wrote it (its title line), then its disposition. The fixes are in commit
-`b85f718`, not yet reviewed: a scoped re-review of the fix diff comes
-next, and the major is listed in the page's 13.1 as blocker 5 until then.
+`b85f718`. The major was listed in the page's 13.1 as blocker 5 until
+its scoped re-review passed (below).
 
 The branch first took in the configuration syntax branch (part (a)) by a
 merge. The syntax page's changes (bidirectional controls refused anywhere
@@ -451,3 +451,23 @@ still holds.
 | F2: "`fstatat` failures are unclassified: \"gone when it is opened\", and an Unreadable definition that lists `fstat` but not `fstatat`." | GLM, minor | FIXED: 5.1, point 3: untrusted only when `fstatat` succeeds and shows another type; a failing `fstatat` is classified by point 7. 5.1, point 7: `ENOENT` at `fstatat` on `ironafs.toml` is absent; a listed or `fstatat`-seen file gone at its `fstatat` or `openat` is unreadable; `fstatat` is in the unreadable list. Test cases in 10, point 4 | introduced by the scoped round (blocker 3's `fstatat`) | correctness |
 | F3: "The provisional `dns_interface` range admits \".\" and \"..\"." | GLM, minor | FIXED: 5.2.2's range excludes `.` and `..`; test in 10, point 1 | pre-existing | correctness |
 | F4: "No bound on the number of configuration/policy sources." | GLM, minor | FIXED: `config.sources_max` (64) in 5.2.9. 5.1, point 2: the caller counts sources as it lists, skips other entries unstored, and past the bound stops and reads no file of that directory, giving the directory outcome `TooMany`, which is malformed (5.1, point 7): a local refusal in F, an incompatible policy in P (as for any malformed policy delivery, Q12). 5.8, points 1 and 2: `validate_local` and part (c) refuse a longer list; `validate_local` parses and scans only `ironafs.toml` and the first `config.sources_max` drop-ins. Section 7; test in 10, point 4 | pre-existing | missing mechanism |
+
+Verification: GLM (`glm-5.3`, max), 2026-11-23, on `c40c611..9b2fedc`:
+PASS, each of F1 to F4 fixed. Blocker 5 is closed.
+
+## Landing
+
+1. **Blocker 1's remainder:** GPT (`gpt-6.2-sol`, xhigh), 2026-11-21,
+   verified `4180337..956881c`: PASS, no findings. Its check of
+   `a58d61d`, on all four blockers, named only blockers 1 and 3 as still
+   open; its check of `a58d61d..4180337` closed blocker 3 (the scoped
+   round). With blocker 5's verification
+   above, no blocker of the page's 13.1 is open, and 13.1 says so.
+2. **Register and index:** RFC 4291 was cited as "to be registered". Its
+   row E6 already existed for other specifications; it now also
+   allowlists §2.2 and names this page. Section 2.2's held erratum 6596
+   would stop `::` standing for one leading or trailing zero piece. The
+   page reads §2.2 as published, because RFC 5952, section 4, requires a
+   reader to accept every RFC 4291 form, and says so in 5.3, point 3,
+   with a test in 10, point 1. RFC 5952 is registered as E59. The page's
+   index row is added.

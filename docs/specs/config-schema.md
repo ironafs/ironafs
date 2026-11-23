@@ -570,8 +570,12 @@ it refuses. A value of another syntax type is a type error (section 7).
    `0:0:0:0:0:0:0:1` are equal) refuse the list `[OWN]`. Either family is
    accepted whatever `network.families` says
    `[ADR 0004 C34.1: Working]`; using an address of a family that is off
-   is the user's rule. RFC 4291 is not yet in the register of editions;
-   it is registered before this page is reviewed.
+   is the user's rule. Section 2.2 is read as published: `::` may stand
+   for one leading or trailing zero piece, so `::0:0:0:0:0:0:1` is
+   accepted and equals `::1`. Erratum 6596, held for a document update,
+   would refuse that form; RFC 5952, section 4, requires a reader to
+   accept every form RFC 4291 allows, and comparing by value makes the
+   two readings name the same address `[OWN]`.
 4. **Interface name:** a string; its range is in 5.2.2.
 5. **Byte count:** an integer, in bytes, from 64 MiB (67,108,864) to
    2^62 − 1 `[OWN]`: the floor keeps the cache above a few dozen chunks of
@@ -958,7 +962,10 @@ in `crates/ironafs-config/tests/it/`.
 
 1. **Each key:** its default; one accepted value; each range bound
    accepted and one past it refused; the wrong syntax type refused;
-   `dns_interface` values `.` and `..` refused.
+   `dns_interface` values `.` and `..` refused; an IPv6 address in each
+   of RFC 4291, section 2.2's three forms accepted, `::0:0:0:0:0:0:1`
+   accepted as `::1` (5.3, point 3), and `1::2::3` and a zone index
+   refused.
 2. **Unknown keys:** in F, refused with the suggestion of 5.9, point 2
    (for example `cells."x".protocl` suggests `protocol`); in P, ignored and
    reported, with more than `config.unknown_reported_max` counted.
@@ -1043,7 +1050,7 @@ in `crates/ironafs-config/tests/it/`.
 | DNS | SPECIFICATION | The DNS client specification, issue #60 (draft), 5.2, 5.6.3 and 5.6.4 | 5.2.2, 5.2.4 |
 | NS | SPECIFICATION | The namespace specification, issue #80 (draft), 5.2 and 5.6.5 | 5.2.1, 5.2.6 |
 | VLFS | SPECIFICATION | The location service specification, issue #65 (draft, 2026-11-21), 5.1.1, point 5 (the VL service's port, marked unverified there) | 5.3.3 |
-| S1 | SPECIFICATION | RFC 4291, "IP Version 6 Addressing Architecture", section 2.2 (to be registered) | 5.3.3 |
+| S1 | SPECIFICATION | RFC 4291, "IP Version 6 Addressing Architecture", February 2006, §2.2, register row E6 ([README](README.md)); RFC 5952, August 2010, section 4, its opening paragraph, register row E59 | 5.3.3 |
 | CTL | DECISION | The controller's rulings of 2026-11-21 on Q1 to Q12 | 13 |
 | OWN | OWN | This page's own choices, each with its reason where it is made | throughout |
 
@@ -1113,9 +1120,10 @@ Open: Q6's registration (above), and the cross-specification notes for
 ### 13.1 Blockers before this page leaves draft
 
 The first four findings were open when the review's fix rounds stopped;
-the fifth came from the security review. Each fix is now in the text; the
-page stays draft, and no code is written from it, until a scoped
-re-review of each fix passes. Each is quoted as the reviewer wrote it.
+the fifth came from the security review. Each is quoted as the reviewer
+wrote it. Each fix is in the text, and the scoped re-review of each has
+passed (the review record, "Scoped round", "Security round" and
+"Landing"): none is open.
 
 1. "The per-source table gives no precedence when policy sources fail in
    different ways. It also treats a single missing policy file as absence
