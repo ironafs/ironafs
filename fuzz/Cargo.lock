@@ -44,9 +44,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironafs-config"
+version = "0.0.0"
+
+[[package]]
 name = "ironafs-fuzz"
 version = "0.0.0"
 dependencies = [
+ "ironafs-config",
  "ironafs-xdr",
  "libfuzzer-sys",
 ]
