@@ -15,21 +15,15 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 use super::super::{disable_dumps, dumpable};
 use crate::dump::harness::{
-    Collector, PrivateDir, Run, binary_copy, command, command_at, contains, core_limits, marker,
-    plant, role, run, trusted_parent,
+    Collector, NOBODY, PrivateDir, Run, SIGABRT, binary_copy, command, command_at, contains,
+    core_limits, marker, nobody_copy, plant, role, run, trusted_parent,
 };
 
 /// This file's entry test, which a child runs.
 const ENTRY: &str = "unix_nodump::tests::kernel::child";
 
-/// SIGABRT, the dumping signal `std::process::abort` raises.
-const SIGABRT: i32 = 6;
-
 /// The salt of the marker the dump tests plant.
 const SALT: u8 = 11;
-
-/// An unprivileged user and group to change to.
-const NOBODY: u32 = 65_534;
 
 /// The user and group id the set-id exec test runs its grandchild under:
 /// one that no account or group of the machine has (checked before use,
@@ -125,14 +119,6 @@ fn set_id_copy() -> (PrivateDir, std::path::PathBuf) {
         "{SET_ID_TEST_ID} belongs to an account or group here: choose another"
     );
     binary_copy(SET_ID_TEST_ID, 0o4710)
-}
-
-/// A copy of this test binary that [`NOBODY`]'s group may run and read, so
-/// a child under `nobody` can run it wherever the build left the binary;
-/// readable, so its exec is an ordinary one, which leaves the attribute 1
-/// (an unreadable program's exec resets it as a set-id one does).
-fn nobody_copy() -> (PrivateDir, std::path::PathBuf) {
-    binary_copy(NOBODY, 0o750)
 }
 
 /// Whether `id` is no account's user or primary group id and no group's

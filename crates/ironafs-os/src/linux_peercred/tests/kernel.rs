@@ -17,7 +17,7 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 
 use super::super::peer_credentials;
-use crate::dump::harness::{PrivateDir, binary_copy, command_at, role};
+use crate::dump::harness::{NOBODY, PrivateDir, command_at, nobody_copy, role};
 use crate::peer::PeerError;
 
 /// This file's entry test, which a child runs.
@@ -25,9 +25,6 @@ const ENTRY: &str = "linux_peercred::tests::kernel::child";
 
 /// The environment variable naming the socket the child connects to.
 const SOCKET: &str = "IRONAFS_OS_TEST_SOCKET";
-
-/// An unprivileged user and group.
-const NOBODY: u32 = 65_534;
 
 /// The effective user and group ids of this process, from
 /// `/proc/self/status` (`Uid:` and `Gid:` give real, effective, saved and
@@ -96,9 +93,7 @@ fn peer_credentials_name_a_peer_under_another_uid() {
     let listener = UnixListener::bind(&path).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
 
-    // The child runs a copy of this binary its group may run and read,
-    // since the binary where the build left it may be out of its reach.
-    let (_copy_dir, copy) = binary_copy(NOBODY, 0o750);
+    let (_copy_dir, copy) = nobody_copy();
     let mut child = command_at(&copy, ENTRY, "connect")
         .env(SOCKET, &path)
         .uid(NOBODY)

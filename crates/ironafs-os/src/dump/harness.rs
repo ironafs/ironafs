@@ -55,6 +55,13 @@ pub(crate) const CORE_DIR: &str = "IRONAFS_CORE_DIR";
 /// A marker's length: long enough that no chance match is plausible.
 pub(crate) const MARKER_LEN: usize = 64;
 
+/// SIGABRT, the dumping signal `std::process::abort` raises.
+pub(crate) const SIGABRT: i32 = 6;
+
+/// The unprivileged user and group `nobody`, for a child under another
+/// user.
+pub(crate) const NOBODY: u32 = 65_534;
+
 /// The role this process was started with, if it is a child.
 pub(crate) fn role() -> Option<String> {
     std::env::var(ROLE).ok()
@@ -404,6 +411,15 @@ pub(crate) fn binary_copy(group: u32, mode: u32) -> (PrivateDir, PathBuf) {
     chown(&copy, Some(0), Some(group)).unwrap();
     fs::set_permissions(&copy, fs::Permissions::from_mode(mode)).unwrap();
     (dir, copy)
+}
+
+/// A copy of this test binary that [`NOBODY`]'s group may run and read
+/// (see [`binary_copy`]), so a child under `nobody` can run it wherever the
+/// build left the binary. Readable, so its exec is an ordinary one, which
+/// leaves the dumpable attribute 1 (an unreadable program's exec resets it
+/// as a set-id one does).
+pub(crate) fn nobody_copy() -> (PrivateDir, PathBuf) {
+    binary_copy(NOBODY, 0o750)
 }
 
 /// Whether the mount `path` is on honours set-user-id bits and allows
