@@ -205,6 +205,25 @@ The file carries no version. The subset may grow, only by accepting TOML
 that it refuses today, never by changing the meaning of an accepted file
 `[OWN]`.
 
+Against the rules for formats IronAFS defines
+([README](README.md), "Formats IronAFS defines"):
+
+1. **Magic value and version:** none, a named departure from that rule
+   `[OWN]`. People write the file, in a subset of a standard format; a
+   version line would be one more thing to get wrong, and would say
+   nothing the grow-only rule above does not.
+2. **Versions read and written:** every IronAFS version reads every file
+   an earlier version accepted. IronAFS never writes this file: the crate
+   has no encoder (§10.2), and finding and reading files is the caller's
+   (§2).
+3. **Older versions:** nothing to decode differently or migrate, since
+   the subset only grows and an accepted file keeps its meaning.
+4. **A newer file** (TOML this subset refuses) is refused at its first
+   such construct, with its position and hint, and no document is
+   returned (§5.5; §7, points 1 and 2). The parser only reads the bytes.
+5. **Extension without a new version:** by accepting TOML refused today,
+   as above.
+
 ### 5.4 Decoding
 
 1. The checks run in this order, and the first failure is the error:
