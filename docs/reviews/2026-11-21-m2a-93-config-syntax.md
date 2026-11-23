@@ -344,3 +344,17 @@ Evidence (EXECUTED, macOS 27 on Apple silicon, 2026-11-23, at
 three of `ironafs-xdr_decode`; and a 120-second fuzzing run of
 `ironafs-config_syntax` from its seeds, about 3.6 million inputs, with
 no failure.
+
+### Landing verification
+
+GLM (`glm-5.3`, high, 2026-11-23) read `df943f9..1fcb684` and passed it,
+with one minor finding, fixed and recorded, with no further round.
+
+- **Minor, fixed:** "crates/ironafs-config/src/syntax.rs:7-9 (module
+  doc) and crates/ironafs-config/src/syntax/parser.rs:35-37 (check_file
+  doc) still enumerate the whole-file checks as "line ends, control
+  characters, line length" without the bidirectional-control check that
+  cf04f93 added (parser.rs:104-109), although the check's own doc
+  (parser.rs:85-87) was updated."
+  - Both summaries now name bidirectional controls among the whole-file
+    checks.
