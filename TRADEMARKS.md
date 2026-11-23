@@ -14,30 +14,38 @@ AFS-3, OpenAFS or any other protocol or product name, which this project
 only refers to.
 
 The name is written **IronAFS**: capital I, lower-case "ron", capital AFS,
-one word. The ™ sign is used once, at the first prominent mention, and not
-in ordinary prose, paths, commands, URLs or crate names.
+one word. The ™ sign goes on the prominent brand reference (a title or
+heading) and in the ownership statement, and not in ordinary prose, paths,
+commands, URLs or crate names.
 
 ## Your rights under the licence
 
 The software is licensed under GPL-3.0-or-later ([LICENSING.md](LICENSING.md)).
-Nothing on this page takes away any right that licence grants, or restricts
-any use the law allows without permission. You do not need permission to
-use, study, change, fork, sell or redistribute the code.
+The licence grants no trademark rights; this page is about the name only.
+Nothing on it adds a condition to the licence, takes away any right the
+licence grants, or restricts any use the law allows without permission.
+The licence itself is the permission to use, study, change, fork, sell and
+redistribute the code, on its terms; you need no separate permission from
+this project.
 
 ## Referring to the project
+
+This is guidance on labelling things accurately, so that people can tell
+the project's own releases from other people's builds.
 
 - **Accurate references are welcome** without asking: in articles,
   documentation, links, talks, and statements such as "works with IronAFS"
   or "based on IronAFS", as long as they are true.
-- **Redistributing an unchanged release,** or packaging it for a
-  distribution, you may call it IronAFS. Say who built and distributes the
-  package.
-- **Distributing a modified version,** make clear that it is modified and
-  who distributes it, for example "based on IronAFS". Do not present it as
-  the official IronAFS, or as endorsed by this project. A fork may say
-  truthfully where it comes from.
-- **Do not suggest** that this project endorses, certifies or is affiliated
-  with your product, service or project unless it does.
+- **Packages of an unchanged release** can be called IronAFS. A label that
+  also says who built the package, for example "IronAFS 1.0, packaged by
+  Example Linux", tells users where it came from.
+- **Modified versions** are best labelled as such, with who distributes
+  them, for example "Example AFS, based on IronAFS". Please do not present
+  a modified version as the official IronAFS. A fork may say truthfully
+  where it comes from.
+- **Endorsement:** please do not suggest that this project endorses,
+  certifies or is affiliated with your product, service or project unless
+  it does.
 
 For the project's own relationship to other AFS software, see the README's
 [Licence](README.md#licence) section.
