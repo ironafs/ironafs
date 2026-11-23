@@ -400,6 +400,10 @@ fn core_shadows_finds_every_item_or_import_named_core() {
         "use crate::shadow::{core, other};\n",
         "macro_rules! core { () => {} }\n",
         "fn f<core>() {}\n",
+        "fn f<T, core>() {}\n",
+        "impl<'a, T, core: Copy> S<'a, T> {}\n",
+        "struct S<const N: usize, core>;\n",
+        "fn f<T>() where core: Copy {}\n",
         "mod r#core {}\n",
     ] {
         let found = core_shadows(&tokens(source).unwrap());

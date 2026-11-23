@@ -690,36 +690,20 @@ fn use_tree(
     }
 }
 
-/// The lines of every item, import or generic parameter named `core` among
-/// `tokens`, raw identifiers included. Any of them can make a path written
-/// `core::...` in its scope (or, through a glob import, in another file)
-/// name something other than the `core` crate. A path that only uses
-/// `core` (`core::ffi::c_int`, `::core::ptr`) is not one.
+/// The lines of every `core` among `tokens` that is not the first segment
+/// of a path (`core::...` or `::core::...`), raw identifiers included: an
+/// item, an import, a generic parameter in any position, a macro argument
+/// or anything else so named. Any of them can make `core::...` in its scope
+/// (or, through a glob import, in another file) name something other than
+/// the `core` crate; with none in a crate, every `core::...` path in it
+/// resolves through the extern prelude to the core crate.
 pub(crate) fn core_shadows(tokens: &[Token]) -> Vec<usize> {
-    const DECLARES: &[&str] = &[
-        "mod", "struct", "enum", "union", "trait", "fn", "const", "static", "type", "as", "crate",
-    ];
-    let mut in_use = false;
-    let mut found = Vec::new();
-    for (at, token) in tokens.iter().enumerate() {
-        if ident(Some(token)) == Some("use") && !token.raw {
-            in_use = true;
-        }
-        if punct(Some(token)) == Some(';') {
-            in_use = false;
-        }
-        if ident(Some(token)) != Some("core") || is(tokens, at + 1, &TokenKind::PathSep) {
-            continue;
-        }
-        let before = at.checked_sub(1).and_then(|before| tokens.get(before));
-        let declared = ident(before).is_some_and(|word| DECLARES.contains(&word));
-        let macro_name = punct(before) == Some('!')
-            && ident(at.checked_sub(2).and_then(|before| tokens.get(before)))
-                == Some("macro_rules");
-        let generic = punct(before) == Some('<');
-        if declared || macro_name || generic || in_use {
-            found.push(token.line);
-        }
-    }
-    found
+    tokens
+        .iter()
+        .enumerate()
+        .filter(|(at, token)| {
+            ident(Some(token)) == Some("core") && !is(tokens, at + 1, &TokenKind::PathSep)
+        })
+        .map(|(_, token)| token.line)
+        .collect()
 }
