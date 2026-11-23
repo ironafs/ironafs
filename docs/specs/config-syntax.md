@@ -422,8 +422,8 @@ two final dots refused; mixed-case input stored lower-cased.
 
 | Id | Kind | Source, version or date, locator | Used in |
 |---|---|---|---|
-| S1 | SPECIFICATION | TOML v1.0.0, <https://toml.io/en/v1.0.0>, sections "Spec", "Comment", "Keys", "String", "Integer", "Boolean", "Array", "Table" (read 2026-11-21) | §5.1, §5.4, §5.5 |
-| S2 | SPECIFICATION | Unicode Character Database 18.0.0, `PropList.txt`, property `Bidi_Control`, <https://www.unicode.org/Public/UCD/latest/ucd/PropList.txt> (read 2026-11-23) | §5.1 |
+| S1 | SPECIFICATION | TOML v1.0.0, register of editions row E57 ([README](README.md)), <https://toml.io/en/v1.0.0>, sections "Spec", "Comment", "Keys", "String", "Integer", "Boolean", "Array", "Table" (read 2026-11-21) | §5.1, §5.4, §5.5 |
+| S2 | SPECIFICATION | Unicode Character Database 18.0.0, `PropList.txt`, property `Bidi_Control`, register of editions row E58 ([README](README.md)), <https://www.unicode.org/Public/18.0.0/ucd/PropList.txt> (read 2026-11-23) | §5.1 |
 | DEC-1 | DECISION | Issue #93, the canonical cell-name rule (owner's decision, 2026-11-20) | §1, §5.7 |
 | ADR | DECISION | ADR 0004, C4, O17, O18, O19, O47 | §1, §2 |
 | OWN | OWN | This specification's own choices, each with its reason where it is made | throughout |
