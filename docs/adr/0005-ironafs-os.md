@@ -6,7 +6,9 @@
 Status: accepted (2026-11-21), by the owner, after the review rounds
 recorded below. Raised in issue #43; the ADR 0004 amendment it needs
 is issue #49, in the same pull request (#101). Amended 2026-11-22
-(#TBD): row 23 and its sheet, the route sockets' bounded wait.
+(#152): point 5.3 and Decision 4, the target gate; and amended
+2026-11-22 (#TBD): row 23 and its sheet, the route sockets' bounded
+wait.
 
 ## Context
 
@@ -1879,11 +1881,73 @@ site.
      callback under Miri over fabricated replies, a non-zero
      `errorCode` with poisoned other parameters included.
 
-### 4. The macOS C shim
+### 4. The build script: the target gate and the macOS C shim
 
 **Working.** Revisit if: O8's shim decision is revisited, Apple ships a
-non-macro entry point for unified logging, or the build fails on a
-supported Xcode (L37, point 2).
+non-macro entry point for unified logging, the build fails on a
+supported Xcode (L37, point 2), a build of the crate is found that
+does not run its build script (then point 5.3's gate has a gap), or
+the pinned toolchain starts admitting custom targets in its normal
+stable mode, or the workspace's standard builds enable unstable
+custom-target support.
+
+The crate's one build script, `build.rs`, does two things, in this
+order: of the targets Cargo selects by a built-in triple, it refuses
+every one outside point 5.3's list (the target gate, amended
+2026-11-22; its scope is below), and on a macOS host building for macOS it
+builds the shim. It is written in IronAFS's own Rust with the standard
+library only: it has no `[build-dependencies]` (point 1.4 covers every
+dependency table), runs no other program but the two `xcrun` commands
+below, and compiles or runs no foreign code but the shim (point 1.1).
+
+- **The target gate** (amended 2026-11-22). The script reads Cargo's
+  `TARGET` variable, the short name Cargo reports for the target: the
+  triple of a built-in target, or, for a custom JSON target, the stem
+  of the specification file's name (`foo` out of `foo.json`), never
+  its path. It compares that name, as an exact string, with the seven
+  triples of point 5.3. On any other value, an
+  absent or non-UTF-8 one included, it prints one
+  `cargo::error=` line naming the triple and point 5.3, and exits with
+  a nonzero status, so Cargo fails the build before the crate is
+  compiled. The value is never printed raw: `TARGET` can be the stem
+  of a target specification file's name, which may itself hold a line
+  break, and a raw line break would let the rest of the value become a
+  Cargo directive.
+  A UTF-8 value is printed in Rust's debug form (`{:?}`), which escapes
+  every line break and control character, so the refusal is always one
+  line; an absent value is printed as "unset" and a non-UTF-8 one as
+  "not UTF-8", with none of its bytes. **Scope.** The comparison
+  identifies the target by the value Cargo reports, which is the
+  target itself only when Cargo selects it by a built-in triple. The
+  pinned toolchain rejects custom JSON targets in its normal stable
+  mode: Cargo accepts a `.json` target only with unstable target
+  support enabled (`-Z json-target-spec`, usually with
+  `-Z build-std`), on a nightly toolchain or with `RUSTC_BOOTSTRAP=1`
+  set. Whenever unstable target support is enabled, a builder can name
+  a specification after a listed triple and copy its cfg values, and
+  neither the gate nor point 5.3's `compile_error!` guard can tell it
+  apart. The refusal is guaranteed for targets Cargo selects by a
+  built-in triple; custom targets are outside it. The gate compiles nothing,
+  writes nothing and reads no
+  other variable, so it runs the same on every host, for `cargo build`,
+  `cargo check`, `cargo clippy`, `cargo doc` and Miri alike.
+- **When Cargo reruns the script.** While the script holds the gate
+  alone, it tells Cargo to rerun it only when `build.rs` changes
+  (`cargo::rerun-if-changed=build.rs`); a new `TARGET` is a new build
+  in any case. When the shim is added (M4), the same script also names
+  the shim's C file and every other file it reads in
+  `cargo::rerun-if-changed=` lines, so an edit to any of them reruns
+  the script and rebuilds the shim; a stale archive is never linked.
+  **A requirement on the M4 shim change:** the build reruns, and the
+  shim archive is rebuilt, whenever any effective input of the shim
+  changes that Cargo does not already track. That includes the
+  headers the compiler reads (the SDK's `<os/log.h>` and what it
+  includes), the selected SDK and Xcode, and the deployment version
+  and every other build setting the script passes to `xcrun`. How the
+  script tracks them is that change's design, reviewed under point
+  6.6.
+
+The macOS C shim:
 
 - One C file inside `ironafs-os`, IronAFS's own, with an SPDX header. It
   includes only `<os/log.h>` and `<stdint.h>`. It uses one constant format
@@ -1892,16 +1956,17 @@ supported Xcode (L37, point 2).
   the log handles it creates once. Its exported functions take fixed-width
   integers and `const char *` only, and check each integer against the
   shim's own tables (sheet 5). It does no DNS work (point 3.3).
-- **Built by the crate's own `build.rs`** (the written reason rule 20 asks
-  for is this ADR and O8, point 2). On a macOS host building for a macOS
-  target, it runs `xcrun clang` `[DES-021]` for Cargo's target
-  architecture and deployment version, with warnings as errors, then
-  `xcrun libtool -static`, and tells Cargo to link the result statically.
-  It reads only the named Cargo variables, writes only under `OUT_DIR`, and
-  uses no network.
-- On any other host or target it compiles nothing, so `cargo check` and
-  `cargo clippy --target` for macOS still run from Linux. Linking the macOS
-  daemon needs a macOS host.
+- **Built by the same `build.rs`**, after the target gate (the written
+  reason rule 20 asks for is this ADR, O8, point 2, and point 5.3). On a
+  macOS host building for a macOS target, it runs `xcrun clang`
+  `[DES-021]` for Cargo's target architecture and deployment version,
+  with warnings as errors, then `xcrun libtool -static`, and tells Cargo
+  to link the result statically. It reads only the named Cargo
+  variables, writes only under `OUT_DIR`, and uses no network.
+- On any other host or target it compiles nothing (the gate still runs),
+  so `cargo check` and `cargo clippy --target` for macOS still run from
+  Linux. Linking the macOS daemon needs a macOS host. Until the shim
+  lands (M4), the build script holds the target gate alone.
 - **The shim is linked into the daemon only.** O8, point 2, leaves open
   whether other Rust binaries (the `afs` CLI) get it; this ADR does not
   link it into them, so the gap O8 states remains until an amendment.
@@ -1919,7 +1984,9 @@ Revisit point 2's per-C-library declaration of `struct pollfd` and
 `nfds_t` if point 5.6's check shows the glibc and musl declarations
 equal on every Linux target, or a declaration wrong on one (amended
 2026-11-22).
-Revisit point 3 if: a row of L37 to L39 is added, removed or qualified.
+Revisit point 3 if: a row of L37 to L39 is added, removed or qualified,
+or a compiler update changes which targets share a listed target's cfg
+set.
 Revisit point 4 if: the link-and-run check fails on a supported Windows
 release, or the pinned toolchain's `raw-dylib` support changes. Revisit
 point 5 if: L42's glibc floor moves, or a supported kernel lacks
@@ -1958,8 +2025,10 @@ decision and a change to this point (point 7).
    since `nfds_t`'s type differs from macOS's and its width in glibc and
    musl is UNVERIFIED until point 5.6's check (Context). No
    upstream crate's tests stand behind them.
-3. **A target allowlist.** The crate compiles for these targets only, all
-   64-bit, and any other target is a `compile_error!`:
+3. **A target allowlist.** For Cargo builds that select a built-in
+   triple, the crate compiles for these targets only, all 64-bit, and
+   the build refuses every other built-in triple (amended 2026-11-22;
+   the refusal and its scope are below the list):
    - `x86_64-` and `aarch64-unknown-linux-gnu` (L37, point 1; L42, point 3);
    - `x86_64-` and `aarch64-unknown-linux-musl` (the static musl candidate,
      L39, point 5);
@@ -1981,6 +2050,59 @@ decision and a change to this point (point 7).
    CONFIRMED 2026-11-20). No release documents an awake clock that stops
    in suspend, so C37's pair for it needs its own evidence first.
    Adding a target is a change to the list (point 7).
+
+   **The refusal has two parts, and both stay** (amended 2026-11-22).
+   Both cover the targets Cargo selects by a built-in triple; a custom
+   target, which Cargo accepts only with unstable target support
+   enabled, is outside the
+   guarantee (Decision 4, "Scope"):
+   - **The target gate** of Decision 4 refuses, by exact triple, every
+     target not on the list that Cargo selects by triple. It is the part that makes the refusal
+     exact. Some of the compiler's targets have exactly the cfg set of a
+     listed one (vendor variants, `arm64e`, and sanitizer variants of
+     `x86_64` glibc: six on the pinned compiler, as the review of the
+     crate's first change counted them; UNVERIFIED until the check
+     below runs), so no `cfg` in source can tell them apart; the
+     triple can.
+   - **The `compile_error!` guard** in the crate root refuses every
+     target whose cfg set differs from every listed target's. It is
+     kept as a second net: it holds even where a build script is not
+     run, and it names the property that differs.
+
+   `cargo xtask check-os`, which `cargo xtask check` runs beside point
+   6.7's inventory, checks both layers:
+   - the gate's seven triples must equal this list exactly. The
+     check's reference copy of the list is kept apart from the gate,
+     never read from the gate's own code, and is tied to this point's
+     text by review: a change to either the gate's list or the
+     reference copy without the other fails the check;
+   - the production gate itself must accept each listed triple: an
+     affirmative result from the gate's own code for each of the seven,
+     obtained before any shim compilation, linking or ABI check (how
+     the check isolates the gate is the follow-up change's, reviewed
+     under point 6.6);
+   - the guard's expected verdict is derived from this list, not from
+     the guard: a target is expected to pass the guard exactly when its
+     whole cfg set (every name and every `key = "value"` pair that
+     `rustc --print cfg --target` reports on the pinned compiler)
+     equals a listed target's. For every built-in target of the pinned
+     compiler, the guard's evaluated verdict is compared with the
+     expected one, and any disagreement, in either direction, fails the
+     check. So the guard must accept every listed target and refuse
+     every target whose cfg set differs from every listed one's;
+   - every target the guard accepts but the list does not name (the
+     cfg-equal targets above) is built through Cargo, which must reach
+     the gate and fail in the build script with the gate's message, not
+     later and not for another reason. A target that fails that way is
+     refused; one that builds, or fails for another reason, fails the
+     check.
+
+   Its negative tests: a gate that accepts one cfg-equal extra triple, a
+   gate list missing one listed triple, a gate that refuses one listed
+   triple, and a guard widened by one target, each make it fail. Until this check has run on the pinned compiler, the
+   cfg-equal targets are MISSING evidence of refusal
+   (`docs/workflow.md` §3c), and a compiler update reruns it (as point
+   5.7 does for headers).
 4. **Windows.** Declarations are `extern "system"`. Microsoft's reference
    names Kernel32.dll as the DLL for both clock functions, `mincore.lib` as
    the library for `QueryUnbiasedInterruptTimePrecise`, and its Interrupt
@@ -2215,9 +2337,22 @@ decision and a change to this point (point 7).
 - **Coding standards rule 5 changes** in the same pull request as this ADR:
   "every crate inherits the workspace lints" gains its one named exception.
   Rule 20 is not edited here: it changes with the layout pull request, a
-  separate change that is pending. Until then this ADR and O8, point 2,
-  are the written reason for this crate's `build.rs` that rule 20 asks
-  for (Decision 4).
+  separate change that is pending. Until then this ADR, O8, point 2,
+  and point 5.3's target gate are the written reason for this crate's
+  `build.rs` that rule 20 asks for (Decision 4).
+- **The target gate** (amended 2026-11-22; point 5.3, Decision 4).
+  Before this amendment the crate's own comments read point 1.4 as
+  forbidding any build script and stated the cfg-equal targets as an
+  accepted limit; point 1.4 forbids dependencies, and point 1.1 only a
+  build script that compiles or runs foreign code or a native helper,
+  so neither forbids the gate. The gate comes as its own class S change
+  (point 6.6) after the owner accepts this amendment, not inside
+  another change's fix round. That change writes the build script,
+  teaches `cargo xtask check-os` the check of point 5.3, corrects the crate's
+  comments that cite point 1.4 for "no build script" and state the
+  limit, and adds the crate's own build script to `deny.toml`'s
+  build-script allowlist (`[bans.build]`, which covers workspace
+  crates). It adds no dependency.
 - **CI grows:** the ABI check and the per-site tests on Linux, macOS and
   Windows runners, a C compiler on each, the Miri job, and the inventory
   check. None of them is a Cargo dependency.
@@ -2419,6 +2554,14 @@ no macOS or Windows component's status: that is the owner's (below).
   It would remove the Windows half of point 5.2's upkeep, and is the
   fallback there for the same reason `libc` is on Unix.
 - **The `cc` crate for the shim.** See point 4.
+- **Stating the cfg-equal targets as a residual of point 5.3** (the
+  crate documents them, `cargo xtask` names them, and every build
+  matrix and release excludes them). Not taken (owner, 2026-11-22):
+  point 5.3 asks that any other target be refused, and a pure-Rust
+  build script reading the triple refuses them exactly, at the cost of
+  one build script that runs on every build and an allowlist entry for
+  it. A residual held only by build matrices would hold only as long
+  as every matrix and every user's command line stays correct.
 - **`SO_RCVTIMEO` on the route sockets** for row 23's bounded receive
   (one `setsockopt` and `struct timeval`, a fixed period such as one
   second). Not taken (owner, 2026-11-22): it bounds one receive call
@@ -2609,6 +2752,144 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
   wording, round 15's sweep entry in the record, and round 1's
   undescribed minor), fixed in the next commit and recorded; under the
   stop rule, no further round.
+- **Amendment, 2026-11-22 (#152): point 5.3 and Decision 4, the
+  target gate.** Design issue #151.
+  - What changed: point 5.3's refusal has two parts. A target gate in
+    the crate's build script refuses, by exact triple, every target
+    outside the list that Cargo selects by triple, the targets whose cfg
+    set equals a listed one's included; the `compile_error!` guard
+    stays as a second net. A custom target, which Cargo accepts only
+    with unstable target support enabled, is outside the guarantee.
+    `cargo xtask check-os` checks both layers: the gate's list against
+    a reference copy kept apart from it, the gate's acceptance of each
+    listed triple, the guard's verdict against one derived from the
+    list for every built-in target, and Cargo's refusal of each
+    cfg-equal target in the build script. The refusal prints the
+    target in an escaped, one-line form. Decision 4 now describes the
+    build script's two jobs (the gate, then the macOS shim), its rerun
+    rule while it holds the gate alone, and a requirement on the M4
+    shim change to rerun on every effective input Cargo does not
+    track. Consequences name the follow-up class S change (the script,
+    the check, the crate comments, the `deny.toml` build-script
+    allowlist entry); Alternatives record the residual route not
+    taken. Both decisions stay Working, with new triggers.
+  - Evidence: the first `ironafs-os` change (PR #118) found that on
+    the pinned compiler six built-in targets have exactly the cfg set
+    of a listed one, so the `compile_error!` guard cannot refuse them,
+    as point 5.3 requires (open item O3 of that change's review record,
+    on the round that reviewed `8183d8f`, 2026-11-21). The crate's
+    comments (`crates/ironafs-os/Cargo.toml`,
+    `crates/ironafs-os/src/lib.rs`) read point 1.4 as forbidding the
+    build script that could. Point 1.4 forbids dependencies. Point 1.1
+    keeps a build script that compiles or runs foreign code or a
+    native helper out of every crate but this one, and this crate may
+    have one (the shim's, Decision 4); the gate compiles and runs
+    nothing, so neither point forbids it. The owner chose the gate over
+    stating a residual on 2026-11-22 (decision comment on PR #118).
+  - Sweep: the repository at `origin/main` (`3f73854`) was searched for
+    "no build script", "point 1.4", "compile_error", "build.rs", "build
+    script", "5.3" and "0005"; so were the open branches of PR #118
+    (`m2a-57-os`, `ff71ace`), PR #132 (`m2a-57-osc`, `291bc50`), PR #136
+    (`m2a-57-ose`, `33bc576`) and PR #143 (`m2a-97-netgen`, `e6c9eae`).
+    - On `main`, point 5.3 itself is the old rule, rewritten above. No
+      other file states it. The "no build script" hits are the pure
+      crates' rule (ADR 0004, C4, point 1, unchanged):
+      `crates/ironafs-crypto/Cargo.toml`, `crates/ironafs-time/Cargo.toml`,
+      `crates/xtask/src/pure.rs`, `docs/specs/local-ipc.md` (for
+      `ironafs-ipc`) and the review record
+      `docs/reviews/2026-11-21-m2a-13-check-deps.md`; and
+      `crates/xtask/src/bans.rs` uses the words in a check's report
+      about the build scripts clippy runs, a different rule. Coding
+      standards rules 5, 20 and 21, `AGENTS.md`, `docs/workflow.md`
+      and the skills were read in full: none says this crate has no
+      build script. The `add-dependency` skill puts each build script
+      in `deny.toml`'s `[bans.build]` allowlist, which covers
+      workspace crates; that entry comes with the follow-up code, as
+      Consequences say. Unchanged.
+    - On the four branches, each a follow-up for its pull request, not
+      edited here. Each carries main's point 5.3 and Decision 4
+      unchanged, which take this amendment when it is merged. Three
+      carry main's ADR 0005 exactly; PR #132's branch (`291bc50`) is
+      the exception: it carries its own amendment of rows and sheets
+      13 and 14, which touches neither point 5.3 nor Decision 4, and
+      that pull request must reconcile both amendments in the ADR's
+      status line and Review section on merge. Each also carries:
+      `crates/ironafs-os/Cargo.toml` ("no build script (ADR 0005,
+      point 1.4)") and `crates/ironafs-os/src/lib.rs` (the cfg-equal
+      targets stated as a limit, citing point 1.4), corrected by the
+      follow-up change; `crates/xtask/src/os/allowlist.rs` (the same
+      reading) and `crates/xtask/src/os.rs` (the guard comparison that
+      accepts the cfg-equal targets as "equivalent", the matrix check
+      that forbids naming them, and its messages) and their tests,
+      replaced there by point 5.3's check. `crates/xtask/src/deps.rs`
+      cites point 1.4 for dependencies only, unchanged.
+    - Actors. The rule binds the maintainer's session, and contributors
+      and their agents, who build and review the crate. CI: on the four
+      branches it runs today's `check-os` (the guard and the matrix
+      check); `main` does not run it; enforcing the amended check in CI
+      comes with the follow-up change. Dependabot proposes dependency
+      updates only and never adds a build script; the `deny.toml`
+      allowlist would refuse one.
+  - Review rounds, class S, from families that wrote neither the
+    amendment nor the decision. The design seat was GPT at
+    `gpt-6.2-sol` (xhigh), not the strongest row's `gpt-6.2-astra`,
+    by the owner's standing choice to conserve GPT quota; ADR 0005's
+    own rounds 16 and 17 used the same pin. The security seat was GLM
+    `glm-5.3`, at high in rounds 1 to 3, and at max for the final pass
+    over the whole amendment (round 4) and its verification, the
+    judgement seat, and rounds 5 and 6. This departure from
+    point 7.2's strongest row is put to the owner with the amendment,
+    for acceptance. Each finding, its disposition and the convergence
+    note are in the review record,
+    [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md),
+    section "Amendment: the target gate".
+    - Round 1 on `3f73854..225145f`: GPT FAIL, 3 major and 1 minor;
+      GLM FAIL, 1 major (GPT's first) and 2 minor. Fixed in `a661d2c`.
+    - Round 2 on `225145f..a661d2c`: GLM PASS, and, as refutation
+      seat, it accepted moving the method that isolates the gate's
+      verdict to the follow-up change; GPT FAIL, 1 major (the shim's
+      indirect inputs). Fixed in `26ee981` as a requirement on the M4
+      shim change.
+    - Round 3 on `a661d2c..26ee981`: GPT PASS and GLM PASS.
+    - Round 4, the final pass over the whole amendment,
+      `3f73854..26ee981`: GLM (`glm-5.3`, max) PASS with 1 minor (the
+      check's reference list must be kept apart from the gate), fixed
+      in `cdc8cb3` and verified by GLM at max.
+    - Round 5, the check of the Review entry, the sweep and the issue
+      draft, on `a9f3886`: GPT (`gpt-6.2-sol`, xhigh) FAIL, 1 blocker,
+      3 major and 2 minor; GLM (`glm-5.3`, max) PASS with 1 minor.
+      (An earlier version of this entry used "Round 5" for this round
+      and the judgement below together; they are now listed apart.)
+    - Judgement on I-GPT-A-2 (for a custom JSON target, `TARGET` holds
+      the specification file's stem, not a path, and the gate cannot
+      tell such a target from a listed one): the judgement seat, GLM
+      (`glm-5.3`, max), ruled A, with high confidence: a defect of
+      wording and scope, not a bypass possible under the pinned
+      toolchain. The controller checked its premises in Cargo's source
+      at commit `3acc79c0c841844675bc53a605922dbfc441e750`: `TARGET` is
+      set from the target's short name
+      (`src/compiler/custom_build.rs:375`), which is the triple or a
+      JSON target's file stem (`src/compiler/compile_kind.rs:241-245`),
+      and a `.json` target is refused without `-Zjson-target-spec`, an
+      unstable flag (`compile_kind.rs:204-205`). Fixed in `8a529d9`:
+      the description of `TARGET`, the basis of the no-raw-print rule,
+      a scope sentence in Decision 4 and point 5.3, and a new trigger.
+    - Round 6, the verification of the fixes, on `8a529d9`: GPT
+      (`gpt-6.2-sol`, xhigh) FAIL, 1 major (the opening rules still
+      stated an unconditional refusal) and 4 minor (unstable target
+      support is also enabled by `RUSTC_BOOTSTRAP`, not only on
+      nightly; PR #132's branch carries its own amendment; two on the
+      issue draft); GLM (`glm-5.3`, max) PASS with 1 minor (the same
+      PR #132 point). Fixed in the next commit.
+    - Round 7, the verification of `8a529d9..a5d0919`: GPT
+      (`gpt-6.2-sol`, xhigh) FAIL, 1 major (point 5.3's opening still
+      limited the crate before the built-in-triple qualifier) and 2
+      minor (`RUSTC_BOOTSTRAP=1`; the revisit trigger split into two
+      conditions); GLM (`glm-5.3`, max) PASS, no findings. All wording,
+      fixed in `07c08f0`.
+    - Round 8, GPT's scoped check of `a5d0919..07c08f0` (`gpt-6.2-sol`,
+      xhigh): all three fixed; 2 record minors, fixed in the next
+      commit. Under the stop rule the rounds stop here.
 - **Amendment, 2026-11-22 (#TBD): row 23 and sheet 23, the route
   sockets' bounded wait.**
   - What changed: row 23 gains `poll` on one route socket and its
