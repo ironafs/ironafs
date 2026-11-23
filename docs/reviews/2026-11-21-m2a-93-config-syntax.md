@@ -5,8 +5,9 @@
 
 ## The change
 
-Class S. Issue #93 (plan id M2a-32), part (a) without its fuzz target,
-and the canonical cell name of part (b).
+Class S. Issue #93 (plan id M2a-32), part (a), and the canonical cell
+name of part (b). The fuzz target came in the security round, once the
+fuzz crate was on `main`.
 
 - `docs/specs/config-syntax.md`: the contract, written before the code.
   It covers the grammar of the subset, each refused TOML construct with
@@ -133,4 +134,100 @@ and recorded, so no verification round.
   - every unit test failed against compiling stubs, except three the stubs happened to satisfy;
   - 23 planted wrong implementations were each caught: off-by-one errors on every cap, a duplicate key where the last one wins, tab and C1 characters allowed, mixed arrays, dotted keys, dates read as integers, no lower-casing, edge hyphens, underscores, two final dots, an escape misread, and an error column shifted;
   - in this round, the three fixes' tests failed first as described above.
-- MISSING: the fuzz target `ironafs-config_syntax` (specification section 10.4). It waits on the fuzz crate and the owner's `libfuzzer-sys` decision (#45).
+- The fuzz target `ironafs-config_syntax` (specification section 10.4) was MISSING at `cbf738d`; it is added in the security round below.
+
+## Security round
+
+The class S security review read `ec2b47f..980fad5` and returned one
+major and six minor findings. The branch first took `main` (`df943f9`,
+a merge of `720a9cd`), which brought the fuzz crate. The fixes are
+`cf04f93` (code and tests), `7fd8d9d` (fuzz target) and `4a457e2`
+(specification).
+
+Findings, each quoted in its defect line, with its disposition:
+
+- **F1, major, fixed (`7fd8d9d`, `cf04f93`, `4a457e2`):** "The
+  configuration decoder ships without its required fuzz target."
+  - `fuzz/fuzz_targets/ironafs-config_syntax.rs` is registered as a
+    `[[bin]]` in `fuzz/Cargo.toml`, with six tracked seeds under
+    `fuzz/seeds/ironafs-config_syntax/`.
+  - It asserts section 10.4 on arbitrary bytes: the parser returns, an
+    error's position is within the input, an accepted document keeps the
+    caps a document can show, and the same input gives the same result.
+  - Its checks are the property tests' own: they moved to
+    `crates/ironafs-config/tests/it/invariants.rs`, which the target
+    includes by path, as the XDR target includes its test types.
+- **F2, minor, fixed (`cf04f93`):** "`header` decodes and allocates the
+  ninth segment before checking `MAX_DEPTH`."
+  - A ninth segment that would be decoded (a bare key or a quoted one) is
+    refused as `TooDeep` at its first character, before it is read.
+    Anything else after the dot is left to the segment reader, so
+    `[a.b.c.d.e.f.g.h.]` still reports a missing key.
+  - The test failed first: an unterminated, an over-long and a
+    badly-escaped ninth segment gave their own errors, not `TooDeep`.
+- **F3, minor, fixed (`4a457e2`):** "The stated bound on stored path
+  bytes omits the explicit table's copy of its full path."
+  - Section 5.2 now counts, for one header with decoded segment text P:
+    up to `MAX_DEPTH` created paths, the explicit table's copy, and the
+    created tables' names in their parents, at most `MAX_DEPTH` + 2
+    times P. It says the bound is decoded text, without container
+    overhead.
+  - The finding named the explicit copy only. The names stored in each
+    parent's map are a second copy of each new segment that the old text
+    also left out; the new bound counts both.
+- **F4, minor, fixed (`cf04f93`):** "`add_entry` repeats `check_key`
+  after `Parser::key_value` already called it."
+  - `check_key` now returns the key it cleared, which `add_entry` takes;
+    `add_entry` keeps the checked count update. No behaviour changes, so
+    no test could fail first; the existing redefinition and definitions
+    cap tests cover both calls.
+- **F5, minor, fixed (`cf04f93`):** "`within_caps` checks upper bounds
+  for explicit table paths and segments but lets both be empty."
+  - An empty explicit path or an empty segment is refused before the
+    prefixes are counted.
+  - Shown by a planted defect: with the parser's empty quoted key check
+    removed, the any-bytes property failed on `[""]` with "bad segment".
+    The old check would have passed it (INSPECTED: it checked only entry
+    keys for emptiness).
+- **F6, minor, fixed (`4a457e2`, test in `cf04f93`):** "§5.4 leaves the
+  final-segment collision ambiguous when a table header names a key that
+  already holds a value."
+  - Section 5.4, point 3 now says: at the last segment, `Redefined` at
+    the header's `[`; at an earlier segment, `NotATable` at that segment;
+    both name the key's position. Point 4 states where each redefinition
+    is reported.
+  - A new test covers both cases inside a table. It passed at once: the
+    code already did this, and the fix is to the text.
+- **F7, minor, fixed (`cf04f93`, `4a457e2`):** "The heading about hidden
+  text is broader than the filter."
+  - The controller decided that the format refuses bidirectional
+    controls: Unicode's `Bidi_Control` set, U+061C, U+200E, U+200F,
+    U+202A to U+202E and U+2066 to U+2069, checked against Unicode's
+    `PropList.txt` (18.0.0).
+  - They are refused anywhere in the file, in the whole-file checks, with
+    a new error kind, `BidiControl`: they are not control characters
+    (category Cf, not Cc), so `ControlCharacter` would misname them.
+  - Section 5.1, point 3 states the set, the reason (text that displays
+    in a different order than it parses) and the filter's exact scope;
+    section 8, point 4 says nothing else is filtered and that a caller
+    escapes text that is not printable before echoing it.
+  - The test failed first: every one of the twelve characters in a
+    comment, a quoted key, a table-path segment, a string, an array
+    element and after a bare key or value was accepted or refused with
+    another error. A second test accepts characters next to the set.
+
+Evidence (EXECUTED, macOS 27 on Apple silicon, 2026-11-23, at
+`4a457e2`), each with exit 0:
+
+- `cargo xtask check`; `cargo nextest run --workspace --retries 0
+  --no-tests fail` (812 tests passed); `cargo test --doc --workspace`;
+  `cargo clippy --all-targets --workspace`, with no warnings;
+  `cargo fmt --all --check`; `cargo deny check`; `reuse lint`.
+- The fuzz job's steps: `cargo xtask check-fuzz-deny` and its
+  `--self-test`; `cargo xtask fuzz --self-test`; in `fuzz/`, `cargo fmt
+  --check`, `cargo clippy --all-targets --locked` with no warnings and
+  `cargo deny --locked check`; `cargo xtask fuzz`, which replayed six
+  seeds of `ironafs-config_syntax` and three of `ironafs-xdr_decode`.
+- A fuzzing run of `ironafs-config_syntax` on the pinned nightly, from
+  the tracked seeds, for 120 seconds: about 4.8 million inputs, no
+  failure.
