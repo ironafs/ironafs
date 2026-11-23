@@ -3,9 +3,8 @@
 
 //! Passing one descriptor over a local stream socket (ADR 0005, sheet 14):
 //! the checks of what a receive returned, and the errors, whatever made the
-//! calls. These are safe functions over owned values, so the tests (and,
-//! once the fuzzing engine is decided, a fuzz target) reach every branch
-//! without a socket.
+//! calls. These are safe functions over owned values, so the tests and the
+//! fuzz target `ironafs-os_fdpass` reach every branch without a socket.
 //!
 //! **Authenticate the header, then adopt, then decide.** A control message
 //! holds descriptors only if the returned control length and the header
@@ -36,8 +35,12 @@
 //! buffer into a [`Received`] and hands it by value to [`accept`], which
 //! checks and adopts, with no fallible step or early return between the
 //! read and the adoption. The checks are a safe function over owned values
-//! so that the tests, and a fuzz target once the fuzzing engine is decided
-//! (ADR 0005, point 6.5), reach every branch without a socket.
+//! so that the tests and the fuzz target `ironafs-os_fdpass` (ADR 0005,
+//! point 6.5) reach every branch without a socket.
+//!
+//! This file uses the standard library alone and holds no site, so the fuzz
+//! target compiles it as it stands, by its path, and the crate's public API
+//! is unchanged.
 
 use std::error::Error;
 use std::fmt;
@@ -130,6 +133,21 @@ pub(crate) struct Rules {
     /// The one data byte the sender writes.
     pub(crate) data: u8,
 }
+
+/// Sheet 14's values on the allowlisted Linux targets: `linux_fdpass`
+/// asserts that its rules, read from the declarations `check-abi` proves
+/// against the C headers, are these, and the tests and the fuzz target
+/// check with them.
+pub(crate) const LINUX: Rules = Rules {
+    level: 1,
+    rights: 1,
+    pidfd: 4,
+    truncated: 8,
+    one: 20,
+    two: 24,
+    capacity: 24,
+    data: 1,
+};
 
 /// What one receive returned, read out of the receiver's own buffers.
 ///

@@ -762,8 +762,8 @@ are in its sheet below the table, under the same number.
       of the control buffer and its adoption: the receive, and the checks
       it hands what it read to by value, with no fallible step or early
       return between them. The checks are a safe function over owned
-      values, so that the tests, and a fuzz target once the fuzzing
-      engine is decided (point 6.5), reach every branch without a socket.
+      values, so that the tests and the fuzz target `ironafs-os_fdpass`
+      (point 6.5) reach every branch without a socket.
     - The wrapper says nothing about what the descriptor refers to, nor
       who receives it. The receiving caller checks the sender (sheet 13)
       and the object. The sending caller checks the recipient **before it

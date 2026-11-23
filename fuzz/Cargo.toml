@@ -40,6 +40,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ironafs-os_fdpass"
+path = "fuzz_targets/ironafs-os_fdpass.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ironafs-xdr_decode"
 path = "fuzz_targets/ironafs-xdr_decode.rs"
 test = false

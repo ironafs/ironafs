@@ -33,7 +33,7 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
-use crate::fdpass::{FdPassError, Received, Rules, accept, retried, sent};
+use crate::fdpass::{FdPassError, LINUX, Received, Rules, accept, retried, sent};
 use abi::{
     MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_NOSIGNAL, SCM_PIDFD, SCM_RIGHTS, SOL_SOCKET, cmsghdr, iovec,
     msghdr,
@@ -114,6 +114,18 @@ const RULES: Rules = Rules {
     capacity: SPACE,
     data: DATA,
 };
+
+// The same rules as the tests and the fuzz target check with.
+const _: () = assert!(
+    RULES.level == LINUX.level
+        && RULES.rights == LINUX.rights
+        && RULES.pidfd == LINUX.pidfd
+        && RULES.truncated == LINUX.truncated
+        && RULES.one == LINUX.one
+        && RULES.two == LINUX.two
+        && RULES.capacity == LINUX.capacity
+        && RULES.data == LINUX.data
+);
 
 /// Why a message could not be built: a length that does not fit its C
 /// field, which the constants above rule out.

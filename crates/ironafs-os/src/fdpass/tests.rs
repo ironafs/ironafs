@@ -11,19 +11,7 @@ use std::cell::RefCell;
 use std::io;
 use std::rc::Rc;
 
-use super::{FdPassError, Received, Rules, accept, retried, sent};
-
-/// Linux's values on the allowlisted targets.
-const RULES: Rules = Rules {
-    level: 1,
-    rights: 1,
-    pidfd: 4,
-    truncated: 8,
-    one: 20,
-    two: 24,
-    capacity: 24,
-    data: 1,
-};
+use super::{FdPassError, LINUX, Received, accept, retried, sent};
 
 /// A valid receive of descriptor 7.
 const ONE: Received = Received {
@@ -58,7 +46,7 @@ impl Drop for Held {
 /// descriptor handed out is in `dropped` too).
 fn run(received: &Received) -> (Option<i32>, Option<FdPassError>, Log) {
     let log = Rc::new(RefCell::new(Log::default()));
-    let result = accept(&RULES, *received, |descriptor| {
+    let result = accept(&LINUX, *received, |descriptor| {
         log.borrow_mut().adopted.push(descriptor);
         Held(descriptor, Rc::clone(&log))
     });
