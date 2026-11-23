@@ -687,5 +687,17 @@ GPT is `gpt-6.2-sol` at xhigh.
        refused once the defect is fixed, as the README's correction
        allows.
 
+   The verification of `a41e815..f27b0a3` (GPT) found that major FIXED
+   and one new major in the same sentence, quoted as written:
+   - **Major, fixed (`fbc7e9c`):** "docs/specs/config-syntax.md:218 —
+     Point 2 correctly allows rejection of files accepted only through
+     an implementation defect. Its new compatibility sentence anchors
+     "every later release" to the first release and includes approved
+     extensions without limiting when each extension takes effect."
+     - The promise is anchored per release: a file the specification
+       accepts as of a release R (the baseline, plus the extensions
+       approved by R) is accepted with the same meaning by R and every
+       release after it. The defect-correction sentence is unchanged.
+
 Final head: the commit that updates this section, on top of
-`f15f16e`, which ends the reviewed content.
+`fbc7e9c`, which ends the reviewed content.
