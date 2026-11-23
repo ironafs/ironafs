@@ -221,7 +221,10 @@ rule for such formats ([README](README.md), "Formats IronAFS defines"):
    accepting TOML it refuses today. Revisions before the first release
    are not covered: no other party depends on this syntax before then.
    If one starts to, the syntax is frozen from then ([README](README.md),
-   "Freezing"), and the promise starts at the revision frozen `[OWN]`.
+   "Freezing"), and the promise starts at the revision frozen. The
+   promise is stronger than the README's one correction for a
+   versionless format, and stays so: every file an earlier release
+   accepted is accepted, with its meaning, with no exception `[OWN]`.
 3. **Newer input,** syntax this parser refuses, is refused with the first
    error in the check order of §5.4, point 1. The error has a position,
    except for a file over `MAX_FILE_BYTES`, and a hint only for the

@@ -100,7 +100,7 @@ The status line is the first line after the title, with a date.
 |---|---|---|
 | `draft` | Being written. Nothing rests on it. | Anything |
 | `reviewed` | Passed the review its class requires, and was merged | Any part, by a pull request of the same class and review |
-| `frozen` | A format IronAFS promises to keep. Formats only. | Nothing in the frozen layout. A new version is added beside it (below). A versionless read-only format changes only by accepting more input ("Freezing", below). |
+| `frozen` | A format IronAFS promises to keep. Formats only. | Nothing in the frozen layout. A new version is added beside it (below). A versionless read-only format changes only by accepting more input, or by correcting an implementation that accepted input outside its specification ("Freezing", below). |
 | `superseded by <spec>` | Replaced. Kept for the versions that used it. | Only the status line and links |
 
 Rules:
@@ -113,8 +113,10 @@ Rules:
   frozen version 1 and a draft version 2. The status line names each.
   A versionless read-only format ("Formats IronAFS defines", below) is
   frozen once: its status line names the specification revision (the
-  commit) and the date of the freeze. The input that revision accepts,
-  with its meaning, is the baseline later changes only add to.
+  commit) and the date of the freeze. The input that revision admits,
+  with its meaning, is the baseline. Later approved changes only add to
+  it, and input the baseline or an approved extension admits is never
+  rejected again.
 - Freezing is the owner's decision (class R). It is recorded on the status
   line with its date and in the frozen formats table.
 - A `frozen` or `superseded` specification is never deleted while any
@@ -476,7 +478,8 @@ example):
 
 - that it carries no version;
 - that it only ever grows, by accepting input it refuses today, never by
-  changing the meaning of input it accepts;
+  changing the meaning of input its specification admits or refusing
+  it again ("Freezing", below, says the one correction allowed);
 - what a reader does with input newer than it knows: it refuses it, and
   writes nothing;
 - which released versions read which inputs.
@@ -501,7 +504,11 @@ example):
   points above), its accepted input only grows: a defect is fixed by
   accepting more input, or by a specification change made under these
   freeze rules, never by changing the meaning of input already
-  accepted. The same one exception applies. It has no versions, and no
+  accepted. Its one exception is narrower than a versioned format's: a
+  change may reject only input an implementation accepted outside the
+  applicable specification (the frozen baseline and its approved
+  extensions). Input the baseline or any approved extension admits keeps
+  its meaning and is never rejected again. It has no versions, and no
   new version is ever added.
 - For a versioned format, a new version is a new section beside the old
   one. The old section stays, marked with the versions that used it.
@@ -734,6 +741,8 @@ title. A specification's pull request adds or updates its row.
 The frozen formats table gains a row in the pull request that freezes a
 format. The magic value and version in the row are the bytes in the
 specification, and a check compares them. A versionless read-only
-format's row has "none" for its magic value and the versions written,
+format's row records the magic value its specification defines, or
+"none" when it defines none, and the check compares the recorded value
+with the specification's. Its row has "none" for the versions written,
 and names, under the versions read, the frozen specification revision
 on its status line.
