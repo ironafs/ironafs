@@ -450,3 +450,28 @@ fn invariants_bound_columns_in_unicode_scalar_values() {
     assert_eq!(invariants::position_within(b"a\xffbc", at(1, 2)), Ok(()));
     assert!(invariants::position_within(b"a\xffbc", at(1, 3)).is_err());
 }
+
+/// The error for `input`, as its kind and its position's line and column.
+fn refused(input: &str) -> (ironafs_config::SyntaxErrorKind, usize, usize) {
+    let error = parse(input.as_bytes()).unwrap_err();
+    let position = error.position().unwrap();
+    (error.kind(), position.line, position.column)
+}
+
+#[test]
+fn parse_refuses_bidirectional_controls_in_comments_keys_and_values() {
+    for control in invariants::BIDI_CONTROLS {
+        let kind = ironafs_config::SyntaxErrorKind::BidiControl(control);
+        assert_eq!(refused(&format!("# a{control}b\n")), (kind, 1, 4));
+        assert_eq!(refused(&format!("a = 1 # {control}")), (kind, 1, 9));
+        assert_eq!(refused(&format!("\"k{control}\" = 1")), (kind, 1, 3));
+        assert_eq!(refused(&format!("[\"t\".\"{control}\"]")), (kind, 1, 7));
+        assert_eq!(refused(&format!("a = \"x{control}y\"")), (kind, 1, 7));
+        assert_eq!(
+            refused(&format!("a = [\"x\", \"{control}\"]")),
+            (kind, 1, 12)
+        );
+        assert_eq!(refused(&format!("a{control} = 1")), (kind, 1, 2));
+        assert_eq!(refused(&format!("a = 1{control}")), (kind, 1, 6));
+    }
+}

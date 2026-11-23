@@ -15,12 +15,14 @@ use ironafs_config::{
     MAX_LINE_BYTES, MAX_STRING_BYTES, Position, Scalar, SyntaxError, SyntaxErrorKind, Value,
 };
 
-/// The bidirectional controls, from the one test-only list the unit tests
-/// share.
-#[path = "bidi_controls.rs"]
-mod bidi_controls;
-
-pub(crate) use bidi_controls::BIDI_CONTROLS;
+/// Unicode's `Bidi_Control` set, which section 5.1, point 3 refuses: the
+/// one test-only list, written out here rather than read from the code
+/// under test. U+061C, U+200E, U+200F, U+202A to U+202E and U+2066 to
+/// U+2069.
+pub(crate) const BIDI_CONTROLS: [char; 12] = [
+    '\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}',
+    '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+];
 
 /// Whether a parsed key, segment or string may hold `character`: no
 /// control character and no bidirectional control.

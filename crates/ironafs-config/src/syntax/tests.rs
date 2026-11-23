@@ -299,31 +299,6 @@ fn parse_refuses_control_characters_everywhere() {
     );
 }
 
-/// The bidirectional controls, from the one test-only list the property
-/// tests and the fuzz target share.
-#[path = "../../tests/it/bidi_controls.rs"]
-mod bidi_controls;
-
-use bidi_controls::BIDI_CONTROLS;
-
-#[test]
-fn parse_refuses_bidirectional_controls_in_comments_keys_and_values() {
-    for control in BIDI_CONTROLS {
-        let kind = SyntaxErrorKind::BidiControl(control);
-        assert_eq!(refused_str(&format!("# a{control}b\n")), (kind, 1, 4));
-        assert_eq!(refused_str(&format!("a = 1 # {control}")), (kind, 1, 9));
-        assert_eq!(refused_str(&format!("\"k{control}\" = 1")), (kind, 1, 3));
-        assert_eq!(refused_str(&format!("[\"t\".\"{control}\"]")), (kind, 1, 7));
-        assert_eq!(refused_str(&format!("a = \"x{control}y\"")), (kind, 1, 7));
-        assert_eq!(
-            refused_str(&format!("a = [\"x\", \"{control}\"]")),
-            (kind, 1, 12)
-        );
-        assert_eq!(refused_str(&format!("a{control} = 1")), (kind, 1, 2));
-        assert_eq!(refused_str(&format!("a = 1{control}")), (kind, 1, 6));
-    }
-}
-
 #[test]
 fn parse_accepts_characters_next_to_the_bidirectional_controls() {
     // Neighbours of the set that are not in it: a zero-width joiner, an
