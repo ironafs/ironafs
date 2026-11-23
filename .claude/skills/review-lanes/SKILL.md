@@ -109,7 +109,8 @@ it concerns, both quoted from their sources, never written by you.
 
 ## Brief template
 
-Every brief starts with "Run no credential command." and then gives:
+Every brief starts with "Run no credential command. Run no command that
+lists or prints git remotes or configuration." and then gives:
 
 1. **What:** a commit range pinned by sha at both ends: for a first
    review, from the merge base (`$(git merge-base main <head>)..<head>`,
@@ -232,10 +233,11 @@ a pass:
 - Stop rule: stop when a round produces no blocker or major, every
   confirmed correctness or contract finding is resolved, whatever its
   severity, and no judgement is pending or inconclusive. After two fix
-  rounds on one change, take another only when the convergence note shows
-  the counts falling, few findings introduced by the fixes, and the kinds
-  narrowing; otherwise split it, move the mechanism into specification
-  items, redesign it, or record the blocker. If too few independent
+  rounds on one change, split it, move the mechanism into specification
+  items, redesign it, or record the blocker. Another round takes the
+  owner's permission for that change alone, asked with a convergence note
+  that shows the counts falling, few findings introduced by the fixes, and
+  the kinds narrowing (`docs/workflow.md` §3, step 7). If too few independent
   families are available, the change waits.
 - A single seat's tail (one or two majors, no blocker, from one seat
   alone) goes to the judgement seat or, through the refutation seat, into

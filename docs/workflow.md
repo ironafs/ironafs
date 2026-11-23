@@ -311,7 +311,8 @@ authoritative.
    rounds re-check only the changed text and what depends on it. Step 7's
    closure rules apply, and editorial minors are fixed and recorded. After
    two fix rounds a brief is split, redesigned, or its blocker recorded and
-   the work kept gated; a convergence note does not extend it. The review
+   the work kept gated; a convergence note alone does not extend it, only
+   the owner's permission for that brief (step 7). The review
    record in `docs/reviews/` for the batch of briefs filed together holds
    these reviews and two counts: review runs per brief filed, and
    acceptance defects found later at pickup or in code review.
@@ -362,11 +363,12 @@ authoritative.
      gives each seat's trend of blocker and major counts, how many of the
      last round's findings the last fix introduced, and whether the kind of
      defect found has drifted. It goes in the review record.
-   - **After two fix rounds, stop patching** unless the latest note shows
-     the counts falling, few findings introduced by the fixes, and the kinds
-     narrowing. Otherwise, or whenever the note cannot show it: split the
-     change, move the mechanism into specification items, redesign it, or
-     record the blocker.
+   - **After two fix rounds, stop patching**: split the change, move the
+     mechanism into specification items, redesign it, or record the
+     blocker. Another round takes the owner's permission for that change
+     alone, asked with the latest note and a recommendation; the note must
+     show the counts falling, few findings introduced by the fixes, and the
+     kinds narrowing. A permission never carries to another change.
    - **A single seat's tail**, one or two majors and no blocker from one
      seat alone, goes to the judgement seat (§2) or, under the rule above,
      into specification items; never into another full round. The
