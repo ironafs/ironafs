@@ -1660,10 +1660,9 @@ site.
 non-macro entry point for unified logging, the build fails on a
 supported Xcode (L37, point 2), a build of the crate is found that
 does not run its build script (then point 5.3's gate has a gap), or
-Cargo's custom-target handling, the toolchain pin, or the way the
-workspace's builds enable unstable features changes so that a custom
-target can reach the script in the pinned toolchain's normal stable
-mode.
+the pinned toolchain starts admitting custom targets in its normal
+stable mode, or the workspace's standard builds enable unstable
+custom-target support.
 
 The crate's one build script, `build.rs`, does two things, in this
 order: of the targets Cargo selects by a built-in triple, it refuses
@@ -1696,7 +1695,7 @@ below, and compiles or runs no foreign code but the shim (point 1.1).
   pinned toolchain rejects custom JSON targets in its normal stable
   mode: Cargo accepts a `.json` target only with unstable target
   support enabled (`-Z json-target-spec`, usually with
-  `-Z build-std`), on a nightly toolchain or with `RUSTC_BOOTSTRAP`
+  `-Z build-std`), on a nightly toolchain or with `RUSTC_BOOTSTRAP=1`
   set. Whenever unstable target support is enabled, a builder can name
   a specification after a listed triple and copy its cfg values, and
   neither the gate nor point 5.3's `compile_error!` guard can tell it
@@ -1791,10 +1790,10 @@ decision and a change to this point (point 7).
    give the same sizes and offsets on these targets but different field
    types and musl's padding fields (Context), which the wrapper zeroes. No
    upstream crate's tests stand behind them.
-3. **A target allowlist.** The crate compiles for these targets only, all
-   64-bit, and any other target that Cargo selects by a built-in
-   triple is refused by the build (amended
-   2026-11-22; the refusal is below the list):
+3. **A target allowlist.** For Cargo builds that select a built-in
+   triple, the crate compiles for these targets only, all 64-bit, and
+   the build refuses every other built-in triple (amended 2026-11-22;
+   the refusal and its scope are below the list):
    - `x86_64-` and `aarch64-unknown-linux-gnu` (L37, point 1; L42, point 3);
    - `x86_64-` and `aarch64-unknown-linux-musl` (the static musl candidate,
      L39, point 5);
@@ -2623,3 +2622,10 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
       nightly; PR #132's branch carries its own amendment; two on the
       issue draft); GLM (`glm-5.3`, max) PASS with 1 minor (the same
       PR #132 point). Fixed in the next commit.
+    - Round 7, the verification of `8a529d9..a5d0919`: GPT
+      (`gpt-6.2-sol`, xhigh) FAIL, 1 major (point 5.3's opening still
+      limited the crate before the built-in-triple qualifier) and 2
+      minor (`RUSTC_BOOTSTRAP=1`; the revisit trigger split into two
+      conditions); GLM (`glm-5.3`, max) PASS, no findings. All wording,
+      fixed in the next commit; GPT's scoped check of that commit is
+      recorded in the review record.
