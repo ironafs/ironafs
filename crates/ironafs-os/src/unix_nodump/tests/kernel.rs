@@ -26,11 +26,13 @@ const ENTRY: &str = "unix_nodump::tests::kernel::child";
 const SALT: u8 = 11;
 
 /// The user and group id the set-id exec test runs its grandchild under:
-/// one that no account or group of the machine has (checked before use,
-/// in the files and through the name service), so no other process can run
-/// the set-user-id copy, which only this group may execute. It lies below
-/// systemd's dynamic range (61184 to 65519), whose ids the files do not
-/// list.
+/// one that no account or group of the machine has and no running process
+/// holds (checked before use, in the files, through the name service and
+/// in every process's ids), so no other process can run the set-user-id
+/// copy, which only this group may execute. A process that gains the id
+/// after the check is not ruled out: the test is for a disposable guest. It
+/// lies below systemd's dynamic range (61184 to 65519), whose ids the
+/// files do not list.
 const SET_ID_TEST_ID: u32 = 59_421;
 
 /// The entry test a child runs; it does nothing without a role.
@@ -122,9 +124,11 @@ fn set_id_copy() -> (PrivateDir, std::path::PathBuf) {
 }
 
 /// Whether `id` is no account's user or primary group id and no group's
-/// id, in `/etc/passwd` and `/etc/group` (fields 3 and 4, and 3), and
-/// whether the name service (`getent`, which also asks systemd's and
-/// directory services' sources) knows no user or group of that id.
+/// id, in `/etc/passwd` and `/etc/group` (fields 3 and 4, and 3), whether
+/// the name service (`getent`, which also asks systemd's and directory
+/// services' sources) knows no user or group of that id, and whether no
+/// running process holds it among its user, group or supplementary group
+/// ids (a process keeps an id whose account entry was removed).
 fn unused_id(id: u32) -> bool {
     let id = id.to_string();
     let named = |file: &str, fields: &[usize]| {
@@ -148,6 +152,32 @@ fn unused_id(id: u32) -> bool {
         && !named("/etc/group", &[2])
         && !known("passwd")
         && !known("group")
+        && !held_by_a_process(&id)
+}
+
+/// Whether any process in `/proc` has `id` among the real, effective,
+/// saved or filesystem user or group ids, or the supplementary groups, of
+/// its `status`. A process that exits while it is read is skipped.
+fn held_by_a_process(id: &str) -> bool {
+    std::fs::read_dir("/proc").unwrap().any(|entry| {
+        let path = entry.unwrap().path();
+        let is_pid = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit()));
+        if !is_pid {
+            return false;
+        }
+        let Ok(status) = std::fs::read_to_string(path.join("status")) else {
+            return false;
+        };
+        status.lines().any(|line| {
+            ["Uid:", "Gid:", "Groups:"].iter().any(|key| {
+                line.strip_prefix(key)
+                    .is_some_and(|ids| ids.split_whitespace().any(|held| held == id))
+            })
+        })
+    })
 }
 
 /// This process's real and effective user ids, from `/proc/self/status`.
@@ -212,6 +242,10 @@ fn the_set_id_test_s_id_belongs_to_no_account_or_group() {
     assert!(unused_id(SET_ID_TEST_ID), "{SET_ID_TEST_ID}");
     // Root's id is in use, as a control.
     assert!(!unused_id(0));
+    // This process's own ids are held by a running process.
+    let (real, _) = user_ids();
+    assert!(held_by_a_process(&real.to_string()));
+    assert!(!held_by_a_process(&SET_ID_TEST_ID.to_string()));
 }
 
 #[test]

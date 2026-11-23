@@ -186,7 +186,9 @@ jobs:
         # set to 2 on this throwaway runner (its default is 0), so the
         # set-id exec's value is told apart from the 0 the child would carry
         # over and from an ordinary exec's 1; the test refuses any other
-        # value and never sets it.
+        # value and never sets it. The set-id case is for a disposable
+        # guest, as this runner is: it checks that no account, group or
+        # running process holds its id, but not that none gains it later.
         timeout-minutes: 10
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo
