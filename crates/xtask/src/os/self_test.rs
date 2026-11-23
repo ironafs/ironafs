@@ -369,6 +369,7 @@ pub(super) fn run(
     )?;
 
     boundary_cases(context, &originals, inventory, compiled, output)?;
+    let musl = musl_cases(&originals, inventory, compiled, output)?;
 
     let lib = originals
         .get(Path::new("src/lib.rs"))
@@ -397,9 +398,47 @@ pub(super) fn run(
         format!(
             "check-os --self-test: the crate's own files passed and {} planted cases failed as \
              planted",
-            CASES.len() + 3 + BOUNDARY_CASES + TARGET_CASES + cases
+            CASES.len() + 3 + BOUNDARY_CASES + TARGET_CASES + musl + cases
         ),
     )
+}
+
+/// For each musl target the check built (its standard library installed,
+/// as in each native musl CI lane), a site compiled for that target alone:
+/// the comparison of that target's own build with the copy must catch it.
+/// Returns how many it planted.
+fn musl_cases(
+    originals: &BTreeMap<PathBuf, String>,
+    inventory: &Inventory,
+    compiled: &BTreeMap<String, BTreeSet<PathBuf>>,
+    output: &mut impl Write,
+) -> Result<usize, Error> {
+    const CASE: &str = "a site compiled for a musl target alone";
+    let mut planted = 0;
+    for target in compiled.keys().filter(|target| target.ends_with("-musl")) {
+        let mut only = compiled.clone();
+        if let Some(files) = only.get_mut(target) {
+            files.insert(PathBuf::from("src/mem_wipe/stray.rs"));
+        }
+        let mut texts = originals.clone();
+        texts.insert(
+            PathBuf::from("src/mem_wipe/stray.rs"),
+            STRAY_WIPE.to_owned(),
+        );
+        let found = check_edited(&texts, &[], inventory, &only)?;
+        let caught = !found.is_empty()
+            && found.iter().all(|violation| {
+                matches!(violation, Violation::Mismatch { target: found, id, .. }
+                    if found == target && id == "mem-wipe")
+            });
+        if !caught {
+            return Err(failure(CASE, &found));
+        }
+        writeln!(output, "caught: {CASE}: {target}")
+            .map_err(Error::io("report check-os self-test"))?;
+        planted += 1;
+    }
+    Ok(planted)
 }
 
 /// How many cases `boundary_cases` plants.

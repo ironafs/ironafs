@@ -27,6 +27,22 @@ pub(crate) struct Pinned {
     pub(crate) rustc: PathBuf,
 }
 
+impl Pinned {
+    /// Whether the pinned sysroot holds `target`'s standard library.
+    pub(crate) fn has_target(&self, target: &str) -> bool {
+        self.rustc
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(|sysroot| {
+                sysroot
+                    .join("lib/rustlib")
+                    .join(target)
+                    .join("lib")
+                    .is_dir()
+            })
+    }
+}
+
 /// The `channel` of a `rust-toolchain.toml` text.
 pub(crate) fn channel(text: &str) -> Option<&str> {
     text.lines()

@@ -23,10 +23,11 @@
 //!   from the list by whole cfg set (`allowlist`). Each target the guard
 //!   accepts but the list does not name is refused by Cargo in the build
 //!   script. Every allowlisted target the toolchain names builds; any
-//!   other target the toolchain names is refused by the gate. The musl
-//!   targets are not built here: the copy gives them the glibc targets'
-//!   statuses, and the crate names `target_env` only in its allowlist, so
-//!   a musl build compiles the glibc build's files.
+//!   other target the toolchain names is refused by the gate. A musl
+//!   target is built, and its own build's files compared with the copy,
+//!   wherever its standard library is installed in the pinned sysroot:
+//!   each native musl CI lane installs it and requires that target in the
+//!   report.
 
 mod allowlist;
 mod gate;
@@ -85,8 +86,11 @@ pub(crate) const ALLOWLIST: &[&str] = &[
 /// run.
 const ALLOWLIST_ERROR: &str = "ironafs-os builds only for the targets of ADR 0005, point 5.3";
 
-/// Whether the check builds `target` itself: every allowlisted target but
-/// musl, whose code is the glibc target's.
+/// Whether the check builds `target` from the toolchain file's targets:
+/// every allowlisted target but musl. A musl target is built as well
+/// wherever its standard library is installed in the pinned sysroot (each
+/// native musl CI lane installs it and requires it in the report), and
+/// its own build's files are compared with the copy like any other.
 fn built_here(target: &str) -> bool {
     ALLOWLIST.contains(&target) && !target.ends_with("-musl")
 }
@@ -631,6 +635,20 @@ pub(crate) fn compiled_files(
                 what: error,
             }),
             _ => {}
+        }
+    }
+    for target in ALLOWLIST
+        .iter()
+        .filter(|target| target.ends_with("-musl") && pinned.has_target(target))
+    {
+        match files_for(Some(pinned), workspace, crate_dir, build_dir, target)? {
+            Built::Files(files) => {
+                compiled.insert((*target).to_owned(), files);
+            }
+            Built::Refused(error) => violations.push(Violation::Target {
+                target: (*target).to_owned(),
+                what: error,
+            }),
         }
     }
     Ok((compiled, violations))

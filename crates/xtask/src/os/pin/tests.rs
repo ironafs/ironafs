@@ -57,3 +57,17 @@ fn pin_cargo_names_the_pinned_compiler_and_no_wrapper() {
     assert_eq!(value("RUSTC_WORKSPACE_WRAPPER"), Some(Some(OsStr::new(""))));
     assert_eq!(value("RUSTFLAGS"), Some(None));
 }
+
+#[test]
+fn has_target_looks_for_the_target_s_library_in_the_pinned_sysroot() {
+    let sysroot = std::env::temp_dir().join(format!("ironafs-xtask-pin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&sysroot);
+    std::fs::create_dir_all(sysroot.join("bin")).unwrap();
+    std::fs::create_dir_all(sysroot.join("lib/rustlib/x86_64-unknown-linux-musl/lib")).unwrap();
+    let pinned = Pinned {
+        rustc: sysroot.join("bin/rustc"),
+    };
+    assert!(pinned.has_target("x86_64-unknown-linux-musl"));
+    assert!(!pinned.has_target("aarch64-unknown-linux-musl"));
+    std::fs::remove_dir_all(&sysroot).unwrap();
+}
