@@ -1094,10 +1094,12 @@ are in its sheet below the table, under the same number.
       proposed by the network-change monitor's specification (PR #143,
       not yet landed; its 5.1, point 3), with an open question there on
       binding that bit on a kernel before Linux 5.3. **Open item for
-      the monitor's change:** the group set becomes final, and row 23
-      may be marked implemented for the notify socket (point 6.7), only
-      when that specification is accepted and the set, nexthops
-      included or not, is restated here by amendment (point 7.1); a
+      the monitor's change:** the group set becomes final only when
+      that specification is accepted and the set, nexthops included or
+      not, is restated here by amendment (point 7.1). Until then row 23
+      stays approved-only on every target; it is marked implemented on
+      a target only as a whole row, once that amendment is accepted
+      and the full row is implemented there (point 6.7); a
       measurement on a kernel before 5.3 settles the open question.
       The descriptor is adopted as an `OwnedFd` as in
       sheet 21.
@@ -1161,7 +1163,10 @@ are in its sheet below the table, under the same number.
       overflow, truncation, an interrupted dump or a monitor failure,
       invalidate the consumers at once and take a fresh verified snapshot
       before reusing state; ignore only lifetime refreshes that leave an
-      address's usability unchanged. The daemon's unit allows
+      address's usability unchanged. A failed signal or clear of a
+      wake (below) is not recoverable: consumers are invalidated at once
+      and the source stops, with no fresh snapshot; the other failures
+      keep the invalidate-and-resnapshot rule. The daemon's unit allows
       `AF_NETLINK` (the Linux units).
     - **What the caller must do with the wait** (owner, 2026-11-22; the
       network-change monitor; amended 2026-11-22). These are
@@ -1186,8 +1191,8 @@ are in its sheet below the table, under the same number.
         still in the counter, and ends the wait. After a wait in which
         the wake and the route socket are both ready, the worker handles
         the stop and any deadline change before it receives from the
-        socket. A failed signal or clear is a monitor failure: the
-        source stops, failing closed, as the policy above says.
+        socket. A failed signal or clear is fatal, as the policy above
+        says.
       - **A finite timeout from an awake-clock deadline.** Each wait's
         timeout is the time left to the worker's earliest outstanding
         deadline on the awake clock, taken from the shared `Clock`'s
@@ -1207,29 +1212,35 @@ are in its sheet below the table, under the same number.
       - **Each attempt is registered before its send.** A dump request
         or a barrier is an attempt with its own id, its sequence number
         and its own deadline. The attempt is registered under the state
-        lock (sequence and deadline set, from a fresh sample) before
-        its send, which is then made with the lock released and is
-        non-blocking. The deadline's duration for a dump and for a
-        barrier, and the sample it starts from, are named constants of
-        the monitor's specification: **open item**, settled there before
-        code, with the evidence of a dump's and a barrier's round trip
-        on the supported kernels.
+        lock (sequence and deadline set, the deadline starting from the
+        fresh sample taken at registration) before its send, which is
+        then made with the lock released and is non-blocking. The
+        deadline's duration for a dump and for a barrier are named
+        constants of the monitor's specification: **open item**,
+        settled there before code, with the evidence of a dump's and a
+        barrier's round trip on the supported kernels.
       - **One terminal transition per attempt.** A send failure ("would
-        block" included), an expiry and an answer each end an attempt
-        only through one transition taken under the state lock, which
-        acts once: the first to take it decides; the others find the
-        attempt gone and do nothing. A send failure is charged to the
-        attempt whose id it carries, never to a newer one.
+        block" included), an expiry and a terminal answer each end an
+        attempt only through one transition taken under the state lock,
+        which acts once: the first to take it decides; the others find
+        the attempt gone and do nothing. A send failure is charged to the
+        attempt whose id it carries, never to a newer one. A terminal
+        answer is the record that ends the attempt in the monitor's
+        specification (a dump's terminator, or the barrier's
+        acknowledgement); an intermediate dump record does not end it.
       - **An answer is accepted only while its attempt is live and in
-        time.** Before an answer is applied, under the state lock, the
+        time.** Before any record of an answer is applied, an
+        intermediate dump record included, under the state lock, the
         caller checks that the attempt is live, that the answer came on
         the socket the attempt was sent on (the same socket instance,
         not a replacement), that its sequence is the attempt's, and,
         from a fresh sample, that the attempt's deadline has not passed
         and that its latched awake-clock doubt has not moved (the seams
-        specification, 5.3, point 2). An answer at or past the deadline,
-        or after a moved doubt count, is not applied: the same
-        transition retires the attempt and counts it as expired. So a
+        specification, 5.3, point 2). An intermediate record that passes
+        is applied and the attempt stays open. A record, intermediate or
+        terminal, at or past the deadline, or after a moved doubt count,
+        is not applied: the attempt's terminal transition retires it and
+        counts it as expired. So a
         late acknowledgement cannot publish, even if it takes the lock
         before the expiry path does. A retired attempt's sequence is
         never issued again on the socket that may still carry a reply
@@ -1255,12 +1266,15 @@ are in its sheet below the table, under the same number.
         whether the clock has returned.
       - **Error and hangup on a route socket.** A wait that reports
         `POLLERR` or `POLLHUP` on the route socket is followed by a
-        receive. An overflow's `ENOBUFS` takes the overflow path above.
-        If the receive returns "nothing queued" or the empty-datagram
-        error after an error or hangup was reported, the condition is
-        unexplained: it is a failed receive on that socket, so
-        consumers are invalidated at once and the socket is made again
-        before a fresh snapshot, as the monitor's specification already
+        receive. `POLLERR` is explained only by an error return of that
+        receive: `ENOBUFS` takes the overflow path above, and any other
+        error is a failed receive. `POLLHUP` is explained by no receive
+        outcome. A flag that the receive does not explain (a datagram,
+        "nothing queued" or the empty-datagram error after `POLLERR`,
+        and any outcome after `POLLHUP`) is a failed receive on that
+        socket: a datagram received with it is not applied, consumers
+        are invalidated at once, and the socket is made again, before
+        any snapshot can publish, as the monitor's specification already
         rules for "any other failed receive on the notify socket"
         (PR #143, section 7). Whether a route socket ever reports an
         error or hangup that a receive does not explain is UNVERIFIED:
@@ -1274,8 +1288,9 @@ are in its sheet below the table, under the same number.
         acknowledgement after its expiry, both when the expiry path
         takes the lock first and when the acknowledgement does; a send
         failure racing an expiry; a clock that fails and returns between
-        two of the monitor's samples; and an error or hangup followed by
-        an empty receive.
+        two of the monitor's samples; an intermediate dump record before
+        and after its deadline; and an error or hangup followed by an
+        empty receive and by a valid datagram.
     *Test:* in a network namespace, an address, a route and a rule added
     and removed, each seen on the notify socket; a dump answered on the
     request socket; an overflow provoked with a small receive buffer,
@@ -1896,6 +1911,10 @@ supported Xcode (L37, point 2).
 not run on a target does not ship there). **Working** (points 1 to 5).
 Revisit points 1 and 2 if: the upkeep proves larger than expected, or an
 ABI error reaches `main` that an upstream crate's tests would have caught.
+Revisit point 2's per-C-library declaration of `struct pollfd` and
+`nfds_t` if point 5.6's check shows the glibc and musl declarations
+equal on every Linux target, or a declaration wrong on one (amended
+2026-11-22).
 Revisit point 3 if: a row of L37 to L39 is added, removed or qualified.
 Revisit point 4 if: the link-and-run check fails on a supported Windows
 release, or the pinned toolchain's `raw-dylib` support changes. Revisit
