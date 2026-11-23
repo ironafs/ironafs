@@ -4,13 +4,21 @@
 //! Tests for the site reader of `check-os`.
 
 use super::{
-    BLOCK_BODY, CFG, EXTERN_FORM, EXTERN_ITEM, ExternItem, HIDDEN, LINK, OUTSIDE, Scan, Site,
-    SiteKind, TARGET_ENV, TWO_NAMES, UNSAFE_ITEM, outside_crate, scan,
+    BLOCK_BODY, CFG, EXTERN_FORM, EXTERN_ITEM, ExternItem, HIDDEN, LIBRARY_SITE, LINK, OUTSIDE,
+    Place, Scan, Site, SiteKind, TARGET_ENV, TWO_NAMES, UNSAFE_ITEM, outside_crate, scan,
 };
 use crate::rust_source::tokens_with_strings;
 
 fn read(source: &str, root: bool) -> Scan {
-    scan(&tokens_with_strings(source).unwrap(), root)
+    read_at(source, if root { Place::Root } else { Place::Other })
+}
+
+fn read_at(source: &str, place: Place) -> Scan {
+    scan(&tokens_with_strings(source).unwrap(), place)
+}
+
+fn whats(scan: &Scan) -> Vec<&'static str> {
+    scan.problems.iter().map(|problem| problem.what).collect()
 }
 
 fn problems(source: &str) -> Vec<&'static str> {
@@ -269,6 +277,45 @@ fn scan_allows_target_env_only_in_the_crate_root_allowlist() {
 }
 
 #[test]
+fn scan_reads_the_crate_root_s_glibc_only_gates_and_no_other_target_env() {
+    let gates = "#[cfg(any(test, all(target_os = \"linux\", target_env = \"gnu\")))]\nmod checks;\n\
+                 #[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\nmod linux_fdpass;\n\
+                 #[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\npub use linux_fdpass::send_fd;\n";
+    let root = read(gates, true);
+    assert_eq!(root.problems, []);
+    assert_eq!(root.glibc_only, ["linux_fdpass"]);
+    assert_eq!(root.glibc_or_test, [("checks".to_owned(), 1)]);
+    assert_eq!(
+        root.glibc_imports,
+        [super::GatedImport {
+            module: "linux_fdpass".to_owned(),
+            or_test: false,
+            line: 5,
+        }]
+    );
+    // Not in the crate root; another library; a renaming import.
+    assert_eq!(read(gates, false).problems.len(), 3);
+    for refused in [
+        "#[cfg(all(target_os = \"linux\", target_env = \"musl\"))]\nmod linux_fdpass;\n",
+        "#[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\npub use linux_fdpass::send_fd as s;\n",
+        "#[cfg(all(target_env = \"gnu\", target_os = \"linux\"))]\nmod linux_fdpass;\n",
+    ] {
+        let found = read(refused, true);
+        assert_eq!(
+            found
+                .problems
+                .iter()
+                .map(|problem| problem.what)
+                .collect::<Vec<_>>(),
+            [TARGET_ENV],
+            "{refused}"
+        );
+        assert!(found.glibc_only.is_empty(), "{refused}");
+        assert!(found.glibc_imports.is_empty(), "{refused}");
+    }
+}
+
+#[test]
 fn outside_crate_finds_unsafe_foreign_blocks_and_link_attributes_only() {
     let found = |source: &str| -> Vec<(usize, &'static str)> {
         outside_crate(&tokens_with_strings(source).unwrap())
@@ -292,4 +339,101 @@ fn outside_crate_finds_unsafe_foreign_blocks_and_link_attributes_only() {
             (6, OUTSIDE)
         ]
     );
+}
+
+/// The gates that choose a C library's declarations, as an `abi.rs` writes
+/// them (ADR 0005, point 5.2: `struct msghdr` and `struct cmsghdr` are
+/// declared per C library).
+const LIBRARY_GATES: &str = "#[cfg(target_env = \"gnu\")]\nmod gnu;\n\
+                             #[cfg(target_env = \"musl\")]\nmod musl;\n\
+                             #[cfg(target_env = \"gnu\")]\npub(super) use gnu::{cmsghdr, msghdr};\n\
+                             #[cfg(target_env = \"musl\")]\npub(super) use musl::{cmsghdr, msghdr};\n";
+
+#[test]
+fn scan_allows_target_env_in_an_abi_file_only_to_gate_a_c_library_module() {
+    assert_eq!(
+        whats(&read_at(LIBRARY_GATES, Place::Abi)),
+        Vec::<&str>::new()
+    );
+    for place in [Place::Other, Place::Library] {
+        assert_eq!(
+            whats(&read_at(LIBRARY_GATES, place)),
+            [TARGET_ENV; 4],
+            "{place:?}"
+        );
+    }
+    for planted in [
+        // A gate on anything but the module of its own library.
+        "#[cfg(target_env = \"musl\")]\nmod gnu;\n",
+        "#[cfg(target_env = \"musl\")]\npub(super) use gnu::msghdr;\n",
+        "#[cfg(target_env = \"musl\")]\npub use musl::msghdr;\n",
+        "#[cfg(target_env = \"musl\")]\npub(super) use musl as gnu;\n",
+        "#[cfg(target_env = \"musl\")]\nconst PLANTED: u8 = 0;\n",
+        "#[cfg(target_env = \"uclibc\")]\nmod uclibc;\n",
+        "#[cfg(not(target_env = \"musl\"))]\nmod gnu;\n",
+        "#[cfg(any(target_env = \"musl\", target_os = \"linux\"))]\nmod musl;\n",
+        "#[cfg_attr(target_env = \"musl\", path = \"x.rs\")]\nmod musl;\n",
+    ] {
+        assert!(
+            whats(&read_at(planted, Place::Abi)).contains(&TARGET_ENV),
+            "{planted}"
+        );
+    }
+}
+
+#[test]
+fn scan_refuses_any_site_in_a_c_library_declaration_file() {
+    // A library's file is compiled for one C library only, so a site there
+    // would make a musl build's sites differ from the glibc build's.
+    let found = read_at(CLOCK, Place::Library);
+    assert!(whats(&found).contains(&LIBRARY_SITE), "{found:?}");
+    assert!(!whats(&read_at(CLOCK, Place::Other)).contains(&LIBRARY_SITE));
+}
+
+#[test]
+fn place_of_names_the_root_the_abi_files_and_the_library_files() {
+    use super::place_of;
+    use std::path::Path;
+    assert_eq!(place_of(Path::new("src/lib.rs")), Place::Root);
+    assert_eq!(place_of(Path::new("src/linux_fdpass/abi.rs")), Place::Abi);
+    assert_eq!(
+        place_of(Path::new("src/linux_fdpass/abi/gnu.rs")),
+        Place::Library
+    );
+    assert_eq!(
+        place_of(Path::new("src/linux_fdpass/abi/musl.rs")),
+        Place::Library
+    );
+    assert_eq!(
+        place_of(Path::new("src/linux_random/number.rs")),
+        Place::Other
+    );
+    assert_eq!(place_of(Path::new("src/abi.rs")), Place::Other);
+    // A library's module may have children, or be written `gnu/mod.rs`:
+    // every file below it is that library's.
+    for library_file in [
+        "src/linux_fdpass/abi/gnu/mod.rs",
+        "src/linux_fdpass/abi/gnu/planted.rs",
+        "src/linux_fdpass/abi/musl/deeper/planted.rs",
+    ] {
+        assert_eq!(
+            place_of(Path::new(library_file)),
+            Place::Library,
+            "{library_file}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn place_of_a_path_with_a_component_that_is_not_utf_8_is_other() {
+    use super::place_of;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    // Dropping the component would read `src/lib.rs`, the crate root.
+    let path = Path::new("src")
+        .join(OsStr::from_bytes(b"\xff"))
+        .join("lib.rs");
+    assert_eq!(place_of(&path), Place::Other);
 }

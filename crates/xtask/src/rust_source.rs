@@ -490,6 +490,127 @@ pub(crate) fn use_paths(tokens: &[Token]) -> Vec<StdPath> {
         .collect()
 }
 
+/// One `use` item, read with its context, for a reader that must refuse
+/// what it cannot resolve: the paths its tree imports (as segments, each
+/// ending in the name it binds), the item's attributes (each the tokens
+/// between `#[` and `]`, written out), how deep in braces it stands (0 at
+/// file scope), and whether its tree holds a glob or a rename or anything
+/// a plain tree of paths, groups and commas does not.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct UseItem {
+    pub(crate) line: usize,
+    pub(crate) paths: Vec<Vec<String>>,
+    pub(crate) attributes: Vec<String>,
+    pub(crate) depth: usize,
+    pub(crate) glob: bool,
+    pub(crate) renamed: bool,
+    pub(crate) plain: bool,
+}
+
+/// Every `use` item among `tokens` (read with or without their strings),
+/// with its context. The tree is expanded by the same reader as
+/// `use_paths`.
+pub(crate) fn use_items(tokens: &[Token]) -> Vec<UseItem> {
+    let mut items = Vec::new();
+    let mut depth = 0_usize;
+    for (at, token) in tokens.iter().enumerate() {
+        match punct(Some(token)) {
+            Some('{') => depth += 1,
+            Some('}') => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if ident(Some(token)) != Some("use") || token.raw {
+            continue;
+        }
+        let end = tokens
+            .get(at..)
+            .unwrap_or_default()
+            .iter()
+            .position(|token| punct(Some(token)) == Some(';'))
+            .map_or(tokens.len(), |offset| at + offset);
+        let tree = tokens.get(at + 1..end).unwrap_or_default();
+        let mut found = Vec::new();
+        let consumed = use_tree(tree, 0, String::new(), &mut found);
+        let plain = consumed == tree.len()
+            && end < tokens.len()
+            && tree.iter().all(|token| match &token.kind {
+                TokenKind::Ident(word) => word != "as" || token.raw,
+                TokenKind::PathSep => true,
+                TokenKind::Punct(next) => matches!(next, '{' | '}' | ','),
+                _ => false,
+            });
+        items.push(UseItem {
+            line: token.line,
+            paths: found
+                .iter()
+                .map(|path| path.split("::").map(str::to_owned).collect())
+                .collect(),
+            attributes: attributes_before(tokens, at),
+            depth,
+            glob: tree.iter().any(|token| punct(Some(token)) == Some('*')),
+            renamed: tree
+                .iter()
+                .any(|token| ident(Some(token)) == Some("as") && !token.raw),
+            plain,
+        });
+    }
+    items
+}
+
+/// The attributes of the item whose keyword is at `at`, after any
+/// visibility (`pub`, `pub(...)`), each written out without its `#[` and
+/// `]`, in order.
+fn attributes_before(tokens: &[Token], at: usize) -> Vec<String> {
+    let mut start = at;
+    // A visibility: `pub`, or `pub(...)`, its parenthesis matched with
+    // nesting counted, as `os::scan::allowlist_range` matches its bracket.
+    if start > 0 && punct(tokens.get(start - 1)) == Some(')') {
+        let close = start - 1;
+        let open = (0..close)
+            .rev()
+            .find(|&open| matching(tokens, open, '(', ')') == Some(close));
+        if let Some(open) = open
+            && open > 0
+            && ident(tokens.get(open - 1)) == Some("pub")
+        {
+            start = open - 1;
+        }
+    } else if start > 0 && ident(tokens.get(start - 1)) == Some("pub") {
+        start -= 1;
+    }
+    let mut found = Vec::new();
+    while start > 0 && punct(tokens.get(start - 1)) == Some(']') {
+        // The `[` this `]` closes, with nested brackets counted (as in
+        // `#[doc = stringify!([x])]`), never the nearest `[`.
+        let close = start - 1;
+        let Some(open) = (0..close)
+            .rev()
+            .find(|&open| matching(tokens, open, '[', ']') == Some(close))
+        else {
+            break;
+        };
+        if open == 0 || punct(tokens.get(open - 1)) != Some('#') {
+            break;
+        }
+        let text: Vec<String> = tokens
+            .get(open + 1..start - 1)
+            .unwrap_or_default()
+            .iter()
+            .map(|token| match &token.kind {
+                TokenKind::Ident(word) => word.clone(),
+                TokenKind::PathSep => "::".to_owned(),
+                TokenKind::Punct(next) => next.to_string(),
+                TokenKind::Str(text) => format!("{text:?}"),
+                TokenKind::Lifetime => "'_".to_owned(),
+            })
+            .collect();
+        found.push(text.concat());
+        start = open - 1;
+    }
+    found.reverse();
+    found
+}
+
 /// Every path of `use` and `extern crate` items, and every expression path
 /// that starts at `std`, each marked with whether an item imported it.
 fn paths(tokens: &[Token]) -> Vec<(StdPath, bool)> {

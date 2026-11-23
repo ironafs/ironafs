@@ -10,7 +10,8 @@
 //! foreign item, this check reads the row's declarations from the Rust
 //! source the compiler read for that target (every file under the row's
 //! module directory, `src/<module>/`: its `#[repr(C)]` structs, its
-//! constants and its extern blocks' functions, each named as C names it),
+//! constants, its type aliases and its extern blocks' functions, each
+//! named as C names it),
 //! generates a C11 file of compile-time assertions from them, and compiles
 //! it with the platform's own compiler and headers, warnings as errors:
 //!
@@ -18,7 +19,14 @@
 //!   `repr(C)` lays them out for the target's data model;
 //! - each field's type, by a `_Generic` selection with no default, so a
 //!   field of the wrong type with the right size and offset fails;
-//! - each constant's value;
+//! - each constant's value, against its C name, or against the C
+//!   expression sites.json maps it to (`expressions`), for a value a macro
+//!   gives, such as `CMSG_LEN(sizeof(int))`;
+//! - each type alias's size, alignment and sign: an alias names a C
+//!   typedef whose spelling differs between C libraries at one size
+//!   (`rlim_t`), and a member of that type is checked against the typedef.
+//!   An alias of `c_char`, whose sign differs by target, has `char`'s sign
+//!   on the target compiled for;
 //! - each function's type, by a `_Generic` selection with no default on
 //!   its address against a pointer to the declared prototype.
 //!
@@ -27,16 +35,34 @@
 //! the row name (`src/<module>.rs` and `src/<module>/`) that is an
 //! object-like macro of the row's headers (the C preprocessor's `-dM`)
 //! must be declared, and so asserted, in the declaration files. The copy's
-//! recorded facts must equal what those files declare. Constants are
+//! recorded facts (`c_facts`: structs, constants and type aliases) must
+//! equal what those files declare. Constants are
 //! emitted as normalized decimals, and no file of the crate may name an
 //! item `core`, so `core::ffi` is the core crate's.
 //!
-//! The C file is never linked into anything. The check proves the host
-//! target only: a target on which it has not run is MISSING evidence, and
-//! its sites do not ship there. `--self-test` compiles a host-portable
-//! fixture of the same shape and plants a member type changed at the same
-//! size and offset, a constant changed by one, a parameter's type changed
-//! and a return type changed, each of which must fail to compile.
+//! Every type name a declaration uses is resolved in its own file, by a
+//! structural rule rather than by evaluating cfgs or scopes. A declaration
+//! file may hold, as imports, only file-scope `use` items: unattributed
+//! ones from `core`, `std` or `super`, and the gated re-export pairs the
+//! shipped files use, each from the child module its cfg names
+//! (`#[cfg(target_env = "gnu")]` from `gnu`, `"musl"` from `musl`,
+//! `#[cfg(target_arch = ...)]` from that architecture's module, and
+//! `#[cfg(not(miri))]` from `foreign`, `#[cfg(miri)]` from `stand_in`).
+//! Which gated import is in effect is decided from the target triple (and
+//! `check-abi` never runs under Miri), not from which files were compiled.
+//! Inline modules, nested imports, imports under any other attribute,
+//! `crate::`, `self::` and other child paths, globs and renames are
+//! refused. A type name is then read as a primitive, a name imported from
+//! `core::ffi`, or a struct or type alias the file declares or imports,
+//! through exactly one import in effect, from a declaration file of the
+//! row that declares or re-exports it in turn; any other name is refused.
+//!
+//! That is what this check establishes: the import and gate shapes it
+//! reads, and the ones it refuses. It does not establish that the type
+//! Rust binds is the type checked where a declaration file holds an
+//! item under a cfg, a local item named like a primitive or a `core::ffi`
+//! scalar, or a union or enum item (no shipped file holds any of these);
+//! TODO(#179): establish it for those shapes too.
 
 mod self_test;
 
@@ -91,9 +117,13 @@ pub(crate) struct Declarations {
     /// negative).
     pub(crate) constants: Vec<(String, String)>,
     pub(crate) functions: Vec<Function>,
+    /// Each `type NAME = <scalar>;`: a C typedef the declarations name.
+    pub(crate) aliases: Vec<(String, CType)>,
     /// The names the declaration files import from `core::ffi`: only these
     /// spell C's types (a `c_int` from anywhere else is not C's `int`).
     pub(crate) ffi_names: Vec<String>,
+    /// Every import of the file, `core::ffi`'s included.
+    pub(crate) imports: Vec<Import>,
 }
 
 /// The sizes of C's integer types on the target.
@@ -138,6 +168,16 @@ pub(crate) fn declarations(
              `core::ffi` would not be the core crate's"
         ));
     }
+    if let Some(token) = tokens.iter().enumerate().find_map(|(at, token)| {
+        (ident(Some(token)) == Some("mod") && !token.raw && punct(tokens.get(at + 2)) == Some('{'))
+            .then_some(token)
+    }) {
+        return Err(format!(
+            "line {}: an inline module, whose imports and items this check does not resolve",
+            token.line
+        ));
+    }
+    read_imports(tokens, found)?;
     let mut at = 0;
     while let Some(token) = tokens.get(at) {
         let line = token.line;
@@ -149,6 +189,22 @@ pub(crate) fn declarations(
                 found.structs.push(item);
                 at = next;
             }
+            Some("type") => {
+                let (alias, next) = read_alias(tokens, at).ok_or_else(|| {
+                    format!("line {line}: a type alias that is not `NAME = <C scalar>;`")
+                })?;
+                // A C typedef's own name (`rlim_t`), never a scalar's: an
+                // alias named `c_long` or `u32` would make that name not
+                // mean what it says.
+                if scalar(&alias.0, DataModel::Lp64).is_some() || alias.0 == "c_void" {
+                    return Err(format!(
+                        "line {line}: a type alias named as a scalar, under which a name would \
+                         not mean what it says"
+                    ));
+                }
+                found.aliases.push(alias);
+                at = next;
+            }
             Some("const") => {
                 let (constant, next) = read_constant(tokens, at).ok_or_else(|| {
                     format!("line {line}: a constant that is not `NAME: TYPE = <integer>;`")
@@ -156,44 +212,14 @@ pub(crate) fn declarations(
                 found.constants.push(constant);
                 at = next;
             }
-            Some("type") => {
-                return Err(format!(
-                    "line {line}: a type alias, under which a name would not mean what it says"
-                ));
-            }
             Some("use") => {
-                let end = tokens
+                // Read, with its context, by `read_imports` before the loop.
+                at = tokens
                     .get(at..)
                     .unwrap_or_default()
                     .iter()
                     .position(|token| punct(Some(token)) == Some(';'))
-                    .map(|offset| at + offset)
-                    .ok_or_else(|| format!("line {line}: an unterminated use"))?;
-                let item = tokens.get(at + 1..end).unwrap_or_default();
-                if item
-                    .iter()
-                    .any(|token| ident(Some(token)) == Some("as") && !token.raw)
-                {
-                    return Err(format!(
-                        "line {line}: a renaming import, under which a name would not mean what \
-                         it says"
-                    ));
-                }
-                let from_ffi = ident(item.first()) == Some("core")
-                    && ident(item.get(2)) == Some("ffi")
-                    && matches!(
-                        item.get(3).map(|token| &token.kind),
-                        Some(TokenKind::PathSep)
-                    );
-                if from_ffi {
-                    found.ffi_names.extend(
-                        item.iter()
-                            .skip(4)
-                            .filter_map(|token| ident(Some(token)))
-                            .map(str::to_owned),
-                    );
-                }
-                at = end + 1;
+                    .map_or(tokens.len(), |offset| at + offset + 1);
             }
             Some("extern") => {
                 let written = match tokens.get(at + 1).map(|token| &token.kind) {
@@ -219,6 +245,129 @@ pub(crate) fn declarations(
                 at = close + 1;
             }
             _ => at += 1,
+        }
+    }
+    Ok(())
+}
+
+/// The cfg under which one of a declaration file's imports is in effect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Gate {
+    /// No attribute: always.
+    Always,
+    /// `#[cfg(target_env = "<env>")] pub(super) use <env>::...;`: on that
+    /// C library's targets.
+    Env(String),
+    /// `#[cfg(target_arch = "<arch>")] pub(super) use <arch>::...;`: on
+    /// that architecture's targets.
+    Arch(String),
+    /// `#[cfg(not(miri))] pub(super) use foreign::...;` (false) or
+    /// `#[cfg(miri)] pub(super) use stand_in::...;` (true): never under
+    /// Miri, or only under it. `check-abi` builds without Miri.
+    Miri(bool),
+}
+
+impl Gate {
+    /// Whether an import under this gate is in effect on `target`
+    /// (`check-abi` never runs under Miri).
+    pub(crate) fn in_effect(&self, target: &str) -> bool {
+        match self {
+            Self::Always => true,
+            Self::Env(env) => target.rsplit('-').next() == Some(env.as_str()),
+            Self::Arch(arch) => target.split('-').next() == Some(arch.as_str()),
+            Self::Miri(miri) => !miri,
+        }
+    }
+}
+
+/// One import of a declaration file: the path it names, ending in the name
+/// it binds, and the cfg under which it is in effect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Import {
+    pub(crate) path: Vec<String>,
+    pub(crate) gate: Gate,
+}
+
+/// The one gated import shape for each cfg a declaration file may put on
+/// an import: the attribute as written, and the module its paths must
+/// start at.
+fn gate_of(attribute: &str, first: &str) -> Option<Gate> {
+    let gate = match attribute {
+        "cfg(target_env=\"gnu\")" => Gate::Env("gnu".to_owned()),
+        "cfg(target_env=\"musl\")" => Gate::Env("musl".to_owned()),
+        "cfg(target_arch=\"aarch64\")" => Gate::Arch("aarch64".to_owned()),
+        "cfg(target_arch=\"x86_64\")" => Gate::Arch("x86_64".to_owned()),
+        "cfg(not(miri))" => Gate::Miri(false),
+        "cfg(miri)" => Gate::Miri(true),
+        _ => return None,
+    };
+    let module = match &gate {
+        Gate::Env(name) | Gate::Arch(name) => name.as_str(),
+        Gate::Miri(false) => "foreign",
+        Gate::Miri(true) => "stand_in",
+        Gate::Always => return None,
+    };
+    (first == module).then_some(gate)
+}
+
+/// Reads every import of a declaration file into `found`, refusing each
+/// form whose binding this check does not establish structurally: an
+/// import not at file scope, a glob, a rename, a tree it cannot read, an
+/// unattributed import that does not start at `core`, `std` or `super`
+/// (`crate::`, `self::` and child-module paths), and an attributed import
+/// other than the per-C-library, per-architecture and Miri pairs, each of
+/// which re-exports from the child module its cfg names.
+fn read_imports(tokens: &[Token], found: &mut Declarations) -> Result<(), String> {
+    for item in rust_source::use_items(tokens) {
+        let line = item.line;
+        if item.renamed {
+            return Err(format!(
+                "line {line}: a renaming import, under which a name would not mean what it says"
+            ));
+        }
+        if item.glob || !item.plain {
+            return Err(format!(
+                "line {line}: an import this check cannot read, or a glob import, which could \
+                 bind any name"
+            ));
+        }
+        if item.depth != 0 {
+            return Err(format!(
+                "line {line}: an import not at file scope, whose scope this check does not \
+                 resolve"
+            ));
+        }
+        for path in item.paths {
+            let first = path.first().map_or("", String::as_str);
+            let gate = match item.attributes.as_slice() {
+                [] if matches!(first, "core" | "std" | "super") && path.len() > 1 => Gate::Always,
+                [] => {
+                    return Err(format!(
+                        "line {line}: an import from {}, a path (crate::, self:: or a child \
+                         module) this check does not resolve",
+                        path.join("::")
+                    ));
+                }
+                [attribute] if path.len() == 2 => gate_of(attribute, first).ok_or_else(|| {
+                    format!(
+                        "line {line}: an import under #[{attribute}]; only the per-C-library, \
+                         per-architecture and Miri pairs, each from the module its cfg names, \
+                         are read"
+                    )
+                })?,
+                _ => {
+                    return Err(format!(
+                        "line {line}: an import with attributes this check does not read"
+                    ));
+                }
+            };
+            if let ([first, second, name], Gate::Always) = (path.as_slice(), &gate)
+                && first == "core"
+                && second == "ffi"
+            {
+                found.ffi_names.push(name.clone());
+            }
+            found.imports.push(Import { path, gate });
         }
     }
     Ok(())
@@ -366,6 +515,31 @@ fn read_constant(tokens: &[Token], at: usize) -> Option<((String, String), usize
     Some(((name, value), next + 2))
 }
 
+/// Reads `type NAME = <scalar>;` at `at`: a C typedef whose type differs
+/// between C libraries at one size (`rlim_t` is `unsigned long` in glibc
+/// and `unsigned long long` in musl), so the C side names the typedef and
+/// asserts its size, alignment and sign instead of one spelling.
+fn read_alias(tokens: &[Token], at: usize) -> Option<((String, CType), usize)> {
+    let name = ident(tokens.get(at + 1))?.to_owned();
+    if punct(tokens.get(at + 2)) != Some('=') {
+        return None;
+    }
+    let (aliased, next) = read_type(tokens, at + 3)?;
+    let CType::Named(scalar_name) = &aliased else {
+        return None;
+    };
+    scalar(
+        scalar_name
+            .strip_prefix("core::ffi::")
+            .unwrap_or(scalar_name),
+        DataModel::Lp64,
+    )?;
+    if punct(tokens.get(next)) != Some(';') {
+        return None;
+    }
+    Some(((name, aliased), next + 1))
+}
+
 /// Reads the functions of an extern block's body.
 fn read_functions(body: &[Token], found: &mut Declarations) -> Option<()> {
     let mut at = 0;
@@ -478,6 +652,7 @@ fn c_name(found: &CType, declarations: &Declarations, model: DataModel) -> Resul
                 .map(|(spelling, _)| spelling.to_owned())
                 .ok_or_else(|| format!("`{name}` has no C type this check knows")),
             Resolved::Struct(name) => Ok(format!("struct {name}")),
+            Resolved::Alias(name, _) => Ok(name.to_owned()),
         },
         CType::Pointer { constant, to } => {
             let base = c_name(to, declarations, model)?;
@@ -496,6 +671,9 @@ enum Resolved<'a> {
     Scalar(&'a str),
     /// A struct of the declaration files.
     Struct(&'a str),
+    /// A type alias of the declaration files (a C typedef), and the scalar
+    /// it aliases.
+    Alias(&'a str, &'a CType),
 }
 
 /// The primitive integer types, which no import can rename (renaming
@@ -508,7 +686,7 @@ const PRIMITIVES: &[&str] = &[
 /// a name imported from `core::ffi` or written `core::ffi::<name>`; a
 /// primitive integer is itself; any other name must be a struct the
 /// declaration files declare.
-fn resolve<'a>(name: &'a str, declarations: &Declarations) -> Result<Resolved<'a>, String> {
+fn resolve<'a>(name: &'a str, declarations: &'a Declarations) -> Result<Resolved<'a>, String> {
     if let Some(rest) = name.strip_prefix("core::ffi::") {
         return if rest.contains("::") {
             Err(format!("`{name}` is no type of core::ffi"))
@@ -531,13 +709,48 @@ fn resolve<'a>(name: &'a str, declarations: &Declarations) -> Result<Resolved<'a
     {
         return Ok(Resolved::Scalar(name));
     }
+    if let Some((_, aliased)) = declarations.aliases.iter().find(|(alias, _)| alias == name) {
+        return Ok(Resolved::Alias(name, aliased));
+    }
     if declarations.structs.iter().any(|item| item.name == name) {
         return Ok(Resolved::Struct(name));
     }
     Err(format!(
-        "`{name}` is neither imported from core::ffi, a primitive integer, nor a struct of the \
-         declaration files"
+        "`{name}` is neither imported from core::ffi, a primitive integer, nor a struct or type alias \
+         of the declaration files"
     ))
+}
+
+/// Whether a scalar is unsigned (`Some(true)`), signed (`Some(false)`), or
+/// differs by target (`c_char`).
+fn unsigned(name: &str) -> Option<bool> {
+    match name {
+        "c_char" => None,
+        "u8" | "u16" | "u32" | "u64" | "usize" | "c_uchar" | "c_ushort" | "c_uint" | "c_ulong"
+        | "c_ulonglong" => Some(true),
+        _ => Some(false),
+    }
+}
+
+/// Refuses an expression mapped to a constant the declarations do not
+/// hold, which would otherwise prove nothing.
+fn unmapped_expressions(
+    expressions: &[(String, String)],
+    declarations: &Declarations,
+) -> Result<(), String> {
+    for (name, _) in expressions {
+        if !declarations
+            .constants
+            .iter()
+            .any(|(constant, _)| constant == name)
+        {
+            return Err(format!(
+                "sites.json maps `{name}` to a C expression, but the declarations hold no such \
+                 constant"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The size and alignment of a type under `repr(C)`.
@@ -554,6 +767,12 @@ fn layout(
             Resolved::Scalar(name) => scalar(name, model)
                 .map(|(_, size)| (size, size))
                 .ok_or_else(|| format!("`{name}` has no C type this check knows")),
+            Resolved::Alias(name, aliased) => {
+                if depth > 8 {
+                    return Err(format!("type {name} nests too deep"));
+                }
+                layout(aliased, declarations, model, depth + 1)
+            }
             Resolved::Struct(name) => {
                 let item = declarations
                     .structs
@@ -590,6 +809,51 @@ fn struct_layout(
     Ok((offset.next_multiple_of(align), align, offsets))
 }
 
+/// Which of `names` the row's headers, with its feature macros, do not
+/// declare on the target the compiler is for. First the headers alone,
+/// with `identity`'s checks that the compiler is the target's, must
+/// compile; then one probe each uses the name as a C expression, so a
+/// macro and an enumeration constant both count, and a probe that fails
+/// only because the name is undeclared marks it unnamed. `Err` for a
+/// failure of the headers or the identity checks, or a probe that failed
+/// for any other reason.
+///
+/// # Errors
+///
+/// Returns an error if a probe cannot be written or compiled.
+pub(crate) fn unnamed(
+    row: &str,
+    defines: &[String],
+    headers: &[String],
+    names: &[String],
+    model: DataModel,
+    identity: &str,
+    dir: &Path,
+) -> Result<Result<Vec<String>, String>, Error> {
+    let base = format!("{}{identity}", preamble(row, defines, headers, model));
+    if names.is_empty() {
+        return Ok(Ok(Vec::new()));
+    }
+    if let Err(error) = compile(&base, &dir.join(format!("{row}-headers.c")))? {
+        return Ok(Err(error));
+    }
+    let mut absent = Vec::new();
+    for name in names {
+        let source =
+            format!("{base}_Static_assert(sizeof({name}) > 0, \"{row}: {name} is declared\");\n");
+        match compile(&source, &dir.join(format!("{row}-{name}.c")))? {
+            Ok(()) => {}
+            // GCC: "'NAME' undeclared"; Clang: "use of undeclared
+            // identifier 'NAME'".
+            Err(error) if error.contains("undeclared") && error.contains(name.as_str()) => {
+                absent.push(name.clone());
+            }
+            Err(error) => return Ok(Err(error)),
+        }
+    }
+    Ok(Ok(absent))
+}
+
 /// The C11 file of assertions for one row.
 ///
 /// # Errors
@@ -597,14 +861,52 @@ fn struct_layout(
 /// Returns why a declaration has no C equivalent this check can state.
 pub(crate) fn c_source(
     row: &str,
+    defines: &[String],
     headers: &[String],
+    expressions: &[(String, String)],
     declarations: &Declarations,
     model: DataModel,
 ) -> Result<String, String> {
-    let mut source = preamble(row, headers, model);
+    let mut source = preamble(row, defines, headers, model);
     let mut assert = |condition: String, what: String| {
         let _ = writeln!(source, "_Static_assert({condition}, \"{row}: {what}\");");
     };
+    for (name, aliased) in &declarations.aliases {
+        let (size, align) = layout(aliased, declarations, model, 0)?;
+        assert(
+            format!("sizeof({name}) == {size}"),
+            format!("sizeof({name})"),
+        );
+        assert(
+            format!("_Alignof({name}) == {align}"),
+            format!("_Alignof({name})"),
+        );
+        let CType::Named(aliased_name) = aliased else {
+            return Err(format!("`{name}` aliases a type that is not a scalar"));
+        };
+        let Resolved::Scalar(scalar_name) = resolve(aliased_name, declarations)? else {
+            return Err(format!("`{name}` aliases a type that is not a scalar"));
+        };
+        // Every alias names an integer: `^` is a constraint violation on a
+        // floating or pointer type under every flag, and `2 != 1` after the
+        // casts refuses `_Bool`, which a cast of -1 would let pass as
+        // unsigned. The operands of each comparison have one type, so no
+        // sign-comparison warning arises.
+        assert(
+            format!("(({name})0 ^ ({name})0) == ({name})0 && ({name})2 != ({name})1"),
+            format!("{name} is an integer type other than _Bool"),
+        );
+        match unsigned(scalar_name) {
+            Some(true) => assert(format!("({name})-1 > 0"), format!("{name} is unsigned")),
+            Some(false) => assert(format!("({name})-1 < 0"), format!("{name} is signed")),
+            // `c_char`: the generated file is compiled for the target
+            // proved, where C's `char` has `c_char`'s sign.
+            None => assert(
+                format!("(({name})-1 > 0) == ((char)-1 > 0)"),
+                format!("{name} has char's sign"),
+            ),
+        }
+    }
     for item in &declarations.structs {
         let name = &item.name;
         let (size, align, offsets) = struct_layout(item, declarations, model, 0)?;
@@ -628,8 +930,12 @@ pub(crate) fn c_source(
             );
         }
     }
+    unmapped_expressions(expressions, declarations)?;
     for (name, value) in &declarations.constants {
-        assert(format!("{name} == {value}"), name.clone());
+        match expressions.iter().find(|(constant, _)| constant == name) {
+            Some((_, expression)) => assert(format!("({expression}) == {value}"), name.clone()),
+            None => assert(format!("{name} == {value}"), name.clone()),
+        }
     }
     for function in &declarations.functions {
         let returns = match &function.returns {
@@ -659,15 +965,27 @@ pub(crate) fn c_source(
 }
 
 /// The start of every generated C file of a row, the macro scan's and the
-/// assertions' alike: the feature defines (`_GNU_SOURCE`, which glibc
-/// needs to expose `CLOCK_BOOTTIME` and others), the common headers and the
-/// row's own. Both read the same definitions, so a constant the assertions
-/// see is one the scan sees.
-pub(crate) fn preamble(row: &str, headers: &[String], model: DataModel) -> String {
+/// assertions' alike: the feature macros (`defines`), the POSIX and
+/// default declarations (`_DEFAULT_SOURCE`), the common headers and the
+/// row's own. The scan's `defines` are the assertions' plus `_GNU_SOURCE`
+/// ([`scan_defines`]), so the macros the assertions see are a subset of
+/// those the scan sees: a constant the assertions could prove is one the
+/// scan finds.
+pub(crate) fn preamble(
+    row: &str,
+    defines: &[String],
+    headers: &[String],
+    model: DataModel,
+) -> String {
     let mut source = format!(
-        "/* Generated by `cargo xtask check-abi` for ironafs-os site {row}; never linked. */\n\
-         #define _GNU_SOURCE 1\n#define _DARWIN_C_SOURCE 1\n\
-         #include <stddef.h>\n#include <stdint.h>\n"
+        "/* Generated by `cargo xtask check-abi` for ironafs-os site {row}; never linked. */\n"
+    );
+    for define in defines {
+        let _ = writeln!(source, "#define {define} 1");
+    }
+    source.push_str(
+        "#define _DEFAULT_SOURCE 1\n#define _DARWIN_C_SOURCE 1\n\
+         #include <stddef.h>\n#include <stdint.h>\n",
     );
     if model == DataModel::Lp64 {
         source.push_str("#include <sys/types.h>\n");
@@ -678,8 +996,25 @@ pub(crate) fn preamble(row: &str, headers: &[String], model: DataModel) -> Strin
     source
 }
 
+/// The feature macros of the macro scan: the row's `defines`, which the
+/// assertions also read, and `_GNU_SOURCE` if the row does not name it. The
+/// scan only preprocesses, so the widest feature set costs nothing there,
+/// and a macro glibc exposes only under `_GNU_SOURCE` (`O_PATH`) that the
+/// row's code names is found even when the row has not opted in; the
+/// assertions then fail to compile until it does. The assertions keep the
+/// row's own set: a global `_GNU_SOURCE` would change which prototypes
+/// they are proved against (glibc's `setrlimit` takes an enum under it).
+pub(crate) fn scan_defines(defines: &[String]) -> Vec<String> {
+    let mut scanned = defines.to_vec();
+    if !scanned.iter().any(|define| define == "_GNU_SOURCE") {
+        scanned.push("_GNU_SOURCE".to_owned());
+    }
+    scanned
+}
+
 /// The object-like macros the C compiler's preprocessor defines after the
-/// row's `preamble` (`$CC -E -dM`), with the same compiler as `compile`.
+/// row's `preamble` with the scan's feature macros ([`scan_defines`])
+/// (`$CC -E -dM`), with the same compiler as `compile`.
 ///
 /// # Errors
 ///
@@ -687,11 +1022,12 @@ pub(crate) fn preamble(row: &str, headers: &[String], model: DataModel) -> Strin
 /// a preprocessor failure is `Ok(Err(..))`.
 pub(crate) fn header_macros(
     row: &str,
+    defines: &[String],
     headers: &[String],
     model: DataModel,
     file: &Path,
 ) -> Result<Result<std::collections::BTreeSet<String>, String>, Error> {
-    crate::fixture::write_file(file, &preamble(row, headers, model))?;
+    crate::fixture::write_file(file, &preamble(row, &scan_defines(defines), headers, model))?;
     let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
     let output = Command::new(compiler)
         .args(["-std=c11", "-E", "-dM"])
@@ -759,35 +1095,42 @@ fn abi_of(model: DataModel) -> &'static str {
 }
 
 /// One file's declarations with every type name rewritten to its identity
-/// in that file's own scope: a name the file imports from `core::ffi`
-/// becomes `core::ffi::<name>`, a primitive stays itself, and any other
-/// name must be one of the row's structs. So an import in one file never
-/// vouches for a name in another.
-fn canonical(file: &Declarations, structs: &[String]) -> Result<Declarations, String> {
+/// in that file's own scope, as this check reads it: a name the file
+/// imports from `core::ffi` becomes `core::ffi::<name>`, a primitive's
+/// name stays itself, and any other name must be one `row` binds, by this
+/// file's own declarations and imports, to a struct or type alias of the
+/// row's declaration files. So an import in one file never vouches for a
+/// name in another, and a name imported from outside the row is refused.
+/// Item-level cfg, a local item named like a primitive or scalar, and
+/// union or enum items are not read here (see the module comment;
+/// TODO(#179)).
+fn canonical(
+    file: &Declarations,
+    row: &dyn Fn(&str) -> Result<(), String>,
+) -> Result<Declarations, String> {
     let rewrite = |found: &CType| -> Result<CType, String> {
-        fn walk(found: &CType, file: &Declarations, structs: &[String]) -> Result<CType, String> {
+        fn walk(
+            found: &CType,
+            file: &Declarations,
+            row: &dyn Fn(&str) -> Result<(), String>,
+        ) -> Result<CType, String> {
             match found {
                 CType::Pointer { constant, to } => Ok(CType::Pointer {
                     constant: *constant,
-                    to: Box::new(walk(to, file, structs)?),
+                    to: Box::new(walk(to, file, row)?),
                 }),
                 CType::Named(name) => {
                     if name.starts_with("core::ffi::") || PRIMITIVES.contains(&name.as_str()) {
                         Ok(CType::Named(name.clone()))
                     } else if file.ffi_names.iter().any(|imported| imported == name) {
                         Ok(CType::Named(format!("core::ffi::{name}")))
-                    } else if structs.iter().any(|item| item == name) {
-                        Ok(CType::Named(name.clone()))
                     } else {
-                        Err(format!(
-                            "`{name}` is neither imported from core::ffi in its own file, a \
-                             primitive integer, nor a struct of the declaration files"
-                        ))
+                        row(name).map(|()| CType::Named(name.clone()))
                     }
                 }
             }
         }
-        walk(found, file, structs)
+        walk(found, file, row)
     };
     let mut out = Declarations::default();
     for item in &file.structs {
@@ -813,27 +1156,77 @@ fn canonical(file: &Declarations, structs: &[String]) -> Result<Declarations, St
             returns: function.returns.as_ref().map(&rewrite).transpose()?,
         });
     }
+    for (name, aliased) in &file.aliases {
+        out.aliases.push((name.clone(), rewrite(aliased)?));
+    }
     out.constants.clone_from(&file.constants);
     Ok(out)
 }
 
-/// The recorded structs and constants that `found` does not declare.
-pub(crate) fn missing_facts(
-    structs: &[String],
-    constants: &[String],
+/// The C facts sites.json records for a row, by kind.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Recorded<'a> {
+    pub(crate) structs: &'a [String],
+    pub(crate) constants: &'a [String],
+    pub(crate) aliases: &'a [String],
+}
+
+impl<'a> From<&'a os::inventory::Code> for Recorded<'a> {
+    fn from(code: &'a os::inventory::Code) -> Self {
+        Self {
+            structs: &code.structs,
+            constants: &code.constants,
+            aliases: &code.aliases,
+        }
+    }
+}
+
+/// How the recorded facts differ from those `found` declares: the
+/// recorded structs, constants and type aliases it does not declare, then
+/// those it declares that are not recorded, each in that order.
+pub(crate) fn fact_differences(
+    recorded: Recorded<'_>,
     found: &Declarations,
-) -> Vec<String> {
-    structs
+) -> (Vec<String>, Vec<String>) {
+    let declared: [Vec<&str>; 3] = [
+        found
+            .structs
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect(),
+        found
+            .constants
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect(),
+        found
+            .aliases
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect(),
+    ];
+    let recorded = [recorded.structs, recorded.constants, recorded.aliases];
+    let missing = recorded
         .iter()
-        .filter(|name| !found.structs.iter().any(|item| &item.name == *name))
-        .chain(constants.iter().filter(|name| {
-            !found
-                .constants
+        .zip(&declared)
+        .flat_map(|(recorded, declared)| {
+            recorded
                 .iter()
-                .any(|(constant, _)| constant == *name)
-        }))
-        .cloned()
-        .collect()
+                .filter(|name| !declared.contains(&name.as_str()))
+                .cloned()
+        })
+        .collect();
+    let unrecorded = declared
+        .iter()
+        .zip(&recorded)
+        .flat_map(|(declared, recorded)| {
+            declared
+                .iter()
+                .filter(|name| !recorded.iter().any(|recorded| recorded == *name))
+                .map(|name| (*name).to_owned())
+        })
+        .collect();
+    (missing, unrecorded)
 }
 
 /// C preprocessor checks that the compiler compiling the generated file is
@@ -872,8 +1265,9 @@ fn row_declarations(
     crate_dir: &Path,
     module: &str,
     read: &std::collections::BTreeSet<PathBuf>,
-    abi: &str,
+    target: &str,
 ) -> Result<Result<Declarations, String>, Error> {
+    let abi = abi_of(DataModel::of(target));
     let directory = Path::new("src").join(module);
     let mut files = Vec::new();
     for file in read.iter().filter(|file| file.starts_with(&directory)) {
@@ -889,15 +1283,13 @@ fn row_declarations(
         }
         files.push((file.clone(), one));
     }
-    let structs: Vec<String> = files
-        .iter()
-        .flat_map(|(_, one)| one.structs.iter().map(|item| item.name.clone()))
-        .collect();
     let mut found = Declarations::default();
-    for (file, one) in files {
-        match canonical(&one, &structs) {
+    for (index, (file, one)) in files.iter().enumerate() {
+        let row = |name: &str| bound_in_row(&files, target, index, name, 0);
+        match canonical(one, &row) {
             Ok(one) => {
                 found.structs.extend(one.structs);
+                found.aliases.extend(one.aliases);
                 found.constants.extend(one.constants);
                 found.functions.extend(one.functions);
             }
@@ -905,6 +1297,122 @@ fn row_declarations(
         }
     }
     Ok(Ok(found))
+}
+
+/// How many re-exports a name is followed through before the chain is
+/// refused.
+const MAX_REEXPORTS: usize = 8;
+
+/// Whether the file `files[at]` binds `name` to a struct or type alias of
+/// the row's declaration files (`files`): it declares it, or exactly one of
+/// its imports in effect on `target` names it in a declaration file of the
+/// row that binds it so in turn. Which imports are in effect is decided
+/// from the target and each import's gate (see [`Gate`]), never from which
+/// files were compiled. An import from outside the row, one in effect whose
+/// file the compiler did not read, a name neither declared nor imported,
+/// and a name two imports in effect bind are refused: the type Rust uses
+/// there may not be the row's.
+pub(crate) fn bound_in_row(
+    files: &[(PathBuf, Declarations)],
+    target: &str,
+    at: usize,
+    name: &str,
+    depth: usize,
+) -> Result<(), String> {
+    let Some((file, one)) = files.get(at) else {
+        return Err(format!("`{name}`: no such declaration file"));
+    };
+    if one.structs.iter().any(|item| item.name == name)
+        || one.aliases.iter().any(|(alias, _)| alias == name)
+    {
+        return Ok(());
+    }
+    if depth > MAX_REEXPORTS {
+        return Err(format!(
+            "`{name}`: a chain of re-exports this check does not follow"
+        ));
+    }
+    let module = module_of(file);
+    let mut bound = Vec::new();
+    for import in one.imports.iter().filter(|import| {
+        import.gate.in_effect(target) && import.path.last().is_some_and(|last| last == name)
+    }) {
+        let shown = import.path.join("::");
+        let outside = || {
+            Err(format!(
+                "`{name}` is imported from {shown}, outside the row's declaration files, so \
+                 the type Rust uses may not be the one this check proves"
+            ))
+        };
+        let Some(destination) = import
+            .path
+            .split_last()
+            .and_then(|(_, modules)| import_target(module.as_deref(), modules))
+        else {
+            bound.push(outside());
+            continue;
+        };
+        let destination_file = Path::new("src").join(format!("{}.rs", destination.join("/")));
+        match files.iter().position(|(file, _)| *file == destination_file) {
+            Some(index) => bound.push(bound_in_row(files, target, index, name, depth + 1)),
+            None => bound.push(outside()),
+        }
+    }
+    match bound.len() {
+        0 => Err(format!(
+            "`{name}` is neither imported from core::ffi in its own file, a primitive integer, \
+             nor a struct or type alias its own file declares or imports, in effect, from the \
+             row's declaration files"
+        )),
+        1 => bound
+            .pop()
+            .unwrap_or_else(|| Err(format!("`{name}`: unbound"))),
+        _ => Err(format!(
+            "`{name}` is bound by more than one import in effect, so which type Rust uses \
+             is not one this check can name"
+        )),
+    }
+}
+
+/// The module path of a source file of the crate, `src/a/b.rs` giving
+/// `a::b`, as segments; `None` for the crate root or a path not of that
+/// form.
+fn module_of(file: &Path) -> Option<Vec<String>> {
+    let relative = file.strip_prefix("src").ok()?;
+    let stem = relative.with_extension("");
+    let segments: Vec<String> = stem
+        .components()
+        .map(|part| part.as_os_str().to_str().map(str::to_owned))
+        .collect::<Option<_>>()?;
+    (segments.first().is_some_and(|first| first != "lib")).then_some(segments)
+}
+
+/// The module an import's module path (`modules`, without the name)
+/// reaches from `module`: `super` steps up, `self` stays, `crate` starts
+/// at the root and any other leading name is a child module. `None` for a
+/// path into another crate (`core`, `std` or any other), or that leaves
+/// the crate.
+fn import_target(module: Option<&[String]>, modules: &[String]) -> Option<Vec<String>> {
+    let mut at: Vec<String> = module?.to_vec();
+    let mut segments = modules.iter();
+    match segments.as_slice().first().map(String::as_str) {
+        Some("crate") => {
+            at.clear();
+            segments.next();
+        }
+        Some("core" | "std" | "alloc") | None => return None,
+        _ => {}
+    }
+    for segment in segments {
+        match segment.as_str() {
+            "super" => {
+                at.pop()?;
+            }
+            "self" => {}
+            other => at.push(other.to_owned()),
+        }
+    }
+    (!at.is_empty()).then_some(at)
 }
 
 /// Every identifier in the files the compiler read for the row of `module`
@@ -1040,6 +1548,7 @@ fn check_target(
         Built::Refused(error) => return Err(fail(vec![format!("{target}: {error}")])),
     };
     let mut checked = Vec::new();
+    let mut withheld = Vec::new();
     let mut violations = Vec::new();
     // `core::ffi` names C's types only where no file of the crate shadows
     // `core`, a glob import from another file included.
@@ -1065,97 +1574,60 @@ fn check_target(
         .filter(|row| to_prove.contains(&row.id))
     {
         match prove_row(row, &crate_dir, &read, target, dir)? {
-            Some(Ok(proved)) => checked.push(proved),
-            Some(Err(problem)) => violations.push(problem),
+            Some(Proof::Proved(proved)) => checked.push(proved),
+            Some(Proof::Withheld(why)) => withheld.push(why),
+            Some(Proof::Failed(problem)) => violations.push(problem),
             None => {}
         }
     }
     if !violations.is_empty() {
         return Err(fail(violations));
     }
-    writeln!(
-        output,
+    let mut report =
+        |line: String| writeln!(output, "{line}").map_err(Error::io("report check-abi"));
+    for why in withheld {
+        report(format!(
+            "check-abi: {target}: withheld {why}: MISSING evidence, so the row does not ship on \
+             this target"
+        ))?;
+    }
+    report(format!(
         "check-abi: {target}: the system's C compiler accepted {}",
         checked.join("; ")
-    )
-    .map_err(Error::io("report check-abi"))
+    ))
 }
 
-/// Proves one row's declarations on `target`: `Ok` names what the C
-/// compiler accepted, `Err` says why the row failed; `None` for a row with
-/// no code.
+/// What the check found for one row.
+enum Proof {
+    /// What the C compiler accepted.
+    Proved(String),
+    /// The row and the qualified constants the target's headers do not
+    /// name.
+    Withheld(String),
+    /// Why the row failed.
+    Failed(String),
+}
+
+/// Proves one row's declarations on `target`; `None` for a row with no
+/// code.
 fn prove_row(
     row: &os::inventory::Row,
     crate_dir: &Path,
     read: &std::collections::BTreeSet<PathBuf>,
     target: &str,
     dir: &Path,
-) -> Result<Option<Result<String, String>>, Error> {
+) -> Result<Option<Proof>, Error> {
     let Some(code) = row.code.as_ref() else {
         return Ok(None);
     };
     let model = DataModel::of(target);
-    let failed = |problem: String| Ok(Some(Err(format!("{}: {problem}", row.id))));
-    let found = match row_declarations(crate_dir, &code.module, read, abi_of(model))? {
+    let failed = |problem: String| Ok(Some(Proof::Failed(format!("{}: {problem}", row.id))));
+    let found = match row_declarations(crate_dir, &code.module, read, target)? {
         Ok(found) => found,
         Err(error) => return failed(error),
     };
-    // The facts the row must assert come from its compiled code: every C
-    // macro of its headers that a file the compiler read for the row names
-    // (`src/<module>.rs` and everything under `src/<module>/`).
-    let macros = match header_macros(
-        &row.id,
-        &code.headers,
-        model,
-        &dir.join(format!("{}-macros.c", row.id)),
-    )? {
-        Ok(macros) => macros,
-        Err(error) => return failed(error),
-    };
-    let used = match row_identifiers(crate_dir, &code.module, read)? {
-        Ok(used) => used,
-        Err(error) => return failed(error),
-    };
-    let declared: Vec<&str> = found
-        .constants
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .collect();
-    let undeclared: Vec<String> = required_constants(used.iter().map(String::as_str), &macros)
-        .into_iter()
-        .filter(|name| !declared.contains(&name.as_str()))
-        .collect();
-    if !undeclared.is_empty() {
-        return failed(format!(
-            "the row's code names {}, a C macro of its headers, which no declaration file the \
-             compiler read under src/{}/ declares, so no assertion would prove it",
-            undeclared.join(", "),
-            code.module
-        ));
-    }
-    // The copy records what the compiled declarations state, no more and
-    // no less: it is checked against them, never the source of them.
-    let missing = missing_facts(&code.structs, &code.constants, &found);
-    let unrecorded: Vec<&str> = found
-        .structs
-        .iter()
-        .map(|item| item.name.as_str())
-        .filter(|name| !code.structs.iter().any(|recorded| recorded == name))
-        .chain(
-            declared
-                .iter()
-                .copied()
-                .filter(|name| !code.constants.iter().any(|recorded| recorded == name)),
-        )
-        .collect();
-    if !missing.is_empty() || !unrecorded.is_empty() {
-        return failed(format!(
-            "sites.json's C facts differ from the declaration files the compiler read under \
-             src/{}/: recorded but not declared [{}], declared but not recorded [{}]",
-            code.module,
-            missing.join(", "),
-            unrecorded.join(", ")
-        ));
+    if let Some(problem) = fact_problem(&row.id, code, &found, crate_dir, read, model, dir)? {
+        return failed(problem);
     }
     let declared: Vec<&str> = code
         .extern_blocks
@@ -1177,22 +1649,111 @@ fn prove_row(
             read_names.join(", ")
         ));
     }
-    let source = match c_source(&row.id, &code.headers, &found, model) {
+    match unnamed(
+        &row.id,
+        &code.defines,
+        &code.headers,
+        &code.qualified,
+        model,
+        &identity(target),
+        dir,
+    )? {
+        Ok(absent) if absent.is_empty() => {}
+        Ok(absent) => {
+            return Ok(Some(Proof::Withheld(format!(
+                "{}: its headers do not name {}",
+                row.id,
+                absent.join(", ")
+            ))));
+        }
+        Err(error) => return failed(error),
+    }
+    let source = match c_source(
+        &row.id,
+        &code.defines,
+        &code.headers,
+        &code.expressions,
+        &found,
+        model,
+    ) {
         Ok(source) => format!("{source}{}", identity(target)),
         Err(error) => return failed(error),
     };
     Ok(Some(
         match compile(&source, &dir.join(format!("{}.c", row.id)))? {
-            Ok(()) => Ok(format!(
+            Ok(()) => Proof::Proved(format!(
                 "{} ({} structs, {} constants, {} functions)",
                 row.id,
                 found.structs.len(),
                 found.constants.len(),
                 found.functions.len()
             )),
-            Err(error) => Err(format!("{}: {error}", row.id)),
+            Err(error) => Proof::Failed(format!("{}: {error}", row.id)),
         },
     ))
+}
+
+/// Why the row's C facts are not the ones its compiled code needs, if they
+/// are not: a C macro of its headers that its code names but no
+/// declaration file declares, or sites.json's facts differing from the
+/// declaration files.
+fn fact_problem(
+    row: &str,
+    code: &os::inventory::Code,
+    found: &Declarations,
+    crate_dir: &Path,
+    read: &std::collections::BTreeSet<PathBuf>,
+    model: DataModel,
+    dir: &Path,
+) -> Result<Option<String>, Error> {
+    // The facts the row must assert come from its compiled code: every C
+    // macro of its headers that a file the compiler read for the row names
+    // (`src/<module>.rs` and everything under `src/<module>/`).
+    let macros = match header_macros(
+        row,
+        &code.defines,
+        &code.headers,
+        model,
+        &dir.join(format!("{row}-macros.c")),
+    )? {
+        Ok(macros) => macros,
+        Err(error) => return Ok(Some(error)),
+    };
+    let used = match row_identifiers(crate_dir, &code.module, read)? {
+        Ok(used) => used,
+        Err(error) => return Ok(Some(error)),
+    };
+    let declared: Vec<&str> = found
+        .constants
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let undeclared: Vec<String> = required_constants(used.iter().map(String::as_str), &macros)
+        .into_iter()
+        .filter(|name| !declared.contains(&name.as_str()))
+        .collect();
+    if !undeclared.is_empty() {
+        return Ok(Some(format!(
+            "the row's code names {}, a C macro of its headers, which no declaration file the \
+             compiler read under src/{}/ declares, so no assertion would prove it",
+            undeclared.join(", "),
+            code.module
+        )));
+    }
+    // The copy records what the compiled declarations state, no more and
+    // no less: it is checked against them, never the source of them.
+    let (missing, unrecorded) = fact_differences(Recorded::from(code), found);
+    if missing.is_empty() && unrecorded.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(format!(
+            "sites.json's C facts differ from the declaration files the compiler read under \
+             src/{}/: recorded but not declared [{}], declared but not recorded [{}]",
+            code.module,
+            missing.join(", "),
+            unrecorded.join(", ")
+        )))
+    }
 }
 
 /// The names of the object-like macros a preprocessor's `-dM` `dump`

@@ -3,18 +3,36 @@
 
 //! `check-abi --self-test`: a fixture of declarations whose C facts are the
 //! same on every Unix target of the allowlist (`struct timespec`, `EINTR`,
-//! `close` and `strlen`) must compile, and each planted mismatch must be
-//! caught at the stage that owns it:
+//! `close`, `strlen`, and `struct rlimit` through the typedef `rlim_t`,
+//! whose spelling differs between C libraries at one size) must compile,
+//! and each planted mismatch must be caught at the stage that owns it:
 //!
 //! - by the C compiler, after the declarations were read and the C
 //!   generated (ADR 0005, point 5.6): a member type changed at the same
-//!   size and offset, a member's size changed, a constant changed by one, a
-//!   parameter's type changed and a return type changed. Each must fail
-//!   with the assertion that names it;
+//!   size and offset, a member's size changed, a constant changed by one
+//!   (one compared with a C expression too), a
+//!   parameter's type changed, a return type changed, an alias of the
+//!   wrong size or sign, an alias of `c_char` naming a typedef of the
+//!   other sign, and aliases of integers naming typedefs of `_Bool` and
+//!   `double`. Each must fail with the assertion that names it;
+//! - by the probe of qualified constants: a name the headers do not define
+//!   is reported unnamed (so its row is withheld), and one they define is
+//!   not;
+//! - by the comparison with sites.json's record: a type alias the
+//!   declarations state but the record leaves out, and one the record
+//!   holds but no declaration states;
+//! - by the import reader and resolver, over a row of four files: a
+//!   declaration's type imported from another module of the crate while
+//!   the row's own type of that name is still declared; a re-export whose
+//!   cfg is not in effect on the target, though its file was compiled,
+//!   alone and beside a binding through an inline module; an import nested
+//!   in a function; an import under another cfg; and a glob;
 //! - by the declaration reader, which refuses what C cannot be compared
 //!   with: another ABI string, an attribute on a foreign function (such as
-//!   `link_name`), a `packed` struct, a renaming import, a type alias, and
-//!   a C type name not imported from `core::ffi`.
+//!   `link_name`), a `packed` struct, a renaming import, a type alias, an
+//!   import under an attribute holding brackets (alone, and after a cfg,
+//!   which a nearest-bracket scan would drop), and a C type name not
+//!   imported from `core::ffi`.
 //!
 //! The fixture's headers are Unix headers. On a Windows host, which has no
 //! row with a foreign item yet, the self-test says so and passes; the
@@ -24,24 +42,39 @@ use std::io::Write;
 use std::path::Path;
 
 use super::{
-    DataModel, Declarations, applies_here, c_source, compile, declarations, header_macros,
-    required_constants,
+    DataModel, Declarations, Recorded, applies_here, c_source, compile, declarations,
+    fact_differences, header_macros, required_constants, row_declarations, unnamed,
 };
 use crate::Error;
+use crate::fixture;
 use crate::rust_source::tokens_with_strings;
 
 const CHECK: &str = "check-abi";
 
-const HEADERS: &[&str] = &["errno.h", "string.h", "time.h", "unistd.h"];
+const HEADERS: &[&str] = &[
+    "errno.h",
+    "string.h",
+    "sys/resource.h",
+    "time.h",
+    "unistd.h",
+];
 
 const FIXTURE: &str = "use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};\n\
                        #[repr(C)]\n\
                        struct timespec {\n    tv_sec: c_long,\n    tv_nsec: c_long,\n}\n\
                        const EINTR: c_int = 4;\n\
+                       const TIMESPEC_SIZE: usize = 16;\n\
+                       type rlim_t = u64;\n\
+                       #[repr(C)]\n\
+                       struct rlimit {\n    rlim_cur: rlim_t,\n    rlim_max: rlim_t,\n}\n\
                        unsafe extern \"C\" {\n\
                        \x20   fn close(fd: c_int) -> c_int;\n\
                        \x20   fn strlen(s: *const c_char) -> usize;\n\
                        }\n";
+
+/// The fixture's constants compared with a C expression, as sites.json's
+/// `expressions` maps a value a macro gives.
+const EXPRESSIONS: &[(&str, &str)] = &[("TIMESPEC_SIZE", "sizeof(struct timespec)")];
 
 /// Mismatches the C compiler must refuse: the case, the text it replaces,
 /// and the assertion's label the compiler's error must carry.
@@ -71,6 +104,12 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
         "EINTR == 10",
     ),
     (
+        "a constant compared with a C expression changed by one",
+        "TIMESPEC_SIZE: usize = 16",
+        "TIMESPEC_SIZE: usize = 17",
+        "(sizeof(struct timespec)) == 17",
+    ),
+    (
         "a parameter's type changed",
         "fn close(fd: c_int)",
         "fn close(fd: c_uint)",
@@ -82,7 +121,32 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
         "*const c_char) -> isize",
         "(&strlen, ssize_t (*)(const char *)",
     ),
+    (
+        "an alias of the wrong size",
+        "type rlim_t = u64",
+        "type rlim_t = u32",
+        "sizeof(rlim_t) == 4",
+    ),
+    (
+        "an alias of the wrong sign",
+        "type rlim_t = u64",
+        "type rlim_t = i64",
+        "(rlim_t)-1 < 0",
+    ),
 ];
+
+/// A typedef of a byte whose sign is not `char`'s on this host, which an
+/// alias of `c_char` must not pass as, and the assertion that refuses it.
+fn other_sign_byte() -> (&'static str, &'static str) {
+    if core::ffi::c_char::MIN == 0 {
+        ("int8_t", "((int8_t)-1 > 0) == ((char)-1 > 0)")
+    } else {
+        ("uint8_t", "((uint8_t)-1 > 0) == ((char)-1 > 0)")
+    }
+}
+
+/// A name no header defines, which the probe must report unnamed.
+const UNNAMED_NAME: &str = "IRONAFS_CHECK_ABI_SELF_TEST_UNNAMED";
 
 /// Declarations the reader must refuse: the case, the text it replaces,
 /// and a phrase of the reader's error.
@@ -110,6 +174,18 @@ const READER: &[(&str, &str, &str, &str)] = &[
         "#[repr(C)]\n",
         "#[repr(C)]\n#[repr(packed)]\n",
         "repr is not exactly C",
+    ),
+    (
+        "an import under a cfg and an attribute holding brackets",
+        "use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};",
+        "#[cfg(miri)]\n#[doc = stringify!([x])]\npub(super) use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};",
+        "with attributes this check does not read",
+    ),
+    (
+        "an import under an attribute holding brackets",
+        "use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};",
+        "#[doc = stringify!([x])]\nuse core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};",
+        "with attributes this check does not read",
     ),
     (
         "a renaming import",
@@ -194,6 +270,8 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
             }
         }
     }
+    char_sign_and_probe(dir, output)?;
+    non_integer_aliases(dir, output)?;
     for (name, from, to, phrase) in READER {
         let planted = plant(name, from, to)?;
         match stage(&planted, &dir.join("reader.c"))? {
@@ -216,13 +294,17 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
          declaration files"
             .to_owned(),
     )?;
+    recorded_facts_case(output)?;
+    foreign_import_case(dir, output)?;
     report(
         output,
         format!(
             "check-abi --self-test: the fixture compiled; {} planted mismatches failed to compile \
-             at their assertions, {} declarations were refused by the reader, and a missing \
-             fact was found",
-            COMPILER.len(),
+             at their assertions, an unnamed qualified constant was withheld, {} declarations \
+             were refused by the reader, a missing fact was found, and a copy that leaves out \
+             or adds a type alias was caught, as was a type taken from outside the row's \
+             declaration files",
+            COMPILER.len() + 1 + NON_INTEGER.len(),
             READER.len()
         ),
     )
@@ -238,6 +320,7 @@ fn missing_fact_case(dir: &Path) -> Result<(), Error> {
     let headers: Vec<String> = HEADERS.iter().map(|header| (*header).to_owned()).collect();
     let macros = match header_macros(
         "self-test",
+        &[],
         &headers,
         DataModel::Lp64,
         &dir.join("macros.c"),
@@ -273,11 +356,228 @@ fn missing_fact_case(dir: &Path) -> Result<(), Error> {
     }
 }
 
+/// sites.json's record of the fixture's C facts, against what the fixture
+/// declares: the full record differs in nothing; one without the fixture's
+/// type alias `rlim_t` leaves it unrecorded, and one with a `socklen_t` the
+/// fixture does not declare records it as missing.
+fn recorded_facts_case(output: &mut impl Write) -> Result<(), Error> {
+    const CASE: &str = "a type alias left out of the record, or recorded but not declared";
+    let mut found = Declarations::default();
+    let tokens = tokens_with_strings(FIXTURE).map_err(|error| failure(CASE, error.to_string()))?;
+    declarations_of(&tokens, &mut found)?;
+    let structs = ["timespec".to_owned(), "rlimit".to_owned()];
+    let constants = ["EINTR".to_owned(), "TIMESPEC_SIZE".to_owned()];
+    let differences = |aliases: &[String]| {
+        fact_differences(
+            Recorded {
+                structs: &structs,
+                constants: &constants,
+                aliases,
+            },
+            &found,
+        )
+    };
+    let none = (Vec::new(), Vec::new());
+    let cases = [
+        (vec!["rlim_t".to_owned()], none.clone()),
+        (Vec::new(), (Vec::new(), vec!["rlim_t".to_owned()])),
+        (
+            vec!["rlim_t".to_owned(), "socklen_t".to_owned()],
+            (vec!["socklen_t".to_owned()], Vec::new()),
+        ),
+    ];
+    for (aliases, expected) in cases {
+        let differs = differences(&aliases);
+        if differs != expected {
+            return Err(failure(
+                CASE,
+                format!("recording aliases {aliases:?} gave {differs:?}, not {expected:?}"),
+            ));
+        }
+    }
+    writeln!(
+        output,
+        "caught: a type alias declared but not recorded, and one recorded but not declared"
+    )
+    .map_err(Error::io("report check-abi self-test"))
+}
+
+/// A row of four declaration files, read for a glibc target: each C
+/// library's file declares `struct timespec`, `abi.rs` re-exports the
+/// glibc one under its cfg, and `abi/foreign.rs` declares a function over
+/// the `timespec` it imports from `super`. That is read. Each plant must be
+/// refused: a type taken from another module of the crate; the musl
+/// re-export alone (not in effect on glibc, though musl's file was
+/// compiled) beside a binding through an inline module; the musl re-export
+/// alone; an import nested in a function; an import under another cfg; and
+/// a glob.
+fn foreign_import_case(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    const CASE: &str = "a type whose binding is not the row's own";
+    const TARGET: &str = "aarch64-unknown-linux-gnu";
+    const LIBRARY: &str = "use core::ffi::c_long;\n#[repr(C)]\n\
+                           pub(crate) struct timespec {\n    tv_sec: c_long,\n    tv_nsec: c_long,\n}\n";
+    const GNU_EXPORT: &str = "#[cfg(target_env = \"gnu\")]\npub(super) use gnu::timespec;\n";
+    const MUSL_EXPORT: &str = "#[cfg(target_env = \"musl\")]\npub(super) use musl::timespec;\n";
+    let foreign = |import: &str| {
+        format!(
+            "use core::ffi::c_int;\n{import}\nunsafe extern \"C\" {{\n    \
+             fn clock_gettime(clock: c_int, now: *mut timespec) -> c_int;\n}}\n"
+        )
+    };
+    let crate_dir = dir.join("row-crate");
+    let module = Path::new("src").join("row");
+    let files = ["abi.rs", "abi/gnu.rs", "abi/musl.rs", "abi/foreign.rs"];
+    let read: std::collections::BTreeSet<_> = files.iter().map(|file| module.join(file)).collect();
+    let attempt = |abi: &str, import: &str| -> Result<Result<Declarations, String>, Error> {
+        let texts = [
+            format!("{abi}#[cfg(target_env = \"gnu\")]\nmod gnu;\n"),
+            LIBRARY.to_owned(),
+            LIBRARY.to_owned(),
+            foreign(import),
+        ];
+        for (file, text) in files.iter().zip(texts) {
+            fixture::write_file(&crate_dir.join(&module).join(file), &text)?;
+        }
+        row_declarations(&crate_dir, "row", &read, TARGET)
+    };
+    let own = "use super::timespec;";
+    if let Err(error) = attempt(GNU_EXPORT, own)? {
+        return Err(failure(
+            CASE,
+            format!("the row's own import was refused: {error}"),
+        ));
+    }
+    let inline = format!(
+        "{MUSL_EXPORT}mod inner {{\n    pub(super) use crate::elsewhere::timespec;\n}}\n\
+         pub(super) use inner::timespec;\n"
+    );
+    for (abi, import, says) in [
+        (
+            GNU_EXPORT,
+            "use crate::elsewhere::timespec;",
+            "a path (crate::",
+        ),
+        (inline.as_str(), own, "an inline module"),
+        (MUSL_EXPORT, own, "`timespec` is neither imported"),
+        (
+            GNU_EXPORT,
+            "fn f() {\n    use super::timespec;\n}",
+            "not at file scope",
+        ),
+        (
+            GNU_EXPORT,
+            "#[cfg(unix)]\nuse super::timespec;",
+            "an import under #[cfg(unix)]",
+        ),
+        (GNU_EXPORT, "use super::*;", "a glob import"),
+    ] {
+        match attempt(abi, import)? {
+            Err(error) if error.contains(says) => {}
+            Err(error) => {
+                return Err(failure(
+                    CASE,
+                    format!("{import}: refused for another reason than {says:?}: {error}"),
+                ));
+            }
+            Ok(_) => return Err(failure(CASE, format!("{import}: accepted"))),
+        }
+    }
+    writeln!(
+        output,
+        "caught: a declaration's type imported from another module, an inactive re-export \
+         beside a binding through an inline module, an inactive re-export alone, a nested \
+         import, an import under another cfg, and a glob"
+    )
+    .map_err(Error::io("report check-abi self-test"))
+}
+
 fn declarations_of(
     tokens: &[crate::rust_source::Token],
     found: &mut Declarations,
 ) -> Result<(), Error> {
     declarations(tokens, "C", found).map_err(|error| failure("reading the fixture", error))
+}
+
+/// The `c_char` alias planted with a typedef of the other sign, which the
+/// compiler must refuse, and the probe of qualified constants, which must
+/// report only the unnamed one.
+fn char_sign_and_probe(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    let report = |output: &mut dyn Write, line: String| {
+        writeln!(output, "{line}").map_err(Error::io("report check-abi self-test"))
+    };
+    let (byte, label) = other_sign_byte();
+    let name = "an alias of c_char naming a typedef of the other sign";
+    let planted = plant(
+        name,
+        "const EINTR",
+        &format!("type {byte} = c_char;\nconst EINTR"),
+    )?;
+    match stage(&planted, &dir.join("char-sign.c"))? {
+        Stage::Compiler(error, at) if at.contains(label) => {
+            report(output, format!("caught by the C compiler: {name}: {error}"))?;
+        }
+        Stage::Compiler(error, _) | Stage::Reader(error) | Stage::Generator(error) => {
+            return Err(failure(name, format!("not refused at `{label}`: {error}")));
+        }
+        Stage::Compiled => return Err(failure(name, "the C compiler accepted it".to_owned())),
+    }
+    let headers: Vec<String> = HEADERS.iter().map(|header| (*header).to_owned()).collect();
+    let names = ["EINTR".to_owned(), UNNAMED_NAME.to_owned()];
+    let name = "a qualified constant the headers do not name";
+    match unnamed("self-test", &[], &headers, &names, DataModel::Lp64, "", dir)? {
+        Ok(absent) if absent == [UNNAMED_NAME] => report(
+            output,
+            format!("withheld by the probe: {name}; a named one (EINTR) was not"),
+        )?,
+        Ok(absent) => {
+            return Err(failure(
+                name,
+                format!("the probe found unnamed: {absent:?}"),
+            ));
+        }
+        Err(error) => return Err(failure(name, error)),
+    }
+    Ok(())
+}
+
+/// Aliases of integers the size and sign of a C typedef that is not an
+/// integer: the case, the typedef, and the alias planted against it. The
+/// headers have no typedef of `_Bool` or `double`, so the generated file
+/// gets the typedef after its preamble.
+const NON_INTEGER: &[(&str, &str, &str)] = &[
+    (
+        "an alias of u8 naming a typedef of _Bool",
+        "typedef _Bool flag_t;",
+        "type flag_t = u8;",
+    ),
+    (
+        "an alias of i64 naming a typedef of double",
+        "typedef double real_t;",
+        "type real_t = i64;",
+    ),
+];
+
+/// Each of [`NON_INTEGER`]'s aliases, which pass the size, alignment and
+/// sign assertions, must fail at the integer-type assertion.
+fn non_integer_aliases(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    let report = |output: &mut dyn Write, line: String| {
+        writeln!(output, "{line}").map_err(Error::io("report check-abi self-test"))
+    };
+    let label = "is an integer type other than _Bool";
+    for (index, (name, typedef, alias)) in NON_INTEGER.iter().enumerate() {
+        let planted = plant(name, "const EINTR", &format!("{alias}\nconst EINTR"))?;
+        let file = dir.join(format!("non-integer-{index}.c"));
+        match stage_with(&planted, &file, typedef)? {
+            Stage::Compiler(error, at) if at.contains(label) => {
+                report(output, format!("caught by the C compiler: {name}: {error}"))?;
+            }
+            Stage::Compiler(error, _) | Stage::Reader(error) | Stage::Generator(error) => {
+                return Err(failure(name, format!("not refused at `{label}`: {error}")));
+            }
+            Stage::Compiled => return Err(failure(name, "the C compiler accepted it".to_owned())),
+        }
+    }
+    Ok(())
 }
 
 fn plant(name: &'static str, from: &str, to: &str) -> Result<String, Error> {
@@ -293,6 +593,12 @@ fn plant(name: &'static str, from: &str, to: &str) -> Result<String, Error> {
 
 /// Reads, generates and compiles one fixture, and says where it stopped.
 fn stage(source: &str, file: &Path) -> Result<Stage, Error> {
+    stage_with(source, file, "")
+}
+
+/// [`stage`], with `typedefs` (C text) placed in the generated file after
+/// its preamble, before the first assertion.
+fn stage_with(source: &str, file: &Path, typedefs: &str) -> Result<Stage, Error> {
     let tokens = tokens_with_strings(source).map_err(|error| Error::SelfTest {
         check: CHECK,
         case: "reading the fixture",
@@ -303,8 +609,19 @@ fn stage(source: &str, file: &Path) -> Result<Stage, Error> {
         return Ok(Stage::Reader(error));
     }
     let headers: Vec<String> = HEADERS.iter().map(|header| (*header).to_owned()).collect();
-    let c = match c_source("self-test", &headers, &found, DataModel::Lp64) {
-        Ok(c) => c,
+    let expressions: Vec<(String, String)> = EXPRESSIONS
+        .iter()
+        .map(|(name, expression)| ((*name).to_owned(), (*expression).to_owned()))
+        .collect();
+    let c = match c_source(
+        "self-test",
+        &[],
+        &headers,
+        &expressions,
+        &found,
+        DataModel::Lp64,
+    ) {
+        Ok(c) => c.replacen("_Static_assert", &format!("{typedefs}\n_Static_assert"), 1),
         Err(error) => return Ok(Stage::Generator(error)),
     };
     Ok(match compile(&c, file)? {

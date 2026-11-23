@@ -130,11 +130,87 @@ jobs:
           cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
           install -d "$cargo_bin"
           install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: Prove mem-wipe's stores survive the release profile, x86_64 and aarch64 Linux
+        # Each glibc target must report passed: a MISSING line exits 0 but
+        # proves nothing. The musl targets are proved in their os-linux lanes.
+        run: |
+          cargo --locked xtask check-wipe > check-wipe.log
+          cat check-wipe.log
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            grep -q "^$target: passed: " check-wipe.log
+          done
+      - name: Prove the mem-wipe gate catches planted regressions
+        run: cargo --locked xtask check-wipe --self-test
       - name: Run tests
         run: cargo nextest run --workspace --profile ci --retries 0 --no-tests fail --locked
       - name: Run doc-tests
         timeout-minutes: 5
         run: cargo test --doc --workspace --locked
+      - name: Run the dump marker tests, with core files and with a piped collector
+        # ADR 0004, O26, point 5, and ADR 0005, sheets 11 and 12: each image
+        # goes to <dir>/core.<pid> in a directory only the runner's user can
+        # enter, first written by the kernel, then piped to a collector that
+        # copies its standard input to that one file (with core_pipe_limit
+        # above zero, so the kernel waits for it). The marker tests run as
+        # the runner's user, whose shell raised the core-file limit: sudo
+        # would set it back to 0 (sudoers(5): "the core dump file size ...
+        # is set by sudoers to 0 by default"). Each named case must pass in
+        # each mode.
+        timeout-minutes: 10
+        run: |
+          dir="$RUNNER_TEMP/ironafs-cores"
+          mkdir -m 0700 "$dir"
+          collector="$RUNNER_TEMP/ironafs-core-collector"
+          printf '#!/bin/sh\nexec /usr/bin/cat > "$1"\n' > "$collector"
+          chmod 0755 "$collector"
+          ulimit -c unlimited
+          export IRONAFS_CORE_DIR="$dir"
+          markers="unix_nodump::tests::kernel::disable_dumps_leaves_no_image_where_an_unprotected_child_leaves_its_marker
+          linux_dontdump::tests::kernel::dump_of_an_unprotected_child_holds_its_control_marker_and_not_its_secret_buffer"
+          filter=$(printf 'test(=%s) | ' $markers)
+          for pattern in "$dir/core.%p" "|$collector $dir/core.%p"; do
+            sudo sysctl -w kernel.core_pipe_limit=16 "kernel.core_pattern=$pattern"
+            status=0
+            cargo nextest run -p ironafs-os --profile ci --retries 0 --no-tests fail --locked --run-ignored only -E "${filter% | }" > markers.log 2>&1 || status=$?
+            cat markers.log
+            test "$status" -eq 0
+            for test in $markers; do
+              grep -Eq "^ +PASS .* ironafs-os $test\$" markers.log
+            done
+          done
+      - name: Run the tests that need root, each named
+        # The dumpable attribute after an exec under another uid (an
+        # ordinary exec: 1) and after a set-id exec, and a peer under
+        # another uid, through nextest's target runner. The direct id-change
+        # reset is not observed: no site changes an id. The set-id case's
+        # helper is started under the test id (the id change happens
+        # there), takes the controls and checks 0, then execs a set-user-id
+        # copy with no id change of its own. fs.suid_dumpable is set to 2 on
+        # this throwaway runner (its default is 0), so that exec's value is
+        # told apart from the helper's 0 carried over and from an ordinary
+        # exec's 1; the test refuses any other value and never sets it.
+        # The same test then shows the set-user-id copy refusing to be the
+        # helper (its effective uid is root's) before it starts the program
+        # the helper would; one test, so no two preflights run at once. The set-id case is for a disposable
+        # guest, as this runner is, which is its access boundary: its check
+        # that no account, group or thread holds its id is a snapshot taken
+        # before the set-id copy is made.
+        timeout-minutes: 10
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo
+        run: |
+          sudo sysctl -w fs.suid_dumpable=2
+          privileged="unix_nodump::tests::kernel::an_exec_as_another_user_resets_the_attribute_and_disable_dumps_restores_it
+          unix_nodump::tests::kernel::a_set_id_exec_resets_the_attribute_to_suid_dumpable_and_disable_dumps_restores_it
+          linux_peercred::tests::kernel::peer_credentials_name_a_peer_under_another_uid"
+          filter=$(printf 'test(=%s) | ' $privileged)
+          status=0
+          cargo nextest run -p ironafs-os --profile ci --retries 0 --no-tests fail --locked --run-ignored only -E "${filter% | }" > privileged.log 2>&1 || status=$?
+          cat privileged.log
+          test "$status" -eq 0
+          for test in $privileged; do
+            grep -Eq "^ +PASS .* ironafs-os $test\$" privileged.log
+          done
 
   os-linux:
     name: os-linux (${{ matrix.runner }}, ${{ matrix.target }})
@@ -144,7 +220,10 @@ jobs:
     # 24.04 and 26.04. Each lane names the target it proves, the sites
     # check-abi must have proved, and the native tests that must have run;
     # check-abi also checks that $CC is that target's compiler (its
-    # architecture and C library).
+    # architecture and C library). A lane's withheld sites are those whose
+    # qualified constants its headers do not name (ADR 0005, sheet 14): the
+    # crate does not compile them for that target, so the lane checks that
+    # neither their tests nor check-abi's report name them.
     strategy:
       fail-fast: false
       matrix:
@@ -158,6 +237,7 @@ jobs:
             nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
             nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
             cc: musl-gcc
+            withheld: linux-fdpass
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
@@ -167,6 +247,7 @@ jobs:
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
             nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
             cc: musl-gcc
+            withheld: linux-fdpass
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-26.04
             nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
@@ -176,6 +257,7 @@ jobs:
             nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
             nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
             cc: musl-gcc
+            withheld: linux-fdpass
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-26.04-arm
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
@@ -185,19 +267,28 @@ jobs:
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
             nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
             cc: musl-gcc
+            withheld: linux-fdpass
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     permissions:
       contents: read
     env:
       TARGET: ${{ matrix.target }}
-      SITES: linux-clock linux-random
+      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass
+      WITHHELD: ${{ matrix.withheld }}
       NATIVE_TESTS: >-
         linux_clock::tests::read_clock_boot_advances_and_never_goes_back
         linux_clock::tests::read_clock_awake_advances_and_never_goes_back
         linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names
         linux_random::tests::getrandom_reports_a_full_piece_of_at_most_256_bytes
         mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257
+        unix_nodump::tests::kernel::disable_dumps_reads_back_not_dumpable_and_zeroes_both_core_limits
+        linux_dontdump::tests::secret_buffer_new_advises_its_whole_block_through_the_call
+        linux_peercred::tests::kernel::peer_credentials_of_a_socket_pair_name_this_process_s_effective_ids
+        linux_peercred::tests::kernel::peer_credentials_refuse_a_listener_wrapped_as_a_stream
+        linux_peercred::tests::kernel::peer_credentials_refuse_a_reconnected_datagram_socket_of_a_pair
+        linux_fdpass::tests::kernel::one_descriptor_arrives_close_on_exec_and_nothing_else_stays_open
+        linux_fdpass::tests::kernel::three_descriptors_are_truncated_and_what_was_delivered_is_closed
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -232,17 +323,44 @@ jobs:
           cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked > nextest.log 2>&1
           cat nextest.log
           for test in $NATIVE_TESTS; do
-            grep -Eq "PASS .* ironafs-os $test\$" nextest.log
+            module="${test%%::*}"
+            if [[ " $WITHHELD " == *" ${module//_/-} "* ]]; then
+              # `set -e` ignores a negated command, so fail explicitly.
+              if grep -Eq "ironafs-os $module::" nextest.log; then exit 1; fi
+            else
+              grep -Eq "PASS .* ironafs-os $test\$" nextest.log
+            fi
           done
+      - name: Close a pidfd the kernel installs, where it offers SO_PASSPIDFD
+        if: ${{ !contains(matrix.withheld, 'linux-fdpass') }}
+        # Linux 6.5 or later, which every runner of this matrix has; python3
+        # sets the option, since no site of ADR 0005 does.
+        run: |
+          test=linux_fdpass::tests::kernel::a_pidfd_the_kernel_installs_is_closed_and_the_message_refused
+          cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked --run-ignored only -E "test(=$test)" > pidfd.log 2>&1 || { cat pidfd.log; exit 1; }
+          cat pidfd.log
+          grep -Eq "PASS .* ironafs-os $test\$" pidfd.log
+      - name: Prove mem-wipe's stores survive the release profile on the target
+        run: |
+          cargo --locked xtask check-wipe > check-wipe.log
+          cat check-wipe.log
+          grep -q "^$TARGET: passed: " check-wipe.log
+      - name: Lint ironafs-os for the target, its C library's declarations included
+        env:
+          CARGO_BUILD_WARNINGS: deny
+        run: cargo clippy -p ironafs-os --all-targets --target "$TARGET" --locked
       - name: Prove the target's foreign declarations against its C headers
         env:
           CC: ${{ matrix.cc || 'cc' }}
         run: |
           cargo --locked xtask check-abi --target "$TARGET" > check-abi.log
           cat check-abi.log
-          grep -q "^check-abi: $TARGET: " check-abi.log
+          grep -q "^check-abi: $TARGET: the system's C compiler accepted " check-abi.log
           for site in $SITES; do
-            grep -q "$site (" check-abi.log
+            case " $WITHHELD " in
+              *" $site "*) if grep -q "$site" check-abi.log; then exit 1; fi ;;
+              *) grep -q "$site (" check-abi.log ;;
+            esac
           done
       - name: Prove the declaration check catches planted mismatches
         env:
@@ -268,8 +386,10 @@ jobs:
     # point 5.5): ironafs-os built and its tests run on AlmaLinux 8, on
     # each Linux architecture. Each lane proves the target it built and
     # the runtime it ran on, and requires the named clock, random and wipe
-    # tests. The conditional glibc 2.17 artefact is not offered until it is
-    # qualified separately.
+    # tests. The tests run under nextest, as everywhere else: some count
+    # this process's open descriptors, which holds only with a process to
+    # each test (libtest's threads share one). The conditional glibc 2.17
+    # artefact is not offered until it is qualified separately.
     strategy:
       fail-fast: false
       matrix:
@@ -280,10 +400,14 @@ jobs:
             arch: x86_64
             runner: ubuntu-24.04
             image: docker.io/library/almalinux:8@sha256:974135fa35c47f8406ae9f81e8479fe0c372bdd64244a48770848466ceb694ce
+            nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
           - target: aarch64-unknown-linux-gnu
             arch: aarch64
             runner: ubuntu-24.04-arm
             image: docker.io/library/almalinux:8@sha256:34a85f19e05e28243249d45dd3842621741a43b110865ca80575c9b4e083cc29
+            nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -324,13 +448,32 @@ jobs:
           host=$("$HOME/.cargo/bin/rustc" -vV | sed -n 's/^host: //p')
           echo "rustc host: $host"
           test "$host" = "$TARGET"
-      - name: Run ironafs-os's tests on glibc 2.28, real system calls included
+      - name: Install cargo-nextest
+        # The release binaries need glibc 2.27 at most (their symbol
+        # versions), so they run on glibc 2.28.
+        env:
+          ARCHIVE: ${{ matrix.nextest }}
+          ARCHIVE_SHA256: ${{ matrix.nextest_sha256 }}
         run: |
-          "$HOME/.cargo/bin/cargo" test -p ironafs-os --locked --target "$TARGET" > test.log 2>&1
-          cat test.log
-          grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' test.log
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          curl --fail --silent --show-error --location --output "$ARCHIVE" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/$ARCHIVE"
+          printf '%s  %s\n' "$ARCHIVE_SHA256" "$ARCHIVE" | sha256sum -c -
+          tar -xzf "$ARCHIVE"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: Run ironafs-os's tests on glibc 2.28, real system calls included
+        # The log is printed before the status is tested, so a failure shows
+        # its cause.
+        run: |
+          status=0
+          "$HOME/.cargo/bin/cargo" nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked > nextest.log 2>&1 || status=$?
+          cat nextest.log
+          test "$status" -eq 0
           for test in $NATIVE_TESTS; do
-            grep -q "^test $test \.\.\. ok\$" test.log
+            grep -Eq "PASS .* ironafs-os $test\$" nextest.log
           done
 
   miri:
@@ -354,9 +497,10 @@ jobs:
       - name: Run ironafs-os under Miri, host and aarch64 Linux
         # A run that ran nothing, or ignored a test, proves nothing: each
         # must report every test passed and none ignored, and the named
-        # wrapper and wipe tests must be among them. The random site passes
-        # its buffer's exposed address, as the C call needs, so Miri runs
-        # with permissive provenance, which only silences its warning about
+        # wrapper and wipe tests must be among them. Tests that need the
+        # kernel itself (child processes, /proc) are not built under Miri.
+        # The random site passes its buffer's exposed address, as the C call
+        # needs, so Miri runs with permissive provenance, which only silences its warning about
         # that integer-to-pointer cast (the cast is the design, not a bug).
         env:
           MIRIFLAGS: -Zmiri-permissive-provenance
@@ -369,6 +513,18 @@ jobs:
               linux_clock::tests::read_clock_boot_advances_and_never_goes_back \
               linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names \
               linux_random::tests::arguments_pass_the_buffer_address_and_length_and_zeros_each_as_a_long \
+              unix_nodump::tests::disable_dumps_in_this_process_reads_back_not_dumpable \
+              unix_nodump::tests::stand_in::a_failure_of_each_call_is_reported_with_its_errno \
+              linux_peercred::tests::stand_in::a_type_other_than_a_stream_is_refused \
+              fdpass::tests::accept_adopts_and_closes_a_pidfd_and_refuses \
+              linux_dontdump::tests::secret_buffer_new_advises_its_whole_block_through_the_call \
+              linux_peercred::tests::peer_credentials_of_a_socket_pair_name_this_process \
+              linux_fdpass::tests::a_sent_descriptor_arrives_as_a_new_descriptor_for_the_same_socket \
+              fdpass::tests::accept_hands_out_only_the_valid_case_and_never_leaks_across_the_sweep \
+              linux_peercred::tests::stand_in::a_short_and_an_over_long_length_from_the_call_are_refused \
+              linux_dontdump::tests::stand_in::a_failed_exclusion_hands_out_no_buffer \
+              linux_dontdump::tests::stand_in::a_dropped_buffer_is_all_zero_when_its_memory_is_released \
+              linux_fdpass::tests::stand_in::an_interrupted_send_and_receive_are_each_made_again \
               mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257; do
               grep -q "^test $test \.\.\. ok$" "miri-$target.log"
             done

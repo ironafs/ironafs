@@ -65,6 +65,8 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     // The replay itself needs the fuzz crate's nightly and cargo-fuzz; CI's
     // fuzz job runs it. Its judgement is proven here.
     crate::fuzz::run(true, output)?;
+    crate::wipe::run(false, output)?;
+    crate::wipe::run(true, output)?;
 
     check_reuse_result(
         Command::new("reuse").arg("lint").status(),

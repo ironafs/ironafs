@@ -50,7 +50,8 @@
           "constants": [
             "CLOCK_MONOTONIC",
             "CLOCK_BOOTTIME"
-          ]
+          ],
+          "aliases": []
         },
         "stand_in": {
           "functions": 1,
@@ -203,7 +204,8 @@
             "EPERM",
             "ENOSYS",
             "SYS_getrandom"
-          ]
+          ],
+          "aliases": []
         },
         "stand_in": {
           "functions": 1,
@@ -257,11 +259,90 @@
       "blocks": "one per call: one on macOS (`setrlimit`), three on Linux (`setrlimit`, and `prctl` to set and to read back)",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved",
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented",
         "aarch64-apple-darwin": "approved"
+      },
+      "code": {
+        "module": "unix_nodump",
+        "headers": [
+          "sys/resource.h",
+          "sys/prctl.h"
+        ],
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "setrlimit",
+                "safe": false
+              },
+              {
+                "name": "prctl",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "abi::setrlimit",
+            "arguments": [
+              "resource",
+              "pointer"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::prctl",
+            "arguments": [
+              "option",
+              "NOT_DUMPABLE",
+              "UNUSED",
+              "UNUSED",
+              "UNUSED"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::prctl",
+            "arguments": [
+              "option",
+              "UNUSED",
+              "UNUSED",
+              "UNUSED",
+              "UNUSED"
+            ]
+          }
+        ],
+        "impls": 0,
+        "c_facts": {
+          "structs": [
+            "rlimit"
+          ],
+          "constants": [
+            "RLIMIT_CORE",
+            "PR_GET_DUMPABLE",
+            "PR_SET_DUMPABLE"
+          ],
+          "aliases": [
+            "rlim_t"
+          ]
+        },
+        "stand_in": {
+          "functions": 2,
+          "blocks": [
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "rlim"
+              ]
+            }
+          ]
+        }
       }
     },
     {
@@ -274,42 +355,334 @@
       "blocks": "one",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved"
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented"
+      },
+      "code": {
+        "module": "linux_dontdump",
+        "headers": [
+          "sys/mman.h"
+        ],
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "madvise",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "abi::madvise",
+            "arguments": [
+              "address",
+              "length",
+              "advice"
+            ]
+          }
+        ],
+        "impls": 0,
+        "c_facts": {
+          "structs": [],
+          "constants": [
+            "MADV_DONTDUMP"
+          ],
+          "aliases": []
+        },
+        "stand_in": {
+          "functions": 1,
+          "blocks": [
+            {
+              "operation": "core::slice::from_raw_parts",
+              "arguments": [
+                "bytes",
+                "length"
+              ]
+            }
+          ]
+        }
       }
     },
     {
       "row": 13,
       "id": "linux-peercred",
       "targets": "Linux",
-      "foreign_item": "`int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_SOCKET` and `SO_PEERCRED` only, on a borrowed `UnixStream`, into a `struct ucred`",
+      "foreign_item": "`int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_SOCKET` and `SO_TYPE` (into an `int`, which must be `SOCK_STREAM`), then `SOL_SOCKET` and `SO_PEERCRED` (into a `struct ucred`), only, on a borrowed `UnixStream`",
       "linked_from": "the C library",
       "declared": "`unsafe fn`",
-      "blocks": "one",
+      "blocks": "two (one per option)",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved"
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented"
+      },
+      "code": {
+        "module": "linux_peercred",
+        "headers": [
+          "sys/socket.h"
+        ],
+        "defines": [
+          "_GNU_SOURCE"
+        ],
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "getsockopt",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "abi::getsockopt",
+            "arguments": [
+              "descriptor",
+              "level",
+              "option",
+              "value",
+              "size"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::getsockopt",
+            "arguments": [
+              "descriptor",
+              "level",
+              "option",
+              "value",
+              "size"
+            ]
+          }
+        ],
+        "impls": 0,
+        "c_facts": {
+          "structs": [
+            "ucred"
+          ],
+          "constants": [
+            "SOL_SOCKET",
+            "SO_PEERCRED",
+            "SO_TYPE",
+            "SOCK_STREAM"
+          ],
+          "aliases": [
+            "pid_t",
+            "uid_t",
+            "gid_t",
+            "socklen_t"
+          ]
+        },
+        "stand_in": {
+          "functions": 1,
+          "blocks": [
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "optlen"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "value",
+                "credentials"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "optlen",
+                "length"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "value",
+                "kind"
+              ]
+            }
+          ]
+        }
       }
     },
     {
       "row": 14,
       "id": "linux-fdpass",
-      "targets": "Linux",
-      "foreign_item": "`ssize_t sendmsg(int, const struct msghdr *, int)` and `ssize_t recvmsg(int, struct msghdr *, int)` carrying exactly one `SCM_RIGHTS` descriptor and one data byte, with `MSG_NOSIGNAL` on send and `MSG_CMSG_CLOEXEC` on receive; each received descriptor becomes an `OwnedFd` at once (L7, point 1)",
+      "targets": "Linux, glibc (withheld on musl, sheet 14)",
+      "foreign_item": "`ssize_t sendmsg(int, const struct msghdr *, int)` and `ssize_t recvmsg(int, struct msghdr *, int)` carrying exactly one `SCM_RIGHTS` descriptor and one data byte, with `MSG_NOSIGNAL` on send and `MSG_CMSG_CLOEXEC` on receive; each received descriptor becomes an `OwnedFd` at once (L7, point 1), a pidfd the kernel installed with `SCM_PIDFD` included, which is then closed (sheet 14)",
       "linked_from": "the C library",
       "declared": "`unsafe fn`",
       "blocks": "one per call (two), and one that adopts a received descriptor (`OwnedFd::from_raw_fd`)",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
         "x86_64-unknown-linux-musl": "approved",
         "aarch64-unknown-linux-musl": "approved"
+      },
+      "code": {
+        "module": "linux_fdpass",
+        "headers": [
+          "sys/socket.h",
+          "sys/uio.h"
+        ],
+        "defines": [
+          "_GNU_SOURCE"
+        ],
+        "expressions": {
+          "CMSG_LEN_ONE": "CMSG_LEN(sizeof(int))",
+          "CMSG_LEN_TWO": "CMSG_LEN(2 * sizeof(int))",
+          "CMSG_SPACE_ONE": "CMSG_SPACE(sizeof(int))"
+        },
+        "qualified": [
+          "SCM_PIDFD"
+        ],
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "sendmsg",
+                "safe": false
+              },
+              {
+                "name": "recvmsg",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "abi::sendmsg",
+            "arguments": [
+              "descriptor",
+              "pointer",
+              "flags"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::recvmsg",
+            "arguments": [
+              "descriptor",
+              "pointer",
+              "flags"
+            ]
+          },
+          {
+            "kind": "adopt",
+            "operation": "OwnedFd::from_raw_fd",
+            "arguments": [
+              "descriptor"
+            ]
+          }
+        ],
+        "impls": 0,
+        "c_facts": {
+          "structs": [
+            "iovec",
+            "msghdr",
+            "cmsghdr"
+          ],
+          "constants": [
+            "SOL_SOCKET",
+            "SCM_RIGHTS",
+            "SCM_PIDFD",
+            "MSG_NOSIGNAL",
+            "MSG_CMSG_CLOEXEC",
+            "MSG_CTRUNC",
+            "CMSG_LEN_ONE",
+            "CMSG_LEN_TWO",
+            "CMSG_SPACE_ONE"
+          ],
+          "aliases": [
+            "socklen_t"
+          ]
+        },
+        "stand_in": {
+          "functions": 2,
+          "blocks": [
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "msg"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "buffers"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "data"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "control"
+              ]
+            },
+            {
+              "operation": "BorrowedFd::borrow_raw",
+              "arguments": [
+                "descriptor"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "msg"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "buffers"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "data",
+                "byte"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "control",
+                "written"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "msg",
+                "message"
+              ]
+            }
+          ]
+        }
       }
     },
     {
@@ -480,7 +853,8 @@
         "impls": 0,
         "c_facts": {
           "structs": [],
-          "constants": []
+          "constants": [],
+          "aliases": []
         },
         "stand_in": null
       }

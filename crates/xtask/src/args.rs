@@ -38,6 +38,9 @@ pub(super) enum Task {
         self_test: bool,
         target: Option<String>,
     },
+    CheckWipe {
+        self_test: bool,
+    },
     Fuzz {
         self_test: bool,
     },
@@ -105,7 +108,7 @@ impl fmt::Display for UsageError {
         }?;
         write!(
             formatter,
-            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-fuzz-deny [--self-test] | check-grants [--self-test] | check-pure [--self-test] | check-seams [--self-test] | check-os [--self-test] | check-abi [--self-test | --target <triple>] | fuzz [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file] | cell pin"
+            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-fuzz-deny [--self-test] | check-grants [--self-test] | check-pure [--self-test] | check-seams [--self-test] | check-os [--self-test] | check-abi [--self-test | --target <triple>] | check-wipe [--self-test] | fuzz [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file] | cell pin"
         )
     }
 }
@@ -139,6 +142,9 @@ pub(super) fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Tas
         },
         Some("check-abi") => parse_check_abi(&mut arguments)?,
         Some("check-seams") => Task::CheckSeams {
+            self_test: parse_self_test(&mut arguments)?,
+        },
+        Some("check-wipe") => Task::CheckWipe {
             self_test: parse_self_test(&mut arguments)?,
         },
         Some("fuzz") => Task::Fuzz {

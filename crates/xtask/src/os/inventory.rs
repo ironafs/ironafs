@@ -75,6 +75,14 @@ impl Block {
     pub(crate) fn callee(&self) -> &str {
         self.operation.rsplit("::").next().unwrap_or_default()
     }
+
+    /// Whether the block is the one approved write: `core`'s volatile
+    /// write, by its whole path, of zero (sheet 24).
+    fn zero_write(&self) -> bool {
+        self.kind == BlockKind::Write
+            && WRITES.contains(&self.operation.as_str())
+            && self.arguments.last().map(String::as_str) == Some("0")
+    }
 }
 
 /// One extern block of an implemented row: its `#[link]` arguments as
@@ -94,15 +102,28 @@ pub(crate) struct Code {
     /// The C headers the row's declarations are written from, for the ABI
     /// check (ADR 0005, point 5.6).
     pub(crate) headers: Vec<String>,
+    /// The feature macros the ABI check defines before the headers.
+    pub(crate) defines: Vec<String>,
+    /// Constants the ABI check compares with a C expression rather than
+    /// with a C name: (constant, expression), for macros such as
+    /// `CMSG_LEN(sizeof(int))`.
+    pub(crate) expressions: Vec<(String, String)>,
+    /// Constants a target's C headers may not name (`SCM_PIDFD`, which
+    /// musl and older glibc lack): on a target whose headers do not name
+    /// one, `check-abi` withholds the row, as MISSING evidence, rather than
+    /// prove it from another target's value (ADR 0005, sheet 14).
+    pub(crate) qualified: Vec<String>,
     pub(crate) extern_blocks: Vec<ExternBlock>,
     pub(crate) blocks: Vec<Block>,
     pub(crate) impls: usize,
     /// The C facts the row's declaration files must state, by name, beside
-    /// its functions: its structs and its constants. `check-abi` requires
-    /// each among the declarations the target compiles, so a fact moved out
-    /// of the module cannot drop out of the proof unseen.
+    /// its functions: its structs, its constants and its type aliases (C
+    /// typedefs). `check-abi` requires each among the declarations the
+    /// target compiles, and each of those among these, so a fact moved out
+    /// of the module, or added to it, cannot escape the record unseen.
     pub(crate) structs: Vec<String>,
     pub(crate) constants: Vec<String>,
+    pub(crate) aliases: Vec<String>,
     /// The row's Miri stand-in (ADR 0005, point 6.5), if it has one: how
     /// many `unsafe fn`s it defines and its `unsafe` blocks, each a call as
     /// written with its arguments. `check-os` holds `stand_in.rs` to it.
@@ -315,17 +336,116 @@ fn parse_code(code: &Value) -> Result<Code, String> {
             .collect()
     };
     let stand_in = parse_stand_in(code)?;
+    let constants = names("constants")?;
+    let expressions = expressions(code)?;
     Ok(Code {
         module: text(code, "module")?.to_owned(),
         headers: strings("headers")?,
+        defines: defines(code)?,
+        qualified: qualified(code, &constants, &expressions)?,
+        expressions,
         extern_blocks,
         blocks,
         impls,
         structs: names("structs")?,
-        constants: names("constants")?,
+        constants,
+        aliases: names("aliases")?,
         stand_in,
     })
 }
+
+/// The feature macros a row's ABI check defines (`defines`, optional):
+/// only those of `FEATURE_MACROS`, since each is written into the C file.
+fn defines(code: &Value) -> Result<Vec<String>, String> {
+    let Some(defines) = code.get("defines") else {
+        return Ok(Vec::new());
+    };
+    defines
+        .as_array()
+        .ok_or("`defines` is not an array")?
+        .iter()
+        .map(|value| match value.as_str() {
+            Some(name) if FEATURE_MACROS.contains(&name) => Ok(name.to_owned()),
+            _ => Err(format!(
+                "`defines` holds {value:?}, which is not a feature macro the ABI check accepts \
+                 ({})",
+                FEATURE_MACROS.join(", ")
+            )),
+        })
+        .collect()
+}
+
+/// The constants a target's headers may not name (`qualified`, optional):
+/// each one of the row's recorded constants, and none mapped to an
+/// expression, so `check-abi` compares each with its C name, the name the
+/// probe found.
+fn qualified(
+    code: &Value,
+    constants: &[String],
+    expressions: &[(String, String)],
+) -> Result<Vec<String>, String> {
+    let Some(qualified) = code.get("qualified") else {
+        return Ok(Vec::new());
+    };
+    qualified
+        .as_array()
+        .ok_or("`qualified` is not an array")?
+        .iter()
+        .map(|value| match value.as_str() {
+            Some(name) if expressions.iter().any(|(mapped, _)| mapped == name) => Err(format!(
+                "`qualified` holds {name:?}, which `expressions` maps to a C expression: a \
+                 qualified constant is compared with its own C name"
+            )),
+            Some(name) if constants.iter().any(|constant| constant == name) => Ok(name.to_owned()),
+            _ => Err(format!(
+                "`qualified` holds {value:?}, which is not one of the row's constants"
+            )),
+        })
+        .collect()
+}
+
+/// The C expressions a row's ABI check compares constants with
+/// (`expressions`, optional): an object from a constant's name to an
+/// expression of names, numbers, spaces, `*`, `+` and parentheses, since
+/// each is written into the C file, naming at least one C name: a literal
+/// alone (`4`) would compare the constant with itself and prove nothing.
+fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
+    let Some(expressions) = code.get("expressions") else {
+        return Ok(Vec::new());
+    };
+    let Value::Object(members) = expressions else {
+        return Err("`expressions` is not an object".to_owned());
+    };
+    members
+        .iter()
+        .map(|(name, value)| {
+            let name_ok = !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+            let expression = value.as_str().unwrap_or_default();
+            let names_c = expression
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|word| word.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'));
+            let expression_ok = names_c
+                && expression
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_ ()*+".contains(&byte));
+            if name_ok && expression_ok {
+                Ok((name.clone(), expression.to_owned()))
+            } else {
+                Err(format!(
+                    "`expressions` maps {name:?} to {value:?}: a constant's name must map to an \
+                     expression of names, numbers, spaces, `*`, `+` and parentheses that names \
+                     at least one C name"
+                ))
+            }
+        })
+        .collect()
+}
+
+/// The feature macros a row may ask the ABI check to define.
+const FEATURE_MACROS: &[&str] = &["_GNU_SOURCE"];
 
 /// A row's recorded Miri stand-in, if any.
 fn parse_stand_in(code: &Value) -> Result<Option<StandIn>, String> {
@@ -451,6 +571,26 @@ pub(crate) fn problems(inventory: &Inventory, adr: &str) -> Vec<String> {
     found
 }
 
+/// Each musl target and the glibc target of its architecture.
+const MUSL_GNU: [(&str, &str); 2] = [
+    ("x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"),
+    ("aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"),
+];
+
+/// Whether a row is withheld on musl (ADR 0005, sheet 14): it has
+/// qualified constants, and is implemented on each glibc target and only
+/// approved on each musl one. The crate root's glibc-only gate then leaves
+/// its module out of a musl build (`check-os` holds the two equal).
+pub(crate) fn withheld_on_musl(row: &Row) -> bool {
+    row.code
+        .as_ref()
+        .is_some_and(|code| !code.qualified.is_empty())
+        && MUSL_GNU.iter().all(|(musl, gnu)| {
+            row.status.get(*gnu) == Some(&Status::Implemented)
+                && row.status.get(*musl) == Some(&Status::Approved)
+        })
+}
+
 /// One row's departures from the copy's rules.
 fn row_problems(row: &Row) -> Vec<String> {
     let mut found = Vec::new();
@@ -462,13 +602,12 @@ fn row_problems(row: &Row) -> Vec<String> {
             ));
         }
     }
-    for (musl, gnu) in [
-        ("x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"),
-        ("aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"),
-    ] {
-        if row.status.get(musl) != row.status.get(gnu) {
+    for (musl, gnu) in MUSL_GNU {
+        if row.status.get(musl) != row.status.get(gnu) && !withheld_on_musl(row) {
             found.push(format!(
-                "{id}: {musl} and {gnu} differ; a musl build compiles the glibc build's code"
+                "{id}: {musl} and {gnu} differ; a musl build compiles the glibc build's code, \
+                 unless the row is implemented on glibc and only approved on musl because its \
+                 qualified constants withhold it there"
             ));
         }
     }
@@ -510,10 +649,7 @@ fn row_problems(row: &Row) -> Vec<String> {
                 BlockKind::Call => declared(callee),
                 BlockKind::Read => READS.contains(&callee),
                 BlockKind::Adopt => ADOPTIONS.contains(&callee),
-                BlockKind::Write => {
-                    WRITES.contains(&block.operation.as_str())
-                        && block.arguments.last().map(String::as_str) == Some("0")
-                }
+                BlockKind::Write => block.zero_write(),
             };
             if !fits {
                 found.push(format!(
@@ -609,11 +745,7 @@ fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
     // A row whose foreign item is the volatile write holds that write, of
     // zero, as a write block (sheet 24).
     let volatile = foreign.contains("write_volatile");
-    let writes = code.blocks.iter().any(|block| {
-        block.kind == BlockKind::Write
-            && WRITES.contains(&block.operation.as_str())
-            && block.arguments.last().map(String::as_str) == Some("0")
-    });
+    let writes = code.blocks.iter().any(Block::zero_write);
     if volatile && !writes {
         found.push(format!(
             "{id}: the ADR's row is the volatile zero write, but no write block of zero is recorded"

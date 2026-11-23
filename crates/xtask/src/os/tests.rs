@@ -34,6 +34,9 @@ fn clock_code() -> Code {
     Code {
         module: "linux_clock".into(),
         headers: vec!["time.h".into()],
+        defines: Vec::new(),
+        expressions: Vec::new(),
+        qualified: Vec::new(),
         extern_blocks: vec![ExternBlock {
             link: None,
             items: vec![ExternItem {
@@ -49,6 +52,7 @@ fn clock_code() -> Code {
         impls: 0,
         structs: vec!["timespec".into()],
         constants: Vec::new(),
+        aliases: Vec::new(),
         stand_in: None,
     }
 }
@@ -71,7 +75,10 @@ const CLOCK: &str = "#[expect(unsafe_code, reason = \"linux-clock\")]\n\
 fn file(path: &str, source: &str) -> CrateFile {
     CrateFile {
         path: PathBuf::from(path),
-        scan: scan(&tokens_with_strings(source).unwrap(), false),
+        scan: scan(
+            &tokens_with_strings(source).unwrap(),
+            super::scan::Place::Other,
+        ),
     }
 }
 

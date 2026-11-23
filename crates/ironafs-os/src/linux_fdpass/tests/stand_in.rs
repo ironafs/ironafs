@@ -1,0 +1,132 @@
+// SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! The wrappers' retries and failures, driven through `send_fd` and
+//! `receive_fd` themselves with the calls' Miri stand-ins answering as
+//! planned: a call interrupted by a signal is made again, and a failure is
+//! returned with its errno. A wrapper that did not retry, or that dropped
+//! the errno, fails here. Built only under Miri, where the stand-ins
+//! replace the calls.
+
+use std::io;
+use std::os::fd::AsFd;
+use std::os::unix::net::UnixStream;
+
+use super::super::abi::stand_in::{Plan, calls, plan};
+use super::super::abi::{SCM_RIGHTS, SOL_SOCKET, cmsghdr, iovec, msghdr};
+use super::super::{Control, SPACE, receive_fd, receive_message, send_fd, send_message};
+use crate::fdpass::FdPassError;
+
+/// `EPIPE` and `ECONNRESET`.
+const EPIPE: i32 = 32;
+const ECONNRESET: i32 = 104;
+
+#[test]
+fn an_interrupted_send_and_receive_are_each_made_again() {
+    let (sender, receiver) = UnixStream::pair().unwrap();
+    let (passed, _far) = UnixStream::pair().unwrap();
+    let before = calls();
+    plan(Plan::Interrupt(2));
+    send_fd(&sender, passed.as_fd()).unwrap();
+    assert_eq!(calls() - before, 3);
+    let before = calls();
+    plan(Plan::Interrupt(2));
+    receive_fd(&receiver).unwrap();
+    assert_eq!(calls() - before, 3);
+}
+
+#[test]
+fn a_failed_send_is_returned_with_its_errno_and_not_made_again() {
+    let (sender, _receiver) = UnixStream::pair().unwrap();
+    let (passed, _far) = UnixStream::pair().unwrap();
+    let before = calls();
+    plan(Plan::Fail(EPIPE));
+    match send_fd(&sender, passed.as_fd()) {
+        Err(FdPassError::Send(error)) => assert_eq!(error.raw_os_error(), Some(EPIPE)),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(calls() - before, 1);
+}
+
+#[test]
+fn a_failed_receive_is_returned_with_its_errno() {
+    let (_sender, receiver) = UnixStream::pair().unwrap();
+    plan(Plan::Fail(ECONNRESET));
+    match receive_fd(&receiver) {
+        Err(FdPassError::Receive(error)) => assert_eq!(error.raw_os_error(), Some(ECONNRESET)),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// `EINVAL`.
+const EINVAL: i32 = 22;
+
+#[test]
+fn a_malformed_message_after_an_interruption_fails_with_einval_not_eintr() {
+    // A stand-in that left the last errno in place would answer EINTR, and
+    // the wrapper's retry would never end.
+    let (sender, _receiver) = UnixStream::pair().unwrap();
+    let mut byte = 1_u8;
+    let mut buffer = iovec {
+        iov_base: (&raw mut byte).cast(),
+        iov_len: 1,
+    };
+    let message = msghdr::new(&raw mut buffer, core::ptr::null_mut(), 0).unwrap();
+    plan(Plan::Interrupt(1));
+    let first = send_message(sender.as_fd(), &message).unwrap_err();
+    assert_eq!(first.kind(), io::ErrorKind::Interrupted);
+    let second = send_message(sender.as_fd(), &message).unwrap_err();
+    assert_eq!(second.raw_os_error(), Some(EINVAL));
+}
+
+#[test]
+fn a_header_of_no_descriptor_count_after_an_interruption_fails_with_einval() {
+    // The same for a control message whose header length is neither one
+    // descriptor's nor two's.
+    let (sender, _receiver) = UnixStream::pair().unwrap();
+    let mut byte = 1_u8;
+    let mut buffer = iovec {
+        iov_base: (&raw mut byte).cast(),
+        iov_len: 1,
+    };
+    let mut control = Control {
+        header: cmsghdr::new(16, SOL_SOCKET, SCM_RIGHTS).unwrap(),
+        descriptors: [0, 0],
+    };
+    let message = msghdr::new(&raw mut buffer, (&raw mut control).cast(), SPACE).unwrap();
+    plan(Plan::Interrupt(1));
+    let first = send_message(sender.as_fd(), &message).unwrap_err();
+    assert_eq!(first.kind(), io::ErrorKind::Interrupted);
+    let second = send_message(sender.as_fd(), &message).unwrap_err();
+    assert_eq!(second.raw_os_error(), Some(EINVAL));
+}
+
+/// A receive whose control buffer is shorter than one descriptor's space.
+fn short_receive(receiver: &UnixStream) -> io::Error {
+    let mut byte = 0_u8;
+    let mut buffer = iovec {
+        iov_base: (&raw mut byte).cast(),
+        iov_len: 1,
+    };
+    let mut control = Control {
+        header: cmsghdr::new(0, 0, 0).unwrap(),
+        descriptors: [0, 0],
+    };
+    let mut message = msghdr::new(&raw mut buffer, (&raw mut control).cast(), SPACE - 1).unwrap();
+    receive_message(receiver.as_fd(), &mut message).unwrap_err()
+}
+
+#[test]
+fn a_malformed_receive_fails_with_einval_on_an_empty_stream() {
+    let (_sender, receiver) = UnixStream::pair().unwrap();
+    assert_eq!(short_receive(&receiver).raw_os_error(), Some(EINVAL));
+}
+
+#[test]
+fn a_malformed_receive_fails_with_einval_and_leaves_the_queued_message() {
+    let (sender, receiver) = UnixStream::pair().unwrap();
+    let (passed, _far) = UnixStream::pair().unwrap();
+    send_fd(&sender, passed.as_fd()).unwrap();
+    assert_eq!(short_receive(&receiver).raw_os_error(), Some(EINVAL));
+    receive_fd(&receiver).unwrap();
+}

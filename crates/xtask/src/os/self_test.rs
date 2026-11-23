@@ -19,8 +19,8 @@ use super::inventory::Inventory;
 use super::pin::{self, Pinned};
 use super::scan::{self, BLOCK_BODY, CFG, CORE, TARGET_ENV};
 use super::{
-    ALLOWLIST, CrateFile, Violation, compare, gate_violations, guard_violations,
-    outside_violations, rust_files,
+    ALLOWLIST, CrateFile, GLIBC_IMPORT, GLIBC_ONLY, GLIBC_OR_TEST_MODULE, Violation, compare,
+    gate_violations, guard_violations, outside_violations, rust_files,
 };
 use crate::pure::toolchain_targets;
 use crate::rust_source::tokens_with_strings;
@@ -205,12 +205,12 @@ const CASES: &[Case] = &[
     Case {
         name: "code for a row that is only approved",
         edits: &[add(
-            "src/linux_peercred.rs",
-            "#[expect(unsafe_code, reason = \"linux-peercred\")]\n\
-             unsafe extern \"C\" { fn getsockopt(fd: c_int) -> c_int; }\n",
+            "src/linux_mount.rs",
+            "#[expect(unsafe_code, reason = \"linux-mount\")]\n\
+             unsafe extern \"C\" { fn mount(source: c_int) -> c_int; }\n",
             LINUX,
         )],
-        expect: &[|found| mismatch(found, "linux-peercred")],
+        expect: &[|found| mismatch(found, "linux-mount")],
     },
     Case {
         name: "an item of an implemented row removed",
@@ -287,6 +287,45 @@ const CASES: &[Case] = &[
         expect: &[|found| rule(found, CFG)],
     },
     Case {
+        name: "a site in a C library's declaration file",
+        edits: &[replace(
+            "src/linux_fdpass/abi/gnu.rs",
+            "impl cmsghdr {",
+            "fn planted() {\n    #[expect(unsafe_code, reason = \"linux-fdpass\")]\n    \
+             // SAFETY: planted.\n    let () = unsafe { core::hint::unreachable_unchecked() };\n}\n\n\
+             impl cmsghdr {",
+        )],
+        expect: &[
+            |found| rule(found, super::scan::LIBRARY_SITE),
+            // The library file now holds a site, so its own cfg attributes
+            // are refused too, and the glibc build's sites differ.
+            |found| rule(found, CFG),
+            |found| mismatch(found, "linux-fdpass"),
+        ],
+    },
+    Case {
+        name: "a site in a file under a C library's declaration directory",
+        edits: &[add(
+            "src/linux_fdpass/abi/gnu/planted.rs",
+            "fn planted() {\n    #[expect(unsafe_code, reason = \"linux-fdpass\")]\n    \
+             // SAFETY: planted.\n    let () = unsafe { core::hint::unreachable_unchecked() };\n}\n",
+            LINUX,
+        )],
+        expect: &[
+            |found| rule(found, super::scan::LIBRARY_SITE),
+            |found| mismatch(found, "linux-fdpass"),
+        ],
+    },
+    Case {
+        name: "a target_env gate in an abi.rs on a module not named for its library",
+        edits: &[replace(
+            "src/linux_fdpass/abi.rs",
+            "#[cfg(target_env = \"musl\")]\nmod musl;",
+            "#[cfg(target_env = \"musl\")]\nmod gnu;",
+        )],
+        expect: &[|found| rule(found, TARGET_ENV)],
+    },
+    Case {
         name: "target_env outside the crate root's allowlist",
         edits: &[replace(
             "src/linux_random/number.rs",
@@ -294,6 +333,57 @@ const CASES: &[Case] = &[
             "#[cfg(target_arch = \"aarch64\")]\nmod aarch64;\n#[cfg(target_env = \"musl\")]\nmod musl;",
         )],
         expect: &[|found| rule(found, TARGET_ENV)],
+    },
+    Case {
+        name: "a row withheld on musl left in the musl build",
+        edits: &[replace(
+            "src/lib.rs",
+            "#[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\nmod linux_fdpass;",
+            "#[cfg(target_os = \"linux\")]\nmod linux_fdpass;",
+        )],
+        // Its import is still gated glibc-only, now from a module that is not.
+        expect: &[
+            |found| rule(found, GLIBC_ONLY),
+            |found| rule(found, GLIBC_IMPORT),
+        ],
+    },
+    Case {
+        name: "a row implemented on musl left out of the musl build",
+        edits: &[replace(
+            "src/lib.rs",
+            "#[cfg(target_os = \"linux\")]\nmod linux_peercred;",
+            "#[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\nmod linux_peercred;",
+        )],
+        expect: &[|found| rule(found, GLIBC_ONLY)],
+    },
+    Case {
+        name: "a row's module behind the glibc-or-test gate",
+        edits: &[replace(
+            "src/lib.rs",
+            "#[cfg(target_os = \"linux\")]\nmod linux_peercred;",
+            "#[cfg(any(test, all(target_os = \"linux\", target_env = \"gnu\")))]\nmod linux_peercred;",
+        )],
+        expect: &[|found| rule(found, GLIBC_OR_TEST_MODULE)],
+    },
+    Case {
+        name: "a glibc-only import from a module a musl build compiles",
+        edits: &[replace(
+            "src/lib.rs",
+            "#[cfg(target_os = \"linux\")]\npub use linux_peercred::peer_credentials;",
+            "#[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\n\
+             pub use linux_peercred::peer_credentials;",
+        )],
+        expect: &[|found| rule(found, GLIBC_IMPORT)],
+    },
+    Case {
+        name: "a glibc-only import from a module behind the glibc-or-test gate",
+        edits: &[replace(
+            "src/lib.rs",
+            "#[cfg(any(test, all(target_os = \"linux\", target_env = \"gnu\")))]\n\
+             pub use fdpass::FdPassError;",
+            "#[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\npub use fdpass::FdPassError;",
+        )],
+        expect: &[|found| rule(found, GLIBC_IMPORT)],
     },
 ];
 
@@ -1193,10 +1283,10 @@ fn check_edited(
             case: "reading a planted file",
             found: vec![error.to_string()],
         })?;
-        let root = path == Path::new("src/lib.rs");
+        let place = scan::place_of(&path);
         files.push(CrateFile {
             path,
-            scan: scan::scan(&tokens, root),
+            scan: scan::scan(&tokens, place),
         });
     }
     Ok(compare(inventory, &files, &compiled))
