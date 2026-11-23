@@ -178,7 +178,7 @@ fn run_task(
             abi::run(self_test, target.as_deref(), output)
         }
         args::Task::CheckSeams { self_test } => seams::run(self_test, output),
-        args::Task::CheckWipe => wipe::run(output),
+        args::Task::CheckWipe { self_test } => wipe::run(self_test, output),
         args::Task::InstallHook { force } => hooks::install(force, output),
         args::Task::UninstallHook => hooks::uninstall(),
         args::Task::Trailers(mode) => trailers::run(mode, output),

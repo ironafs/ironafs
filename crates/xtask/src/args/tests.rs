@@ -196,7 +196,11 @@ fn parse_routes_check_abi_with_and_without_a_target() {
                 target: Some("aarch64-unknown-linux-musl".into()),
             },
         ),
-        (&["check-wipe"][..], Task::CheckWipe),
+        (&["check-wipe"][..], Task::CheckWipe { self_test: false }),
+        (
+            &["check-wipe", "--self-test"][..],
+            Task::CheckWipe { self_test: true },
+        ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Ok(task));
     }

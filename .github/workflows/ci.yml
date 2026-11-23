@@ -139,6 +139,8 @@ jobs:
           for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
             grep -q "^$target: passed: " check-wipe.log
           done
+      - name: Prove the mem-wipe gate catches planted regressions
+        run: cargo --locked xtask check-wipe --self-test
       - name: Run tests
         run: cargo nextest run --workspace --profile ci --retries 0 --no-tests fail --locked
       - name: Run doc-tests

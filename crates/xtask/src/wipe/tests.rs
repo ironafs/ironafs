@@ -180,3 +180,30 @@ fn profile_departures_name_an_option_the_copied_table_dropped() {
     assert_eq!(profile_departures(&shipped, &dropped).len(), 2);
     assert_eq!(profile_departures("", &same).len(), 1);
 }
+
+#[test]
+fn every_planted_case_changes_the_clean_harness_or_its_profile() {
+    let profile = "[profile.release]\noverflow-checks = true\n";
+    let cases = super::self_test::cases(profile);
+    assert_eq!(cases.len(), 4);
+    for case in cases {
+        assert!(
+            (case.source == super::HARNESS_SOURCE) != (case.profile == profile),
+            "{} plants nothing, or in both the source and the profile",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn a_plant_counts_only_with_a_failure_saying_it_on_every_target() {
+    use super::self_test::as_planted;
+    let targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"];
+    let both = [
+        "x86_64-unknown-linux-gnu: `wiped_dead` has 0 zero byte stores".to_owned(),
+        "aarch64-unknown-linux-gnu: `wiped_dead` has 0 zero byte stores".to_owned(),
+    ];
+    assert!(as_planted(&both, &targets, "zero byte stores"));
+    assert!(!as_planted(&both[..1], &targets, "zero byte stores"));
+    assert!(!as_planted(&both, &targets, "refers to ironafs-os"));
+}
