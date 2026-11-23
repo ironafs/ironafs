@@ -64,7 +64,7 @@ review class.
 | Kind | Describes | Examples |
 |---|---|---|
 | **protocol** | Bytes and exchanges with a peer IronAFS does not control | Rx packets, XDR, an RPC interface, callbacks, SMB messages |
-| **format** | Bytes IronAFS itself defines and stores or sends | A state directory record, a cache format, the local IPC messages |
+| **format** | Bytes IronAFS itself defines: those it stores or sends, and those it only reads, written by people or produced by another system | A state directory record, a cache format, the local IPC messages, a configuration file |
 | **behaviour** | What a component does, where no byte layout is the point | An ordering of events, a state machine, a layer's handling of a case |
 | **procedure** | Steps a person or a package follows | Packaging, key rotation, a restore |
 
