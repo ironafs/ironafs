@@ -2491,56 +2491,74 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
   - Evidence: the first `ironafs-os` change (PR #118) found that on
     the pinned compiler six built-in targets have exactly the cfg set
     of a listed one, so the `compile_error!` guard cannot refuse them,
-    as point 5.3 requires; the crate's comments read point 1.4 as
-    forbidding the build script that could. Point 1.4 forbids
-    dependencies and point 1.1 only a build script that compiles or
-    runs foreign code, so neither forbids the gate. The owner chose
-    the gate over stating a residual on 2026-11-22 (decision comment
-    on PR #118).
-  - Sweep: the repository at `origin/main` was searched for "no build
-    script", "point 1.4", "compile_error", "build.rs", "build script",
-    "5.3" and "0005"; the open branches of PRs #118, #132, #136 and
-    #143 for the same.
-    - On `main`: no file states the superseded rule. The "no build
-      script" hits are about pure crates (`ironafs-crypto`,
-      `ironafs-time`, `ironafs-ipc` in `docs/specs/local-ipc.md`, and
-      `crates/xtask/src/pure.rs`), whose rule is ADR 0004, C4, point
-      1, unchanged. Coding standards rules 5, 20 and 21, `AGENTS.md`,
-      `docs/workflow.md` and the skills were read: none says this
-      crate has no build script. The `add-dependency` skill puts each
-      build script in `deny.toml`'s `[bans.build]` allowlist, which
-      covers workspace crates; that entry comes with the follow-up
-      code, as Consequences say. Unchanged.
-    - On the branches of PRs #118, #132, #136 and #143 (the same
-      inherited files): `crates/ironafs-os/Cargo.toml` ("no build
-      script (ADR 0005, point 1.4)") and `crates/ironafs-os/src/lib.rs`
-      (the cfg-equal targets stated as a limit, citing point 1.4) are
-      corrected by the follow-up change; `crates/xtask/src/os/
-      allowlist.rs` (the same reading) gains the check of point 5.3
-      there. `crates/xtask/src/deps.rs` cites point 1.4 for
-      dependencies only, which is unchanged. Recorded as follow-ups
-      for those pull requests; their branches are not edited here.
-    - The rule binds the maintainer's session and contributors and
-      their agents, who build and review the crate; no bot acts on it
-      (Dependabot proposes no build script, and CI runs the check).
+    as point 5.3 requires (open item O3 of that change's review record,
+    on the round that reviewed `8183d8f`, 2026-11-21). The crate's
+    comments (`crates/ironafs-os/Cargo.toml`,
+    `crates/ironafs-os/src/lib.rs`) read point 1.4 as forbidding the
+    build script that could. Point 1.4 forbids dependencies. Point 1.1
+    keeps a build script that compiles or runs foreign code or a
+    native helper out of every crate but this one, and this crate may
+    have one (the shim's, Decision 4); the gate compiles and runs
+    nothing, so neither point forbids it. The owner chose the gate over
+    stating a residual on 2026-11-22 (decision comment on PR #118).
+  - Sweep: the repository at `origin/main` (`3f73854`) was searched for
+    "no build script", "point 1.4", "compile_error", "build.rs", "build
+    script", "5.3" and "0005"; so were the open branches of PR #118
+    (`m2a-57-os`, `ff71ace`), PR #132 (`m2a-57-osc`, `291bc50`), PR #136
+    (`m2a-57-ose`, `33bc576`) and PR #143 (`m2a-97-netgen`, `e6c9eae`).
+    - On `main`, point 5.3 itself is the old rule, rewritten above. No
+      other file states it. The "no build script" hits are the pure
+      crates' rule (ADR 0004, C4, point 1, unchanged):
+      `crates/ironafs-crypto/Cargo.toml`, `crates/ironafs-time/Cargo.toml`,
+      `crates/xtask/src/pure.rs`, `docs/specs/local-ipc.md` (for
+      `ironafs-ipc`) and the review record
+      `docs/reviews/2026-11-21-m2a-13-check-deps.md`; and
+      `crates/xtask/src/bans.rs` uses the words in a check's report
+      about the build scripts clippy runs, a different rule. Coding
+      standards rules 5, 20 and 21, `AGENTS.md`, `docs/workflow.md`
+      and the skills were read in full: none says this crate has no
+      build script. The `add-dependency` skill puts each build script
+      in `deny.toml`'s `[bans.build]` allowlist, which covers
+      workspace crates; that entry comes with the follow-up code, as
+      Consequences say. Unchanged.
+    - On the four branches, each a follow-up for its pull request, not
+      edited here. Each carries main's ADR 0005, which takes this
+      amendment when it is merged. Each also carries:
+      `crates/ironafs-os/Cargo.toml` ("no build script (ADR 0005,
+      point 1.4)") and `crates/ironafs-os/src/lib.rs` (the cfg-equal
+      targets stated as a limit, citing point 1.4), corrected by the
+      follow-up change; `crates/xtask/src/os/allowlist.rs` (the same
+      reading) and `crates/xtask/src/os.rs` (the guard comparison that
+      accepts the cfg-equal targets as "equivalent", the matrix check
+      that forbids naming them, and its messages) and their tests,
+      replaced there by point 5.3's check. `crates/xtask/src/deps.rs`
+      cites point 1.4 for dependencies only, unchanged.
+    - Actors. The rule binds the maintainer's session, and contributors
+      and their agents, who build and review the crate. CI: on the four
+      branches it runs today's `check-os` (the guard and the matrix
+      check); `main` does not run it; enforcing the amended check in CI
+      comes with the follow-up change. Dependabot proposes dependency
+      updates only and never adds a build script; the `deny.toml`
+      allowlist would refuse one.
   - Review rounds, class S, from families that wrote neither the
-    amendment nor the decision. Point 7.2 asks for the strongest row:
-    GPT ran at `gpt-6.2-sol` xhigh rather than `gpt-6.2-astra`, the
-    owner's standing choice to conserve GPT quota, and GLM's rounds 1
-    to 3 ran at high, its final pass and verification at max.
-    - Round 1 on `3f73854..225145f`: GPT (`gpt-6.2-sol`, xhigh) FAIL,
-      3 major and 1 minor (the guard's expected verdict taken from the
-      guard under test; no proof that the gate accepts the listed
-      targets; the rerun rule would leave a stale shim; the proof not
-      assigned to `check-os`); GLM (`glm-5.3`, high) FAIL, 1 major (the
-      same as GPT's first) and 2 minor (the target printed raw, which
-      a line break could turn into a Cargo directive; the rerun rule).
-      All fixed in `a661d2c`.
+    amendment nor the decision. The design seat was GPT at
+    `gpt-6.2-sol` (xhigh), not the strongest row's `gpt-6.2-astra`,
+    by the owner's standing choice to conserve GPT quota; ADR 0005's
+    own rounds 16 and 17 used the same pin. The security seat was GLM
+    `glm-5.3`, at high in rounds 1 to 3 and at max for the final pass
+    over the whole amendment and its verification. This departure from
+    point 7.2's strongest row is put to the owner with the amendment,
+    for acceptance. Each finding, its disposition and the convergence
+    note are in the review record,
+    [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md),
+    section "Amendment: the target gate".
+    - Round 1 on `3f73854..225145f`: GPT FAIL, 3 major and 1 minor;
+      GLM FAIL, 1 major (GPT's first) and 2 minor. Fixed in `a661d2c`.
     - Round 2 on `225145f..a661d2c`: GLM PASS, and, as refutation
       seat, it accepted moving the method that isolates the gate's
       verdict to the follow-up change; GPT FAIL, 1 major (the shim's
-      indirect inputs: SDK headers and build settings). Fixed in
-      `26ee981` as a requirement on the M4 shim change.
+      indirect inputs). Fixed in `26ee981` as a requirement on the M4
+      shim change.
     - Round 3 on `a661d2c..26ee981`: GPT PASS and GLM PASS.
     - Round 4, the final pass over the whole amendment,
       `3f73854..26ee981`: GLM (`glm-5.3`, max) PASS with 1 minor (the
