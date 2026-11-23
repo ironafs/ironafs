@@ -182,11 +182,13 @@ jobs:
         # The dumpable attribute after an exec under another uid (an
         # ordinary exec: 1) and after a set-id exec, and a peer under
         # another uid, through nextest's target runner. The direct id-change
-        # reset is not observed: no site changes an id. fs.suid_dumpable is
-        # set to 2 on this throwaway runner (its default is 0), so the
-        # set-id exec's value is told apart from the 0 the child would carry
-        # over and from an ordinary exec's 1; the test refuses any other
-        # value and never sets it. The set-id case is for a disposable
+        # reset is not observed: no site changes an id. The set-id case's
+        # helper is started under the test id (the id change happens
+        # there), takes the controls and checks 0, then execs a set-user-id
+        # copy with no id change of its own. fs.suid_dumpable is set to 2 on
+        # this throwaway runner (its default is 0), so that exec's value is
+        # told apart from the helper's 0 carried over and from an ordinary
+        # exec's 1; the test refuses any other value and never sets it. The set-id case is for a disposable
         # guest, as this runner is, which is its access boundary: its check
         # that no account, group or thread holds its id is a snapshot taken
         # before the set-id copy is made.

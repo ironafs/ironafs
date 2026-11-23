@@ -29,7 +29,7 @@ const SALT: u8 = 11;
 /// one that no account or group of the machine has and no running process
 /// holds (checked before use, in the files, through the name service and
 /// in every process's ids), so no other process can run the set-user-id
-/// copy, which only this group may execute. A process that gains the id
+/// copy, which only this group may read and execute. A process that gains the id
 /// after the check is not ruled out: the test is for a disposable guest. It
 /// lies below systemd's dynamic range (61184 to 65519), whose ids the
 /// files do not list.
@@ -65,35 +65,43 @@ fn child() {
             disable_dumps().unwrap();
             println!("after={}", dumpable().unwrap());
         }
-        // Take the controls, then start a child through `how`, an exec
-        // that resets the attribute, and relay what that child reports.
-        "disable-then-exec" | "disable-then-exec-as-nobody" | "disable-then-exec-set-id" => {
+        // Take the controls, then start a child through an exec that
+        // resets the attribute, and relay what that child reports.
+        "disable-then-exec" | "disable-then-exec-as-nobody" => {
             disable_dumps().unwrap();
             println!("self={}", dumpable().unwrap());
             // Held until the grandchild has run, then removed.
             let mut _private = None;
-            let mut command = match role.as_str() {
-                "disable-then-exec-set-id" | "disable-then-exec-as-nobody" => {
-                    let (dir, copy) = if role == "disable-then-exec-set-id" {
-                        set_id_copy()
-                    } else {
-                        nobody_copy()
-                    };
-                    _private = Some(dir);
-                    command_at(&copy, ENTRY, "report-then-disable")
-                }
-                _ => command(ENTRY, "report-then-disable"),
+            let mut command = if role == "disable-then-exec-as-nobody" {
+                let (dir, copy) = nobody_copy();
+                _private = Some(dir);
+                let mut command = command_at(&copy, ENTRY, "report-then-disable");
+                command.uid(NOBODY).gid(NOBODY);
+                command
+            } else {
+                command(ENTRY, "report-then-disable")
             };
-            match role.as_str() {
-                "disable-then-exec-as-nobody" => {
-                    command.uid(NOBODY).gid(NOBODY);
-                }
-                "disable-then-exec-set-id" => {
-                    command.uid(SET_ID_TEST_ID).gid(SET_ID_TEST_ID);
-                }
-                _ => {}
-            }
             let grandchild = run(&mut command);
+            assert!(grandchild.status.success(), "{grandchild:?}");
+            print!("{}", grandchild.stdout);
+        }
+        // The set-id helper, already under the test id: report its ids,
+        // take the controls and check the attribute is 0, then start the
+        // set-user-id copy named by SET_ID_COPY with no id change of its
+        // own, and relay what that child reports.
+        "disable-then-exec-set-id" => {
+            let (real, effective) = user_ids();
+            println!("helper-ids={real} {effective}");
+            disable_dumps().unwrap();
+            let held = dumpable().unwrap();
+            assert_eq!(held, 0, "the helper's own controls did not hold");
+            println!("self={held}");
+            let copy = std::env::var_os(SET_ID_COPY).unwrap();
+            let grandchild = run(&mut command_at(
+                std::path::Path::new(&copy),
+                ENTRY,
+                "report-then-disable",
+            ));
             assert!(grandchild.status.success(), "{grandchild:?}");
             print!("{}", grandchild.stdout);
         }
@@ -112,15 +120,26 @@ fn child() {
     }
 }
 
-/// A copy of this test binary, owned by root and set-user-id, that only
-/// the group [`SET_ID_TEST_ID`], which no account or group of the machine
-/// has, may run (see [`binary_copy`]).
-fn set_id_copy() -> (PrivateDir, std::path::PathBuf) {
+/// The environment variable that names the set-user-id copy to the
+/// set-id helper.
+const SET_ID_COPY: &str = "IRONAFS_OS_TEST_SET_ID_COPY";
+
+/// Two copies of this test binary that only the group [`SET_ID_TEST_ID`],
+/// which no account, group or thread of the machine holds (checked first),
+/// may read and run (see [`binary_copy`]): one plain, for the helper, and
+/// one owned by root and set-user-id. Both are readable to that group, so
+/// neither exec is reset for an unreadable program; the set-user-id one
+/// grants nothing a member of the group could not already do by running it,
+/// and reading it gives only the test binary's bytes.
+fn set_id_copies() -> [(PrivateDir, std::path::PathBuf); 2] {
     assert!(
         unused_id(SET_ID_TEST_ID),
-        "{SET_ID_TEST_ID} belongs to an account or group here: choose another"
+        "{SET_ID_TEST_ID} belongs to an account, group or thread here: choose another"
     );
-    binary_copy(SET_ID_TEST_ID, 0o4710)
+    [
+        binary_copy(SET_ID_TEST_ID, 0o750),
+        binary_copy(SET_ID_TEST_ID, 0o4750),
+    ]
 }
 
 /// Whether `id` is no account's user or primary group id and no group's
@@ -322,16 +341,18 @@ fn an_exec_as_another_user_resets_the_attribute_and_disable_dumps_restores_it() 
     assert_reset_then_restored(&run, &format!("{NOBODY} {NOBODY}"), "1");
 }
 
-/// A set-id exec: the child takes the controls (the attribute 0), then
-/// starts its child under [`SET_ID_TEST_ID`] from a set-user-id copy of
-/// the test binary. That exec sets the attribute to
-/// `/proc/sys/fs/suid_dumpable` (prctl(2)); an ordinary exec sets it to 1,
-/// as the test above shows, and with no reset the child's 0 would carry
-/// over. Only `suid_dumpable` 2 tells the set-id reset from both, so the
-/// test refuses to run under any other value rather than pass on one that
-/// shows nothing (0 is the default). It never changes that setting itself:
-/// the guest that runs it sets 2 (CI's root step does, on its throwaway
-/// runner).
+/// A set-id exec, with nothing else to reset the attribute. A helper is
+/// started under [`SET_ID_TEST_ID`] (the id change, which itself sets the
+/// attribute to `suid_dumpable`, happens there, before its own ordinary
+/// exec, which sets it to 1). The helper takes the controls and checks the
+/// attribute is 0, then execs a set-user-id copy with no id change of its
+/// own; its child reports. The exec sets the attribute to
+/// `/proc/sys/fs/suid_dumpable` (prctl(2)) and an ordinary one to 1, and
+/// with no reset the helper's 0 would carry over. Only `suid_dumpable` 2
+/// tells the set-id reset from both, so the test refuses to run under any
+/// other value rather than pass on one that shows nothing (0 is the
+/// default). It never changes that setting itself: the guest that runs it
+/// sets 2 (CI's root step does, on its throwaway runner).
 #[test]
 #[ignore = "needs root, for a set-user-id copy of the test binary, and fs.suid_dumpable 2: run as root on a disposable Linux guest"]
 fn a_set_id_exec_resets_the_attribute_to_suid_dumpable_and_disable_dumps_restores_it() {
@@ -340,12 +361,26 @@ fn a_set_id_exec_resets_the_attribute_to_suid_dumpable_and_disable_dumps_restore
         suid_dumpable(),
         "2",
         "set fs.suid_dumpable to 2 on the guest first: under 0 the reset cannot be told from \
-         the child's own 0 carried over, and under 1 not from an ordinary exec's 1"
+         the helper's own 0 carried over, and under 1 not from an ordinary exec's 1"
     );
-    let run = run(&mut command(ENTRY, "disable-then-exec-set-id"));
-    // The grandchild ran as the test id with root's effective id, so the
-    // set-user-id bit took effect, and its attribute was 2: neither the 0 it
-    // would have carried over nor an ordinary exec's 1.
+    let [(_helper_dir, helper), (_copy_dir, copy)] = set_id_copies();
+    let mut command = command_at(&helper, ENTRY, "disable-then-exec-set-id");
+    command
+        .uid(SET_ID_TEST_ID)
+        .gid(SET_ID_TEST_ID)
+        .env(SET_ID_COPY, &copy);
+    let run = run(&mut command);
+    // The helper ran under the test id with no set-user-id bit, took the
+    // controls (0) and changed no id after; its child ran as the test id
+    // with root's effective id, so the set-user-id bit took effect, and its
+    // attribute was 2: neither the helper's 0 carried over nor an ordinary
+    // exec's 1. So the 2 is the set-id exec's.
+    let helper_ids = format!("{SET_ID_TEST_ID} {SET_ID_TEST_ID}");
+    assert_eq!(
+        run.value("helper-ids"),
+        Some(helper_ids.as_str()),
+        "{run:?}"
+    );
     assert_reset_then_restored(&run, &format!("{SET_ID_TEST_ID} 0"), "2");
 }
 
