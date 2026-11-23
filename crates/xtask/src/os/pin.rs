@@ -119,3 +119,12 @@ pub(crate) fn pin_cargo(command: &mut Command, pinned: &Pinned) {
         .env("RUSTC_WRAPPER", "")
         .env("RUSTC_WORKSPACE_WRAPPER", "");
 }
+
+/// Sets `command`, a Cargo build of `check-os`, to the pinned compiler with
+/// no wrapper (`pin_cargo`), building into `build_dir` for both Cargo's
+/// target directory and its build directory (`bans::isolated_build`), so
+/// no configured `build.build-dir` shares artifacts with other builds.
+pub(crate) fn pinned_build(command: &mut Command, pinned: &Pinned, build_dir: &Path) {
+    pin_cargo(command, pinned);
+    crate::bans::isolated_build(command, build_dir);
+}

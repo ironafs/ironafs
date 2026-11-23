@@ -261,4 +261,25 @@ fn pinned_runs_build_apart_from_check_abi() {
     // check-abi builds the crate with the compiler Cargo selects; check-os's
     // pinned runs must never reuse what those builds leave behind.
     assert_ne!(super::PINNED_BUILD_DIR, crate::abi::BUILD_DIR);
+
+    // Both of Cargo's directories: the target directory, and the build
+    // directory, which a configuration (`build.build-dir`) can point
+    // elsewhere, at check-abi's builds included.
+    let pinned = super::pin::Pinned {
+        rustc: PathBuf::from("/pinned/bin/rustc"),
+    };
+    let private = PathBuf::from("/w/target").join(super::PINNED_BUILD_DIR);
+    let mut command = crate::Command::new("cargo");
+    command.arg("check");
+    super::pin::pinned_build(&mut command, &pinned, &private);
+    let arguments: Vec<&std::ffi::OsStr> = command.get_args().collect();
+    assert_eq!(
+        arguments,
+        ["check", "--target-dir", private.to_str().unwrap()]
+    );
+    let build_dir = command
+        .get_envs()
+        .find(|(name, _)| *name == "CARGO_BUILD_BUILD_DIR")
+        .and_then(|(_, value)| value);
+    assert_eq!(build_dir, Some(private.as_os_str()));
 }

@@ -1294,13 +1294,14 @@ fn no_wrapper(command: &mut Command) {
 /// workspace's lint builds into, fresh for each run.
 const LINT_BUILD: &str = "check-bans-lint";
 
-/// Builds into `dir`, which is fresh and empty, for both cargo's target
-/// directory and its build directory (`build.build-dir`, which a cargo
-/// configuration can point elsewhere). Cargo reuses an artifact whose key
-/// matches, and no compiler wrapper is part of that key: an artifact an
-/// earlier run built without clippy, under a wrapper, would be reused and
-/// its crate never linted. Set over anything the caller set.
-fn isolated_build(command: &mut Command, dir: &Path) {
+/// Builds into `dir` for both cargo's target directory and its build
+/// directory (`build.build-dir`, which a cargo configuration can point
+/// elsewhere). Cargo reuses an artifact whose key matches, and no compiler
+/// wrapper is part of that key: an artifact an earlier run built without
+/// clippy, under a wrapper, would be reused and its crate never linted.
+/// The lint gives it a fresh, empty `dir`; `check-os` gives its pinned
+/// runs a directory of their own. Set over anything the caller set.
+pub(crate) fn isolated_build(command: &mut Command, dir: &Path) {
     command
         .arg("--target-dir")
         .arg(dir)

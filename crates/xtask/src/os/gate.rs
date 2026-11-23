@@ -21,7 +21,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::pin::{Pinned, pin_cargo};
+use super::pin::{Pinned, pinned_build};
 use crate::rust_source::{TokenKind, ident, matching, punct, tokens_with_strings};
 use crate::{Command, Error};
 
@@ -365,10 +365,8 @@ pub(crate) fn cargo_run(
             "json-render-diagnostics",
             "--target",
             target,
-        ])
-        .arg("--target-dir")
-        .arg(build_dir);
-    pin_cargo(&mut command, pinned);
+        ]);
+    pinned_build(&mut command, pinned, build_dir);
     let output = command.output().map_err(Error::io("cargo check"))?;
     Ok(CargoRun {
         success: output.status.success(),

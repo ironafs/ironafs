@@ -668,15 +668,13 @@ pub(crate) fn files_for(
         .current_dir(&workspace.root)
         .args(["check", "--locked", "--lib", "--quiet", "--package", CRATE])
         .args(["--message-format", "json-render-diagnostics", "--target"])
-        .arg(target)
-        .arg("--target-dir")
-        .arg(build_dir);
-    match pinned {
-        Some(pinned) => pin::pin_cargo(&mut command, pinned),
-        None => {
-            for name in crate::pure::CLEARED_ENVIRONMENT {
-                command.env_remove(name);
-            }
+        .arg(target);
+    if let Some(pinned) = pinned {
+        pin::pinned_build(&mut command, pinned, build_dir);
+    } else {
+        command.arg("--target-dir").arg(build_dir);
+        for name in crate::pure::CLEARED_ENVIRONMENT {
+            command.env_remove(name);
         }
     }
     let output = command.output().map_err(Error::io("cargo check"))?;
