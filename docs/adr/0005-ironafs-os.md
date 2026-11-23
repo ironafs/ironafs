@@ -6,7 +6,7 @@
 Status: accepted (2026-11-21), by the owner, after the review rounds
 recorded below. Raised in issue #43; the ADR 0004 amendment it needs
 is issue #49, in the same pull request (#101). Amended 2026-11-22
-(#TBD): point 5.3 and Decision 4, the target gate.
+(#152): point 5.3 and Decision 4, the target gate.
 
 ## Context
 
@@ -2493,8 +2493,8 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
   wording, round 15's sweep entry in the record, and round 1's
   undescribed minor), fixed in the next commit and recorded; under the
   stop rule, no further round.
-- **Amendment, 2026-11-22 (#TBD): point 5.3 and Decision 4, the
-  target gate.**
+- **Amendment, 2026-11-22 (#152): point 5.3 and Decision 4, the
+  target gate.** Design issue #151.
   - What changed: point 5.3's refusal has two parts. A target gate in
     the crate's build script refuses, by exact triple, every target
     outside the list that Cargo selects by triple, the targets whose cfg
