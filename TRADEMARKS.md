@@ -13,7 +13,8 @@ and the logo only.
 The claim covers the complete name **IronAFS** and the IronAFS logo, the
 IronAFS wordmark with the cube "o". It does not cover AFS,
 AFS-3, OpenAFS or any other protocol or product name, which this project
-only refers to.
+only refers to. The logo's image files are not in this repository and are
+not covered by its licence.
 
 The name is written **IronAFS**: capital I, lower-case "ron", capital AFS,
 one word. The ™ sign goes on the prominent brand reference (a title or
