@@ -179,14 +179,19 @@ jobs:
             done
           done
       - name: Run the tests that need root, each named
-        # The dumpable attribute after an exec under another uid and after
-        # a set-id exec (the direct id-change reset is not observed: no
-        # site changes an id), and a peer under another uid, through
-        # nextest's target runner.
+        # The dumpable attribute after an exec under another uid (an
+        # ordinary exec: 1) and after a set-id exec, and a peer under
+        # another uid, through nextest's target runner. The direct id-change
+        # reset is not observed: no site changes an id. fs.suid_dumpable is
+        # set to 2 on this throwaway runner (its default is 0), so the
+        # set-id exec's value is told apart from the 0 the child would carry
+        # over and from an ordinary exec's 1; the test refuses any other
+        # value and never sets it.
         timeout-minutes: 10
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo
         run: |
+          sudo sysctl -w fs.suid_dumpable=2
           privileged="unix_nodump::tests::kernel::an_exec_as_another_user_resets_the_attribute_and_disable_dumps_restores_it
           unix_nodump::tests::kernel::a_set_id_exec_resets_the_attribute_to_suid_dumpable_and_disable_dumps_restores_it
           linux_peercred::tests::kernel::peer_credentials_name_a_peer_under_another_uid"

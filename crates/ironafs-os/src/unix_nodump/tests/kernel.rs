@@ -176,8 +176,8 @@ fn user_ids() -> (u32, u32) {
     (ids.next().unwrap(), ids.next().unwrap())
 }
 
-/// The value `/proc/sys/fs/suid_dumpable` holds: what the kernel resets
-/// the attribute to on an id change or a set-id exec.
+/// The value `/proc/sys/fs/suid_dumpable` holds: what the kernel sets
+/// the attribute to on a set-id exec.
 fn suid_dumpable() -> String {
     std::fs::read_to_string("/proc/sys/fs/suid_dumpable")
         .unwrap()
@@ -278,15 +278,31 @@ fn an_exec_as_another_user_resets_the_attribute_and_disable_dumps_restores_it() 
     assert_reset_then_restored(&run, &format!("{NOBODY} {NOBODY}"), "1");
 }
 
+/// A set-id exec: the child takes the controls (the attribute 0), then
+/// starts its child under [`SET_ID_TEST_ID`] from a set-user-id copy of
+/// the test binary. That exec sets the attribute to
+/// `/proc/sys/fs/suid_dumpable` (prctl(2)); an ordinary exec sets it to 1,
+/// as the test above shows, and with no reset the child's 0 would carry
+/// over. Only `suid_dumpable` 2 tells the set-id reset from both, so the
+/// test refuses to run under any other value rather than pass on one that
+/// shows nothing (0 is the default). It never changes that setting itself:
+/// the guest that runs it sets 2 (CI's root step does, on its throwaway
+/// runner).
 #[test]
-#[ignore = "needs root, for a set-user-id copy of the test binary: run as root on a Linux guest"]
+#[ignore = "needs root, for a set-user-id copy of the test binary, and fs.suid_dumpable 2: run as root on a disposable Linux guest"]
 fn a_set_id_exec_resets_the_attribute_to_suid_dumpable_and_disable_dumps_restores_it() {
     assert!(is_root(), "run this test as root");
-    let reset_to = suid_dumpable();
+    assert_eq!(
+        suid_dumpable(),
+        "2",
+        "set fs.suid_dumpable to 2 on the guest first: under 0 the reset cannot be told from \
+         the child's own 0 carried over, and under 1 not from an ordinary exec's 1"
+    );
     let run = run(&mut command(ENTRY, "disable-then-exec-set-id"));
-    // The grandchild ran as the test id with root's effective id: the
-    // set-user-id bit took effect, so the reset seen is a set-id exec's.
-    assert_reset_then_restored(&run, &format!("{SET_ID_TEST_ID} 0"), &reset_to);
+    // The grandchild ran as the test id with root's effective id, so the
+    // set-user-id bit took effect, and its attribute was 2: neither the 0 it
+    // would have carried over nor an ordinary exec's 1.
+    assert_reset_then_restored(&run, &format!("{SET_ID_TEST_ID} 0"), "2");
 }
 
 #[test]
