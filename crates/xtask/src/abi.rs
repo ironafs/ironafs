@@ -62,8 +62,7 @@
 //! Rust binds is the type checked where a declaration file holds an
 //! item under a cfg, a local item named like a primitive or a `core::ffi`
 //! scalar, or a union or enum item (no shipped file holds any of these);
-//! that is tracked in a follow-up issue (see the review record, open item
-//! O7).
+//! TODO(#179): establish it for those shapes too.
 
 mod self_test;
 
@@ -1103,8 +1102,8 @@ fn abi_of(model: DataModel) -> &'static str {
 /// row's declaration files. So an import in one file never vouches for a
 /// name in another, and a name imported from outside the row is refused.
 /// Item-level cfg, a local item named like a primitive or scalar, and
-/// union or enum items are not read here (see the module comment and the
-/// review record, open item O7).
+/// union or enum items are not read here (see the module comment;
+/// TODO(#179)).
 fn canonical(
     file: &Declarations,
     row: &dyn Fn(&str) -> Result<(), String>,
