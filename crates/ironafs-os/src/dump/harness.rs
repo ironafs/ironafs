@@ -365,6 +365,68 @@ pub(crate) fn trusted_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The directories, each one only root may change, that a copy of the test
+/// binary may be made in: the first on a mount that honours set-user-id
+/// bits and allows execution (`/run` is often mounted `nosuid` and
+/// `noexec`).
+const COPY_PARENTS: &[&str] = &["/run", "/var/lib", "/usr/local", "/opt"];
+
+/// A copy of this test binary, owned by root with group `group` and mode
+/// `mode`, for a child under another user to run: the binary where the
+/// build left it may be out of that user's reach (a checkout under a home
+/// directory only its owner may search). It is made in a new directory
+/// (refused if its path exists) in the first of [`COPY_PARENTS`] that only
+/// root may change (checked) and whose mount honours set-user-id bits and
+/// allows execution; root owns the directory and only `group` may enter
+/// it. The copy is created new, never over an existing file, and the
+/// directory is removed, with it, when the returned guard is dropped, on
+/// every path that unwinds. Only root can make one.
+pub(crate) fn binary_copy(group: u32, mode: u32) -> (PrivateDir, PathBuf) {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, chown};
+    let parent = COPY_PARENTS
+        .iter()
+        .map(Path::new)
+        .find(|parent| trusted_parent(parent).is_ok() && exec_mount(parent))
+        .expect("no trusted directory on a mount without nosuid and noexec");
+    let dir = PrivateDir::create_in(parent, "ironafs-os-test-binary").unwrap();
+    chown(dir.path(), Some(0), Some(group)).unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o710)).unwrap();
+    let copy = dir.path().join("test-binary");
+    let mut source = fs::File::open(std::env::current_exe().unwrap()).unwrap();
+    let mut target = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(&copy)
+        .unwrap();
+    io::copy(&mut source, &mut target).unwrap();
+    drop(target);
+    chown(&copy, Some(0), Some(group)).unwrap();
+    fs::set_permissions(&copy, fs::Permissions::from_mode(mode)).unwrap();
+    (dir, copy)
+}
+
+/// Whether the mount `path` is on honours set-user-id bits and allows
+/// execution: the longest mount point of `/proc/self/mountinfo` above it
+/// has neither `nosuid` nor `noexec` among its options.
+fn exec_mount(path: &Path) -> bool {
+    let mounts = fs::read_to_string("/proc/self/mountinfo").unwrap();
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(' ').collect();
+            let point = Path::new(*fields.get(4)?);
+            let options = *fields.get(5)?;
+            path.starts_with(point).then_some((point, options))
+        })
+        .max_by_key(|(point, _)| point.as_os_str().len())
+        .is_some_and(|(_, options)| {
+            !options
+                .split(',')
+                .any(|option| option == "nosuid" || option == "noexec")
+        })
+}
+
 /// A 64-bit little-endian ELF core image: a header, `segments` program
 /// headers (each a 16-byte segment after the table), and, with
 /// `extended`, the program header count in a section header at the end

@@ -15,8 +15,8 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 use super::super::{disable_dumps, dumpable};
 use crate::dump::harness::{
-    Collector, PrivateDir, Run, command, command_at, contains, core_limits, marker, plant, role,
-    run, trusted_parent,
+    Collector, PrivateDir, Run, binary_copy, command, command_at, contains, core_limits, marker,
+    plant, role, run, trusted_parent,
 };
 
 /// This file's entry test, which a child runs.
@@ -38,12 +38,6 @@ const NOBODY: u32 = 65_534;
 /// systemd's dynamic range (61184 to 65519), whose ids the files do not
 /// list.
 const SET_ID_TEST_ID: u32 = 59_421;
-
-/// The directories, each one only root may change, that the set-user-id
-/// copy's own directory may be made in: the first on a mount that honours
-/// set-user-id bits and allows execution (`/run` is often mounted
-/// `nosuid` and `noexec`).
-const SET_ID_PARENTS: &[&str] = &["/run", "/var/lib", "/usr/local", "/opt"];
 
 /// The entry test a child runs; it does nothing without a role.
 #[test]
@@ -83,8 +77,12 @@ fn child() {
             // Held until the grandchild has run, then removed.
             let mut _private = None;
             let mut command = match role.as_str() {
-                "disable-then-exec-set-id" => {
-                    let (dir, copy) = set_id_copy();
+                "disable-then-exec-set-id" | "disable-then-exec-as-nobody" => {
+                    let (dir, copy) = if role == "disable-then-exec-set-id" {
+                        set_id_copy()
+                    } else {
+                        nobody_copy()
+                    };
                     _private = Some(dir);
                     command_at(&copy, ENTRY, "report-then-disable")
                 }
@@ -120,39 +118,21 @@ fn child() {
 
 /// A copy of this test binary, owned by root and set-user-id, that only
 /// the group [`SET_ID_TEST_ID`], which no account or group of the machine
-/// has, may run. It is made in a new directory (refused if its path exists)
-/// in the first of [`SET_ID_PARENTS`] that only root may change (checked)
-/// and whose mount honours set-user-id bits; root owns the directory
-/// and only that group may enter it. The copy is created new, never over an
-/// existing file, and the directory is removed, with it, when the returned
-/// guard is dropped, on every path that unwinds.
+/// has, may run (see [`binary_copy`]).
 fn set_id_copy() -> (PrivateDir, std::path::PathBuf) {
-    use std::os::unix::fs::{OpenOptionsExt, chown};
     assert!(
         unused_id(SET_ID_TEST_ID),
         "{SET_ID_TEST_ID} belongs to an account or group here: choose another"
     );
-    let parent = SET_ID_PARENTS
-        .iter()
-        .map(std::path::Path::new)
-        .find(|parent| trusted_parent(parent).is_ok() && set_id_mount(parent))
-        .expect("no trusted directory on a mount without nosuid and noexec");
-    let dir = PrivateDir::create_in(parent, "ironafs-os-set-id").unwrap();
-    chown(dir.path(), Some(0), Some(SET_ID_TEST_ID)).unwrap();
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o710)).unwrap();
-    let copy = dir.path().join("set-id-child");
-    let mut source = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
-    let mut target = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o700)
-        .open(&copy)
-        .unwrap();
-    std::io::copy(&mut source, &mut target).unwrap();
-    drop(target);
-    chown(&copy, Some(0), Some(SET_ID_TEST_ID)).unwrap();
-    std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o4710)).unwrap();
-    (dir, copy)
+    binary_copy(SET_ID_TEST_ID, 0o4710)
+}
+
+/// A copy of this test binary that [`NOBODY`]'s group may run and read, so
+/// a child under `nobody` can run it wherever the build left the binary;
+/// readable, so its exec is an ordinary one, which leaves the attribute 1
+/// (an unreadable program's exec resets it as a set-id one does).
+fn nobody_copy() -> (PrivateDir, std::path::PathBuf) {
+    binary_copy(NOBODY, 0o750)
 }
 
 /// Whether `id` is no account's user or primary group id and no group's
@@ -182,27 +162,6 @@ fn unused_id(id: u32) -> bool {
         && !named("/etc/group", &[2])
         && !known("passwd")
         && !known("group")
-}
-
-/// Whether the mount `path` is on honours set-user-id bits and allows
-/// execution: the longest mount point of `/proc/self/mountinfo` above it
-/// has neither `nosuid` nor `noexec` among its options.
-fn set_id_mount(path: &std::path::Path) -> bool {
-    let mounts = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
-    mounts
-        .lines()
-        .filter_map(|line| {
-            let fields: Vec<&str> = line.split(' ').collect();
-            let point = std::path::Path::new(*fields.get(4)?);
-            let options = *fields.get(5)?;
-            path.starts_with(point).then_some((point, options))
-        })
-        .max_by_key(|(point, _)| point.as_os_str().len())
-        .is_some_and(|(_, options)| {
-            !options
-                .split(',')
-                .any(|option| option == "nosuid" || option == "noexec")
-        })
 }
 
 /// This process's real and effective user ids, from `/proc/self/status`.
@@ -304,7 +263,8 @@ fn an_exec_resets_the_attribute_to_dumpable_and_disable_dumps_restores_it() {
 }
 
 /// An exec as another user: the child is started under `nobody` (the id
-/// change is made between fork and exec, by the standard library), and the
+/// change is made between fork and exec, by the standard library), from a
+/// copy of the test binary that user may run and read, and the
 /// exec that follows, with real and effective ids equal, makes the
 /// attribute 1. What the id change alone does, before any exec, is not
 /// observed here: safe Rust has no in-process id change, and no site of

@@ -371,8 +371,10 @@ jobs:
     # point 5.5): ironafs-os built and its tests run on AlmaLinux 8, on
     # each Linux architecture. Each lane proves the target it built and
     # the runtime it ran on, and requires the named clock, random and wipe
-    # tests. The conditional glibc 2.17 artefact is not offered until it is
-    # qualified separately.
+    # tests. The tests run under nextest, as everywhere else: some count
+    # this process's open descriptors, which holds only with a process to
+    # each test (libtest's threads share one). The conditional glibc 2.17
+    # artefact is not offered until it is qualified separately.
     strategy:
       fail-fast: false
       matrix:
@@ -383,10 +385,14 @@ jobs:
             arch: x86_64
             runner: ubuntu-24.04
             image: docker.io/library/almalinux:8@sha256:974135fa35c47f8406ae9f81e8479fe0c372bdd64244a48770848466ceb694ce
+            nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
           - target: aarch64-unknown-linux-gnu
             arch: aarch64
             runner: ubuntu-24.04-arm
             image: docker.io/library/almalinux:8@sha256:34a85f19e05e28243249d45dd3842621741a43b110865ca80575c9b4e083cc29
+            nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -427,13 +433,32 @@ jobs:
           host=$("$HOME/.cargo/bin/rustc" -vV | sed -n 's/^host: //p')
           echo "rustc host: $host"
           test "$host" = "$TARGET"
-      - name: Run ironafs-os's tests on glibc 2.28, real system calls included
+      - name: Install cargo-nextest
+        # The release binaries need glibc 2.27 at most (their symbol
+        # versions), so they run on glibc 2.28.
+        env:
+          ARCHIVE: ${{ matrix.nextest }}
+          ARCHIVE_SHA256: ${{ matrix.nextest_sha256 }}
         run: |
-          "$HOME/.cargo/bin/cargo" test -p ironafs-os --locked --target "$TARGET" > test.log 2>&1
-          cat test.log
-          grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' test.log
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          curl --fail --silent --show-error --location --output "$ARCHIVE" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/$ARCHIVE"
+          printf '%s  %s\n' "$ARCHIVE_SHA256" "$ARCHIVE" | sha256sum -c -
+          tar -xzf "$ARCHIVE"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: Run ironafs-os's tests on glibc 2.28, real system calls included
+        # The log is printed before the status is tested, so a failure shows
+        # its cause.
+        run: |
+          status=0
+          "$HOME/.cargo/bin/cargo" nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked > nextest.log 2>&1 || status=$?
+          cat nextest.log
+          test "$status" -eq 0
           for test in $NATIVE_TESTS; do
-            grep -q "^test $test \.\.\. ok\$" test.log
+            grep -Eq "PASS .* ironafs-os $test\$" nextest.log
           done
 
   miri:
