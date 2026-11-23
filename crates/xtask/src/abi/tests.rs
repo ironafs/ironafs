@@ -6,7 +6,6 @@
 use super::{
     CType, DataModel, Declarations, Function, Recorded, Struct, c_source, canonical, declarations,
     fact_differences, identity, object_macros, preamble, required_constants, scan_defines,
-    use_paths,
 };
 use crate::rust_source::tokens_with_strings;
 
@@ -469,41 +468,84 @@ fn canonical_resolves_each_file_by_its_own_imports() {
 }
 
 #[test]
-fn use_paths_flatten_groups_and_refuse_globs() {
-    let paths = |source: &str| {
-        let tokens = tokens_with_strings(source).unwrap();
-        use_paths(&tokens)
-    };
-    assert_eq!(
-        paths("super::{iovec, socklen_t}"),
-        Some(vec![
-            vec!["super".to_owned(), "iovec".to_owned()],
-            vec!["super".to_owned(), "socklen_t".to_owned()],
-        ])
+fn declarations_read_imports_of_the_shipped_shapes_with_their_gates() {
+    let found = read(
+        "use core::{ffi::c_int};\nuse std::io;\nuse super::{iovec, socklen_t};\n\
+         #[cfg(target_env = \"gnu\")]\npub(super) use gnu::{cmsghdr, msghdr};\n\
+         #[cfg(target_arch = \"x86_64\")]\npub(super) use x86_64::SYS_getrandom;\n\
+         #[cfg(not(miri))]\npub(super) use foreign::recvmsg;\n\
+         #[cfg(miri)]\npub(super) use stand_in::recvmsg;\n",
     );
+    assert_eq!(found.ffi_names, ["c_int".to_owned()]);
+    let gates: Vec<(String, super::Gate)> = found
+        .imports
+        .iter()
+        .map(|import| (import.path.join("::"), import.gate.clone()))
+        .collect();
     assert_eq!(
-        paths("core::{ffi::c_int, cell::{self, Cell}}"),
-        Some(vec![
-            vec!["core".to_owned(), "ffi".to_owned(), "c_int".to_owned()],
-            vec!["core".to_owned(), "cell".to_owned()],
-            vec!["core".to_owned(), "cell".to_owned(), "Cell".to_owned()],
-        ])
+        gates,
+        [
+            ("core::ffi::c_int".to_owned(), super::Gate::Always),
+            ("std::io".to_owned(), super::Gate::Always),
+            ("super::iovec".to_owned(), super::Gate::Always),
+            ("super::socklen_t".to_owned(), super::Gate::Always),
+            ("gnu::cmsghdr".to_owned(), super::Gate::Env("gnu".into())),
+            ("gnu::msghdr".to_owned(), super::Gate::Env("gnu".into())),
+            (
+                "x86_64::SYS_getrandom".to_owned(),
+                super::Gate::Arch("x86_64".into())
+            ),
+            ("foreign::recvmsg".to_owned(), super::Gate::Miri(false)),
+            ("stand_in::recvmsg".to_owned(), super::Gate::Miri(true)),
+        ]
     );
-    for refused in ["super::*", "a::{b, *}", "a::{b", "{self}", ""] {
-        assert_eq!(paths(refused), None, "{refused}");
+    let env = super::Gate::Env("musl".into());
+    assert!(env.in_effect("aarch64-unknown-linux-musl"));
+    assert!(!env.in_effect("aarch64-unknown-linux-gnu"));
+    assert!(super::Gate::Arch("x86_64".into()).in_effect("x86_64-unknown-linux-musl"));
+    assert!(!super::Gate::Miri(true).in_effect("x86_64-unknown-linux-gnu"));
+}
+
+#[test]
+fn declarations_refuse_imports_whose_binding_is_not_established_structurally() {
+    for (source, says) in [
+        ("use super::*;\n", "a glob import"),
+        ("use super::{a, b\n", "cannot read"),
+        ("fn f() { use super::msghdr; }\n", "not at file scope"),
+        (
+            "mod inner {\n    pub(super) use super::msghdr;\n}\n",
+            "an inline module",
+        ),
+        ("use crate::elsewhere::msghdr;\n", "a path (crate::"),
+        ("use self::inner::msghdr;\n", "a path (crate::"),
+        ("use gnu::msghdr;\n", "a path (crate::"),
+        (
+            "#[cfg(unix)]\nuse super::msghdr;\n",
+            "an import under #[cfg(unix)]",
+        ),
+        (
+            "#[cfg(target_env = \"gnu\")]\npub(super) use musl::msghdr;\n",
+            "an import under #[cfg(target_env=\"gnu\")]",
+        ),
+        (
+            "#[cfg(target_env = \"gnu\")]\n#[allow(unused)]\npub(super) use gnu::msghdr;\n",
+            "attributes this check does not read",
+        ),
+    ] {
+        let error = refused(source);
+        assert!(error.contains(says), "{source}: {error}");
     }
-    // Read through the declaration reader, a nested core::ffi import
-    // counts as one.
-    assert_eq!(
-        read("use core::{ffi::c_int};\n").ffi_names,
-        ["c_int".to_owned()]
-    );
 }
 
 /// A row `row` whose declaration files are `files` (path under
 /// `src/row/`, text), all read by the compiler unless listed in `unread`:
 /// what `row_declarations` makes of them.
-fn row_of(name: &str, files: &[(&str, &str)], unread: &[&str]) -> Result<Declarations, String> {
+fn row_of(
+    name: &str,
+    files: &[(&str, &str)],
+    unread: &[&str],
+    target: &str,
+) -> Result<Declarations, String> {
     let root = std::env::temp_dir().join(format!(
         "ironafs-xtask-abi-row-{name}-{}",
         std::process::id()
@@ -518,51 +560,112 @@ fn row_of(name: &str, files: &[(&str, &str)], unread: &[&str]) -> Result<Declara
             read.insert(file);
         }
     }
-    let found = super::row_declarations(&root, "row", &read, "C").unwrap();
+    let found = super::row_declarations(&root, "row", &read, target).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
     found
 }
 
-/// The row's own `msghdr`, declared in the glibc file and re-exported by
-/// `abi.rs`, as the shipped rows write it.
+/// The row's own `msghdr`, declared in each C library's file and
+/// re-exported by `abi.rs` under that library's cfg, as the shipped rows
+/// write it.
 const ABI: &str = "use core::ffi::c_int;\n\
-                   pub(super) use gnu::msghdr;\npub(super) use musl::msghdr;\n";
+                   #[cfg(target_env = \"gnu\")]\npub(super) use gnu::msghdr;\n\
+                   #[cfg(target_env = \"musl\")]\npub(super) use musl::msghdr;\n";
 const GNU: &str = "use core::ffi::c_int;\n#[repr(C)]\npub(crate) struct msghdr { a: c_int }\n";
+const FOREIGN: &str = "use core::ffi::c_int;\nuse super::msghdr;\n\
+                       unsafe extern \"C\" {\n    fn recvmsg(m: *mut msghdr) -> c_int;\n}\n";
+const GLIBC: &str = "aarch64-unknown-linux-gnu";
+const MUSL: &str = "aarch64-unknown-linux-musl";
+
+/// The diagnostic prefix for `file` under `src/row/`, built as
+/// `row_declarations` builds it.
+fn at_file(file: &str) -> String {
+    let path = std::path::Path::new("src").join("row").join(file);
+    format!("{}: ", path.display())
+}
 
 #[test]
 fn row_declarations_follow_each_import_to_the_row_s_own_declaration() {
-    let foreign = "use core::ffi::c_int;\nuse super::msghdr;\n\
-                   unsafe extern \"C\" {\n    fn recvmsg(m: *mut msghdr) -> c_int;\n}\n";
-    let found = row_of(
-        "clean",
+    for (target, unread) in [(GLIBC, "abi/musl.rs"), (MUSL, "abi/gnu.rs")] {
+        let found = row_of(
+            "clean",
+            &[
+                ("abi.rs", ABI),
+                ("abi/gnu.rs", GNU),
+                ("abi/musl.rs", GNU),
+                ("abi/foreign.rs", FOREIGN),
+            ],
+            &[unread],
+            target,
+        )
+        .unwrap();
+        assert_eq!(found.functions.len(), 1, "{target}");
+        assert_eq!(found.structs.len(), 1, "{target}");
+    }
+}
+
+#[test]
+fn row_declarations_decide_which_re_export_is_in_effect_from_the_target() {
+    // Only the musl re-export, on a glibc target, with musl's file
+    // compiled: the re-export is not in effect, so the name is unbound,
+    // though its destination file was read.
+    let musl_only = "use core::ffi::c_int;\n\
+                     #[cfg(target_env = \"musl\")]\npub(super) use musl::msghdr;\n";
+    let error = row_of(
+        "inactive",
+        &[
+            ("abi.rs", musl_only),
+            ("abi/musl.rs", GNU),
+            ("abi/foreign.rs", FOREIGN),
+        ],
+        &[],
+        GLIBC,
+    )
+    .unwrap_err();
+    let prefix = at_file("abi/foreign.rs");
+    assert!(error.starts_with(&prefix), "{error}");
+    assert!(error.contains("`msghdr` is neither imported"), "{error}");
+    // In effect, but its file was not read: refused, not skipped.
+    let error = row_of(
+        "unread",
         &[
             ("abi.rs", ABI),
             ("abi/gnu.rs", GNU),
-            ("abi/musl.rs", GNU),
-            ("abi/foreign.rs", foreign),
+            ("abi/foreign.rs", FOREIGN),
         ],
-        &["abi/musl.rs"],
+        &["abi/gnu.rs"],
+        GLIBC,
     )
-    .unwrap();
-    assert_eq!(found.functions.len(), 1);
-    assert_eq!(found.structs.len(), 1);
+    .unwrap_err();
+    assert!(
+        error.contains("outside the row's declaration files"),
+        "{error}"
+    );
 }
 
 #[test]
 fn row_declarations_refuse_a_same_named_type_imported_from_elsewhere() {
     // The row's msghdr is still declared, but the foreign function's file
-    // takes its msghdr from another module.
-    for (name, import) in [
-        ("crate", "use crate::elsewhere::msghdr;"),
-        ("std", "use std::ffi::msghdr;"),
-        ("unimported", ""),
-        ("twice", "use super::msghdr;\nuse super::gnu::msghdr;"),
+    // takes its msghdr from another module, or from none.
+    for (name, import, says) in [
+        ("crate", "use crate::elsewhere::msghdr;", "a path (crate::"),
+        (
+            "std",
+            "use std::ffi::msghdr;",
+            "`msghdr` is imported from std::ffi::msghdr",
+        ),
+        ("unimported", "", "`msghdr` is neither imported"),
+        (
+            "twice",
+            "use super::msghdr;\nuse super::{msghdr};",
+            "more than one import",
+        ),
     ] {
         let foreign = format!(
             "use core::ffi::c_int;\n{import}\n\
              unsafe extern \"C\" {{\n    fn recvmsg(m: *mut msghdr) -> c_int;\n}}\n"
         );
-        let found = row_of(
+        let error = row_of(
             name,
             &[
                 ("abi.rs", ABI),
@@ -571,12 +674,14 @@ fn row_declarations_refuse_a_same_named_type_imported_from_elsewhere() {
                 ("abi/foreign.rs", &foreign),
             ],
             &["abi/musl.rs"],
-        );
-        let error = found.unwrap_err();
+            GLIBC,
+        )
+        .unwrap_err();
         assert!(
-            error.starts_with("src/row/abi/foreign.rs: `msghdr`"),
+            error.starts_with(&at_file("abi/foreign.rs")),
             "{name}: {error}"
         );
+        assert!(error.contains(says), "{name}: {error}");
     }
 }
 

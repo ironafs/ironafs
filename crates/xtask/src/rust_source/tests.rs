@@ -4,7 +4,8 @@
 //! Tests for the Rust token reader and the `std` paths it finds.
 
 use super::{
-    LexError, Token, TokenKind, core_shadows, std_paths, tokens, tokens_with_strings, use_paths,
+    LexError, Token, TokenKind, core_shadows, std_paths, tokens, tokens_with_strings, use_items,
+    use_paths,
 };
 
 fn idents(source: &str) -> Vec<String> {
@@ -430,4 +431,57 @@ fn core_shadows_finds_every_item_or_import_named_core() {
             "{source}"
         );
     }
+}
+
+#[test]
+fn use_items_give_each_import_s_paths_attributes_depth_and_shape() {
+    let source = "use core::{ffi::c_int, cell::{self, Cell}};\n\
+                  #[cfg(target_env = \"gnu\")]\npub(super) use gnu::msghdr;\n\
+                  fn f() { use super::*; }\nuse a::b as c;\nuse a::{b\n";
+    let items = use_items(&tokens_with_strings(source).unwrap());
+    let shape: Vec<_> = items
+        .iter()
+        .map(|item| {
+            (
+                item.paths
+                    .iter()
+                    .map(|path| path.join("::"))
+                    .collect::<Vec<_>>(),
+                item.attributes.clone(),
+                item.depth,
+                item.glob,
+                item.renamed,
+                item.plain,
+            )
+        })
+        .collect();
+    let paths = |list: &[&str]| {
+        list.iter()
+            .map(|path| (*path).to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        shape,
+        [
+            (
+                paths(&["core::ffi::c_int", "core::cell", "core::cell::Cell"]),
+                vec![],
+                0,
+                false,
+                false,
+                true
+            ),
+            (
+                paths(&["gnu::msghdr"]),
+                vec!["cfg(target_env=\"gnu\")".to_owned()],
+                0,
+                false,
+                false,
+                true
+            ),
+            (paths(&["super::*"]), vec![], 1, true, false, false),
+            (paths(&["a::b"]), vec![], 0, false, true, false),
+            (paths(&["a::b"]), vec![], 0, false, false, false),
+        ]
+    );
 }

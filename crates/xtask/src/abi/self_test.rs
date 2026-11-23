@@ -21,9 +21,12 @@
 //! - by the comparison with sites.json's record: a type alias the
 //!   declarations state but the record leaves out, and one the record
 //!   holds but no declaration states;
-//! - by the import resolver, over a row of two files: a declaration's type
-//!   imported from another module of the crate while the row's own type of
-//!   that name is still declared, and one imported by a glob;
+//! - by the import reader and resolver, over a row of four files: a
+//!   declaration's type imported from another module of the crate while
+//!   the row's own type of that name is still declared; a re-export whose
+//!   cfg is not in effect on the target, though its file was compiled,
+//!   alone and beside a binding through an inline module; an import nested
+//!   in a function; an import under another cfg; and a glob;
 //! - by the declaration reader, which refuses what C cannot be compared
 //!   with: another ABI string, an attribute on a foreign function (such as
 //!   `link_name`), a `packed` struct, a renaming import, a type alias, and
@@ -385,15 +388,22 @@ fn recorded_facts_case(output: &mut impl Write) -> Result<(), Error> {
     .map_err(Error::io("report check-abi self-test"))
 }
 
-/// A row of two declaration files: `abi.rs` declares `struct timespec`,
-/// and `abi/foreign.rs` declares a function over a `timespec` it imports.
-/// Imported from `super`, the row's own, it is read; imported from another
-/// module of the crate, or by a glob, the row's own `timespec` is still
-/// declared, but the function's may be another, and it is refused.
+/// A row of four declaration files, read for a glibc target: each C
+/// library's file declares `struct timespec`, `abi.rs` re-exports the
+/// glibc one under its cfg, and `abi/foreign.rs` declares a function over
+/// the `timespec` it imports from `super`. That is read. Each plant must be
+/// refused: a type taken from another module of the crate; the musl
+/// re-export alone (not in effect on glibc, though musl's file was
+/// compiled) beside a binding through an inline module; the musl re-export
+/// alone; an import nested in a function; an import under another cfg; and
+/// a glob.
 fn foreign_import_case(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
-    const CASE: &str = "a type imported from outside the row's declaration files";
-    const ABI: &str = "use core::ffi::c_long;\n#[repr(C)]\n\
-                       pub(super) struct timespec {\n    tv_sec: c_long,\n    tv_nsec: c_long,\n}\n";
+    const CASE: &str = "a type whose binding is not the row's own";
+    const TARGET: &str = "aarch64-unknown-linux-gnu";
+    const LIBRARY: &str = "use core::ffi::c_long;\n#[repr(C)]\n\
+                           pub(crate) struct timespec {\n    tv_sec: c_long,\n    tv_nsec: c_long,\n}\n";
+    const GNU_EXPORT: &str = "#[cfg(target_env = \"gnu\")]\npub(super) use gnu::timespec;\n";
+    const MUSL_EXPORT: &str = "#[cfg(target_env = \"musl\")]\npub(super) use musl::timespec;\n";
     let foreign = |import: &str| {
         format!(
             "use core::ffi::c_int;\n{import}\nunsafe extern \"C\" {{\n    \
@@ -402,37 +412,57 @@ fn foreign_import_case(dir: &Path, output: &mut impl Write) -> Result<(), Error>
     };
     let crate_dir = dir.join("row-crate");
     let module = Path::new("src").join("row");
-    let read: std::collections::BTreeSet<_> =
-        [module.join("abi.rs"), module.join("abi").join("foreign.rs")]
-            .into_iter()
-            .collect();
-    let attempt = |import: &str| -> Result<Result<Declarations, String>, Error> {
-        fixture::write_file(&crate_dir.join(&module).join("abi.rs"), ABI)?;
-        fixture::write_file(
-            &crate_dir.join(&module).join("abi").join("foreign.rs"),
-            &foreign(import),
-        )?;
-        row_declarations(&crate_dir, "row", &read, "C")
+    let files = ["abi.rs", "abi/gnu.rs", "abi/musl.rs", "abi/foreign.rs"];
+    let read: std::collections::BTreeSet<_> = files.iter().map(|file| module.join(file)).collect();
+    let attempt = |abi: &str, import: &str| -> Result<Result<Declarations, String>, Error> {
+        let texts = [
+            format!("{abi}#[cfg(target_env = \"gnu\")]\nmod gnu;\n"),
+            LIBRARY.to_owned(),
+            LIBRARY.to_owned(),
+            foreign(import),
+        ];
+        for (file, text) in files.iter().zip(texts) {
+            fixture::write_file(&crate_dir.join(&module).join(file), &text)?;
+        }
+        row_declarations(&crate_dir, "row", &read, TARGET)
     };
-    if let Err(error) = attempt("use super::timespec;")? {
+    let own = "use super::timespec;";
+    if let Err(error) = attempt(GNU_EXPORT, own)? {
         return Err(failure(
             CASE,
             format!("the row's own import was refused: {error}"),
         ));
     }
-    for (import, says) in [
+    let inline = format!(
+        "{MUSL_EXPORT}mod inner {{\n    pub(super) use crate::elsewhere::timespec;\n}}\n\
+         pub(super) use inner::timespec;\n"
+    );
+    for (abi, import, says) in [
         (
+            GNU_EXPORT,
             "use crate::elsewhere::timespec;",
-            "imported from crate::elsewhere::timespec",
+            "a path (crate::",
         ),
-        ("use crate::elsewhere::*;", "a glob import"),
+        (inline.as_str(), own, "an inline module"),
+        (MUSL_EXPORT, own, "`timespec` is neither imported"),
+        (
+            GNU_EXPORT,
+            "fn f() {\n    use super::timespec;\n}",
+            "not at file scope",
+        ),
+        (
+            GNU_EXPORT,
+            "#[cfg(unix)]\nuse super::timespec;",
+            "an import under #[cfg(unix)]",
+        ),
+        (GNU_EXPORT, "use super::*;", "a glob import"),
     ] {
-        match attempt(import)? {
+        match attempt(abi, import)? {
             Err(error) if error.contains(says) => {}
             Err(error) => {
                 return Err(failure(
                     CASE,
-                    format!("{import}: refused for another reason: {error}"),
+                    format!("{import}: refused for another reason than {says:?}: {error}"),
                 ));
             }
             Ok(_) => return Err(failure(CASE, format!("{import}: accepted"))),
@@ -440,7 +470,9 @@ fn foreign_import_case(dir: &Path, output: &mut impl Write) -> Result<(), Error>
     }
     writeln!(
         output,
-        "caught: a declaration's type imported from another module of the crate, and by a glob"
+        "caught: a declaration's type imported from another module, an inactive re-export \
+         beside a binding through an inline module, an inactive re-export alone, a nested \
+         import, an import under another cfg, and a glob"
     )
     .map_err(Error::io("report check-abi self-test"))
 }
