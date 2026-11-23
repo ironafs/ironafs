@@ -284,6 +284,15 @@ fn scan_reads_the_crate_root_s_glibc_only_gates_and_no_other_target_env() {
     let root = read(gates, true);
     assert_eq!(root.problems, []);
     assert_eq!(root.glibc_only, ["linux_fdpass"]);
+    assert_eq!(root.glibc_or_test, [("checks".to_owned(), 1)]);
+    assert_eq!(
+        root.glibc_imports,
+        [super::GatedImport {
+            module: "linux_fdpass".to_owned(),
+            or_test: false,
+            line: 5,
+        }]
+    );
     // Not in the crate root; another library; a renaming import.
     assert_eq!(read(gates, false).problems.len(), 3);
     for refused in [
@@ -302,6 +311,7 @@ fn scan_reads_the_crate_root_s_glibc_only_gates_and_no_other_target_env() {
             "{refused}"
         );
         assert!(found.glibc_only.is_empty(), "{refused}");
+        assert!(found.glibc_imports.is_empty(), "{refused}");
     }
 }
 

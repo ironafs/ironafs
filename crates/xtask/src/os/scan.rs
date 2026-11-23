@@ -31,9 +31,12 @@
 //! target_env = "gnu"))]`, or that condition inside `any(test, ...)`, on a
 //! `mod NAME;` or a `pub use NAME::...;` of the crate root. It leaves a row
 //! out of the musl build where the row's evidence is withheld there (ADR
-//! 0005, sheet 14). The reader records each module the first form gates,
-//! and `check-os` requires them to be exactly the modules of the rows the
-//! copy implements on glibc and only approves on musl.
+//! 0005, sheet 14). The reader records each module and each import either
+//! form gates. `check-os` requires the modules of the first form to be
+//! exactly those of the rows the copy implements on glibc and only
+//! approves on musl; the modules of the second form (the *glibc-or-test*
+//! gate) to hold no site and be no row's module; and each gated import to
+//! name a module behind the same form.
 
 use crate::rust_source::{Token, TokenKind, core_shadows, ident, matching, punct};
 
@@ -131,6 +134,22 @@ pub(crate) struct Scan {
     /// build (`#[cfg(all(target_os = "linux", target_env = "gnu"))] mod
     /// NAME;`).
     pub(crate) glibc_only: Vec<String>,
+    /// The modules the crate root's glibc-or-test gates leave out of a musl
+    /// build that is not a test build (`#[cfg(any(test, all(target_os =
+    /// "linux", target_env = "gnu")))] mod NAME;`), each with its line.
+    pub(crate) glibc_or_test: Vec<(String, usize)>,
+    /// The crate root's imports behind either gate (`pub use NAME::...;`).
+    pub(crate) glibc_imports: Vec<GatedImport>,
+}
+
+/// An import of the crate root behind a glibc-only or glibc-or-test gate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GatedImport {
+    /// The module it imports from.
+    pub(crate) module: String,
+    /// Its gate is the glibc-or-test form.
+    pub(crate) or_test: bool,
+    pub(crate) line: usize,
 }
 
 /// Macros and attributes that read code from elsewhere or write machine
@@ -315,17 +334,18 @@ fn has_shape(tokens: &[Token], start: usize, shape: &[Shape]) -> bool {
 
 /// What a `target_env` in the crate root gates.
 enum Gate {
-    /// A module the musl build leaves out.
-    Module(String),
-    /// An import, or the module without sites the tests also use.
-    Other,
+    /// A module the musl build leaves out; `or_test` for the glibc-or-test
+    /// form, which the tests also compile.
+    Module { name: String, or_test: bool },
+    /// An import from `module`, behind the glibc-or-test form if `or_test`.
+    Import { module: String, or_test: bool },
     /// Not a glibc-only gate.
     No,
 }
 
-/// What the `target_env` at `index` gates, if it is in a glibc-only gate
-/// of the crate root on `mod NAME;` or `pub use NAME::...;`: the module,
-/// for the first form on a `mod`.
+/// What the `target_env` at `index` gates, if it is in a glibc-only or
+/// glibc-or-test gate of the crate root on `mod NAME;` or `pub use
+/// NAME::...;`.
 fn glibc_gate(tokens: &[Token], index: usize) -> Gate {
     for (shape, at) in [GLIBC_ONLY, GLIBC_ONLY_OR_TEST] {
         let Some(start) = index.checked_sub(at) else {
@@ -336,10 +356,13 @@ fn glibc_gate(tokens: &[Token], index: usize) -> Gate {
         }
         let item = start + shape.len();
         let token = |offset: usize| tokens.get(item + offset);
+        let or_test = at == GLIBC_ONLY_OR_TEST.1;
         if ident(token(0)) == Some("mod") && punct(token(2)) == Some(';') {
             return match ident(token(1)) {
-                Some(name) if at == GLIBC_ONLY.1 => Gate::Module(name.to_owned()),
-                Some(_) => Gate::Other,
+                Some(name) => Gate::Module {
+                    name: name.to_owned(),
+                    or_test,
+                },
                 None => Gate::No,
             };
         }
@@ -360,7 +383,13 @@ fn glibc_gate(tokens: &[Token], index: usize) -> Gate {
                 .unwrap_or_default()
                 .iter()
                 .any(|token| ident(Some(token)) == Some("as"));
-        return if import { Gate::Other } else { Gate::No };
+        return match ident(token(2)) {
+            Some(module) if import => Gate::Import {
+                module: module.to_owned(),
+                or_test,
+            },
+            _ => Gate::No,
+        };
     }
     Gate::No
 }
@@ -407,8 +436,21 @@ pub(crate) fn scan(tokens: &[Token], place: Place) -> Scan {
                     || place == Place::Abi && library_gate(tokens, index)) =>
             {
                 match glibc_gate(tokens, index) {
-                    Gate::Module(module) if root => scan.glibc_only.push(module),
-                    Gate::Other if root => {}
+                    Gate::Module {
+                        name,
+                        or_test: false,
+                    } if root => scan.glibc_only.push(name),
+                    Gate::Module {
+                        name,
+                        or_test: true,
+                    } if root => scan.glibc_or_test.push((name, token.line)),
+                    Gate::Import { module, or_test } if root => {
+                        scan.glibc_imports.push(GatedImport {
+                            module,
+                            or_test,
+                            line: token.line,
+                        });
+                    }
                     _ => scan.problems.push(problem(TARGET_ENV)),
                 }
             }

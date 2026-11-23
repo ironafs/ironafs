@@ -19,8 +19,8 @@ use super::inventory::Inventory;
 use super::pin::{self, Pinned};
 use super::scan::{self, BLOCK_BODY, CFG, CORE, TARGET_ENV};
 use super::{
-    ALLOWLIST, CrateFile, GLIBC_ONLY, Violation, compare, gate_violations, guard_violations,
-    outside_violations, rust_files,
+    ALLOWLIST, CrateFile, GLIBC_IMPORT, GLIBC_ONLY, GLIBC_OR_TEST_MODULE, Violation, compare,
+    gate_violations, guard_violations, outside_violations, rust_files,
 };
 use crate::pure::toolchain_targets;
 use crate::rust_source::tokens_with_strings;
@@ -341,7 +341,11 @@ const CASES: &[Case] = &[
             "#[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\nmod linux_fdpass;",
             "#[cfg(target_os = \"linux\")]\nmod linux_fdpass;",
         )],
-        expect: &[|found| rule(found, GLIBC_ONLY)],
+        // Its import is still gated glibc-only, now from a module that is not.
+        expect: &[
+            |found| rule(found, GLIBC_ONLY),
+            |found| rule(found, GLIBC_IMPORT),
+        ],
     },
     Case {
         name: "a row implemented on musl left out of the musl build",
@@ -351,6 +355,35 @@ const CASES: &[Case] = &[
             "#[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\nmod linux_peercred;",
         )],
         expect: &[|found| rule(found, GLIBC_ONLY)],
+    },
+    Case {
+        name: "a row's module behind the glibc-or-test gate",
+        edits: &[replace(
+            "src/lib.rs",
+            "#[cfg(target_os = \"linux\")]\nmod linux_peercred;",
+            "#[cfg(any(test, all(target_os = \"linux\", target_env = \"gnu\")))]\nmod linux_peercred;",
+        )],
+        expect: &[|found| rule(found, GLIBC_OR_TEST_MODULE)],
+    },
+    Case {
+        name: "a glibc-only import from a module a musl build compiles",
+        edits: &[replace(
+            "src/lib.rs",
+            "#[cfg(target_os = \"linux\")]\npub use linux_peercred::peer_credentials;",
+            "#[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\n\
+             pub use linux_peercred::peer_credentials;",
+        )],
+        expect: &[|found| rule(found, GLIBC_IMPORT)],
+    },
+    Case {
+        name: "a glibc-only import from a module behind the glibc-or-test gate",
+        edits: &[replace(
+            "src/lib.rs",
+            "#[cfg(any(test, all(target_os = \"linux\", target_env = \"gnu\")))]\n\
+             pub use fdpass::FdPassError;",
+            "#[cfg(all(target_os = \"linux\", target_env = \"gnu\"))]\npub use fdpass::FdPassError;",
+        )],
+        expect: &[|found| rule(found, GLIBC_IMPORT)],
     },
 ];
 

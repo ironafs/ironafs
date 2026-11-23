@@ -32,8 +32,11 @@
 //!   per-library declaration files, which hold no site, and in the crate
 //!   root's glibc-only gates, which must leave out exactly the modules of the
 //!   rows withheld on musl (implemented on glibc, only approved on musl,
-//!   for a qualified constant musl's headers lack). So a musl build
-//!   compiles the glibc build's sites less the withheld rows (`scan`).
+//!   for a qualified constant musl's headers lack); the modules behind the
+//!   glibc-or-test form of that gate hold no site and are no row's, and
+//!   every gated import names a module behind the same gate. So a musl
+//!   build compiles the glibc build's sites less the withheld rows
+//!   (`scan`).
 //!   `check-abi` proves each library's declarations on its own target.
 
 mod allowlist;
@@ -358,15 +361,71 @@ pub(crate) const GLIBC_ONLY: &str = "the crate root's glibc-only gates (`#[cfg(a
                                      glibc and only approves on musl, so a musl build holds \
                                      what the copy says (ADR 0005, sheet 14)";
 
+/// Why a module behind the crate root's glibc-or-test gate is refused.
+pub(crate) const GLIBC_OR_TEST_MODULE: &str = "a module behind the crate root's glibc-or-test \
+                                               gate (`#[cfg(any(test, all(target_os = \
+                                               \"linux\", target_env = \"gnu\")))] mod ...;`) \
+                                               holds no site and is no row's module, since a \
+                                               musl build leaves it out whatever the copy says \
+                                               (ADR 0005, sheet 14)";
+
+/// Why a gated import of the crate root is refused.
+pub(crate) const GLIBC_IMPORT: &str = "a glibc-gated import of the crate root (`pub use \
+                                       NAME::...;`) names a module behind the same gate, so \
+                                       a musl build hides no public item of a module it \
+                                       compiles (ADR 0005, sheet 14)";
+
 /// The crate root's glibc-only gated modules, against the modules of the
-/// rows the copy implements on glibc and only approves on musl: the musl
-/// build, which `check-os` does not compile, leaves out exactly those.
+/// rows the copy implements on glibc and only approves on musl; its
+/// glibc-or-test modules, against the files that hold sites and the rows'
+/// modules; and its gated imports, against the gates of the modules they
+/// name. These are checked from the source on every run, so they hold for
+/// a musl build whether or not this run builds one: the comparison of a
+/// musl build's own files with the copy runs only for each musl target
+/// whose standard library is installed in the pinned sysroot.
 fn glibc_only_mismatch(inventory: &Inventory, files: &[CrateFile]) -> Vec<Violation> {
     let root = Path::new("src").join("lib.rs");
-    let mut gated: Vec<&str> = files
+    let root_scans: Vec<&Scan> = files
         .iter()
         .filter(|file| file.path == root)
-        .flat_map(|file| file.scan.glibc_only.iter().map(String::as_str))
+        .map(|file| &file.scan)
+        .collect();
+    let mut violations = Vec::new();
+    let rule = |line, what| Violation::Rule {
+        file: root.clone(),
+        line,
+        what,
+    };
+    for (module, line) in root_scans.iter().flat_map(|scan| &scan.glibc_or_test) {
+        let holds_site = files
+            .iter()
+            .any(|file| in_module(&file.path, module) && !file.scan.sites.is_empty());
+        let row_module = inventory
+            .rows
+            .iter()
+            .filter_map(|row| row.code.as_ref())
+            .any(|code| code.module == *module);
+        if holds_site || row_module {
+            violations.push(rule(*line, GLIBC_OR_TEST_MODULE));
+        }
+    }
+    for import in root_scans.iter().flat_map(|scan| &scan.glibc_imports) {
+        let gated_alike = root_scans.iter().any(|scan| {
+            if import.or_test {
+                scan.glibc_or_test
+                    .iter()
+                    .any(|(module, _)| *module == import.module)
+            } else {
+                scan.glibc_only.contains(&import.module)
+            }
+        });
+        if !gated_alike {
+            violations.push(rule(import.line, GLIBC_IMPORT));
+        }
+    }
+    let mut gated: Vec<&str> = root_scans
+        .iter()
+        .flat_map(|scan| scan.glibc_only.iter().map(String::as_str))
         .collect();
     gated.sort_unstable();
     let mut withheld: Vec<&str> = inventory
@@ -376,15 +435,10 @@ fn glibc_only_mismatch(inventory: &Inventory, files: &[CrateFile]) -> Vec<Violat
         .filter_map(|row| row.code.as_ref().map(|code| code.module.as_str()))
         .collect();
     withheld.sort_unstable();
-    if gated == withheld {
-        Vec::new()
-    } else {
-        vec![Violation::Rule {
-            file: root,
-            line: 0,
-            what: GLIBC_ONLY,
-        }]
+    if gated != withheld {
+        violations.push(rule(0, GLIBC_ONLY));
     }
+    violations
 }
 
 /// The rules each site of one file must meet on its own: a name, a known
