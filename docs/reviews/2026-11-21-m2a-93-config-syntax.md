@@ -623,9 +623,9 @@ GPT is `gpt-6.2-sol` at xhigh.
    - `908bfe9..52c090c`: GPT FAIL. Every earlier item passed except one
      PARTLY, and two new majors were raised in the README's general
      rule. Item 5 quotes them.
-5. **Deferred, by ruling.** The two majors and the one PARTLY item from
-   the last GPT round, quoted as written:
-   - **Major, deferred:** "docs/specs/README.md:504. Defect: The
+5. **The last round's findings.** The two majors and the one PARTLY
+   item from the `908bfe9..52c090c` round, quoted as written:
+   - **Major, fixed (`c3d0d6d`):** "docs/specs/README.md:504. Defect: The
      versionless path inherits the exception for input the frozen text
      already called invalid. That text is pinned once, so it can still
      classify syntax added by a later approved extension as invalid.
@@ -634,33 +634,42 @@ GPT is `gpt-6.2-sol` at xhigh.
      asked: Limit the exception to correcting implementation acceptance
      outside the applicable specification. Explicitly protect input
      admitted by the frozen baseline or any approved extension."
-   - **Major, deferred:** "docs/specs/README.md:737. Defect: The table
+     - For a versionless read-only format, the one correction rejects
+       only input an implementation accepted outside the applicable
+       specification; input the baseline or an approved extension
+       admits keeps its meaning and is never rejected again. The status
+       table, the status rule and the versionless points say the same.
+       `config-syntax.md` §5.3 keeps a stronger promise, with no
+       exception.
+   - **Major, fixed (`c3d0d6d`):** "docs/specs/README.md:737. Defect: The table
      requires every versionless read-only format to record `none` for
      magic. The opt-in at line 477 permits a format with a magic value
      and no version. Consequence: An eligible format with a magic value
      cannot get an accurate frozen formats row under this rule. Fix
      asked: Record and check the specified magic value when present. Use
      `none` when the specification defines no magic value."
-   - **Partly, not fixed here:** "docs/specs/README.md:476 — PARTLY. The
+     - The row records the magic value the specification defines, or
+       "none" when it defines none, and the check compares it with the
+       specification's.
+   - **Partly, not fixed in this change:** "docs/specs/README.md:476 — PARTLY. The
      versionless path has its own freeze trigger, baseline and table
      entry. The index still specifies a check only for magic and version
      bytes. Require a check that the table and status line identify the
      same baseline commit."
-     - A check for the frozen-table row against the status line belongs
-       to the same README rule; it is recorded here for the same
-       follow-up issue.
+     - No rule yet requires a check that the frozen-table row and the
+       status line name the same revision.
 
-   The controller proposed deferring both to one follow-up issue on the
-   specs README. The refutation seat (GLM) ruled that the deferral
-   HOLDS:
-   - `config-syntax.md` and the parser are correct whichever way the
-     rule is worded: the specification is a draft, unfrozen, has no
-     magic value, and no release has shipped;
-   - neither finding makes anything this change states false;
-   - the follow-up issue is linked as a blocker on the first issue that
-     freezes or adds a versionless read-only format.
+   The controller first proposed deferring the two majors to a
+   follow-up issue on the specs README, and the refutation seat (GLM)
+   ruled that the deferral HOLDS: `config-syntax.md` and the parser are
+   correct whichever way the rule is worded. The follow-up issue's
+   two-family check split: GLM PASS; GPT a blocker, quoted as written:
+   "Opening paragraph and findings 1–2 — The draft justifies deferral
+   based on the unfrozen config syntax. Both findings concern rules that
+   #137 itself introduces at `52c090c`. Workflow §3 steps 3 and 7
+   prohibit deferring a confirmed defect in a contract the PR decides."
+   GPT is right, so both majors are fixed in this change (`c3d0d6d`),
+   and no follow-up issue is filed for them.
 
-   Follow-up issue #TBD.
-
-Final head: the commit that adds this section, on top of `52c090c`,
-which ends the reviewed content.
+Final head: the commit that updates this section, on top of
+`c3d0d6d`, which ends the reviewed content.
