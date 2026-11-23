@@ -485,3 +485,22 @@ fn use_items_give_each_import_s_paths_attributes_depth_and_shape() {
         ]
     );
 }
+
+#[test]
+fn use_items_match_each_attribute_s_brackets_with_nesting_counted() {
+    let source = "#[cfg(miri)]\n#[doc = stringify!([x])]\npub(super) use core::ffi::c_int;\n\
+                  #[doc = stringify!([x])]\nuse core::ffi::c_long;\n\
+                  #[cfg(miri)]\npub(in crate::a) use b::c;\n\
+                  #[cfg(miri)]\npub(crate) use d::{e, f};\n";
+    let items = use_items(&tokens_with_strings(source).unwrap());
+    let attributes: Vec<Vec<String>> = items.iter().map(|item| item.attributes.clone()).collect();
+    assert_eq!(
+        attributes,
+        [
+            vec!["cfg(miri)".to_owned(), "doc=stringify!([x])".to_owned()],
+            vec!["doc=stringify!([x])".to_owned()],
+            vec!["cfg(miri)".to_owned()],
+            vec!["cfg(miri)".to_owned()],
+        ]
+    );
+}

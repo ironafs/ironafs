@@ -29,8 +29,10 @@
 //!   in a function; an import under another cfg; and a glob;
 //! - by the declaration reader, which refuses what C cannot be compared
 //!   with: another ABI string, an attribute on a foreign function (such as
-//!   `link_name`), a `packed` struct, a renaming import, a type alias, and
-//!   a C type name not imported from `core::ffi`.
+//!   `link_name`), a `packed` struct, a renaming import, a type alias, an
+//!   import under an attribute holding brackets (alone, and after a cfg,
+//!   which a nearest-bracket scan would drop), and a C type name not
+//!   imported from `core::ffi`.
 //!
 //! The fixture's headers are Unix headers. On a Windows host, which has no
 //! row with a foreign item yet, the self-test says so and passes; the
@@ -172,6 +174,18 @@ const READER: &[(&str, &str, &str, &str)] = &[
         "#[repr(C)]\n",
         "#[repr(C)]\n#[repr(packed)]\n",
         "repr is not exactly C",
+    ),
+    (
+        "an import under a cfg and an attribute holding brackets",
+        "use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};",
+        "#[cfg(miri)]\n#[doc = stringify!([x])]\npub(super) use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};",
+        "with attributes this check does not read",
+    ),
+    (
+        "an import under an attribute holding brackets",
+        "use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};",
+        "#[doc = stringify!([x])]\nuse core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};",
+        "with attributes this check does not read",
     ),
     (
         "a renaming import",

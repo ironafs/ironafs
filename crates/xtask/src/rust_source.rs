@@ -562,11 +562,13 @@ pub(crate) fn use_items(tokens: &[Token]) -> Vec<UseItem> {
 /// `]`, in order.
 fn attributes_before(tokens: &[Token], at: usize) -> Vec<String> {
     let mut start = at;
-    // A visibility: `pub`, or `pub(...)`.
+    // A visibility: `pub`, or `pub(...)`, its parenthesis matched with
+    // nesting counted, as `os::scan::allowlist_range` matches its bracket.
     if start > 0 && punct(tokens.get(start - 1)) == Some(')') {
-        let open = (0..start - 1)
+        let close = start - 1;
+        let open = (0..close)
             .rev()
-            .find(|index| punct(tokens.get(*index)) == Some('('));
+            .find(|&open| matching(tokens, open, '(', ')') == Some(close));
         if let Some(open) = open
             && open > 0
             && ident(tokens.get(open - 1)) == Some("pub")
@@ -578,9 +580,12 @@ fn attributes_before(tokens: &[Token], at: usize) -> Vec<String> {
     }
     let mut found = Vec::new();
     while start > 0 && punct(tokens.get(start - 1)) == Some(']') {
-        let Some(open) = (0..start - 1)
+        // The `[` this `]` closes, with nested brackets counted (as in
+        // `#[doc = stringify!([x])]`), never the nearest `[`.
+        let close = start - 1;
+        let Some(open) = (0..close)
             .rev()
-            .find(|index| punct(tokens.get(*index)) == Some('['))
+            .find(|&open| matching(tokens, open, '[', ']') == Some(close))
         else {
             break;
         };
