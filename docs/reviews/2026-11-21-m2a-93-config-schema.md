@@ -42,10 +42,11 @@ descriptor walk, one table of source states, one definition of a
 configured cell, one precedence for floors), after text-only fixes did not
 converge under the GPT seat.
 
-**Credit.** GLM's last round passed on `f93c60e`, and its three minor
-findings were then fixed as recorded, with nothing else changed beyond
-GPT's two minors and the blocker list. GPT's final verdict is FAIL, so it
-is not credited as a reviewer of the final text.
+**Credit, as it stood after round 3.** GLM's last round passed on
+`f93c60e`, and its three minor findings were then fixed as recorded, with
+nothing else changed beyond GPT's two minors and the blocker list. GPT's
+round 3 verdict was FAIL. Both seats ran later scoped checks and a
+landing check; the credit for the landed text is under "Landing".
 
 ## Findings
 
@@ -471,3 +472,25 @@ PASS, each of F1 to F4 fixed. Blocker 5 is closed.
    reader to accept every RFC 4291 form, and says so in 5.3, point 3,
    with a test in 10, point 1. RFC 5952 is registered as E59. The page's
    index row is added.
+3. **Landing check** of `f721ba7..79ae966` (the index row, the register
+   rows, 5.3, point 3, 13.1 and this record), 2026-11-23. GLM
+   (`glm-5.3`, high): PASS, with two minors. GPT (`gpt-6.2-sol`, xhigh):
+   FAIL, with three minors and no blocker or major. GPT could not reach
+   the errata pages and left those claims uncertain; GLM checked them at
+   the RFC Editor and found one wrong, and the controller checked them
+   too. All five are fixed in the next commit and recorded here, and the
+   review stops (minors only).
+
+   | Finding | Seat, severity | Disposition | origin | kind |
+   |---|---|---|---|---|
+   | "The new index row omits ADR 0004 O17 points 3 and 4 and C34 point 2 as amended by issue #53, point 4 ... The row also omits the work delegated by configuration syntax §2, point 2." | GPT, minor | FIXED: the row lists O17 points 1 to 4, O19 points 1 to 3 and 5 to 7, C34 points 1 and 2 (point 2 as #53 amends it) and config-syntax.md §2, point 2; section 1 names the points it carries out beyond its quotations | introduced by the landing commit | consistency between parts |
+   | F2: the index row "under-reports against the page" (O17 points 3 and 4, C34 point 2 as amended) | GLM, minor | FIXED, by the same change | introduced by the landing commit | consistency between parts |
+   | "The rationale says that comparing by value makes the two readings name the same address ... The paragraph also uses `[OWN]` for both the local decision and the RFC facts" | GPT, minor | FIXED: 5.3, point 3 tags the RFC facts `[S1 §2.2: CONFIRMED]` and `[S2 §4: CONFIRMED]`, keeps `[OWN]` for following the published text, and says the two spellings decode to one value, so the duplicate rule treats them as one address; S1 is split into S1 (RFC 4291) and S2 (RFC 5952) | introduced by the landing commit | other |
+   | "The Credit paragraph still calls the Round 3 results GLM's last round and GPT's final verdict." | GPT, minor | FIXED: the paragraph is labelled as the state after round 3 and points here | pre-existing, made stale by this landing | consistency between parts |
+   | F1: in E59, "erratum 8554 is misfiled" (it is held, technical, "throughout the document", adding a reference to RFC 4007, not §3.1.4 wording) | GLM, minor | FIXED: E59 lists 3218 and 3219 (held, editorial, §3.1.4) and 8554 (held, technical, throughout: a reference to RFC 4007's scoped-address format, which this page does not accept, since it refuses a zone index); confirmed by the controller at the RFC Editor's errata page | introduced by the landing commit | correctness |
+
+   **Credit for the landed text.** GLM: its landing check passed, and its
+   two minors were fixed as recorded, with nothing else changed. GPT: its
+   landing check found only minor findings, fixed as recorded, with
+   nothing else changed, and its last scoped verification of the page's
+   blockers passed.

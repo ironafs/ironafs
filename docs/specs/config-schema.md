@@ -102,6 +102,10 @@ that does not apply stays, with one line saying why.
   drop-ins and OS policy, and how a later layer may change an earlier one
   (O17)".
 
+The page also carries out ADR 0004, O17, points 3 and 4 (5.1 and 5.6),
+O19, point 5 (5.1, point 7, and 5.8), and C34, point 2, as #53, point 4,
+amends it (5.2.3).
+
 ## 2. Scope
 
 1. **Covered:** the keys M2a defines, their types, ranges, defaults and
@@ -570,12 +574,13 @@ it refuses. A value of another syntax type is a type error (section 7).
    `0:0:0:0:0:0:0:1` are equal) refuse the list `[OWN]`. Either family is
    accepted whatever `network.families` says
    `[ADR 0004 C34.1: Working]`; using an address of a family that is off
-   is the user's rule. Section 2.2 is read as published: `::` may stand
-   for one leading or trailing zero piece, so `::0:0:0:0:0:0:1` is
-   accepted and equals `::1`. Erratum 6596, held for a document update,
-   would refuse that form; RFC 5952, section 4, requires a reader to
-   accept every form RFC 4291 allows, and comparing by value makes the
-   two readings name the same address `[OWN]`.
+   is the user's rule. `::` stands for one or more zero pieces, also at
+   either end `[S1 §2.2: CONFIRMED]`, and a reader accepts every form
+   RFC 4291 allows `[S2 §4: CONFIRMED]`. This page follows the published
+   text, not erratum 6596, which is held for a document update and would
+   refuse `::` for a single leading or trailing piece `[OWN]`: so
+   `::0:0:0:0:0:0:1` is accepted, it decodes to the same 128-bit value as
+   `::1`, and the duplicate rule above treats the two as one address.
 4. **Interface name:** a string; its range is in 5.2.2.
 5. **Byte count:** an integer, in bytes, from 64 MiB (67,108,864) to
    2^62 − 1 `[OWN]`: the floor keeps the cache above a few dozen chunks of
@@ -1050,7 +1055,8 @@ in `crates/ironafs-config/tests/it/`.
 | DNS | SPECIFICATION | The DNS client specification, issue #60 (draft), 5.2, 5.6.3 and 5.6.4 | 5.2.2, 5.2.4 |
 | NS | SPECIFICATION | The namespace specification, issue #80 (draft), 5.2 and 5.6.5 | 5.2.1, 5.2.6 |
 | VLFS | SPECIFICATION | The location service specification, issue #65 (draft, 2026-11-21), 5.1.1, point 5 (the VL service's port, marked unverified there) | 5.3.3 |
-| S1 | SPECIFICATION | RFC 4291, "IP Version 6 Addressing Architecture", February 2006, §2.2, register row E6 ([README](README.md)); RFC 5952, August 2010, section 4, its opening paragraph, register row E59 | 5.3.3 |
+| S1 | SPECIFICATION | RFC 4291, "IP Version 6 Addressing Architecture", February 2006, §2.2, register row E6 ([README](README.md)) | 5.3.3 |
+| S2 | SPECIFICATION | RFC 5952, "A Recommendation for IPv6 Address Text Representation", August 2010, section 4, its opening paragraph, register row E59 ([README](README.md)) | 5.3.3 |
 | CTL | DECISION | The controller's rulings of 2026-11-21 on Q1 to Q12 | 13 |
 | OWN | OWN | This page's own choices, each with its reason where it is made | throughout |
 
