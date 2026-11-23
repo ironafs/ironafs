@@ -1069,8 +1069,9 @@ are in its sheet below the table, under the same number.
     *Interface:* open a notify socket subscribed to a fixed group set
     (links, the addresses and routes of both families, and the policy
     rules of both families), or a request socket with no groups; send
-    one request to the kernel, without waiting; receive one datagram
-    into a caller's buffer, without waiting, returning its length,
+    one request to the kernel, without waiting for buffer space;
+    receive one datagram into a caller's buffer, without waiting for
+    one to arrive, returning its length,
     "nothing queued", "interrupted", or a typed error that tells
     overflow (`ENOBUFS`), truncation, an empty datagram and a sender
     other than the kernel apart; make a wake (one `eventfd`), signal it
@@ -1079,8 +1080,11 @@ are in its sheet below the table, under the same number.
     milliseconds and subject to the kernel's rounding and scheduling
     delay (Context, poll(2)), returning, for the route socket, which of
     readable, error and hangup were reported, whether the wake is
-    signalled, "timed out" or "interrupted". No call of this site blocks
-    except that wait, and the wait always has a finite timeout.
+    signalled, "timed out" or "interrupted". That wait is the site's
+    explicit readiness wait, and always has a finite timeout;
+    `MSG_DONTWAIT` keeps the send from waiting for buffer space and the
+    receive from waiting for a datagram. Whether a send can still wait
+    inside the kernel is UNVERIFIED (below).
     The bytes are not decoded here: the netlink messages go to a pure,
     fuzzed decoder outside this crate (Decision 1, point 3; rules 1 and
     9).
@@ -2608,79 +2612,120 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
 - **Amendment, 2026-11-22 (#TBD): row 23 and sheet 23, the route
   sockets' bounded wait.**
   - What changed: row 23 gains `poll` on one route socket and its
-    wake, and `eventfd` for the wake; its sends and receives pass
-    `MSG_DONTWAIT`, so the wait, always with a finite timeout, is the
-    site's only blocking call. `EINTR` from the wait, a send or a
-    receive is returned to the caller, not retried. The wait reports
-    readable, error and hangup separately, through a fuzzed validator
-    (point 6.5). Sheet 23 states the caller's requirements: one wake
-    per worker, cleared only by it, before it reads state; the
-    timeout from an awake-clock deadline, capped by
+    wake, and `eventfd` for the wake. Its sends and receives pass
+    `MSG_DONTWAIT`, which keeps a send from waiting for buffer space
+    and a receive from waiting for a datagram; `poll`, always with a
+    finite timeout, is the site's explicit readiness wait. Whether a
+    send can still wait inside the kernel is UNVERIFIED and a
+    qualification measurement of the row. `EINTR` from the wait, a send
+    or a receive is returned to the caller, not retried. The wait
+    reports readable, error and hangup separately, through a fuzzed
+    validator (point 6.5). Sheet 23 states the caller's requirements:
+    one wake per worker, cleared only by it, before it reads state;
+    the timeout from an awake-clock deadline, capped by
     `ROUTE_WAIT_HORIZON`; attempts registered before their unlocked
-    send; one terminal transition per attempt; an answer applied only
+    send; one terminal transition per attempt; a record applied only
     while its attempt is live, on its socket, with its sequence and in
     time; each expired attempt counted once; C37's clock failure;
     unexplained error or hangup as a failed receive; failed wake I/O
     fatal. Open items for the monitor's change: the deadline
     durations, the final group set (nexthops), and whether an
     unexplained error or hangup occurs. Point 5.2 declares `struct
-    pollfd` and `nfds_t` per C library on Linux. The row, the sheet
-    and point 5.2 stay Working, with new triggers.
-  - Evidence: the network-change monitor (PR #143) blocks in a receive
-    that ends only on a datagram, so a lost netlink wake leaves a
-    worker blocked and the handle's drop joining forever, and a lost
-    barrier acknowledgement leaves the generation unavailable with no
-    end (its open item B1). Ending the wait needs a call row 23 did
-    not hold. The owner chose `poll` with an `eventfd` wake over
-    `SO_RCVTIMEO` on 2026-11-22, with the conditions sheet 23 now
-    carries (decision comment on PR #143).
-  - Sweep: the repository at `origin/main` was searched for
+    pollfd` and `nfds_t` per C library on Linux, settled by point
+    5.6's check. The row, the sheet and point 5.2 stay Working, with
+    new triggers.
+  - Evidence: on PR #143's branch, the network-change monitor's
+    threads block in a receive that returns on a datagram or a socket
+    error (such as `ENOBUFS`), and nothing else ends it. A wake whose
+    send fails, or whose acknowledgement is lost, can leave an
+    otherwise idle worker blocked, and a drop of the handle from a
+    thread other than a worker then waits for it indefinitely (a drop
+    on a worker only asks for the stop). A lost barrier acknowledgement
+    has no deadline or retry, and can leave the generation unavailable
+    until another loss or a stop (open item B1 of that change's review
+    record, `docs/reviews/2026-11-21-m2a-97-netgen.md` at `e6c9eae`).
+    Bounding the wait needs a call row 23 did not hold. The owner chose
+    `poll` with an `eventfd` wake over `SO_RCVTIMEO` on 2026-11-22,
+    with the conditions sheet 23 now carries (decision comment on PR
+    #143).
+  - Sweep: the repository at `origin/main` (`3f73854`) was searched for
     "SO_RCVTIMEO", "EINTR", "is retried", "wake", "receive timeout",
-    "blocked receive", "rtnetlink", "poll", "eventfd" and "0005"; the
-    open branches of PRs #118, #132, #136 and #143 for the same.
-    - On `main`: no file but this ADR states row 23's rules. Within
-      it, sheets 8 and 14 and Decision 3.3 retry `EINTR` for their own
-      calls, unchanged; the other "is retried" hits are other rules.
-      Unchanged.
-    - On the branch of PR #143: `docs/specs/network-generation.md`
-      (5.7, point 7, the netlink wake and "needs no call beyond
-      `linux-rtnetlink`'s"; section 13, Q6), `crates/ironafs-net/src/
-      monitor.rs` and `crates/ironafs-netgen/src/monitor.rs` (the
-      netlink wake), and `crates/ironafs-os/src/linux_rtnetlink.rs`
-      and `sites.json` (blocking calls that retry `EINTR`) follow
-      the old row. Recorded as follow-ups for that pull request's
-      class S redesign; its branch is not edited here. The branches
-      of PRs #118, #132 and #136 hold no row 23 text.
-    - The rule binds the maintainer's session and contributors and
-      their agents, who write and review the monitor and the site; no
-      bot acts on it.
+    "blocked receive", "rtnetlink", "poll", "eventfd" and "0005"; so
+    were the open branches of PR #118 (`m2a-57-os`, `ff71ace`), PR #132
+    (`m2a-57-osc`, `291bc50`), PR #136 (`m2a-57-ose`, `33bc576`) and PR
+    #143 (`m2a-97-netgen`, `e6c9eae`).
+    - On `main`, only this ADR states row 23's rules, rewritten above.
+      Within it, sheets 8 and 14 and Decision 3.3 retry `EINTR` for
+      their own calls, unchanged; the other "is retried" hits are
+      other rules. Unchanged.
+    - On the four branches, each a follow-up for its pull request, not
+      edited here. Each carries main's ADR 0005, which takes this
+      amendment when it is merged.
+      - `crates/ironafs-os/sites.json`, the machine-readable copy of
+        point 6.7, holds the old row 23 on all four: approved-only on
+        `m2a-57-os` and `m2a-57-osc`; implemented on every Linux target
+        on `m2a-57-ose` and `m2a-97-netgen`. Each must take the amended
+        row's items and counts; on the last two, the row goes back to
+        approved-only until the group-set amendment is accepted and the
+        whole amended row is implemented (point 6.7).
+      - `crates/ironafs-os/src/linux_rtnetlink.rs` and its `abi/`
+        files on `m2a-57-ose` and `m2a-97-netgen`: blocking sends and
+        receives with no flags, which retry `EINTR`, and no `poll` or
+        `eventfd`. Rewritten to the amended sheet by the redesign.
+      - Their tests (`linux_rtnetlink/tests/stand_in.rs`, `kernel.rs`)
+        on the same two branches, including the stand-in test that an
+        interrupted send and receive are each made again, which CI
+        names (`.github/workflows/ci.yml`); replaced by the amended
+        sheet's tests.
+      - `crates/xtask/src/os.rs` and its inventory and ABI checks on
+        all four branches: unchanged in rule, but they check the copy
+        above, so they follow it.
+      - On `m2a-97-netgen` only: the monitor's specification,
+        `docs/specs/network-generation.md`, section 1 (its quotation of
+        sheet 23's caller obligations), 5.7, point 7 (the netlink wake,
+        and "needs no call beyond `linux-rtnetlink`'s"), section 6 (the
+        sequence number 0 kept for the wake) and section 13, Q6; and
+        `crates/ironafs-net/src/monitor.rs` and
+        `crates/ironafs-netgen/src/monitor.rs` (the netlink wake).
+        Rewritten by that pull request's class S redesign.
+    - Actors. The rule binds the maintainer's session, and contributors
+      and their agents, who write and review the monitor and the site.
+      CI: on the four branches it runs `check-os` (the inventory
+      against the copy above) and the ABI check, and, where the row is
+      implemented, the named site tests, all against the old row;
+      `main` runs none of them; the amended row is enforced in CI when the
+      redesign lands. Dependabot proposes dependency updates only and
+      does not act on the row.
   - Review rounds, class S, from families that wrote neither the
-    amendment nor the decision. Point 7.2 asks for the strongest row:
-    GPT ran at `gpt-6.2-sol` xhigh rather than `gpt-6.2-astra`, the
-    owner's standing choice to conserve GPT quota, and GLM's rounds 1
-    to 3 ran at high, its judgement seat and final pass at max.
-    - Round 1 on `3f73854..dca6340`: GPT (`gpt-6.2-sol`, xhigh) FAIL,
-      1 blocker (the first to take the lock could let a past-deadline
-      answer publish), 7 major and 1 minor; GLM (`glm-5.3`, high)
-      FAIL, 1 major (`nfds_t` declared per OS, not per C library) and
-      3 minor. Fixed in `e74a38c`; four points were moved to open
-      items or citations of the monitor's specification (M1 to M4:
-      the deadline durations, the failure count, the nexthop group
-      set, and whether an unexplained error or hangup occurs).
+    amendment nor the decision. The design seat was GPT at
+    `gpt-6.2-sol` (xhigh), not the strongest row's `gpt-6.2-astra`,
+    by the owner's standing choice to conserve GPT quota; ADR 0005's
+    own rounds 16 and 17 used the same pin. The security seat was GLM
+    `glm-5.3`, at high in rounds 1 to 3 and at max for the judgement
+    seat and the final pass over the whole amendment. This departure
+    from point 7.2's strongest row is put to the owner with the
+    amendment, for acceptance. Each finding, its disposition and the
+    convergence note are in the review record,
+    [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md),
+    section "Amendment: the route sockets' bounded wait".
+    - Round 1 on `3f73854..dca6340`: GPT FAIL, 1 blocker, 8 major and
+      1 minor; GLM FAIL, 1 major and 3 minor. Fixed in `e74a38c`; four
+      points were moved to open items or citations of the monitor's
+      specification (M1 to M4).
     - Round 2 on `dca6340..e74a38c`: GLM PASS with 2 minor and, as
       refutation seat, accepted M1 to M4; GPT FAIL, 3 major and 2
-      minor (1 left unfixed, 2 introduced by the fix: a flag that
-      comes with a valid datagram, intermediate dump records, and a
-      per-socket implementation mark). Fixed in `86cc6f6`.
+      minor. Fixed in `86cc6f6`.
     - Round 3 on `e74a38c..86cc6f6`: GLM PASS; GPT FAIL, 1 major
-      (`POLLERR` followed by an interrupted receive). Judgement seat,
-      GLM (`glm-5.3`, max): the finding does not hold. Receives pass
-      `MSG_DONTWAIT`, so they do not wait and are not interrupted; a
-      pending socket error is cleared only when a receive returns it,
-      so `poll` reports `POLLERR` again; the asked fix would replace
-      healthy sockets on every signal. The premises were checked
-      against poll(2), socket(7) and the sheet's text, and the finding
-      is closed as ruled.
+      (`POLLERR` followed by an interrupted receive). The judgement
+      seat, GLM (`glm-5.3`, max), ruled that the finding does not hold
+      and that the asked fix would replace healthy sockets on every
+      signal. Its ruling, qualified as its sources support: a pending
+      socket error is cleared when a receive returns it or when
+      `SO_ERROR` is read, and this site never reads `SO_ERROR`; under
+      `MSG_DONTWAIT` a receive never sleeps, so an interrupted return
+      after `POLLERR` is not expected; if one did occur, the error
+      stays pending and the next wait reports it again. The controller
+      checked these premises against poll(2), recv(2) and socket(7),
+      and the finding is closed as ruled.
     - Round 4, the final pass over the whole amendment,
-      `3f73854..86cc6f6`, GLM (`glm-5.3`, max): [result to be
-      recorded].
+      `3f73854..86cc6f6`, GLM (`glm-5.3`, max): PASS, no findings.
