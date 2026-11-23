@@ -21,9 +21,9 @@ IronAFS is free software under the
 ## The name
 
 GPL-3.0-or-later covers the project's code and documentation, and grants
-no trademark rights in the name. IronAFS™ is a trademark of Adrian Ana; [TRADEMARKS.md](TRADEMARKS.md) explains how to refer to the
-project and to modified versions, without limiting any right the licence
-gives.
+no trademark rights in the name. IronAFS™ is a trademark of Adrian Ana;
+[TRADEMARKS.md](TRADEMARKS.md) explains how to refer to the project and to
+modified versions, without limiting any right the licence gives.
 
 ## File headers
 
