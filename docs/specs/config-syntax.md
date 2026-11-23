@@ -384,12 +384,17 @@ kind and position.
 `ironafs-config_syntax`, in the top-level `fuzz/` crate, with tracked
 seeds under `fuzz/seeds/ironafs-config_syntax/` that `cargo xtask fuzz`
 replays: any bytes; asserts that the parser returns, that an error's
-position lies within the input (its column counted in Unicode scalar
-values), that a file over `MAX_FILE_BYTES` is refused as too large with
-no position, that an accepted input respects every cap of §5.2 (the file
-and line caps on its bytes, the others on its document) and holds no
-character §5.1, point 3 refuses, and that the same input gives the same
-result. Its seeds include each byte cap at its value and one above. Its checks are
+position lies within the input's valid UTF-8 prefix (its column counted
+in Unicode scalar values, the CR of a CR LF not counted), that a file
+over `MAX_FILE_BYTES` is refused as too large with no position, that an
+accepted input respects every cap of §5.2 (the file and line caps on its
+bytes, the others on its document), that the parsed keys, table-path
+segments and strings hold no character §5.1, point 3 refuses, and that
+the same input gives the same result. The character check is on the
+parsed document only, not the raw input: a comment's characters are left
+to the rejection tests of §10.3. Its seeds include the line cap at its
+value and one above; an integration test builds a file at the file cap
+and one byte above, since a seed that large slows every fuzzing run. Its checks are
 the property tests' own, from
 `crates/ironafs-config/tests/it/invariants.rs`.
 
