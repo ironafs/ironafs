@@ -60,6 +60,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-45-fuzz](2026-11-21-m2a-45-fuzz.md) | Issue #45: the excluded `fuzz/` crate, its pinned tooling, the deny-file and replay checks, and the XDR decode target |
 | [2026-11-21-m2a-81-keepalive](2026-11-21-m2a-81-keepalive.md) | Issue #81: the keepalive, callback trust and server time specification, first version from documents only, with the callback specification's lowering count |
 | [2026-11-22-gemini-security-seat](2026-11-22-gemini-security-seat.md) | The owner's decision: Gemini Carbon may hold the security seat, at `gemini-4-carbon-medium` |
+| [2026-11-21-m2a-57-os-part-a](2026-11-21-m2a-57-os-part-a.md) | Issue #57, part A: `ironafs-os`'s first sites (clocks, random source, wipe), `check-os` and `check-abi` |
 | [2026-11-21-m2a-93-config-syntax](2026-11-21-m2a-93-config-syntax.md) | Issue #93, part (a) and the cell name: `ironafs-config`'s strict TOML subset and the canonical cell name |
 | [2026-11-21-m2a-93-config-schema](2026-11-21-m2a-93-config-schema.md) | Issue #93, part (b): the configuration schema, its unknown-key rules and layering (draft; four recorded blockers) |
 

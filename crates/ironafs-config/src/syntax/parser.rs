@@ -33,8 +33,8 @@ pub(super) fn parse(input: &[u8]) -> Result<Document, SyntaxError> {
 }
 
 /// The checks of section 5.4, point 1 that come before any line is read:
-/// size, byte order mark, UTF-8, then line ends, control characters and
-/// line length, from the start of the file.
+/// size, byte order mark, UTF-8, then line ends, control characters,
+/// bidirectional controls and line length, from the start of the file.
 fn check_file(input: &[u8]) -> Result<&str, SyntaxError> {
     if input.len() > MAX_FILE_BYTES {
         return Err(SyntaxError::file_too_large());

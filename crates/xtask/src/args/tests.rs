@@ -129,6 +129,11 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             &["check-pure", "--self-test"][..],
             Task::CheckPure { self_test: true },
         ),
+        (&["check-os"][..], Task::CheckOs { self_test: false }),
+        (
+            &["check-os", "--self-test"][..],
+            Task::CheckOs { self_test: true },
+        ),
         (&["check-seams"][..], Task::CheckSeams { self_test: false }),
         (
             &["check-seams", "--self-test"][..],
@@ -161,6 +166,44 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
         (
             &["check-seams", "--all"][..],
             UsageError::UnexpectedArgument("--all".into()),
+        ),
+    ] {
+        assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
+    }
+}
+
+#[test]
+fn parse_routes_check_abi_with_and_without_a_target() {
+    for (args, task) in [
+        (
+            &["check-abi"][..],
+            Task::CheckAbi {
+                self_test: false,
+                target: None,
+            },
+        ),
+        (
+            &["check-abi", "--self-test"][..],
+            Task::CheckAbi {
+                self_test: true,
+                target: None,
+            },
+        ),
+        (
+            &["check-abi", "--target", "aarch64-unknown-linux-musl"][..],
+            Task::CheckAbi {
+                self_test: false,
+                target: Some("aarch64-unknown-linux-musl".into()),
+            },
+        ),
+    ] {
+        assert_eq!(parse(args.iter().map(OsString::from)), Ok(task));
+    }
+    for (args, error) in [
+        (&["check-abi", "--target"][..], UsageError::MissingTarget),
+        (
+            &["check-abi", "--target", "x", "y"][..],
+            UsageError::UnexpectedArgument("y".into()),
         ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Err(error));

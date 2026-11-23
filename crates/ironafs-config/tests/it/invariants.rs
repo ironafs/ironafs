@@ -61,10 +61,16 @@ pub(crate) fn check(input: &[u8], outcome: &Result<Document, SyntaxError>) -> Re
 }
 
 /// Every line of an accepted input is at most `MAX_LINE_BYTES`, without
-/// its line end, LF or CR LF.
+/// its line end, LF or CR LF. A CR is part of the line end only before an
+/// LF, so the last line, which no LF ends, keeps a final CR.
 fn within_lines(input: &[u8]) -> Result<(), String> {
-    for (index, line) in input.split(|byte| *byte == b'\n').enumerate() {
-        let text = line.strip_suffix(b"\r").unwrap_or(line);
+    let mut lines = input.split(|byte| *byte == b'\n').enumerate().peekable();
+    while let Some((index, line)) = lines.next() {
+        let text = if lines.peek().is_some() {
+            line.strip_suffix(b"\r").unwrap_or(line)
+        } else {
+            line
+        };
         if text.len() > MAX_LINE_BYTES {
             return Err(format!(
                 "accepted line {} of {} bytes",
@@ -78,33 +84,43 @@ fn within_lines(input: &[u8]) -> Result<(), String> {
 
 /// A position lies within the input: its line exists, and its column is at
 /// most one past the line's last character, counted in Unicode scalar
-/// values. In a line that is not UTF-8, only its valid prefix counts, so
-/// the latest column is the one just after that prefix.
+/// values, the CR of a CR LF not counted. Only the file's valid UTF-8
+/// prefix counts: a line after the first invalid sequence does not exist,
+/// and the line holding it ends just before it.
 ///
 /// # Errors
 ///
 /// Returns where the position falls outside.
 pub(crate) fn position_within(input: &[u8], position: Position) -> Result<(), String> {
-    let line = position
-        .line
-        .checked_sub(1)
-        .and_then(|index| input.split(|byte| *byte == b'\n').nth(index));
-    let Some(line) = line else {
-        return Err(format!("line {} past the input", position.line));
-    };
-    let valid = match std::str::from_utf8(line) {
+    let valid = match std::str::from_utf8(input) {
         Ok(text) => text,
-        Err(error) => line
+        Err(error) => input
             .get(..error.valid_up_to())
             .and_then(|prefix| std::str::from_utf8(prefix).ok())
             .unwrap_or_default(),
     };
-    let last = valid.chars().count().saturating_add(1);
-    if position.column == 0 || position.column > last {
+    let mut lines = valid.split('\n').peekable();
+    let mut line = None;
+    for number in 1.. {
+        let Some(text) = lines.next() else { break };
+        if number == position.line {
+            let ended = lines.peek().is_some();
+            line = Some(if ended {
+                text.strip_suffix('\r').unwrap_or(text)
+            } else {
+                text
+            });
+            break;
+        }
+    }
+    let Some(line) = line else {
+        return Err(format!("line {} past the input", position.line));
+    };
+    let characters = line.chars().count();
+    if position.column == 0 || position.column > characters.saturating_add(1) {
         return Err(format!(
-            "column {} outside its line of {} characters",
-            position.column,
-            last - 1
+            "column {} outside its line of {characters} characters",
+            position.column
         ));
     }
     Ok(())

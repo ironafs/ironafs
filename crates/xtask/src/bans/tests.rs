@@ -994,3 +994,17 @@ fn crate_config_drift_says_what_differs() {
          constructor bans; first difference at: x = 1"
     );
 }
+
+#[test]
+fn isolated_build_refuses_a_directory_cargo_would_read_as_a_template() {
+    let mut command = crate::Command::new("cargo");
+    assert!(super::isolated_build(&mut command, Path::new("/w/target/lint")).is_ok());
+    for dir in ["/w/{workspace-root}/lint", "/w/a{b/lint", "/w/a}b/lint"] {
+        let mut command = crate::Command::new("cargo");
+        let error = super::isolated_build(&mut command, Path::new(dir))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(dir) && error.contains("template"), "{error}");
+        assert_eq!(command.get_envs().count(), 0, "{dir}");
+    }
+}

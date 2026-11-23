@@ -6,9 +6,9 @@
 use std::path::PathBuf;
 
 use super::{
-    CRATES, Kind, OWN_LINTS, Rule, THIRD_PARTY, ThirdPartyLists, Violation, edition_violations,
-    graph_violations, inherits_workspace_edition, inherits_workspace_lints, kind_of,
-    lint_violations,
+    CRATES, Kind, OWN_LINTS, Rule, THIRD_PARTY, ThirdPartyLists, Violation,
+    dependency_table_violations, edition_violations, graph_violations, inherits_workspace_edition,
+    inherits_workspace_lints, kind_of, lint_violations, own_lints_differences,
 };
 use crate::metadata::{Member, Package, Workspace};
 
@@ -59,6 +59,8 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                 lib_root: None,
                 target_kinds: vec!["lib".into()],
                 editions: vec!["2024".into()],
+                build_script: None,
+                declared_dependencies: Vec::new(),
                 renamed: Vec::new(),
             })
             .collect(),
@@ -164,7 +166,7 @@ fn graph_violations_pass_the_allowed_shape() {
             &["ironafs-cache", "ironafs-proto", "ironafs-rx"],
         ),
         ("ironafs-net", &["ironafs-rx", "ironafs-os", "outside"]),
-        ("ironafs-os", &["ironafs-time", "libc"]),
+        ("ironafs-os", &["libc"]),
         (
             "ironafs-fuse",
             &["ironafs-vfs", "ironafs-os", "ironafs-crypto"],
@@ -462,7 +464,7 @@ fn graph_violations_keep_layers_and_drivers_to_their_lists_and_the_core_off_driv
         ),
         ("ironafs-auth", &[]),
         ("ironafs-vfs", &[]),
-        ("ironafs-os", &["ironafs-time", "ironafs-proto"]),
+        ("ironafs-os", &["ironafs-proto"]),
         ("ironafs-time", &[]),
         ("ironafs-proto", &[]),
         (
@@ -529,21 +531,36 @@ fn inherits_workspace_lints_accepts_only_the_inherited_table() {
     }
 }
 
+/// A workspace manifest with lints in both tables, as the root's are.
+const ROOT_MANIFEST: &str = "[workspace]\nmembers = [\"crates/*\"]\n\n\
+                             [workspace.lints.rust]\nunsafe_code = \"forbid\"\n\
+                             unreachable_pub = \"warn\"\n\n\
+                             [workspace.lints.clippy]\n\
+                             pedantic = { level = \"warn\", priority = -1 }\n\
+                             unwrap_used = \"deny\"\n";
+
+/// The own table that `ROOT_MANIFEST` allows: the same, with unsafe code
+/// denied instead of forbidden.
+const OWN_TABLE: &str = "[package]\nname = \"ironafs-os\"\n\n\
+                         [lints.rust]\nunsafe_code = \"deny\" # ADR 0005\n\
+                         unreachable_pub = \"warn\"\n\n\
+                         [lints.clippy]\n\
+                         pedantic = {level=\"warn\",priority=-1}\n\
+                         unwrap_used = \"deny\"\n";
+
 #[test]
 fn lint_violations_skip_only_the_crates_an_adr_lets_keep_their_own_lints() {
-    assert_eq!(OWN_LINTS, [] as [&str; 0]);
+    assert_eq!(OWN_LINTS, ["ironafs-os"]);
     let root = std::env::temp_dir().join(format!("ironafs-xtask-lints-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let mut graph = workspace(&[("ironafs-os", &[]), ("ironafs-net", &[])]);
     graph.root.clone_from(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("Cargo.toml"), ROOT_MANIFEST).unwrap();
     for member in &mut graph.members {
         member.dir = root.join("crates").join(&member.name);
         std::fs::create_dir_all(&member.dir).unwrap();
-        std::fs::write(
-            member.dir.join("Cargo.toml"),
-            "[package]\n[lints.rust]\nunsafe_code = \"allow\"\n",
-        )
-        .unwrap();
+        std::fs::write(member.dir.join("Cargo.toml"), OWN_TABLE).unwrap();
     }
 
     assert_eq!(
@@ -555,6 +572,70 @@ fn lint_violations_skip_only_the_crates_an_adr_lets_keep_their_own_lints() {
     );
     assert_eq!(lint_violations(&graph, &[]).unwrap().len(), 2);
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn own_lints_differences_accept_the_workspace_table_with_unsafe_code_denied() {
+    assert_eq!(
+        own_lints_differences(ROOT_MANIFEST, OWN_TABLE),
+        [] as [String; 0]
+    );
+}
+
+#[test]
+fn own_lints_differences_name_each_departure_from_the_workspace_table() {
+    let cases: [(&str, &str, &str); 6] = [
+        (
+            "unsafe code allowed",
+            "unsafe_code = \"deny\"",
+            "unsafe_code = \"allow\"",
+        ),
+        (
+            "unsafe code still forbidden",
+            "unsafe_code = \"deny\"",
+            "unsafe_code = \"forbid\"",
+        ),
+        (
+            "a lint lowered",
+            "unwrap_used = \"deny\"",
+            "unwrap_used = \"warn\"",
+        ),
+        ("a lint dropped", "unwrap_used = \"deny\"\n", ""),
+        (
+            "a lint added",
+            "unwrap_used = \"deny\"",
+            "unwrap_used = \"deny\"\nexpect_used = \"allow\"",
+        ),
+        ("a priority changed", "priority=-1", "priority=0"),
+    ];
+    for (name, from, to) in cases {
+        let manifest = OWN_TABLE.replace(from, to);
+        assert_ne!(manifest, OWN_TABLE, "{name}");
+        assert_eq!(
+            own_lints_differences(ROOT_MANIFEST, &manifest).len(),
+            1,
+            "{name}: {manifest}"
+        );
+    }
+}
+
+#[test]
+fn own_lints_differences_refuse_a_table_they_cannot_read_exactly() {
+    for manifest in [
+        "[package]\n[lints]\nworkspace = true\n",
+        &format!("{OWN_TABLE}[target.'cfg(unix)'.lints.rust]\nunsafe_code = \"allow\"\n"),
+        &format!("{OWN_TABLE}[package.metadata]\nnote = \"\"\"\n[lints.rust]\n\"\"\"\n"),
+        &OWN_TABLE.replace(
+            "[lints.rust]\n",
+            "[lints]\nrust = { unsafe_code = \"deny\" }\n[lints.rust]\n",
+        ),
+        "[package]\nname = \"ironafs-os\"\n",
+    ] {
+        assert!(
+            !own_lints_differences(ROOT_MANIFEST, manifest).is_empty(),
+            "{manifest}"
+        );
+    }
 }
 
 #[test]
@@ -615,6 +696,38 @@ fn edition_violations_want_the_inherited_edition_and_the_edition_the_reader_foll
                 edition: "2021".into(),
             },
         ]
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn dependency_tables_are_cargo_s_declared_dependencies_not_manifest_text() {
+    // Cargo's parse of the manifest is the rule: a declared dependency of any
+    // kind is refused, and text that only mentions the word is not.
+    let root = std::env::temp_dir().join(format!("ironafs-xtask-tables-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut graph = workspace(&[("ironafs-os", &[])]);
+    graph.root.clone_from(&root);
+    for member in &mut graph.members {
+        member.dir = root.join("crates").join(&member.name);
+        std::fs::create_dir_all(&member.dir).unwrap();
+        std::fs::write(
+            member.dir.join("Cargo.toml"),
+            "[package]\nname = \"ironafs-os\"\ndescription = \"no dependencies\"\n",
+        )
+        .unwrap();
+    }
+    assert_eq!(dependency_table_violations(&graph, &["ironafs-os"]), []);
+    if let Some(member) = graph.members.first_mut() {
+        member.declared_dependencies = vec!["dev ironafs-time".into()];
+    }
+    assert_eq!(
+        dependency_table_violations(&graph, &["ironafs-os"]),
+        [Violation::DependencyTable {
+            name: "ironafs-os".into(),
+            manifest: PathBuf::from("crates/ironafs-os/Cargo.toml"),
+            line: "declares the dev ironafs-time".into(),
+        }]
     );
     std::fs::remove_dir_all(&root).unwrap();
 }

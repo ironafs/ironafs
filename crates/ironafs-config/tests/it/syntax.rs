@@ -416,13 +416,26 @@ fn invariants_refuse_an_accepted_input_over_the_byte_caps() {
     let crlf = format!("{at_cap}\r\n{at_cap}\r\n");
     assert_eq!(invariants::check(crlf.as_bytes(), &empty), Ok(()));
     let over = format!("{at_cap}x\n");
-    assert!(invariants::check(over.as_bytes(), &empty).is_err());
+    assert_eq!(
+        invariants::check(over.as_bytes(), &empty),
+        Err("accepted line 1 of 4097 bytes".to_string())
+    );
+    // A CR is a line end only before LF: a bare CR at the end is the
+    // line's own byte.
+    let bare = format!("{at_cap}\r");
+    assert_eq!(
+        invariants::check(bare.as_bytes(), &empty),
+        Err("accepted line 1 of 4097 bytes".to_string())
+    );
 
     let file = comments(MAX_FILE_BYTES, 64);
     assert_eq!(file.len(), MAX_FILE_BYTES);
     assert_eq!(invariants::check(&file, &empty), Ok(()));
     let file = comments(MAX_FILE_BYTES + 1, 64);
-    assert!(invariants::check(&file, &empty).is_err());
+    assert_eq!(
+        invariants::check(&file, &empty),
+        Err("accepted a file of 262145 bytes".to_string())
+    );
 }
 
 #[test]
@@ -430,9 +443,15 @@ fn invariants_require_file_too_large_without_a_position_exactly_over_the_file_ca
     let over = comments(MAX_FILE_BYTES + 1, 64);
     assert_eq!(invariants::check(&over, &parse(&over)), Ok(()));
     // Another error, or a document, for a file over the cap is refused.
-    assert!(invariants::check(&over, &parse(b"=")).is_err());
+    assert_eq!(
+        invariants::check(&over, &parse(b"=")),
+        Err("a file over the cap gave line 1, column 1: found '=', expected a key, a [table] header or a comment".to_string())
+    );
     // An error without a position for a file within the cap is refused.
-    assert!(invariants::check(b"", &parse(&over)).is_err());
+    assert_eq!(
+        invariants::check(b"", &parse(&over)),
+        Err("no position: file is larger than 262144 bytes".to_string())
+    );
 }
 
 #[test]
@@ -443,15 +462,39 @@ fn invariants_bound_columns_in_unicode_scalar_values() {
         invariants::position_within("\u{e9}a".as_bytes(), at(1, 3)),
         Ok(())
     );
-    assert!(invariants::position_within("\u{e9}a".as_bytes(), at(1, 4)).is_err());
-    assert!(invariants::position_within(b"a", at(1, 0)).is_err());
-    assert!(invariants::position_within(b"a\n", at(3, 1)).is_err());
+    assert_eq!(
+        invariants::position_within("\u{e9}a".as_bytes(), at(1, 4)),
+        Err("column 4 outside its line of 2 characters".to_string())
+    );
+    assert_eq!(
+        invariants::position_within(b"a", at(1, 0)),
+        Err("column 0 outside its line of 1 characters".to_string())
+    );
+    assert_eq!(
+        invariants::position_within(b"a\n", at(3, 1)),
+        Err("line 3 past the input".to_string())
+    );
+    // The CR of a CR LF is the line end, not a character of the line.
+    assert_eq!(invariants::position_within(b"ab\r\nc", at(1, 3)), Ok(()));
+    assert_eq!(
+        invariants::position_within(b"ab\r\nc", at(1, 4)),
+        Err("column 4 outside its line of 2 characters".to_string())
+    );
     // Invalid UTF-8: the valid prefix, then the position just after it.
     assert_eq!(invariants::position_within(b"a\xffbc", at(1, 2)), Ok(()));
-    assert!(invariants::position_within(b"a\xffbc", at(1, 3)).is_err());
+    assert_eq!(
+        invariants::position_within(b"a\xffbc", at(1, 3)),
+        Err("column 3 outside its line of 1 characters".to_string())
+    );
+    // Nothing after the first invalid sequence in the file is a position.
+    assert_eq!(
+        invariants::position_within(b"a\n\xff\nbc", at(3, 1)),
+        Err("line 3 past the input".to_string())
+    );
 }
 
 /// The error for `input`, as its kind and its position's line and column.
+#[track_caller]
 fn refused(input: &str) -> (ironafs_config::SyntaxErrorKind, usize, usize) {
     let error = parse(input.as_bytes()).unwrap_err();
     let position = error.position().unwrap();
@@ -474,4 +517,21 @@ fn parse_refuses_bidirectional_controls_in_comments_keys_and_values() {
         assert_eq!(refused(&format!("a{control} = 1")), (kind, 1, 2));
         assert_eq!(refused(&format!("a = 1{control}")), (kind, 1, 6));
     }
+}
+
+#[test]
+fn parse_file_cap_at_and_one_above_in_comment_lines() {
+    let at_cap = comments(MAX_FILE_BYTES, 64);
+    assert_eq!(at_cap.len(), MAX_FILE_BYTES);
+    assert_eq!(
+        parse(&at_cap).map(|document| document.entries().count()),
+        Ok(0)
+    );
+    let over = comments(MAX_FILE_BYTES + 1, 64);
+    assert_eq!(over.len(), MAX_FILE_BYTES + 1);
+    let error = parse(&over).unwrap_err();
+    assert_eq!(
+        (error.kind(), error.position()),
+        (ironafs_config::SyntaxErrorKind::FileTooLarge, None)
+    );
 }

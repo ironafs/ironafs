@@ -5,8 +5,9 @@
 //! points 1 and 2; `docs/specs/config-syntax.md`).
 //!
 //! [`parse`] checks the whole file before it reads any line (size, byte
-//! order mark, UTF-8, line ends, control characters, line length), then
-//! parses the lines in order and stops at the first error. Every cap of
+//! order mark, UTF-8, line ends, control characters, bidirectional
+//! controls, line length), then parses the lines in order and stops at
+//! the first error. Every cap of
 //! the specification's section 5.2 is checked before the bytes it bounds
 //! are stored.
 
