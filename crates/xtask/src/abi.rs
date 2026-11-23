@@ -46,6 +46,10 @@ mod tests;
 
 const CHECK: &str = "check-abi";
 
+/// The target-directory subdirectory `check-abi` builds the crate in, with
+/// the compiler Cargo selects; `check-os`'s pinned runs use their own.
+pub(crate) const BUILD_DIR: &str = "xtask-check-os";
+
 /// A type as a declaration writes it: a name (its path's last segment) or
 /// a raw pointer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -941,7 +945,7 @@ fn check_target(
         Ok(inventory) => inventory,
         Err(problems) => return Err(fail(problems.iter().map(ToString::to_string).collect())),
     };
-    let build_dir = workspace.target_dir.join("xtask-check-os");
+    let build_dir = workspace.target_dir.join(BUILD_DIR);
     let read = match os::files_for(None, workspace, &crate_dir, &build_dir, target)? {
         Built::Files(files) => files,
         Built::Refused(error) => return Err(fail(vec![format!("{target}: {error}")])),

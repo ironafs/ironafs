@@ -94,7 +94,22 @@ const COMMAND: &str = "cargo metadata";
 ///
 /// Returns an error if cargo fails or its output is not the expected graph.
 pub(crate) fn load(manifest: Option<&Path>, config: &[String]) -> Result<Workspace, Error> {
+    load_in(manifest, config, |_| {})
+}
+
+/// As `load`, with `prepare` applied to the `cargo metadata` command first
+/// (to set the compiler it runs, for one).
+///
+/// # Errors
+///
+/// Returns an error if cargo fails or its output is not the expected graph.
+pub(crate) fn load_in(
+    manifest: Option<&Path>,
+    config: &[String],
+    prepare: impl FnOnce(&mut Command),
+) -> Result<Workspace, Error> {
     let mut command = Command::new("cargo");
+    prepare(&mut command);
     command.args(["metadata", "--format-version", "1", "--all-features"]);
     for value in config {
         command.arg("--config").arg(value);

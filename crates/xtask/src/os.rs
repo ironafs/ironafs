@@ -57,6 +57,12 @@ const CHECK: &str = "check-os";
 /// The crate that may hold `unsafe` (ADR 0005, point 1.1).
 pub(crate) const CRATE: &str = "ironafs-os";
 
+/// The target-directory subdirectory of `check-os`'s Cargo runs, all with
+/// the pinned compiler and no wrapper (`pin::pin_cargo`): apart from
+/// `check-abi`'s builds, whose compiler Cargo selects, so no artifact,
+/// build-script output or dependency-info file of those is reused here.
+pub(crate) const PINNED_BUILD_DIR: &str = "xtask-check-os-pinned";
+
 /// The copy of the ADR's table, relative to the crate's directory.
 pub(crate) const SITES: &str = "sites.json";
 
@@ -1033,7 +1039,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
             }]));
         }
     };
-    let build_dir = workspace.target_dir.join("xtask-check-os");
+    let build_dir = workspace.target_dir.join(PINNED_BUILD_DIR);
     let cfgs = allowlist::target_cfgs(&pinned, &workspace.root)?;
     let (mut violations, unlisted) = target_violations(&pinned, &workspace, &build_dir, &cfgs)?;
     let (compiled, found) = compiled_files(&pinned, &workspace, &crate_dir, &build_dir)?;

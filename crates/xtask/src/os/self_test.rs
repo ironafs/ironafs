@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use super::allowlist::{Cfg, guard_of};
 use super::gate::{self, BUILD_SCRIPT};
 use super::inventory::Inventory;
-use super::pin::Pinned;
+use super::pin::{self, Pinned};
 use super::scan::{self, BLOCK_BODY, CFG, TARGET_ENV};
 use super::{
     ALLOWLIST, CrateFile, Violation, compare, gate_violations, guard_violations,
@@ -789,9 +789,10 @@ fn report_caught(output: &mut impl Write, case: &str, found: &str) -> Result<(),
 /// listed one's, each planting one change. One accepts it in its code,
 /// its list unchanged: only the verdict check catches it, and Cargo, given
 /// a package holding that script, must show it ran the script to success
-/// for that target (its `build-script-executed` report) before the build
-/// failed, which `cargo_problem` refuses. The other names it in its list
-/// while its code still refuses it: only the list check catches it.
+/// for that target (its `build-script-executed` report), and
+/// `cargo_problem` must refuse the result, whether the build then failed
+/// or not. The other names it in its list while its code still refuses
+/// it: only the list check catches it.
 fn extra_cases(
     planting: &Planting<'_>,
     unlisted: &[String],
@@ -822,7 +823,9 @@ fn extra_cases(
     let package = planting.scratch.join("package");
     write_package(&package, planting.originals, &accepting)?;
     let manifest = package.join("Cargo.toml");
-    let planted = crate::metadata::load(Some(&manifest), &[])?;
+    let planted = crate::metadata::load_in(Some(&manifest), &[], |command| {
+        pin::pin_cargo(command, planting.context.pinned);
+    })?;
     let run = gate::cargo_run(
         planting.context.pinned,
         planting.context.root,

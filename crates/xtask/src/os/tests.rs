@@ -255,3 +255,10 @@ fn build_script_problem_needs_cargo_s_script_to_be_the_crate_s_own_file() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn pinned_runs_build_apart_from_check_abi() {
+    // check-abi builds the crate with the compiler Cargo selects; check-os's
+    // pinned runs must never reuse what those builds leave behind.
+    assert_ne!(super::PINNED_BUILD_DIR, crate::abi::BUILD_DIR);
+}
