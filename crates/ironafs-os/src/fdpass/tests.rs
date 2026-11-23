@@ -13,6 +13,10 @@ use std::rc::Rc;
 
 use super::{FdPassError, LINUX, Received, accept, retried, sent};
 
+mod held;
+
+use held::{Log, adopter};
+
 /// A valid receive of descriptor 7.
 const ONE: Received = Received {
     count: 1,
@@ -25,31 +29,12 @@ const ONE: Received = Received {
     byte: 1,
 };
 
-/// What happened to the stand-in descriptors: adopted, and dropped.
-#[derive(Default)]
-struct Log {
-    adopted: Vec<i32>,
-    dropped: Vec<i32>,
-}
-
-/// A stand-in descriptor: records its drop.
-struct Held(i32, Rc<RefCell<Log>>);
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        self.1.borrow_mut().dropped.push(self.0);
-    }
-}
-
 /// Runs `accept` over `received`; returns the descriptor handed out, if
 /// any, the error, if any, and the log, after the result was dropped (so a
 /// descriptor handed out is in `dropped` too).
 fn run(received: &Received) -> (Option<i32>, Option<FdPassError>, Log) {
     let log = Rc::new(RefCell::new(Log::default()));
-    let result = accept(&LINUX, *received, |descriptor| {
-        log.borrow_mut().adopted.push(descriptor);
-        Held(descriptor, Rc::clone(&log))
-    });
+    let result = accept(&LINUX, *received, adopter(&log));
     let (handed, error) = match result {
         Ok(held) => (Some(held.0), None),
         Err(error) => (None, Some(error)),

@@ -134,21 +134,11 @@ fn delivers(rules: &Rules, received: &Received) -> Option<(usize, bool)> {
     }
 }
 
-/// What happened to the stand-ins: adopted, and dropped.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Log {
-    adopted: Vec<i32>,
-    dropped: Vec<i32>,
-}
+/// The tests' stand-in descriptor and adopter, from their own file.
+#[path = "../../crates/ironafs-os/src/fdpass/tests/held.rs"]
+mod held;
 
-/// A stand-in descriptor: records its drop.
-struct Held(i32, Rc<RefCell<Log>>);
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        self.1.borrow_mut().dropped.push(self.0);
-    }
-}
+use held::{Log, adopter};
 
 /// One run's outcome: the integer handed out or the error's kind, and the
 /// log once the result is dropped.
@@ -168,10 +158,7 @@ fn check(input: &[u8]) -> Outcome {
         && received.byte == rules.data;
 
     let log = Rc::new(RefCell::new(Log::default()));
-    let result = accept(&rules, received, |value| {
-        log.borrow_mut().adopted.push(value);
-        Held(value, Rc::clone(&log))
-    });
+    let result = accept(&rules, received, adopter(&log));
     let handed = result.as_ref().ok().map(|held| held.0);
     {
         let log = log.borrow();
