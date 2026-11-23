@@ -745,4 +745,5 @@ format's row records the magic value its specification defines, or
 "none" when it defines none, and the check compares the recorded value
 with the specification's. Its row has "none" for the versions written,
 and names, under the versions read, the frozen specification revision
-on its status line.
+on its status line; the check also compares that revision with the
+baseline commit the specification's status line names.
