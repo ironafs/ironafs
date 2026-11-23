@@ -132,8 +132,10 @@ that does not apply stays, with one line saying why.
    - the security floor keys' values and meaning: M2b-17 (planned). M2a
      reserves their names (5.4, point 5);
    - finding the files and reading them, in the order of 5.1, point 2,
-     and by the walk of 5.1, point 3: the caller. It hands this crate each
-     source's bytes, name and trust;
+     and by the walk of 5.1, point 3: the caller. It hands this crate one
+     outcome per source, and per directory whose walk or listing fails
+     (5.8, points 1 and 2): a trusted file's name and bytes, or an
+     unreadable or untrusted source, which carries no bytes;
    - run-time overrides (debug levels and captures, O17, point 1): the
      events specification and the control endpoint (#70). No key of this
      schema is a run-time override.
@@ -165,8 +167,11 @@ that does not apply stays, with one line saying why.
 
 - **Layer:** one of O17, point 1's four: defaults (D), local files (F),
   OS policy (P), run-time overrides (R).
-- **Source:** one file's bytes as the caller hands them over, with its
-  layer, a name for diagnostics and its trust (5.1, point 3).
+- **Source:** one file as the caller hands it over, with its layer and a
+  name for diagnostics: its bytes when it is trusted and was read (5.1,
+  point 3), or else the outcome `Unreadable` or `Untrusted`, which carries
+  no bytes (5.1, point 7). An untrusted or unreadable source never
+  carries bytes.
 - **Schema path:** a key's path with each cell name replaced by `*`, for
   example `cells.*.protocol`. Every known key has one.
 - **Known key:** a schema path in 5.2's tables that is not retired
@@ -204,10 +209,22 @@ that does not apply stays, with one line saying why.
    (`.policy.toml.swp`, `policy.toml.dpkg-new`) is never taken as policy or
    configuration.
 2. **This crate parses bytes.** The caller finds the files, reads at most
-   `MAX_FILE_BYTES` + 1 bytes of each and hands over all it read, so a
-   larger file is seen and refused (config-syntax.md, 5.2), and hands over
-   one source per file ([config-syntax.md](config-syntax.md), §2)
-   `[OWN]`. F's sources are in this order: `ironafs.toml`, then the
+   `MAX_FILE_BYTES` + 1 bytes of each trusted file and hands over all it
+   read, so a larger file is seen and refused (config-syntax.md, 5.2), and
+   hands over one source per file ([config-syntax.md](config-syntax.md),
+   §2) `[OWN]`. A source that is unreadable or untrusted (point 7) is
+   handed over as that outcome, with no bytes, and the caller goes on to
+   the next source: it collects the outcomes of `ironafs.toml` and of the
+   drop-in directory without stopping at the first failure, as it does
+   for the policy directory (5.8, points 1 and 2) `[OWN]`. **At most
+   `config.sources_max` sources** (5.2.9) are taken from the drop-in
+   directory, and at most as many from the policy directory: the caller
+   counts the sources (point 1) as it lists, skips other entries without
+   storing them, and when the count passes the bound it stops listing and
+   reads no file of that directory; the directory's outcome is then
+   `TooMany`, which is malformed (point 7) `[OWN]`, so the bytes held for
+   one layer are at most `config.sources_max` + 1 times
+   (`MAX_FILE_BYTES` + 1). F's sources are in this order: `ironafs.toml`, then the
    drop-ins sorted by name, byte by byte; P's sources are sorted the same
    way `[OWN]`. So which refusal is reported first never depends on the
    order in which a directory lists its entries.
@@ -218,9 +235,11 @@ that does not apply stays, with one line saying why.
    and mode on its descriptor, `/` included, before it opens the next
    component. Before the file is opened, `fstatat` with
    `AT_SYMLINK_NOFOLLOW`, relative to its directory's descriptor, must
-   show a regular file; any other type (a device, a FIFO, a socket, a
-   symbolic link) is untrusted without being opened, so no open can block
-   on it or fail on it first `[OWN]`. The directory has passed the checks,
+   show a regular file; when it succeeds and shows any other type (a
+   device, a FIFO, a socket, a symbolic link), the source is untrusted
+   without being opened, so no open can block on it or fail on it first
+   `[OWN]`. A failing `fstatat` is not an untrust condition: point 7
+   classifies it. The directory has passed the checks,
    so only root can replace the entry between that call and the open
    (8, point 1's residual). The file is then opened with `openat` and
    `O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC` relative to the same
@@ -276,21 +295,24 @@ that does not apply stays, with one line saying why.
    walk ends in `ENOENT` at `ironafs.toml`, or at the drop-in or policy
    directory or any directory above it, every directory opened before it
    having passed point 3's checks: there is no such source. A drop-in or
-   policy directory that holds no source (point 1) is absent too. A file
-   that the directory listing named but that is gone when it is opened is
-   unreadable, never absent. "Unreadable" means any other failure to
-   walk, list, open, `fstat` or read that is not an untrust condition of
-   point 3 (for example `EACCES` or `EIO`). "Malformed" means the syntax
-   or the schema refuses the bytes.
+   policy directory that holds no source (point 1) is absent too. At a
+   file, `ENOENT` from `fstatat` on `ironafs.toml` is absent; a file that
+   the directory listing named, or that `fstatat` showed, but that is gone
+   at its `fstatat` or its `openat` is unreadable, never absent.
+   "Unreadable" means any other failure to walk, list, `fstatat`, open,
+   `fstat` or read that is not an untrust condition of point 3 (for
+   example `EACCES` or `EIO`, at `fstatat` as anywhere else). "Malformed"
+   means the syntax or the schema refuses the bytes, or a directory holds
+   more than `config.sources_max` sources (point 2).
 
    | Layer | Absent | Unreadable | Untrusted | Malformed | Valid |
    |---|---|---|---|---|---|
-   | F (`ironafs.toml`, the drop-in directory, each drop-in) | contributes nothing (`ironafs.toml` or the drop-in directory) | local refusal | local refusal | local refusal | used |
+   | F (`ironafs.toml`, the drop-in directory or a directory above it, each drop-in) | contributes nothing (`ironafs.toml` or the drop-in directory) | local refusal | local refusal | local refusal | used |
    | P (the policy directory, each policy file) | the whole policy is absent (the policy directory): unmanaged if `managed_before` is false, unreadable if it is true (O19, point 5) | the policy is unreadable | the policy is incompatible | the policy is incompatible (Q12) | used, if every policy file is valid |
 
    Across the policy files, and the policy directory or a directory
-   above it when the walk or listing fails there, the worst state
-   decides: untrusted or malformed (the policy is incompatible), then
+   above it when the walk or listing fails there or the directory holds
+   too many sources, the worst state decides: untrusted or malformed (the policy is incompatible), then
    unreadable, then valid `[OWN]`.
 
    A local refusal keeps the last good local configuration, or stops the
@@ -347,7 +369,7 @@ a cell name (5.3.1).
 | `cells.<cell>.discovery` | boolean | | `true` | F, P | reload | C33, point 8; DNS client specification (#60), 5.6.4, point 2 |
 | `cells.<cell>.dns_scope` | enumeration | `host`, `servers` | `host` | F, P | reload | C33, point 5; #60, 5.6.4, point 5 |
 | `cells.<cell>.dns_servers` | list of server addresses | 0 to `dns.explicit_servers_max` (8) entries | empty | F, P | reload | as above |
-| `cells.<cell>.dns_interface` | interface name | 1 to 15 bytes of `a` to `z`, `A` to `Z`, `0` to `9`, `.`, `_`, `-` (Q6) | none | F, P | reload | as above |
+| `cells.<cell>.dns_interface` | interface name | 1 to 15 bytes of `a` to `z`, `A` to `Z`, `0` to `9`, `.`, `_`, `-`, other than `.` and `..` (Q6) | none | F, P | reload | as above |
 | `cells.<cell>.min_class`, `min_level`, `legacy_fileservers`, `anonymous`, `learned`, `rxgk` | security key | reserved (5.4, point 5) | none | F, P | reload | N3 (names); N8, point 2; issue #93 (`min_class`); Q9 (the rest) |
 
 1. **A configured cell** is one whose `cells."<cell>"` table has an
@@ -518,6 +540,7 @@ point 4, separates.
 | `config.cell_servers_max` | 16 | the same bound as `dns.targets_max` (#60, 5.2), so a configured cell and a discovered one carry at most the same number of servers; within config-syntax.md's `MAX_ARRAY_ELEMENTS` `[OWN]` |
 | `config.required_max` | 256 | config-syntax.md's `MAX_ARRAY_ELEMENTS` `[OWN]` |
 | `config.unknown_reported_max` | 64 | the unknown policy keys named one by one in a report; the rest are counted (5.9, point 3) `[OWN]` |
+| `config.sources_max` | 64 | the sources taken from one directory, the drop-in directory or the policy directory (5.1, point 2); a site's drop-ins and policy files are a handful, and the bound keeps the bytes held for one layer at about 16 MiB `[OWN]` |
 
 ### 5.3 Value types
 
@@ -649,7 +672,9 @@ it refuses. A value of another syntax type is a type error (section 7).
    4), not here. In the scan, a cell segment the cell-name constructor
    refuses names no cell and yields no rule, and a value of the wrong
    syntax type is a type error (5.4, point 4) and yields none `[OWN]`.
-   Untrusted sources are never scanned (5.1, point 4). Part (e), keeping
+   Untrusted and unreadable sources carry no bytes and are never scanned
+   (5.1, point 4); when one of them is the refusal, every trusted F
+   source that parsed is still scanned, the same way. Part (e), keeping
    the last good local configuration, still refuses those cells (5.8,
    point 5), so a refused file cannot keep a cell serving under a floor
    its new value raised. A source that does not parse yields no cell
@@ -729,9 +754,24 @@ it refuses. A value of another syntax type is a type error (section 7).
 
 These are names and shapes only. What each part decides is its own.
 
-1. **Validated layers.** Part (b) provides `validate_local(sources) ->
+1. **Validated layers.** Part (b) provides `validate_local(outcomes) ->
    Result<LocalLayer, LocalRefusal>` for F (a `LocalRefusal` carries the
-   refusal rules of 5.5, point 4), and
+   refusal rules of 5.5, point 4). `outcomes` is F as the caller found it
+   (5.1, point 2): a list, empty when everything is absent, of outcomes,
+   each `Unreadable` or `Untrusted` (neither carries bytes; a trust
+   failure may come before any byte is read), `TooMany` (for the drop-in
+   directory, 5.1, point 2), or, for a trusted file, `Read` with its name
+   and bytes. An outcome is for `ironafs.toml` or a drop-in, in the order
+   of 5.1, point 2, or for the drop-in directory or a directory above it,
+   when the walk or the listing fails there, whether or not the listing
+   has already returned entries; that outcome comes before the drop-ins'
+   outcomes already obtained `[OWN]`. Any outcome other than `Read`
+   refuses the local configuration (5.1, point 7), and `validate_local`
+   still scans every `Read` source that parses for the refusal rules of
+   5.5, point 4. A list with more than `config.sources_max` drop-in
+   outcomes is refused as `TooMany` is, and only `ironafs.toml` and the
+   first `config.sources_max` drop-ins are parsed and scanned `[OWN]`.
+   Part (b) also provides
    `validate_policy_source(source) -> PolicyKeys` for one P source, where
    `PolicyKeys` holds that source's known keys with their values, the
    envelope's raw values, the unknown keys for the report, the cell
@@ -741,12 +781,15 @@ These are names and shapes only. What each part decides is its own.
 2. **The envelope and the policy state** (part (c)): part (c) takes the
    policy's sources as the caller found them: either "absent" (5.1, point
    7), or a list of outcomes, each `Unreadable`, `Untrusted` (a trust
-   failure, which may come before any byte is read) or, for a file, its
-   `PolicyKeys`. An outcome is for a policy file, in the order of 5.1,
-   point 2, or for the policy directory or a directory above it, when the
-   walk or the listing fails there, whether or not the listing has
+   failure, which may come before any byte is read), `TooMany` (for the
+   policy directory, 5.1, point 2) or, for a file, its `PolicyKeys`. An
+   outcome is for a policy file, in the order of 5.1, point 2, or for the
+   policy directory or a directory above it, when the walk or the listing
+   fails there, whether or not the listing has
    already returned entries; that outcome comes first, followed by any
-   file outcomes already obtained `[OWN]`; together with `managed_before`
+   file outcomes already obtained `[OWN]`. A list with more than
+   `config.sources_max` file outcomes makes the policy incompatible, as
+   `TooMany` does `[OWN]`; together with `managed_before`
    (5.1, point 7) and whether a last good policy exists (part (f)). It
    returns the policy state of O19, point 4, as a typed value
    `PolicyState { Unmanaged, Valid(PolicyLayer), Unreadable,
@@ -859,8 +902,8 @@ These are names and shapes only. What each part decides is its own.
 
 | Refusal | Raised for | Effect |
 |---|---|---|
-| **Local refusal** (`LocalRefusal`) | in F: a parse error; an unknown key or table; a type or range error; a cell name the constructor refuses; two spellings of one cell; an envelope key; an untrusted source (5.1, point 4); a table or value at the wrong kind of path (5.5, point 2); the same key in two sources; a retired key | no F source is used: the whole local configuration is refused; part (e) keeps the last good one `[ADR 0004 O18.5: Working]` and still applies the cell refusals carried in the refusal (5.5, point 4); at start without a last good one, the daemon does not start (decided, Q11) |
-| **Policy incompatible** | in P: an untrusted source (5.1, point 4); bytes the syntax refuses (decided, Q12; an I/O failure is unreadable instead); a type or range error; a table or value at the wrong kind of path; an unknown enumeration value of a key that is not a security key, `protocol` included; a cell name the constructor refuses; two spellings of one cell; and part (c)'s envelope checks. A retired key is not among them: it is ignored and reported (5.7, point 3) | the whole policy is incompatible: failed health, admissions blocked, grants fenced, never the last good copy `[ADR 0004 O19.3: Firm]` `[ADR 0004 O19.7: Firm]` |
+| **Local refusal** (`LocalRefusal`) | in F: a parse error; an unknown key or table; a type or range error; a cell name the constructor refuses; two spellings of one cell; an envelope key; an untrusted source or directory (5.1, point 4); an unreadable source or directory, or a drop-in directory holding more than `config.sources_max` sources (5.1, point 7); a table or value at the wrong kind of path (5.5, point 2); the same key in two sources; a retired key | no F source is used: the whole local configuration is refused; part (e) keeps the last good one `[ADR 0004 O18.5: Working]` and still applies the cell refusals carried in the refusal (5.5, point 4); at start without a last good one, the daemon does not start (decided, Q11) |
+| **Policy incompatible** | in P: an untrusted source or directory (5.1, point 4); a policy directory holding more than `config.sources_max` sources (5.1, point 2); bytes the syntax refuses (decided, Q12; an I/O failure is unreadable instead); a type or range error; a table or value at the wrong kind of path; an unknown enumeration value of a key that is not a security key, `protocol` included; a cell name the constructor refuses; two spellings of one cell; and part (c)'s envelope checks. A retired key is not among them: it is ignored and reported (5.7, point 3) | the whole policy is incompatible: failed health, admissions blocked, grants fenced, never the last good copy `[ADR 0004 O19.3: Firm]` `[ADR 0004 O19.7: Firm]` |
 | **Cell refused** | in F or P: an unknown value of a security key | that cell, or every cell a machine-wide value applies to, is refused with the reason; the rest serves `[ADR 0004 N8.2: Firm]` `[ADR 0004 O19.6: Firm]` |
 
 Each fails closed: no partial file, policy or cell is used. A refused
@@ -905,7 +948,7 @@ shows it (5.8, point 4) `[OWN]`.
 | N27.2: unsupported protocol refused before I/O | 5.2.2, point 3 | `protocol = "x"` refuses F; the validated value is only `afs3` |
 | C34.2 (as amended): single family only by choice | 5.2.3 | the default is `dual`; only an explicit value changes it |
 | issue #93: only a root-owned file or policy sets a key | 5.1, points 3 to 5 | an F source and a P source each failing one part of the test (file owner, file mode, a directory's owner, a directory's mode) are refused, F as a local refusal and P as incompatible |
-| N8.2 survives a refused file | 5.5, point 4 | a file with `min_class` for a cell and an unknown key elsewhere: the configuration is refused and that cell is still refused |
+| N8.2 survives a refused file | 5.5, point 4; 5.8, point 1 | a file with `min_class` for a cell and an unknown key elsewhere: the configuration is refused and that cell is still refused; the same with the refusal an unreadable or an untrusted drop-in, whose bytes are not read |
 | one cell name | 5.3.1; 5.5, point 3 | two spellings of one cell refused |
 
 ## 10. Tests
@@ -914,7 +957,8 @@ Unit tests in `crates/ironafs-config/src/schema/tests.rs`; property tests
 in `crates/ironafs-config/tests/it/`.
 
 1. **Each key:** its default; one accepted value; each range bound
-   accepted and one past it refused; the wrong syntax type refused.
+   accepted and one past it refused; the wrong syntax type refused;
+   `dns_interface` values `.` and `..` refused.
 2. **Unknown keys:** in F, refused with the suggestion of 5.9, point 2
    (for example `cells."x".protocl` suggests `protocol`); in P, ignored and
    reported, with more than `config.unknown_reported_max` counted.
@@ -927,7 +971,14 @@ in `crates/ironafs-config/tests/it/`.
    device, refused as untrusted without being opened); each cell of 5.1, point 7's
    table, for F and for P, with `managed_before` true and false; a missing
    `/etc/ironafs` gives absent for F and P; an empty policy directory is
-   absent; a listed file gone at its open is unreadable; an untrusted
+   absent; a listed file gone at its `fstatat` or at its open is
+   unreadable; `ENOENT` at `fstatat` on `ironafs.toml` is absent, and
+   `EACCES` or `EIO` there is unreadable, not untrusted; an unreadable or
+   untrusted drop-in, or drop-in directory, is handed over without bytes
+   and refuses the local configuration, with the other sources' outcomes
+   kept; a drop-in or policy directory with `config.sources_max` sources
+   is read and with one more is refused (F) or incompatible (P), no file
+   of it read; an untrusted
    policy directory gives incompatible and an unlistable one unreadable;
    a listing that returns a policy entry and then fails gives the
    directory's unreadable outcome first, with that entry's outcome kept,
@@ -1061,10 +1112,10 @@ Open: Q6's registration (above), and the cross-specification notes for
 
 ### 13.1 Blockers before this page leaves draft
 
-These four findings were open when the review's fix rounds stopped. Each
-fix is now in the text; the page stays draft, and no code is written from
-it, until a scoped re-review of each fix passes. Each is quoted as the
-reviewer wrote it.
+The first four findings were open when the review's fix rounds stopped;
+the fifth came from the security review. Each fix is now in the text; the
+page stays draft, and no code is written from it, until a scoped
+re-review of each fix passes. Each is quoted as the reviewer wrote it.
 
 1. "The per-source table gives no precedence when policy sources fail in
    different ways. It also treats a single missing policy file as absence
@@ -1102,6 +1153,18 @@ reviewer wrote it.
      configured cells (5.2.2, point 1); 5.8, point 2's `has_value` counts
      configured cells only.
    - In: 5.5, points 2 and 3; 5.8, point 2.
+5. "The F-side interface cannot express an unreadable or byte-less
+   untrusted source, so the spec's own N8.2-survival invariant cannot be
+   implemented."
+   - Fix: `validate_local` takes F's outcomes as the caller found them,
+     each `Unreadable`, `Untrusted`, `TooMany` or a trusted file's bytes,
+     for a file or for the directory where the walk or listing failed;
+     the caller collects them without stopping at the first failure;
+     unreadable and untrusted sources never carry bytes; every trusted
+     source that parses is still scanned for refusal rules; section 7's
+     local refusal names an unreadable source or directory.
+   - In: 2, point 2; 4 ("Source"); 5.1, point 2; 5.5, point 4; 5.8, point
+     1; 7; 9; 10, point 4.
 
 ## 14. Review
 
