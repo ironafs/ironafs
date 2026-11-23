@@ -1692,6 +1692,14 @@ below, and compiles or runs no foreign code but the shim (point 1.1).
   the shim's C file and every other file it reads in
   `cargo::rerun-if-changed=` lines, so an edit to any of them reruns
   the script and rebuilds the shim; a stale archive is never linked.
+  **A requirement on the M4 shim change:** the build reruns, and the
+  shim archive is rebuilt, whenever any effective input of the shim
+  changes that Cargo does not already track. That includes the
+  headers the compiler reads (the SDK's `<os/log.h>` and what it
+  includes), the selected SDK and Xcode, and the deployment version
+  and every other build setting the script passes to `xcrun`. How the
+  script tracks them is that change's design, reviewed under point
+  6.6.
 
 The macOS C shim:
 
