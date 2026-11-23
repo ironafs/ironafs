@@ -35,7 +35,8 @@
 //! the row name (`src/<module>.rs` and `src/<module>/`) that is an
 //! object-like macro of the row's headers (the C preprocessor's `-dM`)
 //! must be declared, and so asserted, in the declaration files. The copy's
-//! recorded facts must equal what those files declare. Constants are
+//! recorded facts (`c_facts`: structs, constants and type aliases) must
+//! equal what those files declare. Constants are
 //! emitted as normalized decimals, and no file of the crate may name an
 //! item `core`, so `core::ffi` is the core crate's.
 //!
@@ -1044,23 +1045,70 @@ fn canonical(file: &Declarations, structs: &[String]) -> Result<Declarations, St
     Ok(out)
 }
 
-/// The recorded structs and constants that `found` does not declare.
-pub(crate) fn missing_facts(
-    structs: &[String],
-    constants: &[String],
+/// The C facts sites.json records for a row, by kind.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Recorded<'a> {
+    pub(crate) structs: &'a [String],
+    pub(crate) constants: &'a [String],
+    pub(crate) aliases: &'a [String],
+}
+
+impl<'a> From<&'a os::inventory::Code> for Recorded<'a> {
+    fn from(code: &'a os::inventory::Code) -> Self {
+        Self {
+            structs: &code.structs,
+            constants: &code.constants,
+            aliases: &code.aliases,
+        }
+    }
+}
+
+/// How the recorded facts differ from those `found` declares: the
+/// recorded structs, constants and type aliases it does not declare, then
+/// those it declares that are not recorded, each in that order.
+pub(crate) fn fact_differences(
+    recorded: Recorded<'_>,
     found: &Declarations,
-) -> Vec<String> {
-    structs
+) -> (Vec<String>, Vec<String>) {
+    let declared: [Vec<&str>; 3] = [
+        found
+            .structs
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect(),
+        found
+            .constants
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect(),
+        found
+            .aliases
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect(),
+    ];
+    let recorded = [recorded.structs, recorded.constants, recorded.aliases];
+    let missing = recorded
         .iter()
-        .filter(|name| !found.structs.iter().any(|item| &item.name == *name))
-        .chain(constants.iter().filter(|name| {
-            !found
-                .constants
+        .zip(&declared)
+        .flat_map(|(recorded, declared)| {
+            recorded
                 .iter()
-                .any(|(constant, _)| constant == *name)
-        }))
-        .cloned()
-        .collect()
+                .filter(|name| !declared.contains(&name.as_str()))
+                .cloned()
+        })
+        .collect();
+    let unrecorded = declared
+        .iter()
+        .zip(&recorded)
+        .flat_map(|(declared, recorded)| {
+            declared
+                .iter()
+                .filter(|name| !recorded.iter().any(|recorded| recorded == *name))
+                .map(|name| (*name).to_owned())
+        })
+        .collect();
+    (missing, unrecorded)
 }
 
 /// C preprocessor checks that the compiler compiling the generated file is
@@ -1467,19 +1515,7 @@ fn fact_problem(
     }
     // The copy records what the compiled declarations state, no more and
     // no less: it is checked against them, never the source of them.
-    let missing = missing_facts(&code.structs, &code.constants, found);
-    let unrecorded: Vec<&str> = found
-        .structs
-        .iter()
-        .map(|item| item.name.as_str())
-        .filter(|name| !code.structs.iter().any(|recorded| recorded == name))
-        .chain(
-            declared
-                .iter()
-                .copied()
-                .filter(|name| !code.constants.iter().any(|recorded| recorded == name)),
-        )
-        .collect();
+    let (missing, unrecorded) = fact_differences(Recorded::from(code), found);
     if missing.is_empty() && unrecorded.is_empty() {
         Ok(None)
     } else {

@@ -4,8 +4,8 @@
 //! Tests for the declaration reader and the C it generates.
 
 use super::{
-    CType, DataModel, Declarations, Function, Struct, c_source, canonical, declarations, identity,
-    missing_facts, object_macros, preamble, required_constants, scan_defines,
+    CType, DataModel, Declarations, Function, Recorded, Struct, c_source, canonical, declarations,
+    fact_differences, identity, object_macros, preamble, required_constants, scan_defines,
 };
 use crate::rust_source::tokens_with_strings;
 
@@ -464,15 +464,33 @@ fn canonical_resolves_each_file_by_its_own_imports() {
 }
 
 #[test]
-fn missing_facts_names_a_recorded_constant_or_struct_not_declared() {
-    let found = read("use core::ffi::c_int;\nconst EINTR: c_int = 4;\n");
+fn fact_differences_name_each_recorded_fact_not_declared_and_each_declared_not_recorded() {
+    let found = read("use core::ffi::c_int;\nconst EINTR: c_int = 4;\ntype rlim_t = u64;\n");
+    let structs = ["timespec".to_owned()];
+    let constants = ["EINTR".to_owned(), "SYS_getrandom".to_owned()];
+    let recorded = |aliases| Recorded {
+        structs: &structs,
+        constants: &constants,
+        aliases,
+    };
+    let rlim = ["rlim_t".to_owned()];
     assert_eq!(
-        missing_facts(
-            &["timespec".into()],
-            &["EINTR".into(), "SYS_getrandom".into()],
-            &found
-        ),
-        ["timespec", "SYS_getrandom"]
+        fact_differences(recorded(&rlim), &found),
+        (vec!["timespec".into(), "SYS_getrandom".into()], Vec::new())
+    );
+    // An alias declared but not recorded, and one recorded but not
+    // declared.
+    assert_eq!(
+        fact_differences(recorded(&[]), &found),
+        (
+            vec!["timespec".into(), "SYS_getrandom".into()],
+            vec!["rlim_t".into()]
+        )
+    );
+    let socklen = ["rlim_t".to_owned(), "socklen_t".to_owned()];
+    assert_eq!(
+        fact_differences(recorded(&socklen), &found).0,
+        ["timespec", "SYS_getrandom", "socklen_t"]
     );
 }
 
@@ -600,6 +618,7 @@ fn row_code(module: &str, headers: &[&str], defines: &[&str]) -> crate::os::inve
         impls: 0,
         structs: Vec::new(),
         constants: Vec::new(),
+        aliases: Vec::new(),
         stand_in: None,
     }
 }

@@ -109,11 +109,13 @@ pub(crate) struct Code {
     pub(crate) blocks: Vec<Block>,
     pub(crate) impls: usize,
     /// The C facts the row's declaration files must state, by name, beside
-    /// its functions: its structs and its constants. `check-abi` requires
-    /// each among the declarations the target compiles, so a fact moved out
-    /// of the module cannot drop out of the proof unseen.
+    /// its functions: its structs, its constants and its type aliases (C
+    /// typedefs). `check-abi` requires each among the declarations the
+    /// target compiles, and each of those among these, so a fact moved out
+    /// of the module, or added to it, cannot escape the record unseen.
     pub(crate) structs: Vec<String>,
     pub(crate) constants: Vec<String>,
+    pub(crate) aliases: Vec<String>,
     /// The row's Miri stand-in (ADR 0005, point 6.5), if it has one: how
     /// many `unsafe fn`s it defines and its `unsafe` blocks, each a call as
     /// written with its arguments. `check-os` holds `stand_in.rs` to it.
@@ -339,6 +341,7 @@ fn parse_code(code: &Value) -> Result<Code, String> {
         impls,
         structs: names("structs")?,
         constants,
+        aliases: names("aliases")?,
         stand_in,
     })
 }

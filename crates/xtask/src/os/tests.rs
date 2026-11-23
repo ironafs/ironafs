@@ -52,6 +52,7 @@ fn clock_code() -> Code {
         impls: 0,
         structs: vec!["timespec".into()],
         constants: Vec::new(),
+        aliases: Vec::new(),
         stand_in: None,
     }
 }

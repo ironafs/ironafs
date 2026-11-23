@@ -18,6 +18,9 @@
 //! - by the probe of qualified constants: a name the headers do not define
 //!   is reported unnamed (so its row is withheld), and one they define is
 //!   not;
+//! - by the comparison with sites.json's record: a type alias the
+//!   declarations state but the record leaves out, and one the record
+//!   holds but no declaration states;
 //! - by the declaration reader, which refuses what C cannot be compared
 //!   with: another ABI string, an attribute on a foreign function (such as
 //!   `link_name`), a `packed` struct, a renaming import, a type alias, and
@@ -31,8 +34,8 @@ use std::io::Write;
 use std::path::Path;
 
 use super::{
-    DataModel, Declarations, applies_here, c_source, compile, declarations, header_macros,
-    required_constants, unnamed,
+    DataModel, Declarations, Recorded, applies_here, c_source, compile, declarations,
+    fact_differences, header_macros, required_constants, unnamed,
 };
 use crate::Error;
 use crate::rust_source::tokens_with_strings;
@@ -270,12 +273,14 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
          declaration files"
             .to_owned(),
     )?;
+    recorded_facts_case(output)?;
     report(
         output,
         format!(
             "check-abi --self-test: the fixture compiled; {} planted mismatches failed to compile \
              at their assertions, an unnamed qualified constant was withheld, {} declarations \
-             were refused by the reader, and a missing fact was found",
+             were refused by the reader, a missing fact was found, and a copy that leaves out \
+             or adds a type alias was caught",
             COMPILER.len() + 1 + NON_INTEGER.len(),
             READER.len()
         ),
@@ -326,6 +331,52 @@ fn missing_fact_case(dir: &Path) -> Result<(), Error> {
     } else {
         Err(failure(CASE, format!("found {moved:?}, not [\"EINTR\"]")))
     }
+}
+
+/// sites.json's record of the fixture's C facts, against what the fixture
+/// declares: the full record differs in nothing; one without the fixture's
+/// type alias `rlim_t` leaves it unrecorded, and one with a `socklen_t` the
+/// fixture does not declare records it as missing.
+fn recorded_facts_case(output: &mut impl Write) -> Result<(), Error> {
+    const CASE: &str = "a type alias left out of the record, or recorded but not declared";
+    let mut found = Declarations::default();
+    let tokens = tokens_with_strings(FIXTURE).map_err(|error| failure(CASE, error.to_string()))?;
+    declarations_of(&tokens, &mut found)?;
+    let structs = ["timespec".to_owned(), "rlimit".to_owned()];
+    let constants = ["EINTR".to_owned(), "TIMESPEC_SIZE".to_owned()];
+    let differences = |aliases: &[String]| {
+        fact_differences(
+            Recorded {
+                structs: &structs,
+                constants: &constants,
+                aliases,
+            },
+            &found,
+        )
+    };
+    let none = (Vec::new(), Vec::new());
+    let cases = [
+        (vec!["rlim_t".to_owned()], none.clone()),
+        (Vec::new(), (Vec::new(), vec!["rlim_t".to_owned()])),
+        (
+            vec!["rlim_t".to_owned(), "socklen_t".to_owned()],
+            (vec!["socklen_t".to_owned()], Vec::new()),
+        ),
+    ];
+    for (aliases, expected) in cases {
+        let differs = differences(&aliases);
+        if differs != expected {
+            return Err(failure(
+                CASE,
+                format!("recording aliases {aliases:?} gave {differs:?}, not {expected:?}"),
+            ));
+        }
+    }
+    writeln!(
+        output,
+        "caught: a type alias declared but not recorded, and one recorded but not declared"
+    )
+    .map_err(Error::io("report check-abi self-test"))
 }
 
 fn declarations_of(

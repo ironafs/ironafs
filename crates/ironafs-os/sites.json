@@ -50,7 +50,8 @@
           "constants": [
             "CLOCK_MONOTONIC",
             "CLOCK_BOOTTIME"
-          ]
+          ],
+          "aliases": []
         },
         "stand_in": {
           "functions": 1,
@@ -203,7 +204,8 @@
             "EPERM",
             "ENOSYS",
             "SYS_getrandom"
-          ]
+          ],
+          "aliases": []
         },
         "stand_in": {
           "functions": 1,
@@ -325,6 +327,9 @@
             "RLIMIT_CORE",
             "PR_GET_DUMPABLE",
             "PR_SET_DUMPABLE"
+          ],
+          "aliases": [
+            "rlim_t"
           ]
         },
         "stand_in": {
@@ -387,7 +392,8 @@
           "structs": [],
           "constants": [
             "MADV_DONTDUMP"
-          ]
+          ],
+          "aliases": []
         },
         "stand_in": {
           "functions": 1,
@@ -471,6 +477,12 @@
             "SO_PEERCRED",
             "SO_TYPE",
             "SOCK_STREAM"
+          ],
+          "aliases": [
+            "pid_t",
+            "uid_t",
+            "gid_t",
+            "socklen_t"
           ]
         },
         "stand_in": {
@@ -598,6 +610,9 @@
             "CMSG_LEN_ONE",
             "CMSG_LEN_TWO",
             "CMSG_SPACE_ONE"
+          ],
+          "aliases": [
+            "socklen_t"
           ]
         },
         "stand_in": {
@@ -838,7 +853,8 @@
         "impls": 0,
         "c_facts": {
           "structs": [],
-          "constants": []
+          "constants": [],
+          "aliases": []
         },
         "stand_in": null
       }
