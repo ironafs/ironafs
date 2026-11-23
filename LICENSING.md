@@ -18,6 +18,13 @@ IronAFS is free software under the
 - **Separate programs** merely shipped alongside IronAFS (an aggregate) are
   not covered by its licence (GPLv3 §5).
 
+## The name
+
+The licence covers the code, not the name. IronAFS™ is a trademark of
+Adrian Ana; [TRADEMARKS.md](TRADEMARKS.md) explains how to refer to the
+project and to modified versions, without limiting any right the licence
+gives.
+
 ## File headers
 
 Every file declares its copyright and licence in the form of the
