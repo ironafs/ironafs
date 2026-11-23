@@ -7,14 +7,12 @@
 //! within it, and a generated document written in the subset parses back
 //! to itself.
 
-use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use ironafs_config::{
-    Document, MAX_ARRAY_ELEMENTS, MAX_DEFINITIONS, MAX_DEPTH, MAX_KEY_BYTES, MAX_STRING_BYTES,
-    Scalar, Value, parse,
-};
+use ironafs_config::{MAX_DEFINITIONS, MAX_DEPTH, Scalar, Value, parse};
 use ironafs_test_support::{Property, Source};
+
+use crate::invariants;
 
 /// Pieces of TOML and of what the subset refuses, so arbitrary inputs
 /// reach deep into the grammar.
@@ -54,6 +52,8 @@ const FRAGMENTS: &[&str] = &[
     ":",
     "\u{e9}",
     "\u{85}",
+    "\u{202e}",
+    "\u{2066}",
     "\u{0}",
     "\u{7f}",
     "\"\"\"",
@@ -84,82 +84,11 @@ fn fragments(source: &mut Source) -> Vec<u8> {
     bytes
 }
 
-/// Checks the caps of the specification's section 5.2 that an accepted
-/// document can show: depth, key, string and array lengths, and the
-/// definitions, counting each implicit table once as a proper prefix of an
-/// explicit table's path. The file and line caps are not visible in a
-/// document; the cap tests check them on the input.
-fn within_caps(document: &Document) -> Result<(), String> {
-    let mut definitions = 0;
-    let mut tables: BTreeSet<&[String]> = BTreeSet::new();
-    for table in document.tables() {
-        for length in 1..=table.path().len() {
-            tables.insert(&table.path()[..length]);
-        }
-        if table.path().len() > MAX_DEPTH {
-            return Err(format!("table too deep: {:?}", table.path()));
-        }
-        if table
-            .path()
-            .iter()
-            .any(|segment| segment.len() > MAX_KEY_BYTES)
-        {
-            return Err(format!("segment too long: {:?}", table.path()));
-        }
-    }
-    definitions += tables.len();
-    for (_, entry) in document.entries() {
-        definitions += 1;
-        if entry.key().is_empty() || entry.key().len() > MAX_KEY_BYTES {
-            return Err(format!("bad key length: {}", entry.key().len()));
-        }
-        let strings: Vec<&Scalar> = match entry.value() {
-            Value::Scalar(scalar) => vec![scalar],
-            Value::Array(elements) => {
-                if elements.len() > MAX_ARRAY_ELEMENTS {
-                    return Err(format!("array too long: {}", elements.len()));
-                }
-                elements.iter().map(|element| &element.value).collect()
-            }
-        };
-        for scalar in strings {
-            if let Scalar::String(text) = scalar
-                && (text.len() > MAX_STRING_BYTES || text.chars().any(char::is_control))
-            {
-                return Err(format!("bad string: {text:?}"));
-            }
-        }
-    }
-    if definitions > MAX_DEFINITIONS {
-        return Err(format!("{definitions} definitions"));
-    }
-    Ok(())
-}
-
 #[test]
 fn parse_any_bytes_returns_document_or_error_within_input() {
     Property::new("parse: any bytes")
         .cases(4_096)
-        .check(fragments, |input| {
-            match parse(input) {
-                Ok(document) => within_caps(&document),
-                Err(error) => {
-                    let Some(position) = error.position() else {
-                        return Err(format!("no position: {error}"));
-                    };
-                    let lines: Vec<&[u8]> = input.split(|byte| *byte == b'\n').collect();
-                    let Some(line) = lines.get(position.line - 1) else {
-                        return Err(format!("line {} past the input", position.line));
-                    };
-                    // A column counts characters, so it is at most the
-                    // line's bytes plus one.
-                    if position.column == 0 || position.column > line.len() + 1 {
-                        return Err(format!("column {} outside its line", position.column));
-                    }
-                    Ok(())
-                }
-            }
-        });
+        .check(fragments, |input| invariants::check(input, &parse(input)));
 }
 
 /// Key/value pairs in the order they are written.
@@ -182,12 +111,13 @@ struct Key {
     quoted: bool,
 }
 
-/// Text with no control character, which a string may hold.
+/// Text with no control character and no bidirectional control, which a
+/// string may hold.
 fn text(source: &mut Source, max_bytes: usize) -> String {
     source
         .string(max_bytes)
         .chars()
-        .filter(|character| !character.is_control())
+        .filter(|character| invariants::allowed_in_text(*character))
         .collect()
 }
 
@@ -442,8 +372,10 @@ fn parse_near_definitions_cap_counts_every_implicit_table() {
             },
             |&(keys, depth)| {
                 let within = keys + depth <= MAX_DEFINITIONS;
-                match parse(keys_then_header(keys, depth).as_bytes()) {
-                    Ok(document) if within => within_caps(&document),
+                let input = keys_then_header(keys, depth);
+                let outcome = parse(input.as_bytes());
+                match outcome {
+                    Ok(_) if within => invariants::check(input.as_bytes(), &outcome),
                     Ok(_) => Err(format!("accepted {} definitions", keys + depth)),
                     Err(error) if !within => {
                         if error.kind() == ironafs_config::SyntaxErrorKind::TooManyDefinitions {

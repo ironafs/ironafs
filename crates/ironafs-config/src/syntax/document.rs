@@ -65,6 +65,15 @@ pub(super) struct Segment {
     pub(super) position: Position,
 }
 
+/// A key [`Builder::check_key`] has cleared for one table: what
+/// [`Builder::add_entry`] takes, so the pair it adds is the one checked.
+/// Reading the value in between leaves the builder unchanged.
+pub(super) struct CheckedKey {
+    table: usize,
+    key: String,
+    position: Position,
+}
+
 /// Builds a [`Document`], refusing every redefinition as it is made.
 #[derive(Debug)]
 pub(super) struct Builder {
@@ -157,15 +166,15 @@ impl Builder {
     pub(super) fn check_key(
         &self,
         table: usize,
-        key: &str,
+        key: String,
         key_position: Position,
-    ) -> Result<(), SyntaxError> {
+    ) -> Result<CheckedKey, SyntaxError> {
         // `table` always indexes `nodes`: it came from `root` or
         // `open_table`.
         let existing = self
             .nodes
             .get(table)
-            .and_then(|node| node.children.get(key).copied());
+            .and_then(|node| node.children.get(&key).copied());
         match existing {
             Some(Child::Value(first)) => {
                 return Err(SyntaxError::at(
@@ -188,20 +197,25 @@ impl Builder {
                 SyntaxErrorKind::TooManyDefinitions,
             ));
         }
-        Ok(())
+        Ok(CheckedKey {
+            table,
+            key,
+            position: key_position,
+        })
     }
 
-    /// Adds a key/value pair to a table, after the checks of
-    /// [`Builder::check_key`].
+    /// Adds a key/value pair to the table its key was checked for.
     pub(super) fn add_entry(
         &mut self,
-        table: usize,
-        key: String,
-        key_position: Position,
+        checked: CheckedKey,
         value: Value,
         value_position: Position,
     ) -> Result<(), SyntaxError> {
-        self.check_key(table, &key, key_position)?;
+        let CheckedKey {
+            table,
+            key,
+            position: key_position,
+        } = checked;
         self.count(key_position)?;
         if let Some(node) = self.nodes.get_mut(table) {
             node.children

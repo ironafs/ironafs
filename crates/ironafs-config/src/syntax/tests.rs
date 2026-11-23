@@ -299,6 +299,47 @@ fn parse_refuses_control_characters_everywhere() {
     );
 }
 
+/// The Unicode `Bidi_Control` set (`docs/specs/config-syntax.md`, section
+/// 5.1, point 3), written out here so that the test does not read it from
+/// the code it checks.
+const BIDI_CONTROLS: [char; 12] = [
+    '\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}',
+    '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+];
+
+#[test]
+fn parse_refuses_bidirectional_controls_in_comments_keys_and_values() {
+    for control in BIDI_CONTROLS {
+        let kind = SyntaxErrorKind::BidiControl(control);
+        assert_eq!(refused_str(&format!("# a{control}b\n")), (kind, 1, 4));
+        assert_eq!(refused_str(&format!("a = 1 # {control}")), (kind, 1, 9));
+        assert_eq!(refused_str(&format!("\"k{control}\" = 1")), (kind, 1, 3));
+        assert_eq!(refused_str(&format!("[\"t\".\"{control}\"]")), (kind, 1, 7));
+        assert_eq!(refused_str(&format!("a = \"x{control}y\"")), (kind, 1, 7));
+        assert_eq!(
+            refused_str(&format!("a = [\"x\", \"{control}\"]")),
+            (kind, 1, 12)
+        );
+        assert_eq!(refused_str(&format!("a{control} = 1")), (kind, 1, 2));
+        assert_eq!(refused_str(&format!("a = 1{control}")), (kind, 1, 6));
+    }
+}
+
+#[test]
+fn parse_accepts_characters_next_to_the_bidirectional_controls() {
+    // Neighbours of the set that are not in it: a zero-width joiner, an
+    // Arabic letter mark's neighbour, and the line separator's neighbour.
+    let document = accepted("a = \"\u{200d}\u{061b}\u{2065}\u{206a}\"");
+    assert_eq!(
+        entries(&document),
+        vec![(
+            path(&[]),
+            "a".to_string(),
+            string("\u{200d}\u{061b}\u{2065}\u{206a}")
+        )]
+    );
+}
+
 #[test]
 fn parse_refuses_tab_inside_string() {
     assert_eq!(
@@ -666,6 +707,21 @@ fn parse_refuses_table_where_a_value_is() {
 }
 
 #[test]
+fn parse_header_at_a_value_is_redefined_and_through_one_is_not_a_table() {
+    // The header's last segment names a key that holds a value: the
+    // header is refused as a redefinition at its `[`, naming the key.
+    assert_eq!(
+        refused_str("[t]\nb = 1\n[t.b]"),
+        (SyntaxErrorKind::Redefined { first: at(2, 1) }, 3, 1)
+    );
+    // A strict prefix names it: refused at that segment, naming the key.
+    assert_eq!(
+        refused_str("[t]\nb = 1\n[t.b.c]"),
+        (SyntaxErrorKind::NotATable { first: at(2, 1) }, 3, 4)
+    );
+}
+
+#[test]
 fn parse_refuses_value_where_a_table_is() {
     assert_eq!(
         refused_str("[a.b]\n[a]\nb = 1"),
@@ -855,6 +911,30 @@ fn parse_depth_cap_at_and_above() {
     assert_eq!(
         refused_str("[a.b.c.d.e.f.g.h.i]"),
         (SyntaxErrorKind::TooDeep, 1, 18)
+    );
+}
+
+#[test]
+fn parse_depth_cap_refuses_a_ninth_segment_before_reading_it() {
+    // The ninth segment is refused as too deep before it is decoded, so
+    // what it holds is never read.
+    assert_eq!(
+        refused_str("[a.b.c.d.e.f.g.h.\"unterminated"),
+        (SyntaxErrorKind::TooDeep, 1, 18)
+    );
+    let long = "k".repeat(MAX_KEY_BYTES + 1);
+    assert_eq!(
+        refused_str(&format!("[a.b.c.d.e.f.g.h.{long}]")),
+        (SyntaxErrorKind::TooDeep, 1, 18)
+    );
+    assert_eq!(
+        refused_str("[a.b.c.d.e.f.g.h.\"x\\q\"]"),
+        (SyntaxErrorKind::TooDeep, 1, 18)
+    );
+    // A dot with no segment after it is still a missing key.
+    assert_eq!(
+        refused_str("[a.b.c.d.e.f.g.h.]"),
+        unexpected(Some(']'), Expected::Key, 1, 18)
     );
 }
 

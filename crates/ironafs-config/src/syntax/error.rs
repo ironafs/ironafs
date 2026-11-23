@@ -83,6 +83,10 @@ pub enum SyntaxErrorKind {
     BareCarriageReturn,
     /// A control character other than tab, or tab inside a string.
     ControlCharacter(char),
+    /// A bidirectional control character (Unicode's `Bidi_Control` set),
+    /// which can make text display in an order other than the order it is
+    /// read in.
+    BidiControl(char),
     /// A line longer than [`MAX_LINE_BYTES`].
     LineTooLong,
     /// A TOML construct the subset refuses.
@@ -138,6 +142,11 @@ impl fmt::Display for SyntaxErrorKind {
             Self::ControlCharacter(character) => write!(
                 formatter,
                 "control character U+{:04X} is not allowed here",
+                u32::from(character)
+            ),
+            Self::BidiControl(character) => write!(
+                formatter,
+                "bidirectional control character U+{:04X} is not allowed",
                 u32::from(character)
             ),
             Self::LineTooLong => write!(formatter, "line is longer than {MAX_LINE_BYTES} bytes"),
