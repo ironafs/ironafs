@@ -52,11 +52,18 @@
 //! `check-abi` never runs under Miri), not from which files were compiled.
 //! Inline modules, nested imports, imports under any other attribute,
 //! `crate::`, `self::` and other child paths, globs and renames are
-//! refused. A type name is then a primitive, a name imported from
+//! refused. A type name is then read as a primitive, a name imported from
 //! `core::ffi`, or a struct or type alias the file declares or imports,
 //! through exactly one import in effect, from a declaration file of the
-//! row that declares or re-exports it in turn; anything else is refused,
-//! so the type checked is the type Rust uses.
+//! row that declares or re-exports it in turn; any other name is refused.
+//!
+//! That is what this check establishes: the import and gate shapes it
+//! reads, and the ones it refuses. It does not establish that the type
+//! Rust binds is the type checked where a declaration file holds an
+//! item under a cfg, a local item named like a primitive or a `core::ffi`
+//! scalar, or a union or enum item (no shipped file holds any of these);
+//! that is tracked in a follow-up issue (see the review record, open item
+//! O7).
 
 mod self_test;
 
@@ -1089,12 +1096,15 @@ fn abi_of(model: DataModel) -> &'static str {
 }
 
 /// One file's declarations with every type name rewritten to its identity
-/// in that file's own scope: a name the file imports from `core::ffi`
-/// becomes `core::ffi::<name>`, a primitive stays itself, and any other
-/// name must be one `row` binds, by this file's own declarations and
-/// imports, to a struct or type alias of the row's declaration files. So
-/// an import in one file never vouches for a name in another, and a name
-/// imported from elsewhere is never taken for the row's type of that name.
+/// in that file's own scope, as this check reads it: a name the file
+/// imports from `core::ffi` becomes `core::ffi::<name>`, a primitive's
+/// name stays itself, and any other name must be one `row` binds, by this
+/// file's own declarations and imports, to a struct or type alias of the
+/// row's declaration files. So an import in one file never vouches for a
+/// name in another, and a name imported from outside the row is refused.
+/// Item-level cfg, a local item named like a primitive or scalar, and
+/// union or enum items are not read here (see the module comment and the
+/// review record, open item O7).
 fn canonical(
     file: &Declarations,
     row: &dyn Fn(&str) -> Result<(), String>,
