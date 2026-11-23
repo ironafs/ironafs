@@ -13,6 +13,12 @@ fuzz crate was on `main`.
   It covers the grammar of the subset, each refused TOML construct with
   its error and hint, the caps, the error positions and the cell-name
   rule.
+- `docs/specs/README.md`: the index row for `config-syntax.md`;
+  register rows E57 (TOML v1.0.0) and E58 (Unicode's `PropList.txt`,
+  18.0.0); and the rules for formats by who produces the bytes. A format
+  IronAFS writes keeps the magic-and-version rules. A format IronAFS only
+  reads may opt in to a versionless contract, with its own status,
+  freezing and frozen-table rules. The format kind covers both.
 - `crates/ironafs-config`: a new pure crate.
   - `parse` turns one file's bytes into a document, or refuses the file
     with a positioned error.
@@ -345,16 +351,64 @@ three of `ironafs-xdr_decode`; and a 120-second fuzzing run of
 `ironafs-config_syntax` from its seeds, about 3.6 million inputs, with
 no failure.
 
-### Landing verification
+## Landing
 
-GLM (`glm-5.3`, high, 2026-11-23) read `df943f9..1fcb684` and passed it,
-with one minor finding, fixed and recorded, with no further round.
+All seats ran read-only on 2026-11-23. GLM is `glm-5.3` at high effort;
+GPT is `gpt-6.2-sol` at xhigh.
 
-- **Minor, fixed:** "crates/ironafs-config/src/syntax.rs:7-9 (module
-  doc) and crates/ironafs-config/src/syntax/parser.rs:35-37 (check_file
-  doc) still enumerate the whole-file checks as "line ends, control
-  characters, line length" without the bidirectional-control check that
-  cf04f93 added (parser.rs:104-109), although the check's own doc
-  (parser.rs:85-87) was updated."
-  - Both summaries now name bidirectional controls among the whole-file
-    checks.
+1. **Landing verification** (GLM, `df943f9..1fcb684`): PASS, with one
+   minor finding, fixed (`699d893`) and recorded, with no further round.
+   - Finding: "crates/ironafs-config/src/syntax.rs:7-9 (module doc) and
+     crates/ironafs-config/src/syntax/parser.rs:35-37 (check_file doc)
+     still enumerate the whole-file checks as "line ends, control
+     characters, line length" without the bidirectional-control check
+     that cf04f93 added (parser.rs:104-109), although the check's own
+     doc (parser.rs:85-87) was updated."
+   - Fix: both summaries now name bidirectional controls.
+2. **Index and register.** `config-syntax.md` had no index row. `bb043fb`
+   added it, with register rows E57 and E58, and S1 and S2 now name
+   them. `0df217e` stated §5.3 against the README's format rules.
+3. **Two-family check** of `699d893..0df217e`: GLM PASS, with minor
+   notes; GPT FAIL, with two majors and minor findings.
+   - The majors: §5.3's point on refused input overclaimed the error a
+     reader gets; and a specification departed from a README rule that
+     has no exception.
+   - The controller changed the README rule rather than allowing a
+     departure. `f38f3b2` fixed both majors and the minors (E57 and E58
+     update checks and licences, claim labels, locators, S1's uses, the
+     index sentence).
+4. **README rule rounds.**
+   - `0df217e..f38f3b2`: GLM PASS; GPT, two majors (the rule's scope
+     and the freeze path) and two minors. Fixed in `1e8d3f7` (the rule
+     scoped by who produces the bytes; the freeze path; §3's hints; the
+     grammar's note on a byte order mark) and `908bfe9` (the format
+     kind).
+   - `f38f3b2..908bfe9`: GPT, the main fix passed; two consistency
+     majors (status rules; §5.3 against the early-freeze trigger) and
+     two minors. Fixed in `52c090c`.
+   - `908bfe9..52c090c`: GPT FAIL. Every earlier item passed, and two
+     new majors were raised in the README's general rule (below).
+5. **Deferred, by ruling.** The two majors from the last GPT round,
+   quoted as written:
+   - "docs/specs/README.md:504 — The versionless path inherits the
+     exception for input the frozen text already called invalid. That
+     text is pinned once, so it can still classify syntax added by a
+     later approved extension as invalid."
+   - "docs/specs/README.md:737 — The table requires every versionless
+     read-only format to record `none` for magic. The opt-in at line 477
+     permits a format with a magic value and no version."
+
+   The controller proposed deferring both to one follow-up issue on the
+   specs README. The refutation seat (GLM) ruled that the deferral
+   HOLDS:
+   - `config-syntax.md` and the parser are correct whichever way the
+     rule is worded: the specification is a draft, unfrozen, has no
+     magic value, and no release has shipped;
+   - neither finding makes anything this change states false;
+   - the follow-up issue is linked as a blocker on the first issue that
+     freezes or adds a versionless read-only format.
+
+   Follow-up issue #TBD.
+
+Final head: the commit that adds this section, on top of `52c090c`,
+which ends the reviewed content.
