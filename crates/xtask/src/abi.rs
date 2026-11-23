@@ -688,10 +688,10 @@ pub(crate) fn header_macros(
     headers: &[String],
     file: &Path,
 ) -> Result<Result<std::collections::BTreeSet<String>, String>, Error> {
-    let source: String = headers
-        .iter()
-        .map(|header| format!("#include <{header}>\n"))
-        .collect();
+    let mut source = String::new();
+    for header in headers {
+        let _ = writeln!(source, "#include <{header}>");
+    }
     crate::fixture::write_file(file, &source)?;
     let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
     let output = Command::new(compiler)
