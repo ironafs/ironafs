@@ -273,18 +273,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Each lane's own AlmaLinux 8 image, by its architecture's digest
+          # in the same multi-architecture index.
           - target: x86_64-unknown-linux-gnu
             arch: x86_64
             runner: ubuntu-24.04
+            image: docker.io/library/almalinux:8@sha256:974135fa35c47f8406ae9f81e8479fe0c372bdd64244a48770848466ceb694ce
           - target: aarch64-unknown-linux-gnu
             arch: aarch64
             runner: ubuntu-24.04-arm
+            image: docker.io/library/almalinux:8@sha256:34a85f19e05e28243249d45dd3842621741a43b110865ca80575c9b4e083cc29
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
     container:
-      image: docker.io/library/almalinux:8@sha256:34a85f19e05e28243249d45dd3842621741a43b110865ca80575c9b4e083cc29
+      image: ${{ matrix.image }}
     env:
       TARGET: ${{ matrix.target }}
       ARCH: ${{ matrix.arch }}
@@ -305,11 +309,20 @@ jobs:
           sh rustup-init.sh -y --default-toolchain none --profile minimal
           "$HOME/.cargo/bin/rustup" toolchain install --profile minimal --no-self-update --no-update
       - name: Prove the runtime and the target
+        # Each output is read whole into a variable before it is tested, so
+        # no command writes into a pipe that closes early (SIGPIPE under
+        # pipefail).
         run: |
-          ldd --version | head -n 1
-          ldd --version | head -n 1 | grep -q ' 2\.28$'
+          glibc=$(ldd --version | sed -n 1p)
+          echo "$glibc"
+          case "$glibc" in
+            *' 2.28') ;;
+            *) echo "not glibc 2.28: $glibc"; exit 1 ;;
+          esac
           test "$(uname -m)" = "$ARCH"
-          "$HOME/.cargo/bin/rustc" -vV | grep -qx "host: $TARGET"
+          host=$("$HOME/.cargo/bin/rustc" -vV | sed -n 's/^host: //p')
+          echo "rustc host: $host"
+          test "$host" = "$TARGET"
       - name: Run ironafs-os's tests on glibc 2.28, real system calls included
         run: |
           "$HOME/.cargo/bin/cargo" test -p ironafs-os --locked --target "$TARGET" > test.log 2>&1
