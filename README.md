@@ -1,7 +1,7 @@
 <!-- SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com> -->
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
-# IronAFS
+# IronAFS™
 
 [![Project status: Concept, minimal or no implementation yet](https://www.repostatus.org/badges/latest/concept.svg)](https://www.repostatus.org/#concept)
 [![Licence: GPL-3.0-or-later](https://img.shields.io/badge/licence-GPL--3.0--or--later-blue)](LICENSING.md)
@@ -236,8 +236,12 @@ source, and improvements can flow back to its users and the wider community.
 IronAFS contains no code from OpenAFS, AuriStor or the Linux kernel's AFS and
 Rx implementations ([ADR 0001](docs/adr/0001-licence-and-dont-copy.md)).
 
-AFS is the Andrew File System. IronAFS is not affiliated with or endorsed by
-IBM, the OpenAFS Foundation or AuriStor. OpenAFS, AuriStor and other names
-used here are trademarks of their respective owners, used only to identify
-software discussed in this documentation or intended as interoperability
-targets.
+AFS is the Andrew File System. IronAFS is an independent project and is not
+affiliated with or endorsed by IBM, the OpenAFS Foundation or AuriStor. The
+names of OpenAFS, AuriStor and other software are used here only to
+identify software discussed in this documentation or intended as
+interoperability targets.
+
+IronAFS™ is a trademark of Adrian Ana. [TRADEMARKS.md](TRADEMARKS.md)
+explains how to refer to the project and to modified versions; it does not
+limit the rights the licence gives.
