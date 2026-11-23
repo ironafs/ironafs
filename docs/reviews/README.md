@@ -84,7 +84,8 @@ record lists:
   from an uncalibrated pin ([workflow](../workflow.md) §2, "Model routing");
 - **from round 3 on:** the convergence note ([workflow](../workflow.md) §3,
   step 7), and for each fix round past the second, the controller's
-  request, its recommendation, and the owner's answer with its date.
+  request, its recommendation, the owner's answer with its date, and the
+  controller's check of the updated note before that round.
 
 Records are written from the lanes' output and redacted: no paths outside the
 repository, hostnames, cell names, keys or other projects. Raw transcripts are

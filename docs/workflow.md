@@ -319,7 +319,8 @@ authoritative.
    record in `docs/reviews/` for the batch of briefs filed together holds
    these reviews, two counts (review runs per brief filed, and acceptance
    defects found later at pickup or in code review), and, for a brief past
-   two fix rounds, its convergence notes and permissions (step 7).
+   two fix rounds, its convergence notes and permissions (step 7). Such a
+   brief is filed only once that record holds them.
 
    **Deferring a design point** is allowed only if the current work is
    correct whichever way the point is decided: its acceptance criteria,
@@ -384,7 +385,8 @@ authoritative.
    - **What counts.** A scoped fix of an upheld tail, or of a finding still
      disputed after the fix rounds, counts as a fix round. A part split off
      unconverged keeps the parent's fix-round count; a redesign starts a
-     new count.
+     new count. Any part split off, converged or not, is a change of its
+     own: the parent's permission does not carry to it.
    - **A single seat's tail**, one or two majors and no blocker from one
      seat alone, goes to the judgement seat (§2) or, through the
      refutation seat (the specification-item rule above), into
