@@ -2,14 +2,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # The network-change monitor's measurements on the hosted Ubuntu runners
-# (docs/specs/network-generation.md, section 13, Q5, Q7, Q8 and Q9). Run by
-# hand only; it gates nothing. Each measurement is an ignored test of
-# ironafs-os, run as root in a network namespace of its own, that prints
-# one `measure q<n>` line per result.
+# (docs/specs/network-generation.md, section 13, Q5, Q7, Q8 and Q9).
+# Each measurement is an ignored test of ironafs-os, run as root in a
+# network namespace of its own. The jobs check that the evidence was emitted.
 
 name: Measure
 
 on:
+  push:
+    branches: [m2a-97-netgen]
   workflow_dispatch:
     inputs:
       rounds:
@@ -29,18 +30,24 @@ defaults:
 
 jobs:
   measure:
-    name: measure (${{ matrix.runner }})
+    name: measure ${{ matrix.measurement.name }} (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm, ubuntu-26.04, ubuntu-26.04-arm]
+        measurement:
+          # 1,000 ten-second barrier timeouts take about 167 minutes,
+          # before setup, other rounds, and waits that cross the deadline.
+          - { name: timing, timeout: 210 }
+          - { name: soak, timeout: 90 }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+    timeout-minutes: ${{ matrix.measurement.timeout }}
     permissions:
       contents: read
     env:
-      IRONAFS_MEASURE_ROUNDS: ${{ inputs.rounds }}
-      IRONAFS_MEASURE_SECONDS: ${{ inputs.seconds }}
+      MEASUREMENT: ${{ matrix.measurement.name }}
+      IRONAFS_MEASURE_ROUNDS: ${{ inputs.rounds || '1000' }}
+      IRONAFS_MEASURE_SECONDS: ${{ inputs.seconds || '3600' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,12 +61,52 @@ jobs:
       - name: Run each measurement, as root in a network namespace of its own
         run: |
           uname -r
-          for test in q5_the_notify_socket_binds_with_the_nexthop_bit_and_receives_each_kind \
-            q7_and_q9_each_round_trip_and_send_at_the_caps_worst_case \
-            q8_every_report_is_explained_by_its_receive_over_overflows_and_churn; do
+          output=$(mktemp)
+          trap 'rm -f "$output"' EXIT
+
+          require_line() {
+            local count
+            count=$(grep -Ec "$1" "$output" || [[ $? == 1 ]])
+            if [[ "$count" != 1 ]]; then
+              echo "expected one line matching $1, found $count" >&2
+              return 1
+            fi
+          }
+
+          run_measurement() {
+            local test="linux_rtnetlink::tests::kernel::measure::$1"
             sudo env "PATH=$PATH" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
               "IRONAFS_MEASURE_ROUNDS=$IRONAFS_MEASURE_ROUNDS" "IRONAFS_MEASURE_SECONDS=$IRONAFS_MEASURE_SECONDS" \
-              unshare --net -- cargo test -p ironafs-os --lib --locked -- --ignored --exact --nocapture \
-              "linux_rtnetlink::tests::kernel::measure::$test" 2>&1 | tee -a measure.log
-          done
-          grep '^measure q' measure.log
+              unshare --net -- cargo test -p ironafs-os --lib --locked -- --ignored --exact --nocapture --test-threads=2 \
+              "$test" 2>&1 | tee "$output"
+            require_line '^running 1 test$'
+            require_line '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured;'
+          }
+
+          case "$MEASUREMENT" in
+            timing)
+              [[ "$IRONAFS_MEASURE_ROUNDS" =~ ^[0-9]*[1-9][0-9]*$ ]]
+              run_measurement q5_the_notify_socket_binds_with_the_nexthop_bit_and_receives_each_kind
+              require_line '^measure q5 kernel=[^ ]+ bind='
+
+              run_measurement q7_and_q9_each_round_trip_and_send_at_the_caps_worst_case
+              require_line '^measure q7 kernel=[^ ]+ backlog_changes='
+              for churn in none routes; do
+                for dump in links addresses; do
+                  require_line "^measure q7 kernel=[^ ]+ churn=$churn dump=$dump objects="
+                  require_line "^measure q9 kernel=[^ ]+ churn=$churn send=dump-$dump n="
+                done
+                require_line "^measure q7 kernel=[^ ]+ churn=$churn barrier failed=[0-9]+ overflowed=[0-9]+ failed_with_observed_overflow=[0-9]+ failed_without_observed_overflow=[0-9]+ "
+                require_line "^measure q9 kernel=[^ ]+ churn=$churn send=barrier n="
+              done
+              ;;
+            soak)
+              [[ "$IRONAFS_MEASURE_SECONDS" =~ ^[0-9]*[1-9][0-9]*$ ]]
+              run_measurement q8_every_report_is_explained_by_its_receive_over_overflows_and_churn
+              require_line '^measure q8 kernel=[^ ]+ seconds=[0-9]+ bursts='
+              ;;
+            *)
+              echo "unknown measurement group: $MEASUREMENT" >&2
+              exit 1
+              ;;
+          esac

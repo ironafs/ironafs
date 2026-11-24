@@ -11,9 +11,9 @@
 //!
 //! Each is an ignored test, run as root in a network namespace of its own
 //! (`unshare --net`), one at a time, with `--nocapture`: it prints one
-//! line per measurement, starting `measure q<n>`, with `key=value` fields,
-//! and fails only when the measurement could not be made. The counts and
-//! durations come from the environment: `IRONAFS_MEASURE_ROUNDS` (Q7 and
+//! summary line per result, with key=value fields. Q7 also prints one line
+//! per barrier attempt. The tests fail only when the measurement could not
+//! be made. Counts and durations come from `IRONAFS_MEASURE_ROUNDS` (Q7 and
 //! Q9; default 1,000) and `IRONAFS_MEASURE_SECONDS` (Q8; default 3,600).
 //! Times are read from the awake clock (`CLOCK_MONOTONIC`), in
 //! nanoseconds.
@@ -478,10 +478,68 @@ fn dump_round(
     }
 }
 
-/// One barrier round on the notify socket: a backlog queued, then the
-/// no-op; the time from its send to its acknowledgement, the send's own
-/// duration, the backlog's bytes, and whether the socket overflowed;
-/// `None` for the time of a failed round. The backlog is `changes`
+/// How a barrier attempt ended, with its elapsed time on acknowledgement.
+enum BarrierOutcome {
+    Acknowledged(u64),
+    TimedOut,
+    SendFailed,
+}
+
+/// A barrier attempt with its send duration, pre-send queue fill, and
+/// overflow errors observed while waiting for its answer.
+struct BarrierRound {
+    outcome: BarrierOutcome,
+    send_time: u64,
+    fill: u64,
+    overflowed: bool,
+}
+
+#[derive(Default)]
+struct BarrierCounts {
+    overflowed: usize,
+    failed_with_overflow: usize,
+    failed_without_overflow: usize,
+}
+
+impl BarrierCounts {
+    /// Count the observations from one attempt, including acknowledged rounds.
+    fn record(&mut self, outcome: &BarrierOutcome, overflowed: bool) {
+        self.overflowed += usize::from(overflowed);
+        match (outcome, overflowed) {
+            (BarrierOutcome::Acknowledged(_), _) => {}
+            (BarrierOutcome::TimedOut | BarrierOutcome::SendFailed, true) => {
+                self.failed_with_overflow += 1;
+            }
+            (BarrierOutcome::TimedOut | BarrierOutcome::SendFailed, false) => {
+                self.failed_without_overflow += 1;
+            }
+        }
+    }
+}
+
+#[test]
+fn failed_barriers_are_counted_with_their_own_overflow_observation() {
+    let mut with = BarrierCounts::default();
+    with.record(&BarrierOutcome::TimedOut, true);
+    with.record(&BarrierOutcome::Acknowledged(1), false);
+    let mut without = BarrierCounts::default();
+    without.record(&BarrierOutcome::TimedOut, false);
+    without.record(&BarrierOutcome::Acknowledged(1), true);
+    assert_eq!((with.overflowed, without.overflowed), (1, 1));
+    assert_eq!(
+        (with.failed_with_overflow, with.failed_without_overflow),
+        (1, 0)
+    );
+    assert_eq!(
+        (
+            without.failed_with_overflow,
+            without.failed_without_overflow
+        ),
+        (0, 1)
+    );
+}
+
+/// One barrier round on the notify socket. The backlog is `changes`
 /// address additions and removals; with none (under churn), the socket is
 /// drained, then left unread until the churn has queued 75 per cent of
 /// its receive buffer.
@@ -491,7 +549,7 @@ fn barrier_round(
     buffer: &mut [u8],
     changes: usize,
     sequence: u32,
-) -> (Option<u64>, u64, u64, bool) {
+) -> BarrierRound {
     let mut lines = String::new();
     for index in 0..changes {
         writeln!(lines, "address add 2001:db8:ff::{:x}/128 dev lo", index + 1).unwrap();
@@ -515,23 +573,30 @@ fn barrier_round(
     let started = now();
     let sent = socket.send(&request(NLMSG_NOOP, NLM_F_REQUEST | NLM_F_ACK, sequence));
     let send_time = now() - started;
-    if sent.is_err() {
-        return (None, send_time, fill, false);
-    }
     let mut overflowed = false;
-    loop {
-        if now() - started > u64::try_from(ROUND_LIMIT.as_nanos()).unwrap() {
-            return (None, send_time, fill, overflowed);
-        }
-        match waited_receive(socket, wake, buffer, Duration::from_secs(1)) {
-            Got::Datagram(length) => {
-                if answers(&buffer[..length]).contains(&(0, sequence)) {
-                    return (Some(now() - started), send_time, fill, overflowed);
-                }
+    let outcome = if sent.is_err() {
+        BarrierOutcome::SendFailed
+    } else {
+        loop {
+            if now() - started > u64::try_from(ROUND_LIMIT.as_nanos()).unwrap() {
+                break BarrierOutcome::TimedOut;
             }
-            Got::Error(RouteError::Overflow(_)) => overflowed = true,
-            Got::Error(_) | Got::Nothing => {}
+            match waited_receive(socket, wake, buffer, Duration::from_secs(1)) {
+                Got::Datagram(length) => {
+                    if answers(&buffer[..length]).contains(&(0, sequence)) {
+                        break BarrierOutcome::Acknowledged(now() - started);
+                    }
+                }
+                Got::Error(RouteError::Overflow(_)) => overflowed = true,
+                Got::Error(_) | Got::Nothing => {}
+            }
         }
+    };
+    BarrierRound {
+        outcome,
+        send_time,
+        fill,
+        overflowed,
     }
 }
 
@@ -543,8 +608,9 @@ fn calibrated(socket: &RouteSocket, wake: &Wake, buffer: &mut [u8]) -> (usize, u
     let mut low = 0;
     let mut high = usize::MAX;
     for round in 0..40 {
-        let (_, _, fill, overflowed) =
-            barrier_round(socket, wake, buffer, changes, 1_000_000 + round);
+        let BarrierRound {
+            fill, overflowed, ..
+        } = barrier_round(socket, wake, buffer, changes, 1_000_000 + round);
         let fraction = fill * 100 / limit;
         if overflowed || fraction > 95 {
             high = changes;
@@ -613,25 +679,44 @@ fn q7_and_q9_each_round_trip_and_send_at_the_caps_worst_case() {
         }
         let mut times = Vec::new();
         let mut sends = Vec::new();
-        let mut failed = 0;
-        let mut overflows = 0;
+        let mut counts = BarrierCounts::default();
         let mut fills = Vec::new();
         for _ in 0..rounds {
             sequence += 1;
             let backlog = if churn { 0 } else { changes };
-            let (time, send, fill, overflowed) =
-                barrier_round(&notify, &wake, &mut buffer, backlog, sequence);
-            sends.push(send);
+            let BarrierRound {
+                outcome,
+                send_time,
+                fill,
+                overflowed,
+            } = barrier_round(&notify, &wake, &mut buffer, backlog, sequence);
+            sends.push(send_time);
             fills.push(fill);
-            overflows += usize::from(overflowed);
-            match time {
-                Some(time) => times.push(time),
-                None => failed += 1,
-            }
+            counts.record(&outcome, overflowed);
+            let outcome = match outcome {
+                BarrierOutcome::Acknowledged(time) => {
+                    times.push(time);
+                    "acknowledged"
+                }
+                BarrierOutcome::TimedOut => "timed_out",
+                BarrierOutcome::SendFailed => "send_failed",
+            };
+            println!(
+                "measure q7-round kernel={kernel} churn={label} sequence={sequence} \
+                 outcome={outcome} overflow_observed={overflowed} fill_bytes={fill} send_ns={send_time}"
+            );
         }
+        let BarrierCounts {
+            overflowed,
+            failed_with_overflow,
+            failed_without_overflow,
+        } = counts;
+        let failed = failed_with_overflow + failed_without_overflow;
         fills.sort_unstable();
         println!(
-            "measure q7 kernel={kernel} churn={label} barrier failed={failed} overflowed={overflows} \
+            "measure q7 kernel={kernel} churn={label} barrier failed={failed} overflowed={overflowed} \
+             failed_with_observed_overflow={failed_with_overflow} \
+             failed_without_observed_overflow={failed_without_overflow} \
              fill_min={} fill_max={} {}",
             fills.first().copied().unwrap_or(0),
             fills.last().copied().unwrap_or(0),
