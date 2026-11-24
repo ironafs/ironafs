@@ -11,13 +11,10 @@
 use std::os::unix::process::ExitStatusExt;
 
 use super::super::SecretBuffer;
-use crate::dump::harness::{Collector, command, contains, marker, plant, role, run};
+use crate::dump::harness::{Collector, SIGABRT, command, contains, marker, plant, role, run};
 
 /// This file's entry test, which a child runs.
 const ENTRY: &str = "linux_dontdump::tests::kernel::child";
-
-/// SIGABRT, the dumping signal `std::process::abort` raises.
-const SIGABRT: i32 = 6;
 
 /// The salts of the marker in the secret buffer and of the control marker
 /// in ordinary memory beside it.

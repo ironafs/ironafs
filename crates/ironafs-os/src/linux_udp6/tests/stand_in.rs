@@ -40,6 +40,17 @@ fn a_failed_option_leaves_the_socket_unbound() {
 }
 
 #[test]
+fn a_planned_failure_fails_one_call_and_the_next_succeeds() {
+    let _ = calls();
+    fail(Fail::Bind, 98);
+    assert!(matches!(
+        udp6_socket(Ipv6Addr::LOCALHOST, 0),
+        Err(Udp6Error::InUse(_))
+    ));
+    udp6_socket(Ipv6Addr::LOCALHOST, 0).unwrap();
+}
+
+#[test]
 fn a_missing_family_and_an_address_in_use_are_told_apart_through_the_calls() {
     let _ = calls();
     fail(Fail::Socket, 97);

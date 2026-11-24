@@ -119,6 +119,8 @@ fn parse_reads_a_row_s_c_expressions_and_refuses_any_outside_their_alphabet() {
         "{\"X\": \"1)\\n#include <x.h>\\n(1\"}",
         "{\"X\": \"\"}",
         "{\"x y\": \"1\"}",
+        "{\"X\": \"4\"}",
+        "{\"X\": \"(2 * 2) + 0x0\"}",
     ] {
         let error = parse(&with(refused)).unwrap_err();
         assert!(error.contains("expressions"), "{refused}: {error}");
@@ -150,6 +152,51 @@ fn parse_reads_a_row_s_feature_macros_and_refuses_any_but_gnu_source() {
     );
     let refused = parse(&with("[\"_POSIX_C_SOURCE 1\\n#include <x.h>\"]")).unwrap_err();
     assert!(refused.contains("is not a feature macro"), "{refused}");
+}
+
+#[test]
+fn parse_reads_a_row_s_qualified_constants_and_refuses_any_it_does_not_record() {
+    let text = inventory_text();
+    let with = |qualified: &str| {
+        text.replacen(
+            "\"module\": \"linux_clock\",",
+            &format!("\"module\": \"linux_clock\",\n      \"qualified\": {qualified},"),
+            1,
+        )
+    };
+    let clock = |inventory: &super::Inventory| {
+        inventory
+            .rows
+            .iter()
+            .find(|row| row.id == "linux-clock")
+            .and_then(|row| row.code.clone())
+            .unwrap()
+    };
+    assert_eq!(
+        clock(&parse(&text).unwrap()).qualified,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        clock(&parse(&with("[\"CLOCK_BOOTTIME\"]")).unwrap()).qualified,
+        ["CLOCK_BOOTTIME"]
+    );
+    // A qualified constant proved through an expression would not be
+    // compared with the name the probe found.
+    let both = with("[\"CLOCK_BOOTTIME\"]").replacen(
+        "\"module\": \"linux_clock\",",
+        "\"module\": \"linux_clock\",\n      \"expressions\": {\"CLOCK_BOOTTIME\": \"CLOCK_MONOTONIC + 6\"},",
+        1,
+    );
+    let refused = parse(&both).unwrap_err();
+    assert!(
+        refused.contains("compared with its own C name"),
+        "{refused}"
+    );
+    let refused = parse(&with("[\"SCM_PIDFD\"]")).unwrap_err();
+    assert!(
+        refused.contains("not one of the row's constants"),
+        "{refused}"
+    );
 }
 
 #[test]
@@ -249,7 +296,16 @@ fn assert_caught(text: &str, cases: &[(&str, String, &str)]) {
 #[test]
 fn problems_bind_the_recorded_code_to_the_adr_row() {
     let text = inventory_text();
-    let cases: [(&str, String, &str); 8] = [
+    let cases: [(&str, String, &str); 9] = [
+        (
+            "a same-named write of another path, the last segment kept, recorded alike",
+            text.replacen(
+                "\"operation\": \"core::ptr::write_volatile\"",
+                "\"operation\": \"crate::shadow::write_volatile\"",
+                1,
+            ),
+            "cannot hold `crate::shadow::write_volatile(byte, 0)`",
+        ),
         (
             "the volatile write swapped for an unsafe impl, recorded alike",
             text.replacen(
@@ -322,9 +378,10 @@ fn adopting(module: &str) -> Code {
         headers: Vec::new(),
         defines: Vec::new(),
         expressions: Vec::new(),
-        opaque: Vec::new(),
+        qualified: Vec::new(),
         structs: Vec::new(),
         constants: Vec::new(),
+        aliases: Vec::new(),
         stand_in: None,
         extern_blocks: Vec::new(),
         blocks: vec![Block {

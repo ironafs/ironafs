@@ -939,7 +939,7 @@ fn closure_violations(workspace: &Workspace, member: &Member) -> Vec<Violation> 
 /// # Errors
 ///
 /// Returns an error if `rustc` cannot be run or prints no path.
-fn toolchain_sysroot(root: &Path) -> Result<PathBuf, Error> {
+pub(crate) fn toolchain_sysroot(root: &Path) -> Result<PathBuf, Error> {
     const COMMAND: &str = "rustc --print sysroot";
     let output = Command::new("rustc")
         .args(["--print", "sysroot"])

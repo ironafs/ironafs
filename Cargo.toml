@@ -4,6 +4,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# The fuzz targets are their own crate, on nightly Rust (coding standards
+# rule 20).
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.0"
@@ -19,6 +22,7 @@ publish = false
 [workspace.dependencies]
 ironafs-netgen = { path = "crates/ironafs-netgen", version = "=0.0.0" }
 ironafs-os = { path = "crates/ironafs-os", version = "=0.0.0" }
+ironafs-test-support = { path = "crates/ironafs-test-support", version = "=0.0.0" }
 ironafs-time = { path = "crates/ironafs-time", version = "=0.0.0" }
 
 [workspace.lints.rust]

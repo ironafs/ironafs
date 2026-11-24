@@ -56,10 +56,13 @@ pub enum PeerError {
     /// The socket is not connected to a peer (a listener, or an unconnected
     /// socket, wrapped as a stream); the error carries the errno.
     NotConnected(io::Error),
+    /// The socket is not a stream socket (a datagram socket wrapped as a
+    /// stream, a pair's included); the value is the type it reported.
+    NotStream(i32),
     /// The call failed; the error carries its errno.
     Failed(io::Error),
-    /// The call reported a credential length other than its structure's
-    /// size, so the values cannot be trusted.
+    /// A call reported a length other than its value's size, so the
+    /// value cannot be trusted.
     Length {
         /// The length the call reported.
         returned: usize,
@@ -77,6 +80,9 @@ impl fmt::Display for PeerError {
             Self::NotConnected(error) => {
                 write!(formatter, "the socket has no connected peer: {error}")
             }
+            Self::NotStream(kind) => {
+                write!(formatter, "the socket is not a Unix stream (type {kind})")
+            }
             Self::Failed(error) => {
                 write!(formatter, "reading the peer's credentials failed: {error}")
             }
@@ -85,7 +91,7 @@ impl fmt::Display for PeerError {
             }
             Self::Length { returned, expected } => write!(
                 formatter,
-                "the peer's credentials came back {returned} bytes long, not {expected}"
+                "a read of the peer's socket came back {returned} bytes long, not {expected}"
             ),
         }
     }
@@ -95,7 +101,7 @@ impl Error for PeerError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::NotConnected(error) | Self::Failed(error) => Some(error),
-            Self::Length { .. } | Self::NoCredentials => None,
+            Self::Length { .. } | Self::NotStream(_) | Self::NoCredentials => None,
         }
     }
 }

@@ -4,7 +4,11 @@
 # The one crate that may hold `unsafe` (ADR 0005): the operating-system
 # calls that have no safe route, each a named site of ADR 0005's closed
 # list, recorded in `sites.json` and checked by `cargo xtask check-os`. No
-# dependencies, no features, no build script (ADR 0005, point 1.4).
+# dependencies and no features (ADR 0005, point 1.4). Its one build script,
+# std only, is the target gate of point 5.3 and Decision 4: it refuses, by
+# exact triple, every built-in target outside point 5.3's list, and runs or
+# compiles nothing. `build` is named so a missing script fails the build
+# instead of silently dropping the gate.
 [package]
 name = "ironafs-os"
 description = "IronAFS's operating-system bindings: the calls that need unsafe, behind safe interfaces"
@@ -14,6 +18,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+build = "build.rs"
 
 # The workspace's lint table with one change, `unsafe_code = "deny"`
 # instead of "forbid", so each site's named `#[expect(unsafe_code)]` can

@@ -28,7 +28,7 @@ use core::ffi::{c_int, c_void};
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 
-use crate::fdpass::retried;
+use crate::retry::retried;
 use crate::route::{Received, RouteError, Rules, checked, receive_error, sent};
 use abi::{
     AF_NETLINK, ENOBUFS, MSG_TRUNC, NETLINK_ROUTE, NOTIFY_GROUPS, RTMGRP_IPV4_IFADDR,

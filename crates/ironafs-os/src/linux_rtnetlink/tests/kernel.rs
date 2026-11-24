@@ -25,6 +25,7 @@
 //! event of the same type cannot satisfy it.
 
 use std::fmt::Write as _;
+use std::io::Write as _;
 
 use super::super::RouteSocket;
 use crate::dump::harness::Command;
@@ -75,9 +76,12 @@ fn dump(kind: u16) -> Vec<u8> {
     request
 }
 
-/// The message types in one datagram, each message's length checked
-/// against the datagram.
-fn types(datagram: &[u8]) -> Vec<u16> {
+/// The messages of one datagram, each its type and its payload (the
+/// bytes after the header, to its length), each message's length checked
+/// against what is left of the datagram. The next message starts at the
+/// length rounded up to four bytes, or at the datagram's end if that is
+/// past it.
+fn messages(datagram: &[u8]) -> Vec<(u16, &[u8])> {
     let mut found = Vec::new();
     let mut rest = datagram;
     while rest.len() >= HEADER {
@@ -87,10 +91,19 @@ fn types(datagram: &[u8]) -> Vec<u16> {
             "a message of {length} bytes in {} left",
             rest.len()
         );
-        found.push(u16::from_ne_bytes(rest[4..6].try_into().unwrap()));
-        rest = &rest[(length + 3) & !3..];
+        let kind = u16::from_ne_bytes(rest[4..6].try_into().unwrap());
+        found.push((kind, &rest[HEADER..length]));
+        rest = &rest[((length + 3) & !3).min(rest.len())..];
     }
     found
+}
+
+/// The message types in one datagram.
+fn types(datagram: &[u8]) -> Vec<u16> {
+    messages(datagram)
+        .into_iter()
+        .map(|(kind, _)| kind)
+        .collect()
 }
 
 /// One notification, as this test's reader of `rtnetlink(7)`'s messages
@@ -106,19 +119,11 @@ struct Event {
     mtu: Option<u32>,
 }
 
-/// The events of one datagram, each message's and attribute's length
-/// checked against what holds it.
+/// The events of one datagram, each message's length checked by
+/// [`messages`] and each attribute's against what holds it.
 fn events(datagram: &[u8]) -> Vec<Event> {
     let mut found = Vec::new();
-    let mut rest = datagram;
-    while rest.len() >= HEADER {
-        let length = u32::from_ne_bytes(rest[0..4].try_into().unwrap()) as usize;
-        assert!(
-            (HEADER..=rest.len()).contains(&length),
-            "a message of {length} bytes"
-        );
-        let kind = u16::from_ne_bytes(rest[4..6].try_into().unwrap());
-        let payload = &rest[HEADER..length];
+    for (kind, payload) in messages(datagram) {
         // The fixed part before the attributes, the prefix length's
         // offset in it, and the attribute naming the object.
         let shape = match kind {
@@ -165,7 +170,6 @@ fn events(datagram: &[u8]) -> Vec<Event> {
             }
             found.push(event);
         }
-        rest = &rest[((length + 3) & !3).min(rest.len())..];
     }
     found
 }
@@ -343,7 +347,8 @@ fn a_nexthop_object_added_and_removed_is_seen_on_the_notify_socket() {
 fn a_burst_the_socket_does_not_read_is_an_overflow() {
     ip("link set lo up");
     let socket = RouteSocket::notify().unwrap();
-    let batch = std::env::temp_dir().join(format!("ironafs-os-burst-{}", std::process::id()));
+    // The batch goes to `ip -batch -` on its standard input: no file, so
+    // no path another user could have prepared.
     let mut lines = String::new();
     for index in 0..4000 {
         writeln!(lines, "address add 2001:db8:9::{index:x}/128 dev lo").unwrap();
@@ -351,9 +356,18 @@ fn a_burst_the_socket_does_not_read_is_an_overflow() {
     for index in 0..4000 {
         writeln!(lines, "address del 2001:db8:9::{index:x}/128 dev lo").unwrap();
     }
-    std::fs::write(&batch, lines).unwrap();
-    ip(&format!("-batch {}", batch.display()));
-    std::fs::remove_file(&batch).unwrap();
+    let mut child = Command::new("ip")
+        .args(["-batch", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(lines.as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success(), "ip -batch -");
     let mut buffer = vec![0_u8; 32_768];
     let overflowed = loop {
         match socket.receive(&mut buffer) {

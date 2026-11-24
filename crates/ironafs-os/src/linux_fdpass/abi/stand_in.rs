@@ -7,7 +7,8 @@
 //! (the message, its one buffer, its byte and its control data, so Miri
 //! checks every pointer), takes its own copy of each descriptor an
 //! `SCM_RIGHTS` header carries, as the kernel does, and queues them with
-//! the byte; `recvmsg` takes the oldest queued message, writes its byte,
+//! the byte; `recvmsg` checks the receive's shape, then takes the oldest
+//! queued message, writes its byte,
 //! a header and the descriptors into the receiver's buffers, and sets the
 //! control length, as the kernel does; with nothing queued it returns 0,
 //! the end of the stream. A call without `MSG_NOSIGNAL` (send) or
@@ -134,7 +135,7 @@ pub(in crate::linux_fdpass) unsafe fn sendmsg(
     let count = match header.length() {
         ONE => 1,
         TWO => 2,
-        _ => return -1,
+        _ => return refused(),
     };
     if (header.level(), header.kind()) != (SOL_SOCKET, SCM_RIGHTS) {
         return refused();
@@ -176,9 +177,9 @@ pub(in crate::linux_fdpass) unsafe fn recvmsg(
     if let Some(failed) = planned() {
         return failed;
     }
-    let Some((byte, descriptors)) = QUEUE.with(|queue| queue.borrow_mut().pop_front()) else {
-        return 0;
-    };
+    // The message's shape is checked before a message is taken, so a
+    // malformed receive is refused whether or not one is queued, and leaves
+    // a queued one in place.
     #[expect(unsafe_code, reason = "linux-fdpass: Miri stand-in")]
     // SAFETY: the caller promises `msg` is valid for one read; Miri checks.
     let mut message = unsafe { core::ptr::read(msg) };
@@ -192,6 +193,9 @@ pub(in crate::linux_fdpass) unsafe fn recvmsg(
     if buffer.iov_len < 1 {
         return refused();
     }
+    let Some((byte, descriptors)) = QUEUE.with(|queue| queue.borrow_mut().pop_front()) else {
+        return 0;
+    };
     let data: *mut u8 = buffer.iov_base.cast();
     #[expect(unsafe_code, reason = "linux-fdpass: Miri stand-in")]
     // SAFETY: the buffer is valid for one byte of writes; Miri checks.

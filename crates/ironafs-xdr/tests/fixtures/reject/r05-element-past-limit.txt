@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# names (cap 16, limit at offset 20), count 2: "abcd" at 4 to 12, then a length word of 8 at 12 whose data would end at 24.
+
+type names
+breaks 5.2, point 7; 5.4, points 3.3 and 5
+expect CapExceeded test.names
+offset 12
+extent none
+requests test.names:slots2 test.label:4
+input 00000002 00000004 61626364 00000008 61626364 65666768

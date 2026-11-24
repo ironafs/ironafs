@@ -7,6 +7,7 @@
 |---|---|
 | [adr/](adr/README.md) | The decisions, each with its review history |
 | [research/](research/README.md) | The research the decisions rest on |
+| [specs/](specs/README.md) | The specifications code is written from, their sources and the register of editions |
 | [reviews/](reviews/README.md) | How each change was reviewed, finding by finding |
 | [workflow.md](workflow.md) | How a change is classed, made, reviewed and landed |
 | [coding-standards.md](coding-standards.md) | The numbered rules for Rust code, tests, layout and dependencies |

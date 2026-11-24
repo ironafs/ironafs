@@ -20,6 +20,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use super::super::available_space;
+use crate::descriptors::open_descriptors;
 use crate::space::SpaceError;
 
 /// The path of an empty tmpfs of exactly one mebibyte, for the ignored
@@ -61,11 +62,6 @@ fn stat_free(path: &Path, field: &str) -> u64 {
     let blocks = words.next().unwrap();
     let size = words.next().unwrap();
     blocks * size
-}
-
-/// The number of this process's open descriptors.
-fn open_descriptors() -> usize {
-    std::fs::read_dir("/proc/self/fd").unwrap().count()
 }
 
 #[test]

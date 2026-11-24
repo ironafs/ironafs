@@ -130,7 +130,7 @@ fn a_receive_passes_no_flags() {
     reply(from_kernel(&[1; 4]));
     let _ = calls();
     socket.receive(&mut [0_u8; 8]).unwrap();
-    assert_eq!(calls(), [Call::Receive(0)]);
+    assert_eq!(calls(), [Call::Receive(0), Call::Named(12)]);
 }
 
 #[test]
@@ -145,7 +145,10 @@ fn an_interrupted_send_and_receive_are_each_made_again() {
     reply(from_kernel(&[1; 4]));
     plan(Plan::Interrupt(1));
     assert_eq!(socket.receive(&mut [0_u8; 8]).unwrap(), 4);
-    assert_eq!(calls(), [Call::Receive(0), Call::Receive(0)]);
+    assert_eq!(
+        calls(),
+        [Call::Receive(0), Call::Receive(0), Call::Named(12)]
+    );
 }
 
 #[test]
@@ -181,6 +184,26 @@ fn a_receive_with_nothing_to_return_after_an_interruption_ends_with_its_own_errn
         socket.receive(&mut [0_u8; 8]),
         Err(RouteError::Receive(error)) if error.raw_os_error() == Some(22)
     ));
+}
+
+#[test]
+fn a_sender_address_is_written_only_to_the_length_the_reply_says_and_the_buffer_holds() {
+    // As the kernel does: the address is written up to the shorter of the
+    // reply's address length and the caller's buffer, and the reply's
+    // length is reported whole; either length other than the struct's is
+    // no sender.
+    let socket = RouteSocket::notify().unwrap();
+    for (length, written) in [(4, 4), (0, 0), (16, 12)] {
+        let mut reply_of = from_kernel(&[1; 8]);
+        reply_of.name_length = length;
+        reply(reply_of);
+        let _ = calls();
+        assert!(matches!(
+            socket.receive(&mut [0_u8; 16]),
+            Err(RouteError::BadSender)
+        ));
+        assert_eq!(calls(), [Call::Receive(0), Call::Named(written)]);
+    }
 }
 
 #[test]
