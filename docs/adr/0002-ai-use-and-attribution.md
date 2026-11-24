@@ -148,7 +148,7 @@ Signed-off-by: Adrian Ana <adrian@adrianana.com>
 | id | Lane | Family |
 |---|---|---|
 | `claude-code` | Claude Code, controller and Claude subagent seats | Anthropic |
-| `codex` | codex CLI, implementer for extra capacity and GPT read-only seat | OpenAI |
+| `codex` | codex CLI, implementer for extra capacity and GPT read-only seat; also GPT read-only seats run on the OpenAI API route (`docs/workflow.md` §2) | OpenAI |
 | `agy` | agy CLI, implementer when codex is out | Google |
 | `gemini` | Gemini review via agy | Google |
 | `glm` | GLM via headless Claude Code on Z.ai | Zhipu |
@@ -331,7 +331,7 @@ The repository becomes public only when all of these hold:
 1. The public repository starts from a fresh root. The first private history
    is kept by the owner as a local backup and never published.
 2. The usage record counts work, not money. Most lanes run on flat-rate
-   subscriptions, one is usage-billed, and not all of them report per-run
+   subscriptions, some are usage-billed, and not all of them report per-run
    cost. A per-change figure
    would be invented, and figures for some lanes but not others would mislead.
    `AI.md` names each lane's service and plan type instead.
@@ -510,3 +510,9 @@ Correction, 2026-11-20 (#40), changing no decision: the Context's roles
 line is marked as the roles at acceptance and points to the default
 implementer from M2a, and the `codex` agent-id row says "implementer for
 extra capacity", matching `docs/workflow.md` §2.
+
+Correction, 2026-11-23, changing no decision: GPT read-only seats may
+also run on the owner's OpenAI API credit, the same models by another
+route (`docs/workflow.md` §2, owner's ruling of 2026-11-23). The `codex`
+agent-id row says so, and owner decision 2 says some lanes, not one, are
+usage-billed. The list of ids is unchanged.

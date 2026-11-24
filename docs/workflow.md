@@ -54,9 +54,18 @@ session. A contributor does not dispatch lanes: they open an issue or a PR,
 and the maintainer arranges the reviews the class needs (`CONTRIBUTING.md`).
 
 All lanes were approved for this repository by the owner on 2026-11-18.
-**Only CLIs are used**: Claude Code, the codex CLI and the agy CLI. GLM and
-DeepSeek run through headless Claude Code on their own endpoints. API-platform
-lanes are not used.
+**CLIs first**: Claude Code, the codex CLI and the agy CLI. GLM and
+DeepSeek run through headless Claude Code on their own endpoints. GPT has
+two routes to the same models (owner, 2026-11-23): the codex CLI on the
+ChatGPT subscription, and, for read-only seats, the maintainer's
+`openai_lane.py` on the owner's OpenAI API credit (the Responses API, with
+read-only tools confined to the repository, a cost cap per run and a
+did-it-run gate). A read-only seat takes whichever route has quota; the
+seat, its family, its pin (`gpt-6.2-sol` or `gpt-6.2-astra`) and its effort
+are the same either way, read from the lane's own log, and the review
+record names the route. Trailers credit both routes as `codex`, and
+either counts as the OpenAI lane wherever a rule names it (embargoed work
+included). Code is written only through the codex CLI.
 
 | Role | Who | How |
 |---|---|---|
@@ -66,7 +75,7 @@ lanes are not used.
 | **Implementer when codex is out of quota** | agy CLI (Gemini) | Same brief; a session allowlist that denies git. Brief paths must sit inside `--add-dir`. |
 | **First reviewer of implemented code** | GLM 5.3 (`glm-review`) | Headless Claude Code on Z.ai's endpoint, read-only. |
 | **Second family when the class needs two** | GPT read-only, Gemini Carbon via agy (`gemini-review`), DeepSeek (`deepseek-review`) or a Claude seat, whichever wrote none of the change and is not already the first reviewer | DeepSeek off-peak only (not Mon–Fri 01–04 or 06–10 UTC). |
-| **Design, rulings, research, refutations on work codex did not write** | GPT read-only: `codex exec -s read-only -m gpt-6.2-sol - < brief.md`; `-m gpt-6.2-astra -c model_reasoning_effort=xhigh` for the strongest row (§2, "Model routing") | GLM second when a second view is needed. |
+| **Design, rulings, research, refutations on work codex did not write** | GPT read-only: `codex exec -s read-only -m gpt-6.2-sol - < brief.md`; `-m gpt-6.2-astra -c model_reasoning_effort=xhigh` for the strongest row (§2, "Model routing"); either may run through `openai_lane.py` on the API credit (above) | GLM second when a second view is needed. |
 | **Claude seats** (review, reproduction, hard judgement, security) | Claude Code subagents: Opus by default; Mythos 5.2 (`claude-mythos-5-2`, Claude Code's `fable` alias) for the strongest row of §2's "Model routing", including every Claude security review | Never a required seat on Claude-written work. |
 
 **A family never reviews its own work.** Codex is OpenAI-family, so a GPT
@@ -215,7 +224,7 @@ Disagreements are settled on evidence, never by counting.
   and records the judgement as moot; every other review and merge gate
   still applies.
 - **The record** (§4, "After the run") gives both positions, the seat, the
-  served model and effort, the deciding facts with their sources, and the
+  served model and effort (and a GPT seat's route), the deciding facts with their sources, and the
   controller's check.
 
 ### Model routing
