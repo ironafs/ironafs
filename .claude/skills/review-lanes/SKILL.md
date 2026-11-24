@@ -19,7 +19,11 @@ not copy them here.
 ## Approvals for this repository
 
 All four outside families are approved for IronAFS source (owner,
-2026-11-18). CLIs only; API-platform lanes are not used.
+2026-11-18). CLIs first. GPT read-only seats may also run through
+`openai_lane.py` on the owner's OpenAI API credit (owner, 2026-11-23): the
+same models, pins and effort by another route, whichever has quota; credited
+as `codex`, with the route named in the record; never for writing code
+(`docs/workflow.md` §2). How to run it is in the global `openai-lane` skill.
 
 ## Which seat, by class
 
@@ -220,7 +224,7 @@ a pass:
   it; reading alone never settles it.
 - Write the record: in the ADR's Review section for an ADR, otherwise in
   `docs/reviews/YYYY-MM-DD-<slug>.md`. Give the seat, served model, effort,
-  verdict, and each finding with its disposition. Redact paths outside the
+  verdict (and a GPT seat's route: codex CLI or API), and each finding with its disposition. Redact paths outside the
   repository, hostnames, cell names and keys. Also:
   - tag each finding `origin:` (pre-existing, or introduced by fix round
     N) and `kind:` (correctness, contract, consistency between parts,
