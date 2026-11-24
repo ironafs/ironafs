@@ -7,8 +7,10 @@
 //! descriptor Miri knows, so adopting and closing it is checked); `bind`
 //! and `sendto` read every byte the wrapper points them at; `recvmsg`
 //! writes a reply a test queued (its bytes, cut to the buffer with
-//! `MSG_TRUNC` set when longer, and its sender's address, of the length
-//! the reply says) through the wrapper's message, as the kernel does.
+//! `MSG_TRUNC` set when longer, and its sender's address, written up to
+//! the shorter of the length the reply says and the caller's buffer, with
+//! the reply's length reported whole) through the wrapper's message, as
+//! the kernel does.
 //! Each records the call, in order, on this thread. A test can [`plan`]
 //! the next `sendto` and `recvmsg` answers instead: interrupted by a
 //! signal some number of times (-1 with `EINTR`), or failed once with an
@@ -41,6 +43,8 @@ pub(in crate::linux_rtnetlink) enum Call {
     Send(Vec<u8>, c_int, sockaddr_nl, socklen_t),
     /// The flags.
     Receive(c_int),
+    /// The bytes of the sender's address a receive wrote.
+    Named(usize),
     /// A send answered with a planned failure.
     Failed,
 }
@@ -259,13 +263,22 @@ pub(in crate::linux_rtnetlink) unsafe fn recvmsg(
     // promised, and `written` is at most that and the reply's length;
     // Miri checks both.
     let () = unsafe { core::ptr::copy_nonoverlapping(source, target, written) };
-    let address: *mut sockaddr_nl = name.cast();
     let sender = queued.sender;
     if !queued.untouched {
+        // As the kernel does: the sender's address up to the shorter of
+        // the reply's address length and the buffer the caller stated.
+        let named = usize::try_from(queued.name_length)
+            .unwrap_or(usize::MAX)
+            .min(NAME);
+        let from: *const u8 = (&raw const sender).cast();
+        let address: *mut u8 = name.cast();
+        record(Call::Named(named));
         #[expect(unsafe_code, reason = "linux-rtnetlink: Miri stand-in")]
         // SAFETY: the address buffer is valid for `msg_namelen` bytes, one
-        // `struct sockaddr_nl`, aligned, as promised; Miri checks.
-        let () = unsafe { core::ptr::write(address, sender) };
+        // `struct sockaddr_nl`, as promised, and `named` is at most that;
+        // `from` is `sender`, a local of that struct's size; Miri checks
+        // both.
+        let () = unsafe { core::ptr::copy_nonoverlapping(from, address, named) };
     }
     let returned = if queued.bytes.len() > buffer.iov_len {
         MSG_TRUNC

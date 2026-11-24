@@ -1135,10 +1135,11 @@
               ]
             },
             {
-              "operation": "core::ptr::write",
+              "operation": "core::ptr::copy_nonoverlapping",
               "arguments": [
+                "from",
                 "address",
-                "sender"
+                "named"
               ]
             },
             {
