@@ -8,20 +8,21 @@
 //! its option value through the wrapper's pointer for the stated length;
 //! `bind` reads the whole `struct sockaddr_in6` through the wrapper's
 //! pointer when the length is its size. Each records the call, in order,
-//! on this thread, and a test can make one of them fail with an errno,
-//! which [`last_error`] then returns, as the C library's would be.
+//! on this thread, and a test can make the next of one of them fail once
+//! with an errno, which [`last_error`] then returns, as the C library's
+//! would be.
 //!
 //! A call of a shape a stand-in does not model is refused with -1 and
-//! `EINVAL`, so no earlier errno is reported for it and a retry cannot
-//! loop.
+//! `EINVAL`, so no earlier errno is reported for it.
 
 use core::ffi::{c_int, c_void};
 use std::cell::{Cell, RefCell};
-use std::io;
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
 
 use super::{sockaddr, sockaddr_in6, socklen_t};
+pub(in crate::linux_udp6) use crate::stand_in_errno::last_error;
+use crate::stand_in_errno::{refused, set_errno};
 
 /// One call a stand-in received, with what it read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,7 +45,6 @@ pub(in crate::linux_udp6) enum Fail {
 thread_local! {
     static CALLS: RefCell<Vec<Call>> = const { RefCell::new(Vec::new()) };
     static FAIL: Cell<Option<(Fail, c_int)>> = const { Cell::new(None) };
-    static ERRNO: Cell<c_int> = const { Cell::new(0) };
 }
 
 /// The calls made on this thread so far, which it then forgets.
@@ -52,25 +52,22 @@ pub(in crate::linux_udp6) fn calls() -> Vec<Call> {
     CALLS.with(|calls| calls.take())
 }
 
-/// Makes `call` fail (with -1 and `errno`) from now on, on this thread.
+/// Makes the next `call` on this thread fail once, with -1 and `errno`.
 pub(in crate::linux_udp6) fn fail(call: Fail, errno: c_int) {
     FAIL.with(|fail| fail.set(Some((call, errno))));
-}
-
-/// The errno the last planned failure set.
-pub(in crate::linux_udp6) fn last_error() -> io::Error {
-    io::Error::from_raw_os_error(ERRNO.with(Cell::get))
 }
 
 fn record(call: Call) {
     CALLS.with(|calls| calls.borrow_mut().push(call));
 }
 
-/// Whether `call` is planned to fail; if so, its errno is set.
+/// Whether `call` is planned to fail; if so, the plan is used up and its
+/// errno set.
 fn failing(call: Fail) -> bool {
     match FAIL.with(Cell::get) {
         Some((planned, errno)) if planned == call => {
-            ERRNO.with(|cell| cell.set(errno));
+            FAIL.with(|fail| fail.set(None));
+            set_errno(errno);
             true
         }
         _ => false,
@@ -99,7 +96,9 @@ pub(in crate::linux_udp6) unsafe fn socket(domain: c_int, kind: c_int, protocol:
 /// # Safety
 ///
 /// As the foreign function's: `optval` is valid for reads of `optlen`
-/// bytes.
+/// bytes. And, since the stand-in reads it as one `int` when `optlen` is
+/// `sizeof(int)`, `optval` is then aligned for `c_int`: the wrapper passes
+/// a pointer to its own `c_int` local.
 #[expect(unsafe_code, reason = "linux-udp6: Miri stand-in")]
 pub(in crate::linux_udp6) unsafe fn setsockopt(
     sockfd: c_int,
@@ -114,7 +113,7 @@ pub(in crate::linux_udp6) unsafe fn setsockopt(
     let pointer: *const c_int = optval.cast();
     #[expect(unsafe_code, reason = "linux-udp6: Miri stand-in")]
     // SAFETY: the caller promises `optval` is valid for `optlen` bytes,
-    // one `int`; Miri checks it and its alignment.
+    // one `int`, and aligned for it (`# Safety`); Miri checks both.
     let value = unsafe { core::ptr::read(pointer) };
     record(Call::Option(level, optname, value, optlen));
     if failing(Fail::Option) { -1 } else { 0 }
@@ -125,7 +124,9 @@ pub(in crate::linux_udp6) unsafe fn setsockopt(
 /// # Safety
 ///
 /// As the foreign function's: `addr` is valid for reads of `addrlen`
-/// bytes.
+/// bytes. And, since the stand-in reads it as one `struct sockaddr_in6`
+/// when `addrlen` is that struct's size, `addr` is then aligned for it:
+/// the wrapper passes a pointer to a `sockaddr_in6` it borrows.
 #[expect(unsafe_code, reason = "linux-udp6: Miri stand-in")]
 pub(in crate::linux_udp6) unsafe fn bind(
     sockfd: c_int,
@@ -138,19 +139,9 @@ pub(in crate::linux_udp6) unsafe fn bind(
     let pointer: *const sockaddr_in6 = addr.cast();
     #[expect(unsafe_code, reason = "linux-udp6: Miri stand-in")]
     // SAFETY: the caller promises `addr` is valid for `addrlen` bytes, one
-    // `struct sockaddr_in6`; Miri checks it and its alignment.
+    // `struct sockaddr_in6`, and aligned for it (`# Safety`); Miri checks
+    // both.
     let name = unsafe { core::ptr::read(pointer) };
     record(Call::Bind(name, addrlen));
     if failing(Fail::Bind) { -1 } else { 0 }
-}
-
-/// `EINVAL`.
-const EINVAL: c_int = 22;
-
-/// A call of a shape the stand-in does not model: -1, with `EINVAL` as
-/// its errno, so no earlier errno (such as a planned `EINTR`) is reported
-/// for it.
-fn refused<T: From<i8>>() -> T {
-    ERRNO.with(|cell| cell.set(EINVAL));
-    T::from(-1)
 }

@@ -72,6 +72,10 @@ mod clock;
 #[cfg(not(miri))]
 mod descriptors;
 mod dump;
+// The errno of the Miri stand-ins of `linux_udp6` and `linux_statvfs`.
+#[cfg(miri)]
+#[cfg(target_os = "linux")]
+mod stand_in_errno;
 // The descriptor-passing checks, used by `linux_fdpass` and by their tests
 // on every target.
 #[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]

@@ -18,13 +18,13 @@
 
 use core::ffi::c_int;
 use std::cell::Cell;
-use std::io;
 
 use super::statvfs;
+pub(in crate::linux_statvfs) use crate::stand_in_errno::last_error;
+use crate::stand_in_errno::{refused, set_errno};
 
 thread_local! {
     static PLAN: Cell<Plan> = const { Cell::new(Plan::Answer) };
-    static ERRNO: Cell<c_int> = const { Cell::new(0) };
     static CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -52,11 +52,6 @@ pub(in crate::linux_statvfs) fn calls() -> usize {
     CALLS.with(Cell::get)
 }
 
-/// The errno the last planned failure set.
-pub(in crate::linux_statvfs) fn last_error() -> io::Error {
-    io::Error::from_raw_os_error(ERRNO.with(Cell::get))
-}
-
 /// Counts a call and answers it as planned: `true` for a planned failure,
 /// with its errno set.
 fn planned_failure() -> bool {
@@ -77,7 +72,7 @@ fn planned_failure() -> bool {
             errno
         }
     };
-    ERRNO.with(|cell| cell.set(errno));
+    set_errno(errno);
     true
 }
 
@@ -118,15 +113,4 @@ pub(in crate::linux_statvfs) unsafe fn fstatvfs(fd: c_int, buf: *mut statvfs) ->
     // struct, aligned; Miri checks it.
     let () = unsafe { core::ptr::write(buf, figures) };
     0
-}
-
-/// `EINVAL`.
-const EINVAL: c_int = 22;
-
-/// A call of a shape the stand-in does not model: -1, with `EINVAL` as
-/// its errno, so no earlier errno (such as a planned `EINTR`) is reported
-/// for it.
-fn refused<T: From<i8>>() -> T {
-    ERRNO.with(|cell| cell.set(EINVAL));
-    T::from(-1)
 }
