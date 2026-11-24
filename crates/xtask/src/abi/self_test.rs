@@ -404,11 +404,10 @@ fn recorded_facts_case(output: &mut impl Write) -> Result<(), Error> {
             ));
         }
     }
-    writeln!(
+    report(
         output,
-        "caught: a type alias declared but not recorded, and one recorded but not declared"
+        "caught: a type alias declared but not recorded, and one recorded but not declared",
     )
-    .map_err(Error::io("report check-abi self-test"))
 }
 
 /// A row of four declaration files, read for a glibc target: each C
@@ -491,13 +490,12 @@ fn foreign_import_case(dir: &Path, output: &mut impl Write) -> Result<(), Error>
             Ok(_) => return Err(failure(CASE, format!("{import}: accepted"))),
         }
     }
-    writeln!(
+    report(
         output,
         "caught: a declaration's type imported from another module, an inactive re-export \
          beside a binding through an inline module, an inactive re-export alone, a nested \
-         import, an import under another cfg, and a glob"
+         import, an import under another cfg, and a glob",
     )
-    .map_err(Error::io("report check-abi self-test"))
 }
 
 fn declarations_of(
