@@ -150,7 +150,7 @@ fn c_source_asserts_layout_member_types_constants_and_function_types() {
         "_Static_assert(sizeof(struct timespec) == 16, \"linux-clock: sizeof(struct timespec)\");",
         "_Static_assert(_Alignof(struct timespec) == 8, \"linux-clock: _Alignof(struct timespec)\");",
         "_Static_assert(offsetof(struct timespec, tv_nsec) == 8, \"linux-clock: offsetof(struct timespec, tv_nsec)\");",
-        "_Static_assert(_Generic(((struct timespec *)0)->tv_sec, long: 1), \"linux-clock: type of timespec.tv_sec\");",
+        "_Static_assert(_Generic(&((struct timespec *)0)->tv_sec, long *: 1), \"linux-clock: type of timespec.tv_sec\");",
         "_Static_assert(CLOCK_BOOTTIME == 7, \"linux-clock: CLOCK_BOOTTIME\");",
         "_Static_assert(NEGATIVE == -1, \"linux-clock: NEGATIVE\");",
         "_Static_assert(_Generic(&clock_gettime, int (*)(int, struct timespec *): 1), \"linux-clock: type of clock_gettime\");",
@@ -231,7 +231,7 @@ fn c_source_resolves_type_names_by_identity_not_spelling() {
     assert!(
         c_source("row", &[], &[], &[], &written_out, DataModel::Lp64)
             .unwrap()
-            .contains("_Generic(((struct ok *)0)->a, long: 1)")
+            .contains("_Generic(&((struct ok *)0)->a, long *: 1)")
     );
 }
 
@@ -325,7 +325,7 @@ fn c_source_names_an_alias_by_its_c_typedef_and_asserts_its_size_alignment_and_s
         "_Static_assert(_Alignof(rlim_t) == 8, \"unix-nodump: _Alignof(rlim_t)\");",
         "_Static_assert((rlim_t)-1 > 0, \"unix-nodump: rlim_t is unsigned\");",
         "_Static_assert(sizeof(struct rlimit) == 16, \"unix-nodump: sizeof(struct rlimit)\");",
-        "_Static_assert(_Generic(((struct rlimit *)0)->rlim_max, rlim_t: 1), \"unix-nodump: type of rlimit.rlim_max\");",
+        "_Static_assert(_Generic(&((struct rlimit *)0)->rlim_max, rlim_t *: 1), \"unix-nodump: type of rlimit.rlim_max\");",
         "_Static_assert(_Generic(&setrlimit, int (*)(int, const struct rlimit *): 1), \"unix-nodump: type of setrlimit\");",
     ] {
         assert!(

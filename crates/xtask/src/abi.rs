@@ -17,10 +17,12 @@
 //!
 //! - the size and alignment of each struct, and each field's offset, as
 //!   `repr(C)` lays them out for the target's data model;
-//! - each field's type, by a `_Generic` selection with no default, so a
-//!   field of the wrong type with the right size and offset fails; an
-//!   array member (`[T; N]`) by its address, `T (*)[N]`, so its element
-//!   type and count are both checked. A struct's last field may be an
+//! - each field's type, by a `_Generic` selection with no default over
+//!   the field's address (`T *`), so a field of the wrong type with the
+//!   right size and offset fails, and a C array member, which as a value
+//!   would decay to a pointer, never passes for a pointer field; an array
+//!   member (`[T; N]`) as `T (*)[N]`, so its element type and count are
+//!   both checked. A struct's last field may be an
 //!   opaque array of integers (its name starts `_opaque` and it is
 //!   private): space a C library fills with fields that are never read and
 //!   whose names differ between libraries or releases (`struct statvfs`'s
@@ -758,9 +760,12 @@ fn c_name(found: &CType, declarations: &Declarations, model: DataModel) -> Resul
 /// Where an array may stand.
 const ARRAY_PLACE: &str = "an array is a struct member only, never a parameter or return type";
 
-/// The C type of a pointer to a struct member: `T (*)[N]` for an array,
-/// so `_Generic` on the member's address checks the element type and the
-/// count; for any other member its own type, compared without `&`.
+/// The C type of a pointer to a struct member, which `_Generic` compares
+/// with the member's address: `T (*)[N]` for an array, so the element type
+/// and the count are checked; `T *` for any other member. The address,
+/// not the member's value: a value undergoes lvalue conversion, so a C
+/// array member would decay to a pointer and match a pointer field, and
+/// its top-level qualifiers would be dropped.
 fn member_check(
     item: &str,
     field: &str,
@@ -776,7 +781,7 @@ fn member_check(
     }
     let spelled = c_name(found, declarations, model)?;
     Ok(format!(
-        "_Generic(((struct {item} *)0)->{field}, {spelled}: 1)"
+        "_Generic(&((struct {item} *)0)->{field}, {spelled} *: 1)"
     ))
 }
 

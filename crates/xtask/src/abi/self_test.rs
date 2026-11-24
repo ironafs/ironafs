@@ -103,13 +103,13 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
         "a member type changed at the same size and offset",
         "tv_nsec: c_long",
         "tv_nsec: c_ulong",
-        "->tv_nsec, unsigned long: 1",
+        "->tv_nsec, unsigned long *: 1",
     ),
     (
         "a member's size changed",
         "tv_sec: c_long",
         "tv_sec: c_int",
-        "->tv_sec, int: 1",
+        "->tv_sec, int *: 1",
     ),
     (
         "a constant changed by one",
@@ -254,9 +254,6 @@ enum Stage {
 ///
 /// Returns the first case that did not end as planted.
 pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
-    let report = |output: &mut dyn Write, line: String| {
-        writeln!(output, "{line}").map_err(Error::io("report check-abi self-test"))
-    };
     if cfg!(windows) {
         let (applies, host) = applies_here()?;
         if applies {
@@ -283,6 +280,7 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
     let planted_count = compiler_stage(dir, output)?;
     char_sign_and_probe(dir, output)?;
     non_integer_aliases(dir, output)?;
+    array_as_pointer(dir, output)?;
     for (name, from, to, phrase) in READER {
         let planted = plant(name, from, to)?;
         match stage(&planted, &dir.join("reader.c"))? {
@@ -315,7 +313,7 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
              were refused by the reader, a missing fact was found, and a copy that leaves out \
              or adds a type alias was caught, as was a type taken from outside the row's \
              declaration files",
-            planted_count + 1 + NON_INTEGER.len(),
+            planted_count + 2 + NON_INTEGER.len(),
             READER.len()
         ),
     )
@@ -513,9 +511,6 @@ fn declarations_of(
 /// compiler must refuse, and the probe of qualified constants, which must
 /// report only the unnamed one.
 fn char_sign_and_probe(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
-    let report = |output: &mut dyn Write, line: String| {
-        writeln!(output, "{line}").map_err(Error::io("report check-abi self-test"))
-    };
     let (byte, label) = other_sign_byte();
     let name = "an alias of c_char naming a typedef of the other sign";
     let planted = plant(
@@ -571,9 +566,6 @@ const NON_INTEGER: &[(&str, &str, &str)] = &[
 /// Each of [`NON_INTEGER`]'s aliases, which pass the size, alignment and
 /// sign assertions, must fail at the integer-type assertion.
 fn non_integer_aliases(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
-    let report = |output: &mut dyn Write, line: String| {
-        writeln!(output, "{line}").map_err(Error::io("report check-abi self-test"))
-    };
     let label = "is an integer type other than _Bool";
     for (index, (name, typedef, alias)) in NON_INTEGER.iter().enumerate() {
         let planted = plant(name, "const EINTR", &format!("{alias}\nconst EINTR"))?;
@@ -612,8 +604,7 @@ fn compiler_stage(dir: &Path, output: &mut impl Write) -> Result<usize, Error> {
             "",
         )? {
             Stage::Compiler(error, at) if at.contains(label) => {
-                writeln!(output, "caught by the C compiler: {name}: {error}")
-                    .map_err(Error::io("report check-abi self-test"))?;
+                report(output, format!("caught by the C compiler: {name}: {error}"))?;
             }
             Stage::Compiler(error, at) => {
                 return Err(failure(
@@ -635,14 +626,50 @@ fn compiler_stage(dir: &Path, output: &mut impl Write) -> Result<usize, Error> {
     Ok(count)
 }
 
+/// A C struct with an eight-byte array member, placed in the generated
+/// file, and its Rust declaration: with the array declared as one, it must
+/// compile; declared as a pointer, of the same size, alignment and offset
+/// on LP64, it must fail at the member's type assertion, which compares
+/// the member's address, so the array cannot decay to a pointer and match.
+fn array_as_pointer(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    const TYPEDEF: &str = "struct holder { long a; char b[8]; };";
+    const HOLDER: &str =
+        "#[repr(C)]\nstruct holder {\n    a: c_long,\n    b: [c_char; 8],\n}\nconst EINTR";
+    let name = "an array member declared as a pointer of the same size";
+    let label = "->b, char * *: 1";
+    let clean = plant(name, "const EINTR", HOLDER)?;
+    match stage_with(&clean, &dir.join("holder.c"), TYPEDEF)? {
+        Stage::Compiled => {}
+        Stage::Reader(error) | Stage::Generator(error) | Stage::Compiler(error, _) => {
+            return Err(failure(
+                name,
+                format!("the array itself was refused: {error}"),
+            ));
+        }
+    }
+    let planted = plant(
+        name,
+        "const EINTR",
+        &HOLDER.replacen("b: [c_char; 8]", "b: *mut c_char", 1),
+    )?;
+    match stage_with(&planted, &dir.join("holder-pointer.c"), TYPEDEF)? {
+        Stage::Compiler(error, at) if at.contains(label) => {
+            report(output, format!("caught by the C compiler: {name}: {error}"))
+        }
+        Stage::Compiler(error, _) | Stage::Reader(error) | Stage::Generator(error) => {
+            Err(failure(name, format!("not refused at `{label}`: {error}")))
+        }
+        Stage::Compiled => Err(failure(name, "the C compiler accepted it".to_owned())),
+    }
+}
+
 /// On Linux, the array fixture must compile.
 fn array_fixture(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
     if !cfg!(target_os = "linux") {
         return Ok(());
     }
     match stage_of(ARRAY_FIXTURE, ARRAY_HEADERS, &[], &dir.join("array.c"), "")? {
-        Stage::Compiled => writeln!(output, "passed: the array fixture")
-            .map_err(Error::io("report check-abi self-test")),
+        Stage::Compiled => report(output, "passed: the array fixture".to_owned()),
         Stage::Reader(error) | Stage::Generator(error) | Stage::Compiler(error, _) => {
             Err(failure("the array fixture", error))
         }
@@ -761,6 +788,11 @@ fn stage_of(
 fn error_line(error: &str, file: &Path) -> Option<usize> {
     let rest = error.strip_prefix(&*file.to_string_lossy())?;
     rest.strip_prefix(':')?.split(':').next()?.parse().ok()
+}
+
+/// Writes one line of the self-test's report.
+fn report(output: &mut dyn Write, line: impl std::fmt::Display) -> Result<(), Error> {
+    writeln!(output, "{line}").map_err(Error::io("report check-abi self-test"))
 }
 
 fn failure(case: &'static str, why: String) -> Error {
