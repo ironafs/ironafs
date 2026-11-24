@@ -222,7 +222,7 @@ pub struct Ready {
 impl Ready {
     /// Whether anything was reported on the route socket.
     #[must_use]
-    pub fn socket(&self) -> bool {
+    pub fn socket(self) -> bool {
         self.readable || self.error || self.hangup
     }
 }

@@ -47,6 +47,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ironafs-os_revents"
+path = "fuzz_targets/ironafs-os_revents.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ironafs-os_sender"
+path = "fuzz_targets/ironafs-os_sender.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ironafs-xdr_decode"
 path = "fuzz_targets/ironafs-xdr_decode.rs"
 test = false
