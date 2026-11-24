@@ -55,7 +55,10 @@ use std::thread::{self, JoinHandle, ThreadId};
 use std::time::Duration;
 
 use ironafs_netgen::{Consumers, Loss, Monitor, Reader, Request, StopRequest, Stopped};
-use ironafs_os::{Receipt, RouteError, RouteSocket, Sent, Waited, Wake};
+use ironafs_os::{Ready, Receipt, RouteError, RouteSocket, Sent, Waited, Wake};
+
+#[cfg(test)]
+mod tests;
 
 /// The receive buffer, in bytes (docs/specs/network-generation.md, 5.5,
 /// point 1).
@@ -140,11 +143,11 @@ impl Shared {
     /// with the lock released.
     fn wake_all(&self) {
         self.work.notify_all();
-        let signalled = self
-            .notify_wake
-            .signal()
-            .and_then(|()| self.request_wake.signal());
-        if signalled.is_err() {
+        // Both are signalled, so one failed wake does not hold up the
+        // other thread.
+        let notify = self.notify_wake.signal();
+        let request = self.request_wake.signal();
+        if notify.is_err() || request.is_err() {
             self.failed_wake();
         }
     }
@@ -317,8 +320,11 @@ fn follow(shared: &Shared) -> Result<(), Stopped> {
             }
             Arc::clone(&state.notify)
         };
-        let Some(received) = turn(&notify, &shared.notify_wake, &mut buffer) else {
-            continue;
+        let received = match turn(&notify, &shared.notify_wake, &mut buffer) {
+            Turn::Idle => continue,
+            Turn::Datagram(count) => Ok(count),
+            Turn::Failed(error) => Err(Some(error)),
+            Turn::Unexplained => Err(None),
         };
         let mut state = shared.lock();
         if state.monitor.is_stopped() {
@@ -328,9 +334,9 @@ fn follow(shared: &Shared) -> Result<(), Stopped> {
         let monitor = &mut state.monitor;
         match received {
             Ok(count) => monitor.notification(buffer.get(..count).unwrap_or_default())?,
-            Err(RouteError::Overflow(_)) => monitor.lost(Loss::Overflow)?,
-            Err(RouteError::Truncated) => monitor.lost(Loss::Truncated)?,
-            Err(RouteError::BadSender | RouteError::NotKernel(_)) => {}
+            Err(Some(RouteError::Overflow(_))) => monitor.lost(Loss::Overflow)?,
+            Err(Some(RouteError::Truncated)) => monitor.lost(Loss::Truncated)?,
+            Err(Some(RouteError::BadSender | RouteError::NotKernel(_))) => {}
             Err(_) => monitor.lost(Loss::Failed)?,
         }
         if state.monitor.needs_subscription() {
@@ -374,7 +380,12 @@ fn snapshots(shared: &Shared) -> Result<(), Stopped> {
                     && barrier_sent != Some(barrier)
                 {
                     barrier_sent = Some(barrier);
-                    if !sent(&state.notify, &barrier.bytes()) {
+                    // Sent with the lock released (ADR 0005, sheet 23).
+                    let notify = Arc::clone(&state.notify);
+                    drop(state);
+                    let went = sent(|| notify.send(&barrier.bytes()));
+                    state = shared.lock();
+                    if !went {
                         state.monitor.dump_failed(Loss::Failed)?;
                     }
                     continue;
@@ -386,7 +397,7 @@ fn snapshots(shared: &Shared) -> Result<(), Stopped> {
                 });
             }
         };
-        if !sent(&request, &asked.bytes()) {
+        if !sent(|| request.send(&asked.bytes())) {
             shared.lock().monitor.dump_failed(Loss::Failed)?;
             renew(shared)?;
             continue;
@@ -410,11 +421,17 @@ fn snapshots(shared: &Shared) -> Result<(), Stopped> {
             }
             let monitor = &mut state.monitor;
             match received {
-                None | Some(Err(RouteError::BadSender | RouteError::NotKernel(_))) => {}
-                Some(Ok(count)) => monitor.reply(buffer.get(..count).unwrap_or_default())?,
-                Some(Err(RouteError::Overflow(_))) => monitor.dump_failed(Loss::Overflow)?,
-                Some(Err(RouteError::Truncated)) => monitor.dump_failed(Loss::Truncated)?,
-                Some(Err(_)) => monitor.dump_failed(Loss::Failed)?,
+                Turn::Idle | Turn::Failed(RouteError::BadSender | RouteError::NotKernel(_)) => {}
+                Turn::Datagram(count) => monitor.reply(buffer.get(..count).unwrap_or_default())?,
+                Turn::Failed(RouteError::Overflow(_)) => monitor.dump_failed(Loss::Overflow)?,
+                Turn::Failed(RouteError::Truncated) => monitor.dump_failed(Loss::Truncated)?,
+                Turn::Failed(_) => monitor.dump_failed(Loss::Failed)?,
+                Turn::Unexplained => {
+                    // The socket stays in that state: its dump fails, and
+                    // it is made again (`follows` is false with no request).
+                    monitor.dump_failed(Loss::Failed)?;
+                    break (None, false);
+                }
             }
             if state.monitor.is_stopped() {
                 return Err(Stopped);
@@ -463,31 +480,57 @@ fn cleared(shared: &Shared, wake: &Wake) -> Result<(), Stopped> {
     Ok(())
 }
 
+/// What one turn of a thread hands over.
+#[derive(Debug)]
+enum Turn {
+    /// Nothing: a timeout, an interruption, the wake alone, or nothing
+    /// queued after the socket was reported readable only. The caller
+    /// looks at the state again.
+    Idle,
+    /// A datagram of this length, in the buffer.
+    Datagram(usize),
+    /// The wait or the receive failed.
+    Failed(RouteError),
+    /// The wait reported an error or a hangup on the socket that the
+    /// receive did not explain (nothing queued): a failed receive on that
+    /// socket (ADR 0005, sheet 23), so the socket is not waited on again.
+    Unexplained,
+}
+
 /// One wait on `socket` and `wake`, to [`ROUTE_WAIT_HORIZON`], then, if
-/// the socket was reported, one receive: the datagram's length or the
-/// receive's error, or `None` when there is nothing to hand over (a
-/// timeout, an interruption, the wake alone, nothing queued), so the
-/// caller looks at the state again. A failed wait is a failed receive.
-fn turn(socket: &RouteSocket, wake: &Wake, buffer: &mut [u8]) -> Option<Result<usize, RouteError>> {
+/// the socket was reported, one receive. A failed wait is a failed
+/// receive.
+fn turn(socket: &RouteSocket, wake: &Wake, buffer: &mut [u8]) -> Turn {
     match socket.wait(wake, ROUTE_WAIT_HORIZON) {
-        Ok(Waited::Ready(ready)) if ready.socket() => match socket.receive(buffer) {
-            Ok(Receipt::Datagram(count)) => Some(Ok(count)),
-            Ok(Receipt::NothingQueued | Receipt::Interrupted) => None,
-            Err(error) => Some(Err(error)),
-        },
-        Ok(Waited::Ready(_) | Waited::TimedOut | Waited::Interrupted) => None,
-        Err(error) => Some(Err(error)),
+        Ok(Waited::Ready(ready)) if ready.socket() => received(ready, socket.receive(buffer)),
+        Ok(Waited::Ready(_) | Waited::TimedOut | Waited::Interrupted) => Turn::Idle,
+        Err(error) => Turn::Failed(error),
     }
 }
 
-/// Sends `request` on `socket`, made again while a signal interrupts it:
-/// whether every byte went.
-fn sent(socket: &RouteSocket, request: &[u8]) -> bool {
-    loop {
-        match socket.send(request) {
+/// What a receive made after the wait reported `ready` hands over.
+fn received(ready: Ready, receipt: Result<Receipt, RouteError>) -> Turn {
+    match receipt {
+        Ok(Receipt::Datagram(count)) => Turn::Datagram(count),
+        Ok(Receipt::NothingQueued) if ready.error || ready.hangup => Turn::Unexplained,
+        Ok(Receipt::NothingQueued | Receipt::Interrupted) => Turn::Idle,
+        Err(error) => Turn::Failed(error),
+    }
+}
+
+/// How many times a send is made: an interrupted one once more, as a
+/// wake's transfer is (ADR 0005, sheet 23), and no more.
+const SEND_ATTEMPTS: usize = 2;
+
+/// Sends with `send`, made again once if a signal interrupted it:
+/// whether every byte went. A second interruption is a failed send.
+fn sent(mut send: impl FnMut() -> Result<Sent, RouteError>) -> bool {
+    for _ in 0..SEND_ATTEMPTS {
+        match send() {
             Ok(Sent::All) => return true,
             Ok(Sent::Interrupted) => {}
             Err(_) => return false,
         }
     }
+    false
 }
