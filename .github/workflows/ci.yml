@@ -566,12 +566,23 @@ jobs:
           cat doc.log
           grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' doc.log
       - name: Prove the declarations against glibc 2.28's headers
+        # glibc 2.28's headers do not name SCM_PIDFD, so check-abi withholds
+        # linux-fdpass here (ADR 0005, sheet 14): the lane requires that
+        # verdict and no proof of the row, and a proof of every other site.
+        env:
+          WITHHELD: linux-fdpass
         run: |
           "$HOME/.cargo/bin/cargo" --locked xtask check-abi --target "$TARGET" > check-abi.log
           cat check-abi.log
           grep -q "^check-abi: $TARGET: the system's C compiler accepted " check-abi.log
           for site in $SITES; do
-            grep -q "$site (" check-abi.log
+            case " $WITHHELD " in
+              *" $site "*)
+                grep -q "^check-abi: $TARGET: withheld $site: " check-abi.log
+                if grep -q "$site (" check-abi.log; then exit 1; fi
+                ;;
+              *) grep -q "$site (" check-abi.log ;;
+            esac
           done
 
   miri:
