@@ -448,19 +448,28 @@ the text it applies.
      make it, back to `spawn`; a handoff channel that disconnects
      without either is a failure. The worker then waits on the **start
      decision,** one cell shared by both workers, which `spawn` sets
-     once, to "start" or "abort", and which no worker sets. `spawn`
-     sets "start" only after both handoffs have succeeded, both signal
-     sides are installed in the locked state, and the handle that owns
-     both workers' join handles is built, so each worker has its peer's
-     signal side before its first turn. Until then a drop guard in
-     `spawn` holds the cell: if `spawn` fails or unwinds before "start"
-     is set, the guard sets "abort". Both workers read the same
-     decision, so neither can begin a turn while the other is aborted.
-     On "abort", each started worker ends without a turn; `spawn` joins
-     them (none has entered a turn, so the joins wait on no route call),
-     stops the source, and fails, as it does for a socket now. Once
-     "start" is set, the handle owns the workers, and anything after it
-     (an unwind included) ends through the handle's drop. The set of
+     once, to "start" or "abort", and which no worker sets.
+     **Until "start", the join handles belong to `spawn`'s startup
+     guard, never to the handle.** The guard holds the cell and the join
+     handle of each worker started so far. `spawn` sets "start" only
+     after both handoffs have succeeded and both signal sides are
+     installed in the locked state, so each worker has its peer's
+     signal side before its first turn; in that one step the guard sets
+     "start" and moves both join handles into the handle, a move that
+     cannot fail or unwind (no allocation, no call that can panic). On
+     every exit before that step (a failure returned, or an unwind) the
+     guard's drop first sets "abort", which releases every worker still
+     waiting at the decision, and only then joins the workers it holds.
+     Both workers read the same decision, so neither can begin a turn
+     while the other is aborted, and none has entered a turn, so the
+     joins wait on no route call. `spawn` then stops the source and
+     fails, as it does for a socket now. Of the two shapes that keep
+     "abort" before any join, this one is chosen `[OWN]` because it
+     makes the order structural: before "start" no handle owns a join
+     handle, so no destructor's order can put a join first, and the
+     handle's drop needs no path for an unset decision. Once "start" is
+     set, the handle owns the workers, and anything after it (an unwind
+     included) ends through the handle's drop. The set of
      started workers is fixed when the decision is set, and the
      completion result (test 17) is set only after that and after every
      started worker has ended.
@@ -859,29 +868,36 @@ the text it applies.
      return of that receive: `ENOBUFS` takes the overflow path above, and
      any other error is a failed receive. `POLLHUP` is explained by no
      receive outcome." The flags are recorded under the lock in step
-     7's hold and resolved by the first receive's outcome, in that
-     outcome's own hold (point 4, step 8):
-     - `ENOBUFS` after `POLLERR` takes the overflow path (on the notify
-       socket a loss, overflow; on the request socket a failed dump,
-       section 7);
-     - any other outcome, "interrupted" included (it is an error return
-       other than `ENOBUFS`, which the sheet makes "a failed receive"),
-       and any outcome at all after `POLLHUP`, is a failed receive on
-       that socket: a datagram received with it is not applied.
-     A failed receive, and so a resolution, is in every case:
-     - on the notify socket, a loss (failed, section 7: consumers told
-       at once, the socket made again before any snapshot);
-     - on the request socket, with a dump attempt live, that attempt's
-       end as receive failed (counted, section 7's request-socket row),
-       which withholds the generation and restarts the snapshot, and the
-       socket made again before the next dump;
-     - on the request socket with no dump attempt live, a loss of the
-       request socket, not counted: under the lock the generation is
-       withheld and every consumer told at once (as for any loss, 5.7,
-       point 6), the snapshot in progress, if any, is abandoned (a live
-       barrier with it), and the socket is marked to be made again; the
-       fresh snapshot's first dump waits for that renewal (step 2's
-       order).
+     7's hold and resolved by the first receive's outcome, in step 8's
+     hold for that outcome, by exactly one row of this table. The rows
+     are disjoint, decided by the flags pending and the outcome:
+
+     | Flags pending | First receive's outcome | Path |
+     |---|---|---|
+     | `POLLHUP`, with or without `POLLERR` | any, `ENOBUFS` and "interrupted" included | failed receive |
+     | `POLLERR` alone | `ENOBUFS` | overflow |
+     | `POLLERR` alone | any other, "interrupted" included (an error return other than `ENOBUFS`, which the sheet makes "a failed receive"), a datagram, "nothing queued" or the empty-datagram error | failed receive |
+
+     A datagram received on a failed-receive path is not applied. Each
+     path, by socket:
+
+     | Socket | Overflow path | Failed-receive path |
+     |---|---|---|
+     | notify | a loss, overflow (section 7) | a loss, failed (section 7) |
+     | request, a dump attempt live | that attempt ends as failed, overflow (counted, section 7's dump row) | that attempt ends as receive failed (counted, section 7's request-socket row) |
+     | request, no dump attempt live | the request socket's loss, not counted | the request socket's loss, not counted |
+
+     On the notify socket a loss tells every consumer at once and makes
+     the socket again before any snapshot. On the request socket, an
+     ended dump attempt withholds the generation, restarts the snapshot
+     and marks the socket to be made again before the next dump (point
+     6, item 8). **The request socket's loss** is the one transition for
+     a request-socket fault with no dump attempt live, whatever the
+     flags and outcome: under the lock the generation is withheld and
+     every consumer told at once (as for any loss, 5.7, point 6), the
+     snapshot in progress, if any, is abandoned (a live barrier with
+     it), and the socket is marked to be made again; the fresh
+     snapshot's first dump waits for that renewal (step 2's order).
      So every resolution of a flag withholds the generation and
      abandons the snapshot in progress (sheet 23: "consumers are
      invalidated at once, and the socket is made again, before any
@@ -893,7 +909,7 @@ the text it applies.
      would accept it is handled as if no barrier were live (its
      notifications applied, the acknowledgement skipped), and the
      barrier stays live, to be abandoned by the resolution, which the
-     list above shows abandons the snapshot in every case. So no
+     tables above show abandons the snapshot in every case. So no
      snapshot publishes across a recorded fault, and the skipped
      acknowledgement loses nothing.
    - This fails closed whatever the kernel does, so the code does not
@@ -1070,9 +1086,12 @@ the text it applies.
         nothing is counted.
     24. A fault first seen by step 5's sample (a failed sample, a moved
         doubt count, a passed deadline): the affected attempts end once,
-        before the wait. With the clock kept failing across several
-        turns, each worker waits one horizon per turn, never restarts
-        without a wait, and still receives and applies notifications.
+        before the wait. A failed step 5 sample with a dump attempt
+        live: the attempt expires once and the request socket is made
+        again (step 3) before any wait. Then, with the clock kept
+        failing across several turns and no renewal due, each worker
+        waits one horizon per turn, never restarts without a wait, and
+        still receives and applies notifications.
     25. A failed wait, on each kind the site reports: consumers are told
         at once, the worker's socket is made again before any snapshot,
         the wake is kept, the source does not stop, and it is counted
@@ -1098,13 +1117,16 @@ the text it applies.
         the request worker's receive resolves the flag. Nothing
         publishes; the acknowledgement is skipped; the resolution
         abandons the snapshot; the next snapshot publishes normally.
-    29. Startup: the second thread fails to start; the second worker's
-        wake cannot be made; a handoff channel disconnects; and `spawn`
-        unwinds after the first worker's handoff and before "start":
-        in each, both started workers read "abort" and end without a
-        turn, `spawn` joins them, stops the source and fails, and the
-        completion result is set once both have ended. No worker begins
-        a turn before "start".
+    29. Startup: the second thread fails to start (one worker exists);
+        the second worker's wake cannot be made; a handoff channel
+        disconnects, its worker having already exited before the
+        decision is set; `spawn` unwinds after the first worker's
+        handoff; and `spawn` unwinds after both handoffs succeed and the
+        guard holds both join handles, immediately before "start". In
+        each: no worker enters a turn; every worker still waiting at the
+        decision reads "abort"; "abort" is set before any join begins;
+        `spawn` stops the source and fails; and the completion result is
+        set once every worker that actually started has ended.
     30. One monitor per process: a second `spawn` is refused while a
         monitor's state exists, and allowed once it is dropped. The
         drop's comparison is tested on its own: a mark naming another
@@ -1115,6 +1137,14 @@ the text it applies.
     33. An expiry in step 5 that is the eighth failure, and one whose
         hook drops the handle: the worker ends after that hold, signals
         its peer, and does not wait the horizon.
+    34. `POLLERR` with an `ENOBUFS` receive on the request socket with no
+        dump attempt live, on an idle source with a readable generation
+        and on an unavailable source with a live barrier: the request
+        socket's loss in both (reads fail at once, nothing counted, the
+        socket made again, the barrier abandoned and unable to publish,
+        whether its acknowledgement came before or after the
+        resolution). `POLLERR | POLLHUP` with an `ENOBUFS` receive, on
+        each socket: the failed-receive path, not the overflow one.
     The Linux tests of section 10, point 4, stay, and gain: the
     handle's drop on an idle host returns. The rebuild also moves the
     burst in `ironafs-os`'s kernel test
