@@ -468,11 +468,16 @@ the text it applies.
      guard's drop first sets "abort", which releases every worker still
      waiting at the decision, and only then joins the workers it holds.
      **No join waits on a send or on the decision:** before "start" a
-     worker is only ever making its wake (a call that does not wait),
-     sending its handoff (which never waits, above), or waiting on the
-     decision (which "abort", set before the first join, ends); after
-     any of these it ends. So each join waits only for a worker that is
-     already ending.
+     worker runs one sequence: make its wake (a call that does not
+     wait); send its handoff once (which never waits, above), or end at
+     once if the wake could not be made or the message is refused; then
+     read the decision, waiting only until it is set. "Abort" is set
+     before the first join, so a worker at any point of that sequence
+     reaches the decision, reads "abort", and ends, as every worker
+     exit does, through point 3's exit guard (which finds the source
+     stopping, or stops it, and does nothing more). No step of the
+     sequence waits on anything the guard holds back, so each join
+     waits only for a worker on its way to that exit.
      Both workers read the same decision, so neither can begin a turn
      while the other is aborted, and none has entered a turn, so the
      joins wait on no route call. `spawn` then stops the source and
@@ -1139,11 +1144,14 @@ the text it applies.
         each: no worker enters a turn; every worker still waiting at the
         decision reads "abort"; "abort" is set before any join begins;
         `spawn` stops the source and fails; and the completion result is
-        set once every worker that actually started has ended. A further
-        case aborts while a worker's handoff send is in progress, the
-        guard still holding or already having dropped that receiver: the
-        send completes without waiting, the worker reads "abort" or sees
-        its message refused and ends, and the join returns.
+        set once every worker that actually started has ended. Two
+        further cases abort while a worker's handoff send is in
+        progress, one with the guard still holding that receiver and one
+        with the receiver already dropped: in both, the send completes
+        without waiting; with the receiver held the worker then reads
+        "abort", and with it dropped the worker sees its message
+        refused; in both it ends through its exit guard, and the join
+        returns.
     30. One monitor per process: a second `spawn` is refused while a
         monitor's state exists, and allowed once it is dropped. The
         drop's comparison is tested on its own: a mark naming another
