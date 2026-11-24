@@ -41,14 +41,15 @@ both `gpt-6.2-sol` and `gpt-6.2-astra`.
 
 ## Rounds
 
-| Round | Range | Seat (served model, effort) | Verdict |
+| Round | Range | Seat (agent id, served model, effort) | Verdict |
 |---|---|---|---|
-| 1 | `d840644..f75f5e1` | GLM (`glm-5.3`, high), reading the repository | FAIL: 1 major, 2 minors |
-| 1 | same | Gemini (`gemini-4-carbon-medium`), inlined | FAIL: 1 major, 2 minors |
+| 1 | `d840644..f75f5e1` | GLM (`glm`, `glm-5.3`, high), reading the repository | FAIL: 1 major, 2 minors |
+| 1 | same | Gemini (`gemini`, `gemini-4-carbon-medium`), inlined | FAIL: 1 major, 2 minors |
 | Fix 1 | `f75f5e1..ca13d46` | the owner's ruling applied | |
-| 2 (verification) | `d840644..ca13d46` | GLM (`glm-5.3`, high) | PASS: 3 minors |
-| 2 (verification) | same | Gemini (`gemini-4-carbon-medium`) | PASS: 1 minor (the same as GLM's third) |
-| Fix 2 | the minors, below | | stop rule: only minors, fixed and recorded |
+| 2 (verification) | `d840644..ca13d46` | GLM (`glm`, `glm-5.3`, high) | PASS: 3 minors |
+| 2 (verification) | same | Gemini (`gemini`, `gemini-4-carbon-medium`) | PASS: 1 minor (ADR 0002's `codex` row, which GLM also raised) |
+| Fix 2 | `ca13d46..2f3a982`: the minors, below | | stop rule: only minors, fixed and recorded |
+| Closing | `ca13d46..2f3a982` | GLM (`glm`, `glm-5.3`, high); Gemini (`gemini`, `gemini-4-carbon-medium`) | both PASS: minors in this record only (agent ids, a wrong pointer to a finding, missing tags), fixed as recorded |
 
 Quota headroom: not reported by either lane.
 
@@ -61,16 +62,16 @@ Round 1, as the seats wrote them (shortened only where marked):
   docs/workflow.md §2 lane' … This change adds a new §2 lane with agent id
   `openai` … but does not amend ADR 0002's closed list." Disposition:
   MOOT by the owner's ruling (no new id); both seats confirmed it fixed.
-- **G2, GLM, minor** and **M2, Gemini, minor** (`kind:` consistency):
+- **G2, GLM, minor** and **M2, Gemini, minor** (`origin:` the change; `kind:` consistency):
   `AI.md`'s GPT-6.2 Sol row named only codex. FIXED in `ca13d46`.
-- **G3, GLM, minor** (`kind:` consistency): ADR 0002's owner decision 2
+- **G3, GLM, minor** (`origin:` pre-existing, made untrue by the change; `kind:` consistency): ADR 0002's owner decision 2
   said one lane is usage-billed. FIXED in fix 2 (ADR 0002 correction).
-- **M1, Gemini, major** (`kind:` contract): the embargo rule ("only to the
+- **M1, Gemini, major** (`origin:` the change; `kind:` contract): the embargo rule ("only to the
   Anthropic and OpenAI lanes") would silently take in the API route.
   Disposition: the owner ruled that either route counts as the OpenAI
   lane, embargoed work included; `ca13d46` says so in §2. GLM: MOOT;
   Gemini: FIXED.
-- **M3, Gemini, minor:** `AI.md`'s design row lacked the "`gpt-6.2-sol`
+- **M3, Gemini, minor** (`origin:` the change; `kind:` contract): `AI.md`'s design row lacked the "`gpt-6.2-sol`
   only" limit. MOOT: the API route serves `gpt-6.2-astra` too (above).
 
 Round 2:
@@ -78,12 +79,12 @@ Round 2:
 - **GLM, minor** (`origin:` fix 1; `kind:` missing mechanism): "the review
   record names the route" was in no record checklist. FIXED in fix 2
   (`docs/reviews/README.md`, the skill, §2's judgement-seat bullet).
-- **GLM and Gemini, minor** (`kind:` consistency): ADR 0002's `codex` row
+- **GLM and Gemini, minor** (`origin:` pre-existing, made untrue by fix 1; `kind:` consistency): ADR 0002's `codex` row
   described the codex CLI only. FIXED in fix 2 (ADR 0002 correction).
-- **GLM, minor:** G3 still open. FIXED in fix 2.
+- **GLM, minor** (`origin:` as G3; `kind:` consistency): G3 still open. FIXED in fix 2.
 
 ## Credit
 
-Both seats' last verdicts passed, with minor findings fixed as recorded
-above and nothing else changed: GLM (`glm-5.3`) and Gemini
+Both seats' last verdicts (the closing verification) passed, with minor
+findings in this record fixed as recorded above and nothing else changed: GLM (`glm-5.3`) and Gemini
 (`gemini-4-carbon-medium`).
