@@ -4,7 +4,9 @@
 //! Tests for the release-assembly reader, on synthetic assembly in the
 //! shape the compiler emits for each architecture.
 
-use super::{Arch, body, fence_keeps_stores, judge, normalized, profile_table, zero_byte_stores};
+use super::{
+    Arch, body, codegen, judge, normalized, profile_departures, profile_table, zero_byte_stores,
+};
 
 /// Assembly with one function per harness case, in the shape of
 /// `x86_64` output: `wiped` cases with `count` zero stores, a `plain_dead`
@@ -134,19 +136,74 @@ fn body_follows_a_symbol_the_compiler_merged_into_another() {
     assert_eq!(body(asm, "untouched_dead").unwrap(), ["\tretq"]);
 }
 
+/// A line of cargo's verbose output for one rustc call.
+fn running(name: &str, options: &str) -> String {
+    format!(
+        "     Running `/x/rustc --crate-name {name} --edition=2024 src/lib.rs --crate-type lib \
+         -C opt-level=3 {options} -C metadata=0a1b -C extra-filename=-0a1b --out-dir /x`\n"
+    )
+}
+
 #[test]
-fn fence_keeps_stores_tells_whether_the_fenced_control_differs_from_untouched() {
-    let base = x86(64, "", false);
+fn codegen_reads_a_crate_s_options_without_those_that_name_the_build() {
+    let log = running("ironafs_os", "-C embed-bitcode=no -Coverflow-checks=on");
+    assert_eq!(
+        codegen(&log, "ironafs_os"),
+        Some(vec![
+            "embed-bitcode=no".to_owned(),
+            "opt-level=3".to_owned(),
+            "overflow-checks=on".to_owned()
+        ])
+    );
+    assert_eq!(codegen(&log, "other"), None);
+}
+
+#[test]
+fn profile_departures_name_an_option_the_copied_table_dropped() {
+    // The shipping build, under a package override the copy did not carry
+    // (such as one written `[profile . release . package . ironafs-os]`).
+    let shipped = running("ironafs_os", "-C overflow-checks=on -C codegen-units=1");
     let same = format!(
-        "{base}_RNvCs9_17ironafs_wipe_gate11fenced_dead:\n\tcallq\t*__rust_alloc@GOTPCREL(%rip)\n\
-         \tje\t.LBB4_1\n.LBB4_1:\n\tjmpq\t*__rust_dealloc@GOTPCREL(%rip)\n.Lfunc_end4:\n"
+        "{}{}",
+        running("ironafs_os", "-C overflow-checks=on -C codegen-units=1"),
+        running(
+            "ironafs_wipe_gate",
+            "-C overflow-checks=on -C codegen-units=1"
+        )
     );
-    assert_eq!(fence_keeps_stores(&same), Some(false));
-    let kept = format!(
-        "{base}_RNvCs9_17ironafs_wipe_gate11fenced_dead:\n\tcallq\t*__rust_alloc@GOTPCREL(%rip)\n\
-         \tje\t.LBB4_1\n\tmovdqu\t%xmm0, (%rax)\n\t#MEMBARRIER\n.LBB4_1:\n\
-         \tjmpq\t*__rust_dealloc@GOTPCREL(%rip)\n.Lfunc_end4:\n"
+    assert_eq!(profile_departures(&shipped, &same), Vec::<String>::new());
+    let dropped = format!(
+        "{}{}",
+        running("ironafs_os", "-C overflow-checks=on"),
+        running("ironafs_wipe_gate", "-C overflow-checks=on")
     );
-    assert_eq!(fence_keeps_stores(&kept), Some(true));
-    assert_eq!(fence_keeps_stores(&base), None);
+    assert_eq!(profile_departures(&shipped, &dropped).len(), 2);
+    assert_eq!(profile_departures("", &same).len(), 1);
+}
+
+#[test]
+fn every_planted_case_changes_the_clean_harness_or_its_profile() {
+    let profile = "[profile.release]\noverflow-checks = true\n";
+    let cases = super::self_test::cases(profile);
+    assert_eq!(cases.len(), 4);
+    for case in cases {
+        assert!(
+            (case.source == super::HARNESS_SOURCE) != (case.profile == profile),
+            "{} plants nothing, or in both the source and the profile",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn a_plant_counts_only_with_a_failure_saying_it_on_every_target() {
+    use super::self_test::as_planted;
+    let targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"];
+    let both = [
+        "x86_64-unknown-linux-gnu: `wiped_dead` has 0 zero byte stores".to_owned(),
+        "aarch64-unknown-linux-gnu: `wiped_dead` has 0 zero byte stores".to_owned(),
+    ];
+    assert!(as_planted(&both, &targets, "zero byte stores"));
+    assert!(!as_planted(&both[..1], &targets, "zero byte stores"));
+    assert!(!as_planted(&both, &targets, "refers to ironafs-os"));
 }

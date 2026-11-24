@@ -36,6 +36,13 @@ pub(super) const SOL_SOCKET: c_int = 1;
 /// `SCM_RIGHTS`: a control message of descriptors.
 pub(super) const SCM_RIGHTS: c_int = 1;
 
+/// `SCM_PIDFD`: a control message of the peer's pidfd, which the kernel
+/// installs on a socket with `SO_PASSPIDFD` set (Linux 6.5). glibc 2.39
+/// and later name it under `_GNU_SOURCE`; musl's headers do not, so the
+/// row is withheld on musl and this site is compiled for glibc only
+/// (ADR 0005, sheet 14).
+pub(super) const SCM_PIDFD: c_int = 4;
+
 /// `MSG_NOSIGNAL`: a send to a closed peer fails with `EPIPE` and raises
 /// no `SIGPIPE`.
 pub(super) const MSG_NOSIGNAL: c_int = 16_384;

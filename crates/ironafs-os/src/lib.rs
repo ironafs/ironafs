@@ -20,20 +20,19 @@
 //! its callers' to decide.
 //!
 //! The crate builds for the targets of ADR 0005, point 5.3, only: their
-//! declarations are written and proved for those targets alone. The guard
-//! below names every property that tells them apart from the compiler's
-//! other targets, and `cargo xtask check-os` evaluates it against every
-//! target the pinned compiler knows: it must accept those seven and no
-//! other target whose cfg set differs from theirs.
-//!
-//! **Limit.** A few of the compiler's targets have exactly the cfg set of
-//! an allowlisted one (the `oe` vendor variants, `arm64e`, and the
-//! sanitizer variants of `x86_64` glibc); no `cfg` can tell them apart, and
-//! the crate has no build script to read the target's name (ADR 0005,
-//! point 1.4). This guard therefore does not refuse them. `check-os` names
-//! them, and fails if the repository's build matrix (`rust-toolchain.toml`
-//! and the CI workflows) names any of them, so nothing IronAFS builds or
-//! ships targets them.
+//! declarations are written and proved for those targets alone. The refusal
+//! of every other target has two parts (point 5.3 and Decision 4). The
+//! target gate in the build script refuses, by exact triple, every target
+//! Cargo selects by a built-in triple outside the list, including the few
+//! whose whole cfg set equals a listed target's (the `oe` vendor variants,
+//! `arm64e`, and the sanitizer variants of `x86_64` glibc), which no `cfg`
+//! can tell apart. The guard below is the second net: it refuses every
+//! target whose cfg set differs from every listed one's, holds where a
+//! build script is not run, and names the property that differs.
+//! `cargo xtask check-os` checks both: the gate's list, acceptances and
+//! refusals; the guard's verdict on every target the pinned compiler knows
+//! against the one derived from the list; and Cargo's refusal, in the build
+//! script, of each cfg-equal target.
 
 #[cfg(not(all(
     target_pointer_width = "64",
@@ -68,9 +67,16 @@ compile_error!(
 
 mod clock;
 mod dump;
+// The descriptor-passing checks, used by `linux_fdpass` and by their tests
+// on every target.
+#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 mod fdpass;
 mod peer;
 mod random;
+// The EINTR retry, used by the Linux sites and by the tests on every
+// target.
+#[cfg(any(test, target_os = "linux"))]
+mod retry;
 mod route;
 mod space;
 mod udp6;
@@ -79,7 +85,9 @@ mod udp6;
 mod linux_clock;
 #[cfg(target_os = "linux")]
 mod linux_dontdump;
-#[cfg(target_os = "linux")]
+// Withheld on musl: its headers do not name `SCM_PIDFD`, so `check-abi`
+// has no evidence there and the site is not compiled (ADR 0005, sheet 14).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod linux_fdpass;
 #[cfg(target_os = "linux")]
 mod linux_peercred;
@@ -97,12 +105,13 @@ mod unix_nodump;
 
 pub use clock::{ClockError, OsClock};
 pub use dump::DumpError;
+#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 pub use fdpass::FdPassError;
 #[cfg(target_os = "linux")]
 pub use linux_clock::read_clock;
 #[cfg(target_os = "linux")]
 pub use linux_dontdump::SecretBuffer;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use linux_fdpass::{receive_fd, send_fd};
 #[cfg(target_os = "linux")]
 pub use linux_peercred::peer_credentials;

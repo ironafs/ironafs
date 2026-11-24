@@ -66,3 +66,26 @@ fn guard_refuses_a_guard_another_attribute_could_switch_off() {
     let with_inner = format!("#![no_std]\n//! Docs.\n{ROOT}");
     assert!(guard(&tokens_with_strings(&with_inner).unwrap()).is_ok());
 }
+
+#[test]
+fn guard_refuses_a_crate_attribute_that_can_remove_the_crate() {
+    for attribute in [
+        "#![cfg(target_os = \"linux\")]",
+        "#![cfg_attr(target_arch = \"x86_64\", cfg(any()))]",
+        "#![r#cfg_attr(not(unix), cfg(any()))]",
+        "#! [cfg(any())]",
+    ] {
+        let source = format!("{attribute}\n{ROOT}");
+        assert!(
+            guard(&tokens_with_strings(&source).unwrap()).is_err(),
+            "{source}"
+        );
+    }
+    for harmless in ["#![no_std]", "#![doc = \"cfg\"]", "#![warn(missing_docs)]"] {
+        let source = format!("{harmless}\n{ROOT}");
+        assert!(
+            guard(&tokens_with_strings(&source).unwrap()).is_ok(),
+            "{source}"
+        );
+    }
+}

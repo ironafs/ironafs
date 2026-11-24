@@ -4,8 +4,9 @@
 //! Tests for the declaration reader and the C it generates.
 
 use super::{
-    CType, DataModel, Declarations, Function, OPAQUE_TAILS, OpaqueTail, Struct, c_source,
-    canonical, declarations, identity, missing_facts,
+    CType, DataModel, Declarations, Function, OPAQUE_TAILS, OpaqueTail, Recorded, Struct, c_source,
+    canonical, declarations, fact_differences, identity, object_macros, preamble,
+    required_constants, scan_defines,
 };
 use crate::rust_source::tokens_with_strings;
 
@@ -122,6 +123,10 @@ fn declarations_refuse_what_c_cannot_be_compared_with() {
         (
             "use core::ffi::c_long as c_int;",
             "line 1: a renaming import",
+        ),
+        (
+            "mod core { pub mod ffi { pub type c_int = u8; } }",
+            "line 1: an item, import or generic parameter named `core`",
         ),
     ] {
         let error = refused(source);
@@ -440,19 +445,23 @@ fn declarations_refuse_a_type_alias_named_as_a_scalar() {
 
 #[test]
 fn canonical_resolves_each_file_by_its_own_imports() {
+    let none = |name: &str| Err(format!("`{name}` unbound"));
+    let row_s = |name: &str| {
+        if name == "s" {
+            Ok(())
+        } else {
+            Err(format!("`{name}` unbound"))
+        }
+    };
     let importing = read("use core::ffi::c_long;\nconst A: c_long = 1;\n");
-    assert!(canonical(&importing, &[]).is_ok());
+    assert!(canonical(&importing, &none).is_ok());
     let using = read("#[repr(C)]\nstruct s { a: c_long }\n");
     assert_eq!(
-        canonical(&using, &["s".to_owned()]).map(|found| found.structs.len()),
-        Err(
-            "`c_long` is neither imported from core::ffi in its own file, a primitive integer, \
-             nor a struct or type alias of the declaration files"
-                .to_owned()
-        )
+        canonical(&using, &row_s).map(|found| found.structs.len()),
+        Err("`c_long` unbound".to_owned())
     );
     let mut imported = read("use core::ffi::c_long;\n#[repr(C)]\nstruct s { a: c_long }\n");
-    imported = canonical(&imported, &["s".to_owned()]).unwrap();
+    imported = canonical(&imported, &row_s).unwrap();
     assert_eq!(
         imported.structs.first().map(|item| item.fields.clone()),
         Some(vec![("a".into(), CType::Named("core::ffi::c_long".into()))])
@@ -460,15 +469,251 @@ fn canonical_resolves_each_file_by_its_own_imports() {
 }
 
 #[test]
-fn missing_facts_names_a_recorded_constant_or_struct_not_declared() {
-    let found = read("use core::ffi::c_int;\nconst EINTR: c_int = 4;\n");
+fn declarations_read_imports_of_the_shipped_shapes_with_their_gates() {
+    let found = read(
+        "use core::{ffi::c_int};\nuse std::io;\nuse super::{iovec, socklen_t};\n\
+         #[cfg(target_env = \"gnu\")]\npub(super) use gnu::{cmsghdr, msghdr};\n\
+         #[cfg(target_arch = \"x86_64\")]\npub(super) use x86_64::SYS_getrandom;\n\
+         #[cfg(not(miri))]\npub(super) use foreign::recvmsg;\n\
+         #[cfg(miri)]\npub(super) use stand_in::recvmsg;\n",
+    );
+    assert_eq!(found.ffi_names, ["c_int".to_owned()]);
+    let gates: Vec<(String, super::Gate)> = found
+        .imports
+        .iter()
+        .map(|import| (import.path.join("::"), import.gate.clone()))
+        .collect();
     assert_eq!(
-        missing_facts(
-            &["timespec".into()],
-            &["EINTR".into(), "SYS_getrandom".into()],
-            &found
+        gates,
+        [
+            ("core::ffi::c_int".to_owned(), super::Gate::Always),
+            ("std::io".to_owned(), super::Gate::Always),
+            ("super::iovec".to_owned(), super::Gate::Always),
+            ("super::socklen_t".to_owned(), super::Gate::Always),
+            ("gnu::cmsghdr".to_owned(), super::Gate::Env("gnu".into())),
+            ("gnu::msghdr".to_owned(), super::Gate::Env("gnu".into())),
+            (
+                "x86_64::SYS_getrandom".to_owned(),
+                super::Gate::Arch("x86_64".into())
+            ),
+            ("foreign::recvmsg".to_owned(), super::Gate::Miri(false)),
+            ("stand_in::recvmsg".to_owned(), super::Gate::Miri(true)),
+        ]
+    );
+    let env = super::Gate::Env("musl".into());
+    assert!(env.in_effect("aarch64-unknown-linux-musl"));
+    assert!(!env.in_effect("aarch64-unknown-linux-gnu"));
+    assert!(super::Gate::Arch("x86_64".into()).in_effect("x86_64-unknown-linux-musl"));
+    assert!(!super::Gate::Miri(true).in_effect("x86_64-unknown-linux-gnu"));
+}
+
+#[test]
+fn declarations_refuse_imports_whose_binding_is_not_established_structurally() {
+    for (source, says) in [
+        ("use super::*;\n", "a glob import"),
+        ("use super::{a, b\n", "cannot read"),
+        ("fn f() { use super::msghdr; }\n", "not at file scope"),
+        (
+            "mod inner {\n    pub(super) use super::msghdr;\n}\n",
+            "an inline module",
         ),
-        ["timespec", "SYS_getrandom"]
+        ("use crate::elsewhere::msghdr;\n", "a path (crate::"),
+        ("use self::inner::msghdr;\n", "a path (crate::"),
+        ("use gnu::msghdr;\n", "a path (crate::"),
+        (
+            "#[cfg(unix)]\nuse super::msghdr;\n",
+            "an import under #[cfg(unix)]",
+        ),
+        (
+            "#[cfg(target_env = \"gnu\")]\npub(super) use musl::msghdr;\n",
+            "an import under #[cfg(target_env=\"gnu\")]",
+        ),
+        (
+            "#[cfg(target_env = \"gnu\")]\n#[allow(unused)]\npub(super) use gnu::msghdr;\n",
+            "attributes this check does not read",
+        ),
+    ] {
+        let error = refused(source);
+        assert!(error.contains(says), "{source}: {error}");
+    }
+}
+
+/// A row `row` whose declaration files are `files` (path under
+/// `src/row/`, text), all read by the compiler unless listed in `unread`:
+/// what `row_declarations` makes of them.
+fn row_of(
+    name: &str,
+    files: &[(&str, &str)],
+    unread: &[&str],
+    target: &str,
+) -> Result<Declarations, String> {
+    let root = std::env::temp_dir().join(format!(
+        "ironafs-xtask-abi-row-{name}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut read = std::collections::BTreeSet::new();
+    for (path, text) in files {
+        let file = std::path::Path::new("src").join("row").join(path);
+        std::fs::create_dir_all(root.join(&file).parent().unwrap()).unwrap();
+        std::fs::write(root.join(&file), text).unwrap();
+        if !unread.contains(path) {
+            read.insert(file);
+        }
+    }
+    let found = super::row_declarations(&root, "row", &read, target).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    found
+}
+
+/// The row's own `msghdr`, declared in each C library's file and
+/// re-exported by `abi.rs` under that library's cfg, as the shipped rows
+/// write it.
+const ABI: &str = "use core::ffi::c_int;\n\
+                   #[cfg(target_env = \"gnu\")]\npub(super) use gnu::msghdr;\n\
+                   #[cfg(target_env = \"musl\")]\npub(super) use musl::msghdr;\n";
+const GNU: &str = "use core::ffi::c_int;\n#[repr(C)]\npub(crate) struct msghdr { a: c_int }\n";
+const FOREIGN: &str = "use core::ffi::c_int;\nuse super::msghdr;\n\
+                       unsafe extern \"C\" {\n    fn recvmsg(m: *mut msghdr) -> c_int;\n}\n";
+const GLIBC: &str = "aarch64-unknown-linux-gnu";
+const MUSL: &str = "aarch64-unknown-linux-musl";
+
+/// The diagnostic prefix for `file` under `src/row/`, built as
+/// `row_declarations` builds it.
+fn at_file(file: &str) -> String {
+    let path = std::path::Path::new("src").join("row").join(file);
+    format!("{}: ", path.display())
+}
+
+#[test]
+fn row_declarations_follow_each_import_to_the_row_s_own_declaration() {
+    for (target, unread) in [(GLIBC, "abi/musl.rs"), (MUSL, "abi/gnu.rs")] {
+        let found = row_of(
+            "clean",
+            &[
+                ("abi.rs", ABI),
+                ("abi/gnu.rs", GNU),
+                ("abi/musl.rs", GNU),
+                ("abi/foreign.rs", FOREIGN),
+            ],
+            &[unread],
+            target,
+        )
+        .unwrap();
+        assert_eq!(found.functions.len(), 1, "{target}");
+        assert_eq!(found.structs.len(), 1, "{target}");
+    }
+}
+
+#[test]
+fn row_declarations_decide_which_re_export_is_in_effect_from_the_target() {
+    // Only the musl re-export, on a glibc target, with musl's file
+    // compiled: the re-export is not in effect, so the name is unbound,
+    // though its destination file was read.
+    let musl_only = "use core::ffi::c_int;\n\
+                     #[cfg(target_env = \"musl\")]\npub(super) use musl::msghdr;\n";
+    let error = row_of(
+        "inactive",
+        &[
+            ("abi.rs", musl_only),
+            ("abi/musl.rs", GNU),
+            ("abi/foreign.rs", FOREIGN),
+        ],
+        &[],
+        GLIBC,
+    )
+    .unwrap_err();
+    let prefix = at_file("abi/foreign.rs");
+    assert!(error.starts_with(&prefix), "{error}");
+    assert!(error.contains("`msghdr` is neither imported"), "{error}");
+    // In effect, but its file was not read: refused, not skipped.
+    let error = row_of(
+        "unread",
+        &[
+            ("abi.rs", ABI),
+            ("abi/gnu.rs", GNU),
+            ("abi/foreign.rs", FOREIGN),
+        ],
+        &["abi/gnu.rs"],
+        GLIBC,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("outside the row's declaration files"),
+        "{error}"
+    );
+}
+
+#[test]
+fn row_declarations_refuse_a_same_named_type_imported_from_elsewhere() {
+    // The row's msghdr is still declared, but the foreign function's file
+    // takes its msghdr from another module, or from none.
+    for (name, import, says) in [
+        ("crate", "use crate::elsewhere::msghdr;", "a path (crate::"),
+        (
+            "std",
+            "use std::ffi::msghdr;",
+            "`msghdr` is imported from std::ffi::msghdr",
+        ),
+        ("unimported", "", "`msghdr` is neither imported"),
+        (
+            "twice",
+            "use super::msghdr;\nuse super::{msghdr};",
+            "more than one import",
+        ),
+    ] {
+        let foreign = format!(
+            "use core::ffi::c_int;\n{import}\n\
+             unsafe extern \"C\" {{\n    fn recvmsg(m: *mut msghdr) -> c_int;\n}}\n"
+        );
+        let error = row_of(
+            name,
+            &[
+                ("abi.rs", ABI),
+                ("abi/gnu.rs", GNU),
+                ("abi/musl.rs", GNU),
+                ("abi/foreign.rs", &foreign),
+            ],
+            &["abi/musl.rs"],
+            GLIBC,
+        )
+        .unwrap_err();
+        assert!(
+            error.starts_with(&at_file("abi/foreign.rs")),
+            "{name}: {error}"
+        );
+        assert!(error.contains(says), "{name}: {error}");
+    }
+}
+
+#[test]
+fn fact_differences_name_each_recorded_fact_not_declared_and_each_declared_not_recorded() {
+    let found = read("use core::ffi::c_int;\nconst EINTR: c_int = 4;\ntype rlim_t = u64;\n");
+    let structs = ["timespec".to_owned()];
+    let constants = ["EINTR".to_owned(), "SYS_getrandom".to_owned()];
+    let recorded = |aliases| Recorded {
+        structs: &structs,
+        constants: &constants,
+        aliases,
+    };
+    let rlim = ["rlim_t".to_owned()];
+    assert_eq!(
+        fact_differences(recorded(&rlim), &found),
+        (vec!["timespec".into(), "SYS_getrandom".into()], Vec::new())
+    );
+    // An alias declared but not recorded, and one recorded but not
+    // declared.
+    assert_eq!(
+        fact_differences(recorded(&[]), &found),
+        (
+            vec!["timespec".into(), "SYS_getrandom".into()],
+            vec!["rlim_t".into()]
+        )
+    );
+    let socklen = ["rlim_t".to_owned(), "socklen_t".to_owned()];
+    assert_eq!(
+        fact_differences(recorded(&socklen), &found).0,
+        ["timespec", "SYS_getrandom", "socklen_t"]
     );
 }
 
@@ -483,6 +728,194 @@ fn identity_names_the_architecture_and_c_library_of_the_target() {
     let gnu = identity("x86_64-unknown-linux-gnu");
     assert!(gnu.contains("#if !defined(__x86_64__)"), "{gnu}");
     assert!(gnu.contains("#if !defined(__GLIBC__)"), "{gnu}");
+}
+
+#[test]
+fn constants_are_emitted_as_normalized_decimal_values() {
+    let found = read(
+        "const LEADING: c_int = 046;\nconst SPLIT: c_int = 0_1_0;\nconst NEG: c_int = -007;\n",
+    );
+    assert_eq!(
+        found.constants,
+        [
+            ("LEADING".to_owned(), "46".to_owned()),
+            ("SPLIT".to_owned(), "10".to_owned()),
+            ("NEG".to_owned(), "-7".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn object_macros_reads_the_preprocessor_s_definitions() {
+    let dump = "#define EINTR 4\n#define _GNU_SOURCE 1\n#define FD_SET(fd, set) x\n\
+                #define __x86_64__ 1\n";
+    let found = object_macros(dump);
+    assert!(found.contains("EINTR") && found.contains("__x86_64__"));
+    assert!(!found.contains("FD_SET"));
+}
+
+#[test]
+fn required_constants_are_the_c_macros_the_row_s_code_names() {
+    let macros =
+        object_macros("#define EINTR 4\n#define EPERM 1\n#define unix 1\n#define errno x\n");
+    // EINTR is used by the code and is a C macro; FLAGS is used but is no
+    // C macro; unix and errno have no upper-case letter, so a Rust `cfg`
+    // word or a variable is never taken for one.
+    let used = ["EINTR", "FLAGS", "unix", "errno", "c_int"];
+    assert_eq!(required_constants(used.iter().copied(), &macros), ["EINTR"]);
+}
+
+#[test]
+fn the_macro_scan_reads_every_definition_the_assertions_read_and_gnu_s() {
+    let headers = ["time.h".to_owned()];
+    for defines in [vec![], vec!["_GNU_SOURCE".to_owned()]] {
+        let start = preamble("linux-clock", &defines, &headers, DataModel::Lp64);
+        assert!(start.contains("#define _DEFAULT_SOURCE 1\n"));
+        let source = c_source(
+            "linux-clock",
+            &defines,
+            &headers,
+            &[],
+            &read(CLOCK),
+            DataModel::Lp64,
+        )
+        .unwrap();
+        assert!(source.starts_with(&start));
+        // The scan's preamble holds every line of the assertions' and
+        // defines `_GNU_SOURCE` once, so the macros the assertions see are
+        // among those the scan sees.
+        let scanned = preamble(
+            "linux-clock",
+            &scan_defines(&defines),
+            &headers,
+            DataModel::Lp64,
+        );
+        assert!(
+            start
+                .lines()
+                .all(|line| scanned.lines().any(|seen| seen == line)),
+            "{scanned}"
+        );
+        assert_eq!(
+            scanned
+                .lines()
+                .filter(|line| *line == "#define _GNU_SOURCE 1")
+                .count(),
+            1,
+            "{scanned}"
+        );
+    }
+}
+
+/// A crate directory holding `src/<module>.rs` with `text`, the files the
+/// compiler read for the row, and the directory for the generated C.
+#[cfg(target_os = "linux")]
+fn row_files(
+    name: &str,
+    module: &str,
+    text: &str,
+) -> (
+    std::path::PathBuf,
+    std::collections::BTreeSet<std::path::PathBuf>,
+) {
+    let root =
+        std::env::temp_dir().join(format!("ironafs-xtask-abi-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let file = std::path::Path::new("src").join(format!("{module}.rs"));
+    std::fs::write(root.join(&file), text).unwrap();
+    (root, [file].into_iter().collect())
+}
+
+/// A row's code with these `headers` and `defines`, and no recorded facts.
+#[cfg(target_os = "linux")]
+fn row_code(module: &str, headers: &[&str], defines: &[&str]) -> crate::os::inventory::Code {
+    crate::os::inventory::Code {
+        module: module.to_owned(),
+        headers: headers.iter().map(|header| (*header).to_owned()).collect(),
+        defines: defines.iter().map(|define| (*define).to_owned()).collect(),
+        expressions: Vec::new(),
+        qualified: Vec::new(),
+        extern_blocks: Vec::new(),
+        blocks: Vec::new(),
+        impls: 0,
+        structs: Vec::new(),
+        constants: Vec::new(),
+        aliases: Vec::new(),
+        stand_in: None,
+    }
+}
+
+/// A row whose code names `O_PATH`, which glibc's `<fcntl.h>` defines only
+/// under `_GNU_SOURCE`, and declares nothing: the fact is missing whether or
+/// not the row opts in to `_GNU_SOURCE` itself.
+#[cfg(target_os = "linux")]
+#[test]
+fn fact_problem_finds_a_gnu_only_macro_the_code_names_with_or_without_the_row_s_opt_in() {
+    let (root, compiled) = row_files("gnu-macro", "row", "const PATH: c_int = O_PATH;\n");
+    for defines in [&[][..], &["_GNU_SOURCE"][..]] {
+        let code = row_code("row", &["fcntl.h"], defines);
+        let found = super::fact_problem(
+            "row",
+            &code,
+            &Declarations::default(),
+            &root,
+            &compiled,
+            DataModel::Lp64,
+            &root,
+        )
+        .unwrap();
+        assert!(
+            found.as_deref().is_some_and(
+                |problem| problem.starts_with("the row's code names O_PATH, a C macro")
+            ),
+            "{defines:?}: {found:?}"
+        );
+    }
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// `CLOCK_BOOTTIME`, which glibc's `<time.h>` defines under
+/// `_DEFAULT_SOURCE`: the scan requires it of a row that names it, and the
+/// assertions' preamble, without `_GNU_SOURCE`, compiles the assertion of
+/// its value.
+#[cfg(target_os = "linux")]
+#[test]
+fn clock_boottime_is_a_required_fact_and_asserted_under_the_default_source() {
+    let (root, compiled) = row_files("boottime", "clock", "const BOOT: c_int = CLOCK_BOOTTIME;\n");
+    let code = row_code("clock", &["time.h"], &[]);
+    let found = super::fact_problem(
+        "clock",
+        &code,
+        &Declarations::default(),
+        &root,
+        &compiled,
+        DataModel::Lp64,
+        &root,
+    )
+    .unwrap();
+    assert!(
+        found.as_deref().is_some_and(
+            |problem| problem.starts_with("the row's code names CLOCK_BOOTTIME, a C macro")
+        ),
+        "{found:?}"
+    );
+    let declared = read("use core::ffi::c_int;\nconst CLOCK_BOOTTIME: c_int = 7;\n");
+    let source = c_source(
+        "clock",
+        &[],
+        &["time.h".to_owned()],
+        &[],
+        &declared,
+        DataModel::Lp64,
+    )
+    .unwrap();
+    assert!(!source.contains("_GNU_SOURCE"), "{source}");
+    assert_eq!(
+        super::compile(&source, &root.join("boottime.c")).unwrap(),
+        Ok(())
+    );
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]

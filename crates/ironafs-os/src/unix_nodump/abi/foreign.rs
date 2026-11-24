@@ -4,8 +4,14 @@
 //! The foreign declarations of site `unix-nodump` on Linux.
 
 use core::ffi::c_int;
+use std::io;
 
 use super::rlimit;
+
+/// The errno the last failed call on this thread set.
+pub(in crate::unix_nodump) fn last_error() -> io::Error {
+    io::Error::last_os_error()
+}
 
 // SAFETY: `int setrlimit(int resource, const struct rlimit *rlim)`, as
 // `setrlimit(2)` and POSIX declare it (glibc's GNU mode spells the

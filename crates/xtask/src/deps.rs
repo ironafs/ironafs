@@ -8,7 +8,7 @@
 //! edition, and every target is in the edition the source checks' token
 //! reader follows.
 
-mod pure_source;
+pub(crate) mod pure_source;
 mod self_test;
 
 use std::collections::BTreeSet;
@@ -70,6 +70,9 @@ pub(crate) const CRATES: &[(&str, Kind)] = &[
     ("xtask", Kind::Automation),
     ("ironafs-sim", Kind::TestOnly),
     ("ironafs-test-support", Kind::TestOnly),
+    // Not an architecture crate: check-bans' canary (coding standards rule
+    // 7), which plants every ban and which no crate may depend on.
+    ("ironafs-bans-canary", Kind::TestOnly),
 ];
 
 /// The protocol crates (ADR 0004, C4, point 1).
@@ -166,10 +169,12 @@ const NAMED_FFI: &[&str] = &["ironafs-gss"];
 /// listed: `check-pure` forbids its unsafe code on the command line.
 pub(crate) const OWN_LINTS: &[&str] = &["ironafs-os"];
 
-/// Crates whose manifest may hold no dependency table at all, normal,
-/// development, build or target-specific (ADR 0005, point 1.4). The
-/// resolved graph leaves development dependencies out, so this is read
-/// from the manifest itself.
+/// Crates that may declare no dependency at all, normal, development,
+/// build or target-specific (ADR 0005, point 1.4). The resolved graph
+/// leaves development dependencies out, so this is read from what Cargo
+/// parsed of the manifest (`Member::declared_dependencies`), whatever the
+/// spelling of its keys. An empty table declares nothing and is not
+/// refused: the ADR forbids dependencies, not tables.
 const NO_DEPENDENCY_TABLES: &[&str] = &["ironafs-os"];
 
 /// The edition every target of the workspace is compiled in: the one whose
@@ -843,31 +848,28 @@ fn own_lints_differences(workspace_manifest: &str, manifest: &str) -> Vec<String
         .collect()
 }
 
-/// The members of `names` whose manifest has a dependency table or key.
-///
-/// # Errors
-///
-/// Returns an error if a manifest cannot be read.
-fn dependency_table_violations(
-    workspace: &Workspace,
-    names: &[&str],
-) -> Result<Vec<Violation>, Error> {
+/// The members of `names` that declare a dependency, as Cargo parsed their
+/// manifests.
+fn dependency_table_violations(workspace: &Workspace, names: &[&str]) -> Vec<Violation> {
     let mut violations = Vec::new();
     for member in workspace
         .members
         .iter()
         .filter(|member| names.contains(&member.name.as_str()))
     {
-        let (text, manifest) = read_manifest(workspace, member)?;
+        let manifest = member.dir.join("Cargo.toml");
+        let manifest = manifest
+            .strip_prefix(&workspace.root)
+            .unwrap_or(&manifest)
+            .to_path_buf();
         // Cargo's own reading of the manifest catches every declared
         // dependency, however its key is spelled (an escaped quoted key
-        // included); the text check adds empty tables, which cargo does
-        // not report.
-        let declared = member
+        // included).
+        if let Some(line) = member
             .declared_dependencies
             .first()
-            .map(|dependency| format!("declares the {dependency}"));
-        if let Some(line) = declared.or_else(|| dependency_line(&text)) {
+            .map(|dependency| format!("declares the {dependency}"))
+        {
             violations.push(Violation::DependencyTable {
                 name: member.name.clone(),
                 manifest,
@@ -875,19 +877,7 @@ fn dependency_table_violations(
             });
         }
     }
-    Ok(violations)
-}
-
-/// The first line of a manifest, comments aside, that names a dependency
-/// table or key (`[dependencies]`, `[dev-dependencies]`,
-/// `[build-dependencies]`, `[target.'...'.dependencies]`, or a dotted or
-/// inline key), as written.
-fn dependency_line(manifest: &str) -> Option<String> {
-    manifest
-        .lines()
-        .map(|line| line.split('#').next().unwrap_or_default().trim())
-        .find(|line| line.contains("dependencies"))
-        .map(str::to_owned)
+    violations
 }
 
 /// A member's manifest, and its path as shown, relative to the workspace
@@ -1107,7 +1097,7 @@ fn check(
 ) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
     let mut violations = graph_violations(workspace, third_party);
     violations.extend(lint_violations(workspace, OWN_LINTS)?);
-    violations.extend(dependency_table_violations(workspace, no_tables)?);
+    violations.extend(dependency_table_violations(workspace, no_tables));
     violations.extend(edition_violations(workspace)?);
     let (found, scanned) = pure_source::scan(workspace)?;
     violations.extend(found);

@@ -3,9 +3,8 @@
 
 //! Passing one descriptor over a local stream socket (ADR 0005, sheet 14):
 //! the checks of what a receive returned, and the errors, whatever made the
-//! calls. These are safe functions over owned values, so the tests (and,
-//! once the fuzzing engine is decided, a fuzz target) reach every branch
-//! without a socket.
+//! calls. These are safe functions over owned values, so the tests and the
+//! fuzz target `ironafs-os_fdpass` reach every branch without a socket.
 //!
 //! **Authenticate the header, then adopt, then decide.** A control message
 //! holds descriptors only if the returned control length and the header
@@ -19,34 +18,29 @@
 //! fails a check is never adopted (it may be another descriptor of this
 //! process), and a negative one never is.
 //!
-//! **Open, pending an ADR 0005 amendment: `SCM_PIDFD`.** On Linux 6.5 and
+//! **A pidfd is the second descriptor-carrying type.** On Linux 6.5 and
 //! later, a receiving Unix socket with `SO_PASSPIDFD` set (on it, or
-//! inherited from the listener it was accepted from) gets an `SCM_PIDFD`
-//! control message, and the kernel installs that pidfd in this process.
-//! When a receive delivers no `SCM_RIGHTS` message and leaves room for it
-//! (a data byte sent without a descriptor, or rights the kernel did not
-//! deliver; on a datagram socket wrapped as a stream, even with no data),
-//! the only message is `SCM_PIDFD`: these checks refuse it as a control
-//! message of another type, without adopting its integer, so the pidfd
-//! stays open, and repeated refusals can exhaust the descriptor table. With
-//! an `SCM_RIGHTS` message the buffer is full, the kernel creates no pidfd
-//! and sets `MSG_CTRUNC`, and the delivered descriptor is closed. No site
-//! of ADR 0005 sets `SO_PASSPIDFD`, so the exposure is a socket configured
-//! outside IronAFS (a socket unit's `PassPIDFD=`, or foreign code in the
-//! process). Recognising `SCM_PIDFD`, adopting and closing its descriptor,
-//! then refusing, needs a new constant, which ADR 0005, point 7.1, puts to
-//! the owner before the code (#57's review record holds the proposal).
+//! inherited from the listener it was accepted from; no site sets it) gets
+//! an `SCM_PIDFD` control message whenever a receive delivers no
+//! `SCM_RIGHTS` message and leaves room for it, and the kernel installs
+//! that pidfd in this process. A header of level `SOL_SOCKET`, type
+//! `SCM_PIDFD` and length exactly one descriptor's `CMSG_LEN`, within the
+//! control length, holds one descriptor: if non-negative it is adopted,
+//! whatever else the receive reported, and the message is then refused
+//! ([`FdPassError::PeerPidfd`]), which closes it.
 //!
-//! **Where a received descriptor is an integer.** Sheet 14 keeps it an
-//! integer "only between the checked read of the control buffer and its
-//! adoption, in one private function". Here that span is the receive
-//! (`linux_fdpass::receive_fd`), which reads its control buffer into a
-//! [`Received`] and hands it by value to [`accept`], which checks and
-//! adopts: two functions, with no fallible step or early return between
-//! the read and the adoption. The checks are a safe function over owned
-//! values so that the tests, and a fuzz target once the fuzzing engine is
-//! decided (ADR 0005, point 6.5), reach every branch without a socket.
-//! This departure is recorded for sheet 14's next amendment.
+//! **Where a received descriptor is an integer** (ADR 0005, sheet 14):
+//! between the checked read of the control buffer and its adoption, that
+//! is, the receive (`linux_fdpass::receive_fd`), which reads its control
+//! buffer into a [`Received`] and hands it by value to [`accept`], which
+//! checks and adopts, with no fallible step or early return between the
+//! read and the adoption. The checks are a safe function over owned values
+//! so that the tests and the fuzz target `ironafs-os_fdpass` (ADR 0005,
+//! point 6.5) reach every branch without a socket.
+//!
+//! This file uses the standard library alone and holds no site, so the fuzz
+//! target compiles it as it stands, by its path, and the crate's public API
+//! is unchanged.
 
 use std::error::Error;
 use std::fmt;
@@ -79,6 +73,9 @@ pub enum FdPassError {
     TooMany,
     /// The message delivered a negative descriptor value.
     BadDescriptor,
+    /// The message carried the peer's pidfd (`SCM_PIDFD`), not a
+    /// descriptor; it was closed.
+    PeerPidfd,
     /// The data byte was not the one the sender writes.
     BadData,
 }
@@ -101,6 +98,8 @@ impl fmt::Display for FdPassError {
                 formatter.write_str("the message carried more than one descriptor; all were closed")
             }
             Self::BadDescriptor => formatter.write_str("the message carried a negative descriptor"),
+            Self::PeerPidfd => formatter
+                .write_str("the peer's pidfd arrived instead of a descriptor; it was closed"),
             Self::BadData => formatter.write_str("the message's data byte was not the sender's"),
         }
     }
@@ -117,15 +116,13 @@ impl Error for FdPassError {
 
 /// The C facts the checks compare with, from the site's declarations.
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(
-    all(not(target_os = "linux"), not(test)),
-    expect(dead_code, reason = "used by the Linux site")
-)]
 pub(crate) struct Rules {
     /// `SOL_SOCKET`.
     pub(crate) level: i32,
     /// `SCM_RIGHTS`.
     pub(crate) rights: i32,
+    /// `SCM_PIDFD`.
+    pub(crate) pidfd: i32,
     /// `MSG_CTRUNC`.
     pub(crate) truncated: i32,
     /// `CMSG_LEN` of one descriptor, and of two.
@@ -137,6 +134,21 @@ pub(crate) struct Rules {
     pub(crate) data: u8,
 }
 
+/// Sheet 14's values on the allowlisted Linux targets: `linux_fdpass`
+/// asserts that its rules, read from the declarations `check-abi` proves
+/// against the C headers, are these, and the tests and the fuzz target
+/// check with them.
+pub(crate) const LINUX: Rules = Rules {
+    level: 1,
+    rights: 1,
+    pidfd: 4,
+    truncated: 8,
+    one: 20,
+    two: 24,
+    capacity: 24,
+    data: 1,
+};
+
 /// What one receive returned, read out of the receiver's own buffers.
 ///
 /// It holds the delivered descriptors as integers, so it is not `Copy` or
@@ -144,10 +156,6 @@ pub(crate) struct Rules {
 /// value, straight to [`accept`], which adopts or drops what it holds.
 #[derive(Debug, Default, PartialEq, Eq)]
 #[cfg_attr(test, derive(Clone, Copy))]
-#[cfg_attr(
-    all(not(target_os = "linux"), not(test)),
-    expect(dead_code, reason = "used by the Linux site")
-)]
 pub(crate) struct Received {
     /// The data bytes received: 0 at the end of the stream.
     pub(crate) count: usize,
@@ -165,20 +173,18 @@ pub(crate) struct Received {
     pub(crate) byte: u8,
 }
 
-/// Checks a receive, adopts every descriptor a valid `SCM_RIGHTS` message
-/// delivered with `adopt`, then hands out the one descriptor of a valid
-/// message, or drops every adopted one and refuses.
+/// Checks a receive, adopts every descriptor a valid `SCM_RIGHTS` or
+/// `SCM_PIDFD` message delivered with `adopt`, then hands out the one
+/// descriptor of a valid `SCM_RIGHTS` message, or drops every adopted one
+/// and refuses.
 ///
 /// # Errors
 ///
 /// [`FdPassError::Closed`], [`FdPassError::Truncated`],
-/// [`FdPassError::NoDescriptor`], [`FdPassError::BadControl`],
-/// [`FdPassError::BadDescriptor`], [`FdPassError::TooMany`] or
-/// [`FdPassError::BadData`], in that order of precedence.
-#[cfg_attr(
-    all(not(target_os = "linux"), not(test)),
-    expect(dead_code, reason = "used by the Linux site")
-)]
+/// [`FdPassError::NoDescriptor`], [`FdPassError::PeerPidfd`],
+/// [`FdPassError::BadControl`], [`FdPassError::BadDescriptor`],
+/// [`FdPassError::TooMany`] or [`FdPassError::BadData`], in that order of
+/// precedence.
 #[cfg_attr(
     not(test),
     expect(
@@ -192,7 +198,7 @@ pub(crate) fn accept<T>(
     received: Received,
     mut adopt: impl FnMut(i32) -> T,
 ) -> Result<T, FdPassError> {
-    let number = delivered(rules, &received);
+    let message = delivered(rules, &received);
     let Received {
         count,
         flags,
@@ -201,11 +207,15 @@ pub(crate) fn accept<T>(
         byte,
         ..
     } = received;
-    let delivered = number.and_then(|number| payload.get(..number));
+    let number = match message {
+        Message::Rights(number) | Message::Pidfd(number) => Some(number),
+        Message::Other => None,
+    };
+    let carried = number.and_then(|number| payload.get(..number));
     // Adopt first: from here every delivered descriptor is owned, and
     // dropped on any refusal below.
     let mut adopted = [None, None];
-    for (slot, &value) in adopted.iter_mut().zip(delivered.unwrap_or_default()) {
+    for (slot, &value) in adopted.iter_mut().zip(carried.unwrap_or_default()) {
         if value >= 0 {
             *slot = Some(adopt(value));
         }
@@ -219,8 +229,10 @@ pub(crate) fn accept<T>(
     if control == 0 {
         return Err(FdPassError::NoDescriptor);
     }
-    let Some(delivered) = delivered else {
-        return Err(FdPassError::BadControl);
+    let delivered = match (message, carried) {
+        (Message::Pidfd(_), _) => return Err(FdPassError::PeerPidfd),
+        (Message::Rights(_), Some(delivered)) => delivered,
+        _ => return Err(FdPassError::BadControl),
     };
     if delivered.iter().any(|value| *value < 0) {
         return Err(FdPassError::BadDescriptor);
@@ -237,21 +249,37 @@ pub(crate) fn accept<T>(
     Ok(descriptor)
 }
 
-/// How many integers a receive's control message delivered as
-/// descriptors: one or two, only if the control length and the header pass
-/// every check.
-fn delivered(rules: &Rules, received: &Received) -> Option<usize> {
+/// What a receive's control message holds, by its header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Message {
+    /// `SCM_RIGHTS`: this many descriptors, one or two.
+    Rights(usize),
+    /// `SCM_PIDFD`: this many descriptors, always one, the peer's pidfd.
+    Pidfd(usize),
+    /// No control message, or one that fails a check: no descriptor.
+    Other,
+}
+
+/// Which descriptors a receive's control message delivered: only if the
+/// control length and the header pass every check, one or two of
+/// `SCM_RIGHTS`, or one of `SCM_PIDFD`.
+fn delivered(rules: &Rules, received: &Received) -> Message {
     let control = (rules.one..=rules.capacity).contains(&received.control);
     let length = received.length <= received.control;
-    let kind = received.level == rules.level && received.kind == rules.rights;
-    let count = if received.length == rules.one {
-        1
-    } else if received.length == rules.two {
-        2
-    } else {
-        return None;
-    };
-    (control && length && kind).then_some(count)
+    if !(control && length && received.level == rules.level) {
+        return Message::Other;
+    }
+    if received.kind == rules.rights {
+        if received.length == rules.one {
+            return Message::Rights(1);
+        }
+        if received.length == rules.two {
+            return Message::Rights(2);
+        }
+    } else if received.kind == rules.pidfd && received.length == rules.one {
+        return Message::Pidfd(1);
+    }
+    Message::Other
 }
 
 /// The result of one send of the data byte.
@@ -259,32 +287,10 @@ fn delivered(rules: &Rules, received: &Received) -> Option<usize> {
 /// # Errors
 ///
 /// [`FdPassError::ShortSend`] for any count but 1.
-#[cfg_attr(
-    all(not(target_os = "linux"), not(test)),
-    expect(dead_code, reason = "used by the Linux site")
-)]
 pub(crate) fn sent(count: usize) -> Result<(), FdPassError> {
     if count == 1 {
         Ok(())
     } else {
         Err(FdPassError::ShortSend(count))
-    }
-}
-
-/// Makes `call` until it is not interrupted by a signal (`EINTR`).
-///
-/// # Errors
-///
-/// The first error that is not an interruption.
-#[cfg_attr(
-    all(not(target_os = "linux"), not(test)),
-    expect(dead_code, reason = "used by the Linux site")
-)]
-pub(crate) fn retried(mut call: impl FnMut() -> io::Result<usize>) -> io::Result<usize> {
-    loop {
-        match call() {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            result => return result,
-        }
     }
 }

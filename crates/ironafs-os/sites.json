@@ -50,7 +50,8 @@
           "constants": [
             "CLOCK_MONOTONIC",
             "CLOCK_BOOTTIME"
-          ]
+          ],
+          "aliases": []
         },
         "stand_in": {
           "functions": 1,
@@ -203,7 +204,8 @@
             "EPERM",
             "ENOSYS",
             "SYS_getrandom"
-          ]
+          ],
+          "aliases": []
         },
         "stand_in": {
           "functions": 1,
@@ -325,6 +327,9 @@
             "RLIMIT_CORE",
             "PR_GET_DUMPABLE",
             "PR_SET_DUMPABLE"
+          ],
+          "aliases": [
+            "rlim_t"
           ]
         },
         "stand_in": {
@@ -387,7 +392,8 @@
           "structs": [],
           "constants": [
             "MADV_DONTDUMP"
-          ]
+          ],
+          "aliases": []
         },
         "stand_in": {
           "functions": 1,
@@ -407,10 +413,10 @@
       "row": 13,
       "id": "linux-peercred",
       "targets": "Linux",
-      "foreign_item": "`int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_SOCKET` and `SO_PEERCRED` only, on a borrowed `UnixStream`, into a `struct ucred`",
+      "foreign_item": "`int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_SOCKET` and `SO_TYPE` (into an `int`, which must be `SOCK_STREAM`), then `SOL_SOCKET` and `SO_PEERCRED` (into a `struct ucred`), only, on a borrowed `UnixStream`",
       "linked_from": "the C library",
       "declared": "`unsafe fn`",
-      "blocks": "one",
+      "blocks": "two (one per option)",
       "open": false,
       "status": {
         "x86_64-unknown-linux-gnu": "implemented",
@@ -448,6 +454,17 @@
               "value",
               "size"
             ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::getsockopt",
+            "arguments": [
+              "descriptor",
+              "level",
+              "option",
+              "value",
+              "size"
+            ]
           }
         ],
         "impls": 0,
@@ -457,7 +474,15 @@
           ],
           "constants": [
             "SOL_SOCKET",
-            "SO_PEERCRED"
+            "SO_PEERCRED",
+            "SO_TYPE",
+            "SOCK_STREAM"
+          ],
+          "aliases": [
+            "pid_t",
+            "uid_t",
+            "gid_t",
+            "socklen_t"
           ]
         },
         "stand_in": {
@@ -482,6 +507,13 @@
                 "optlen",
                 "length"
               ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "value",
+                "kind"
+              ]
             }
           ]
         }
@@ -490,8 +522,8 @@
     {
       "row": 14,
       "id": "linux-fdpass",
-      "targets": "Linux",
-      "foreign_item": "`ssize_t sendmsg(int, const struct msghdr *, int)` and `ssize_t recvmsg(int, struct msghdr *, int)` carrying exactly one `SCM_RIGHTS` descriptor and one data byte, with `MSG_NOSIGNAL` on send and `MSG_CMSG_CLOEXEC` on receive; each received descriptor becomes an `OwnedFd` at once (L7, point 1)",
+      "targets": "Linux, glibc (withheld on musl, sheet 14)",
+      "foreign_item": "`ssize_t sendmsg(int, const struct msghdr *, int)` and `ssize_t recvmsg(int, struct msghdr *, int)` carrying exactly one `SCM_RIGHTS` descriptor and one data byte, with `MSG_NOSIGNAL` on send and `MSG_CMSG_CLOEXEC` on receive; each received descriptor becomes an `OwnedFd` at once (L7, point 1), a pidfd the kernel installed with `SCM_PIDFD` included, which is then closed (sheet 14)",
       "linked_from": "the C library",
       "declared": "`unsafe fn`",
       "blocks": "one per call (two), and one that adopts a received descriptor (`OwnedFd::from_raw_fd`)",
@@ -499,8 +531,8 @@
       "status": {
         "x86_64-unknown-linux-gnu": "implemented",
         "aarch64-unknown-linux-gnu": "implemented",
-        "x86_64-unknown-linux-musl": "implemented",
-        "aarch64-unknown-linux-musl": "implemented"
+        "x86_64-unknown-linux-musl": "approved",
+        "aarch64-unknown-linux-musl": "approved"
       },
       "code": {
         "module": "linux_fdpass",
@@ -508,11 +540,17 @@
           "sys/socket.h",
           "sys/uio.h"
         ],
+        "defines": [
+          "_GNU_SOURCE"
+        ],
         "expressions": {
           "CMSG_LEN_ONE": "CMSG_LEN(sizeof(int))",
           "CMSG_LEN_TWO": "CMSG_LEN(2 * sizeof(int))",
           "CMSG_SPACE_ONE": "CMSG_SPACE(sizeof(int))"
         },
+        "qualified": [
+          "SCM_PIDFD"
+        ],
         "extern_blocks": [
           {
             "link": null,
@@ -565,12 +603,16 @@
           "constants": [
             "SOL_SOCKET",
             "SCM_RIGHTS",
+            "SCM_PIDFD",
             "MSG_NOSIGNAL",
             "MSG_CMSG_CLOEXEC",
             "MSG_CTRUNC",
             "CMSG_LEN_ONE",
             "CMSG_LEN_TWO",
             "CMSG_SPACE_ONE"
+          ],
+          "aliases": [
+            "socklen_t"
           ]
         },
         "stand_in": {
@@ -828,6 +870,11 @@
             "SOCKADDR_IN6_SIZE",
             "EAFNOSUPPORT",
             "EADDRINUSE"
+          ],
+          "aliases": [
+            "socklen_t",
+            "sa_family_t",
+            "in_port_t"
           ]
         },
         "stand_in": {
@@ -895,7 +942,11 @@
           "structs": [
             "statvfs"
           ],
-          "constants": []
+          "constants": [],
+          "aliases": [
+            "fsblkcnt_t",
+            "fsfilcnt_t"
+          ]
         },
         "stand_in": {
           "functions": 1,
@@ -915,10 +966,10 @@
       "row": 23,
       "id": "linux-rtnetlink",
       "targets": "Linux, glibc and musl",
-      "foreign_item": "`socket` with `AF_NETLINK`, `SOCK_RAW \\| SOCK_CLOEXEC` and `NETLINK_ROUTE` only; `bind` with a wrapper-built `struct sockaddr_nl` (the fixed group set on the notify socket, none on the request socket); `ssize_t sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t)` to the kernel's address only; `ssize_t recvmsg(int, struct msghdr *, int)` with a `struct sockaddr_nl` for the sender and `MSG_TRUNC` checked; each descriptor adopted as an `OwnedFd` (C23, point 2)",
+      "foreign_item": "`socket` with `AF_NETLINK`, `SOCK_RAW \\| SOCK_CLOEXEC` and `NETLINK_ROUTE` only; `bind` with a wrapper-built `struct sockaddr_nl` (the fixed group set on the notify socket, none on the request socket); `ssize_t sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t)` to the kernel's address only, with `MSG_DONTWAIT` only; `ssize_t recvmsg(int, struct msghdr *, int)` with `MSG_DONTWAIT` only, a `struct sockaddr_nl` for the sender and `MSG_TRUNC` checked; `int eventfd(unsigned int, int)` with 0 and `EFD_CLOEXEC \\| EFD_NONBLOCK` only, for the wake descriptor; `int poll(struct pollfd *, nfds_t, int)` on exactly two entries, one route socket and its wake descriptor, `POLLIN` requested on each, with a timeout of 0 or more only; each descriptor adopted as an `OwnedFd` (C23, point 2; amended 2026-11-22)",
       "linked_from": "the C library",
       "declared": "`unsafe fn`",
-      "blocks": "one per call (four); one that adopts the descriptor",
+      "blocks": "one per call (six); one that adopts a descriptor, a route socket's or the wake descriptor's (one private function)",
       "open": false,
       "status": {
         "x86_64-unknown-linux-gnu": "implemented",
@@ -1034,6 +1085,10 @@
             "RTNLGRP_IPV6_RULE",
             "NOTIFY_GROUPS",
             "SOCKADDR_NL_SIZE"
+          ],
+          "aliases": [
+            "socklen_t",
+            "sa_family_t"
           ]
         },
         "stand_in": {
@@ -1132,7 +1187,8 @@
         "impls": 0,
         "c_facts": {
           "structs": [],
-          "constants": []
+          "constants": [],
+          "aliases": []
         },
         "stand_in": null
       }

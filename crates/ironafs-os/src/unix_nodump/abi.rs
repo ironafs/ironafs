@@ -36,15 +36,16 @@ pub(super) const PR_GET_DUMPABLE: c_int = 3;
 /// `PR_SET_DUMPABLE`: sets the dumpable attribute to 0 or 1.
 pub(super) const PR_SET_DUMPABLE: c_int = 4;
 
-// The foreign functions, or under Miri, which cannot call them, the
-// in-crate stand-ins of ADR 0005, point 6.5, which the same calls reach,
-// so the wrappers' arguments and the read-back run unchanged.
+// The foreign functions and the errno they set, or under Miri, which
+// cannot call them, the in-crate stand-ins of ADR 0005, point 6.5, which
+// the same calls reach, so the wrappers' arguments and the read-back run
+// unchanged and their tests can plan each failure.
 #[cfg(not(miri))]
 mod foreign;
 #[cfg(miri)]
-mod stand_in;
+pub(super) mod stand_in;
 
 #[cfg(not(miri))]
-pub(super) use foreign::{prctl, setrlimit};
+pub(super) use foreign::{last_error, prctl, setrlimit};
 #[cfg(miri)]
-pub(super) use stand_in::{prctl, setrlimit};
+pub(super) use stand_in::{last_error, prctl, setrlimit};

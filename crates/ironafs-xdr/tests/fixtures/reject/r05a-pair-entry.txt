@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# pair with only 4 bytes of input: 2 x 4 > 4 on entry.
+
+type pair
+breaks 5.4, point 2
+expect Truncated -
+offset 0
+extent 4
+requests none
+input 00000000

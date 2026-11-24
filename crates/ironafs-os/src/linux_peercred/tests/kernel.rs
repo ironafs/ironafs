@@ -5,7 +5,9 @@
 //! running kernel itself, so Miri does not build them: the credentials of
 //! a pair name this process's effective ids; a peer under another uid,
 //! connected through a listening socket, is named by its own ids and
-//! process id; and the credentials are those of the connection's time.
+//! process id; the credentials are those of the connection's time; and
+//! sockets that are not connected Unix streams, wrapped as streams, are
+//! refused.
 
 use std::io::Read;
 use std::os::fd::OwnedFd;
@@ -15,7 +17,9 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 
 use super::super::peer_credentials;
-use crate::dump::harness::{PrivateDir, command, role};
+use crate::dump::harness::{
+    NOBODY, PrivateDir, command_at, nobody_copy, own_status, role, status_ids,
+};
 use crate::peer::PeerError;
 
 /// This file's entry test, which a child runs.
@@ -24,24 +28,15 @@ const ENTRY: &str = "linux_peercred::tests::kernel::child";
 /// The environment variable naming the socket the child connects to.
 const SOCKET: &str = "IRONAFS_OS_TEST_SOCKET";
 
-/// An unprivileged user and group.
-const NOBODY: u32 = 65_534;
-
 /// The effective user and group ids of this process, from
 /// `/proc/self/status` (`Uid:` and `Gid:` give real, effective, saved and
 /// filesystem ids).
 fn effective_ids() -> (u32, u32) {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap();
-    let effective = |key: &str| -> u32 {
-        status
-            .lines()
-            .find_map(|line| line.strip_prefix(key))
-            .and_then(|ids| ids.split_whitespace().nth(1))
-            .unwrap()
-            .parse()
-            .unwrap()
-    };
-    (effective("Uid:"), effective("Gid:"))
+    let status = own_status();
+    (
+        status_ids(&status, "Uid:")[1],
+        status_ids(&status, "Gid:")[1],
+    )
 }
 
 /// The entry test a child runs; it does nothing without a role.
@@ -83,16 +78,19 @@ fn peer_credentials_of_a_shut_down_stream_are_still_the_connection_s() {
 #[test]
 #[ignore = "needs root, to run a peer under another user: run as root on a Linux guest"]
 fn peer_credentials_name_a_peer_under_another_uid() {
+    // Created exclusively, so a path planted before (a symlink included)
+    // fails the test rather than being followed. The other user needs
+    // only to search the directory and to write to the socket.
     let directory: PathBuf =
         std::env::temp_dir().join(format!("ironafs-peercred-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = directory.join("socket");
-    let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
 
-    let mut child = command(ENTRY, "connect")
+    let (_copy_dir, copy) = nobody_copy();
+    let mut child = command_at(&copy, ENTRY, "connect")
         .env(SOCKET, &path)
         .uid(NOBODY)
         .gid(NOBODY)
@@ -124,18 +122,29 @@ fn peer_credentials_refuse_a_listener_wrapped_as_a_stream() {
     );
 }
 
+/// `SOCK_DGRAM`, the type a datagram socket reports.
+const SOCK_DGRAM: i32 = 2;
+
 #[test]
-fn peer_credentials_refuse_sockets_with_no_peer_credentials() {
+fn peer_credentials_refuse_sockets_that_are_not_connected_unix_streams() {
     // A connected datagram socket, an unconnected one and a UDP socket,
-    // each wrapped as a stream: the kernel answers -1 for the ids, or the
-    // socket has no Unix peer.
+    // each wrapped as a stream: the first has a Unix peer but is no
+    // stream, the others have no Unix peer. None reaches the credential
+    // read, so the refusal of ids of -1 is driven through the stand-in
+    // (`stand_in`), not here: every connected Unix stream has peer
+    // credentials.
     let dir = PrivateDir::create("ironafs-peercred").unwrap();
     let ours = UnixDatagram::bind(dir.path().join("ours")).unwrap();
     let _theirs = UnixDatagram::bind(dir.path().join("theirs")).unwrap();
     ours.connect(dir.path().join("theirs")).unwrap();
+    let wrapped = UnixStream::from(OwnedFd::from(ours));
+    let found = peer_credentials(&wrapped);
+    assert!(
+        matches!(found, Err(PeerError::NotStream(SOCK_DGRAM))),
+        "a connected datagram socket: {found:?}"
+    );
     let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     for (case, descriptor) in [
-        ("a connected datagram socket", OwnedFd::from(ours)),
         (
             "an unconnected datagram socket",
             OwnedFd::from(UnixDatagram::unbound().unwrap()),
@@ -145,11 +154,26 @@ fn peer_credentials_refuse_sockets_with_no_peer_credentials() {
         let wrapped = UnixStream::from(descriptor);
         let found = peer_credentials(&wrapped);
         assert!(
-            matches!(
-                found,
-                Err(PeerError::NotConnected(_) | PeerError::NoCredentials)
-            ),
+            matches!(found, Err(PeerError::NotConnected(_))),
             "{case}: {found:?}"
         );
     }
+}
+
+#[test]
+fn peer_credentials_refuse_a_reconnected_datagram_socket_of_a_pair() {
+    // A datagram pair has credentials cached when it was made; connected
+    // to another peer, its `SO_PEERCRED` still answers the pair's, so only
+    // the type check refuses it.
+    let dir = PrivateDir::create("ironafs-peercred").unwrap();
+    let other = UnixDatagram::bind(dir.path().join("other")).unwrap();
+    let (ours, _theirs) = UnixDatagram::pair().unwrap();
+    ours.connect(dir.path().join("other")).unwrap();
+    let wrapped = UnixStream::from(OwnedFd::from(ours));
+    let found = peer_credentials(&wrapped);
+    assert!(
+        matches!(found, Err(PeerError::NotStream(SOCK_DGRAM))),
+        "{found:?}"
+    );
+    drop(other);
 }

@@ -19,15 +19,26 @@
 //! macros defined in the crate, `include!` and `#[path]`, assembly, a
 //! `cfg` in a file that holds a site (other than the gate of its unit-test
 //! module), and `target_env` anywhere but the crate root's target
-//! allowlist and the gates by which a row's `abi.rs` chooses its C
-//! library's declarations (`#[cfg(target_env = "gnu")] mod gnu;` and
+//! allowlist, the gates by which a row's `abi.rs` chooses its C library's
+//! declarations (`#[cfg(target_env = "gnu")] mod gnu;` and
 //! `pub(super) use gnu::...;`, and `musl`'s; ADR 0005, point 5.2, declares
-//! `struct msghdr` per C library).
+//! `struct msghdr` per C library), and the crate root's glibc-only gates.
 //! Those library files may hold no site, so a musl build compiles exactly
-//! the glibc build's sites; their declarations are proved on each library
-//! by `check-abi`.
+//! the glibc build's sites, less the rows the glibc-only gates leave out;
+//! their declarations are proved on each library by `check-abi`.
+//!
+//! A **glibc-only gate** is exactly `#[cfg(all(target_os = "linux",
+//! target_env = "gnu"))]`, or that condition inside `any(test, ...)`, on a
+//! `mod NAME;` or a `pub use NAME::...;` of the crate root. It leaves a row
+//! out of the musl build where the row's evidence is withheld there (ADR
+//! 0005, sheet 14). The reader records each module and each import either
+//! form gates. `check-os` requires the modules of the first form to be
+//! exactly those of the rows the copy implements on glibc and only
+//! approves on musl; the modules of the second form (the *glibc-or-test*
+//! gate) to hold no site and be no row's module; and each gated import to
+//! name a module behind the same form.
 
-use crate::rust_source::{Token, TokenKind, ident, matching, punct};
+use crate::rust_source::{Token, TokenKind, core_shadows, ident, matching, punct};
 
 #[cfg(test)]
 mod tests;
@@ -48,13 +59,17 @@ pub(crate) const CFG: &str = "a file that holds a site names cfg only as `#[cfg(
                               tests;`, so each target's sites are the files the compiler reads \
                               for it (ADR 0005, point 6.7)";
 pub(crate) const TARGET_ENV: &str = "target_env is named only in the crate root's target \
-                                     allowlist and in an abi.rs's gates \
+                                     allowlist and glibc-only gates, and in an abi.rs's gates \
                                      `#[cfg(target_env = \"<gnu|musl>\")]` on that library's \
                                      `mod` or `pub(super) use`, so a musl build compiles the \
-                                     glibc build's sites";
-pub(crate) const LIBRARY_SITE: &str = "a C library's declaration file (abi/gnu.rs, abi/musl.rs) \
-                                       holds no site, so a musl build's sites are the glibc \
-                                       build's (ADR 0005, points 5.2 and 6.7)";
+                                     glibc build's sites, less the rows withheld on musl";
+pub(crate) const LIBRARY_SITE: &str = "a C library's declaration file (abi/gnu.rs, abi/musl.rs, \
+                                       or a file below abi/gnu/ or abi/musl/) holds no site, so \
+                                       a musl build's sites are the glibc build's (ADR 0005, \
+                                       points 5.2 and 6.7)";
+pub(crate) const CORE: &str = "an item, import or generic parameter named `core`, under which \
+                               `core::...` in this crate could name something other than the \
+                               core crate (ADR 0005, point 6.7)";
 pub(crate) const TWO_NAMES: &str = "one statement or item carries more than one \
                                     #[expect(unsafe_code)] (ADR 0005, point 6.1)";
 pub(crate) const OUTSIDE: &str = "unsafe code, a foreign declaration or function, or a #[link] \
@@ -115,6 +130,26 @@ pub(crate) struct Problem {
 pub(crate) struct Scan {
     pub(crate) sites: Vec<Site>,
     pub(crate) problems: Vec<Problem>,
+    /// The modules the crate root's glibc-only gates leave out of a musl
+    /// build (`#[cfg(all(target_os = "linux", target_env = "gnu"))] mod
+    /// NAME;`).
+    pub(crate) glibc_only: Vec<String>,
+    /// The modules the crate root's glibc-or-test gates leave out of a musl
+    /// build that is not a test build (`#[cfg(any(test, all(target_os =
+    /// "linux", target_env = "gnu")))] mod NAME;`), each with its line.
+    pub(crate) glibc_or_test: Vec<(String, usize)>,
+    /// The crate root's imports behind either gate (`pub use NAME::...;`).
+    pub(crate) glibc_imports: Vec<GatedImport>,
+}
+
+/// An import of the crate root behind a glibc-only or glibc-or-test gate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GatedImport {
+    /// The module it imports from.
+    pub(crate) module: String,
+    /// Its gate is the glibc-or-test form.
+    pub(crate) or_test: bool,
+    pub(crate) line: usize,
 }
 
 /// Macros and attributes that read code from elsewhere or write machine
@@ -137,21 +172,30 @@ pub(crate) enum Place {
     Root,
     /// A row module's `abi.rs`.
     Abi,
-    /// A C library's declaration file under it: `abi/gnu.rs`, `abi/musl.rs`.
+    /// A C library's declaration file under it, `abi/gnu.rs` or
+    /// `abi/musl.rs`, or any file of that library's module below them
+    /// (`abi/gnu/...`, `abi/musl/...`).
     Library,
     Other,
 }
 
-/// The place of the file at `path`, relative to the crate.
+/// The place of the file at `path`, relative to the crate. A path with a
+/// component that is not UTF-8 is [`Place::Other`] as a whole, never read
+/// with that component dropped.
 pub(crate) fn place_of(path: &std::path::Path) -> Place {
-    let parts: Vec<&str> = path
+    let Some(parts) = path
         .components()
-        .filter_map(|part| part.as_os_str().to_str())
-        .collect();
+        .map(|part| part.as_os_str().to_str())
+        .collect::<Option<Vec<&str>>>()
+    else {
+        return Place::Other;
+    };
     match parts.as_slice() {
         ["src", "lib.rs"] => Place::Root,
         ["src", _, "abi.rs"] => Place::Abi,
-        ["src", _, "abi", "gnu.rs" | "musl.rs"] => Place::Library,
+        ["src", _, "abi", "gnu.rs" | "musl.rs"] | ["src", _, "abi", "gnu" | "musl", ..] => {
+            Place::Library
+        }
         _ => Place::Other,
     }
 }
@@ -212,6 +256,144 @@ fn gated_item(tokens: &[Token], at: usize, library: &str) -> bool {
             .any(|token| ident(Some(token)) == Some("as"))
 }
 
+/// One token of a gate's fixed shape.
+#[derive(Clone, Copy)]
+enum Shape {
+    Punct(char),
+    Ident(&'static str),
+    Str(&'static str),
+}
+
+/// `#[cfg(all(target_os = "linux", target_env = "gnu"))]`, and the
+/// position of `target_env` in it.
+const GLIBC_ONLY: (&[Shape], usize) = (
+    &[
+        Shape::Punct('#'),
+        Shape::Punct('['),
+        Shape::Ident("cfg"),
+        Shape::Punct('('),
+        Shape::Ident("all"),
+        Shape::Punct('('),
+        Shape::Ident("target_os"),
+        Shape::Punct('='),
+        Shape::Str("linux"),
+        Shape::Punct(','),
+        Shape::Ident("target_env"),
+        Shape::Punct('='),
+        Shape::Str("gnu"),
+        Shape::Punct(')'),
+        Shape::Punct(')'),
+        Shape::Punct(']'),
+    ],
+    10,
+);
+
+/// `#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]`, for
+/// a module without sites that the gated rows and the tests use, and the
+/// position of `target_env` in it.
+const GLIBC_ONLY_OR_TEST: (&[Shape], usize) = (
+    &[
+        Shape::Punct('#'),
+        Shape::Punct('['),
+        Shape::Ident("cfg"),
+        Shape::Punct('('),
+        Shape::Ident("any"),
+        Shape::Punct('('),
+        Shape::Ident("test"),
+        Shape::Punct(','),
+        Shape::Ident("all"),
+        Shape::Punct('('),
+        Shape::Ident("target_os"),
+        Shape::Punct('='),
+        Shape::Str("linux"),
+        Shape::Punct(','),
+        Shape::Ident("target_env"),
+        Shape::Punct('='),
+        Shape::Str("gnu"),
+        Shape::Punct(')'),
+        Shape::Punct(')'),
+        Shape::Punct(')'),
+        Shape::Punct(']'),
+    ],
+    14,
+);
+
+/// Whether the tokens from `start` have `shape`.
+fn has_shape(tokens: &[Token], start: usize, shape: &[Shape]) -> bool {
+    shape.iter().enumerate().all(|(offset, expected)| {
+        let token = tokens.get(start + offset);
+        match expected {
+            Shape::Punct(c) => punct(token) == Some(*c),
+            Shape::Ident(name) => token.is_some_and(|token| !token.raw) && ident(token) == Some(name),
+            Shape::Str(text) => {
+                matches!(token.map(|token| &token.kind), Some(TokenKind::Str(found)) if found == text)
+            }
+        }
+    })
+}
+
+/// What a `target_env` in the crate root gates.
+enum Gate {
+    /// A module the musl build leaves out; `or_test` for the glibc-or-test
+    /// form, which the tests also compile.
+    Module { name: String, or_test: bool },
+    /// An import from `module`, behind the glibc-or-test form if `or_test`.
+    Import { module: String, or_test: bool },
+    /// Not a glibc-only gate.
+    No,
+}
+
+/// What the `target_env` at `index` gates, if it is in a glibc-only or
+/// glibc-or-test gate of the crate root on `mod NAME;` or `pub use
+/// NAME::...;`.
+fn glibc_gate(tokens: &[Token], index: usize) -> Gate {
+    for (shape, at) in [GLIBC_ONLY, GLIBC_ONLY_OR_TEST] {
+        let Some(start) = index.checked_sub(at) else {
+            continue;
+        };
+        if !has_shape(tokens, start, shape) {
+            continue;
+        }
+        let item = start + shape.len();
+        let token = |offset: usize| tokens.get(item + offset);
+        let or_test = at == GLIBC_ONLY_OR_TEST.1;
+        if ident(token(0)) == Some("mod") && punct(token(2)) == Some(';') {
+            return match ident(token(1)) {
+                Some(name) => Gate::Module {
+                    name: name.to_owned(),
+                    or_test,
+                },
+                None => Gate::No,
+            };
+        }
+        let Some(end) = tokens
+            .get(item..)
+            .unwrap_or_default()
+            .iter()
+            .position(|token| punct(Some(token)) == Some(';'))
+        else {
+            return Gate::No;
+        };
+        let import = ident(token(0)) == Some("pub")
+            && ident(token(1)) == Some("use")
+            && ident(token(2)).is_some()
+            && matches!(token(3).map(|token| &token.kind), Some(TokenKind::PathSep))
+            && !tokens
+                .get(item..item + end)
+                .unwrap_or_default()
+                .iter()
+                .any(|token| ident(Some(token)) == Some("as"));
+        return match ident(token(2)) {
+            Some(module) if import => Gate::Import {
+                module: module.to_owned(),
+                or_test,
+            },
+            _ => Gate::No,
+        };
+    }
+    Gate::No
+}
+
 /// Reads the sites and problems of one file of the crate, at `place`.
 pub(crate) fn scan(tokens: &[Token], place: Place) -> Scan {
     let root = place == Place::Root;
@@ -253,7 +435,24 @@ pub(crate) fn scan(tokens: &[Token], place: Place) -> Scan {
                     .is_some_and(|range| range.contains(&index))
                     || place == Place::Abi && library_gate(tokens, index)) =>
             {
-                scan.problems.push(problem(TARGET_ENV));
+                match glibc_gate(tokens, index) {
+                    Gate::Module {
+                        name,
+                        or_test: false,
+                    } if root => scan.glibc_only.push(name),
+                    Gate::Module {
+                        name,
+                        or_test: true,
+                    } if root => scan.glibc_or_test.push((name, token.line)),
+                    Gate::Import { module, or_test } if root => {
+                        scan.glibc_imports.push(GatedImport {
+                            module,
+                            or_test,
+                            line: token.line,
+                        });
+                    }
+                    _ => scan.problems.push(problem(TARGET_ENV)),
+                }
             }
             _ => {}
         }
@@ -271,6 +470,13 @@ pub(crate) fn scan(tokens: &[Token], place: Place) -> Scan {
                 .map(|line| Problem { line, what: CFG }),
         );
     }
+    // Every file of the crate: a `core` item anywhere could reach a site's
+    // file through a glob import.
+    scan.problems.extend(
+        core_shadows(tokens)
+            .into_iter()
+            .map(|line| Problem { line, what: CORE }),
+    );
     scan
 }
 

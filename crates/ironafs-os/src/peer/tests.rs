@@ -92,6 +92,6 @@ fn peer_errors_name_what_failed() {
     };
     assert_eq!(
         length.to_string(),
-        "the peer's credentials came back 8 bytes long, not 12"
+        "a read of the peer's socket came back 8 bytes long, not 12"
     );
 }

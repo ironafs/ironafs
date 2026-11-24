@@ -65,10 +65,29 @@ jobs:
         run: cargo --locked xtask check-grants
       - name: Prove the confinement catches planted violations
         run: cargo --locked xtask check-grants --self-test
+      - name: Check the fuzz crate's dependency policy against the root's
+        run: cargo --locked xtask check-fuzz-deny
+      - name: Prove a drifted fuzz dependency policy is caught
+        run: cargo --locked xtask check-fuzz-deny --self-test
+      - name: Prove the fuzz step fails when nothing ran and prints no reproducer
+        run: cargo --locked xtask fuzz --self-test
+      - name: Install the fuzz crate's pinned nightly
+        working-directory: fuzz
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Check the fuzz crate's dependencies
+        working-directory: fuzz
+        run: cargo deny --locked check
       - name: Build the pure crates against core and alloc alone
         run: cargo --locked xtask check-pure
       - name: Prove the pure-crate build catches planted violations
         run: cargo --locked xtask check-pure --self-test
+      - name: Check the seams' source rules
+        run: cargo --locked xtask check-seams
+      - name: Prove the seam rules catch planted violations
+        run: cargo --locked xtask check-seams --self-test
       - name: Check unsafe stays in ironafs-os and matches ADR 0005's table
         run: cargo --locked xtask check-os
       - name: Prove the site inventory catches planted changes
@@ -112,7 +131,16 @@ jobs:
           install -d "$cargo_bin"
           install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
       - name: Prove mem-wipe's stores survive the release profile, x86_64 and aarch64 Linux
-        run: cargo --locked xtask check-wipe
+        # Each glibc target must report passed: a MISSING line exits 0 but
+        # proves nothing. The musl targets are proved in their os-linux lanes.
+        run: |
+          cargo --locked xtask check-wipe > check-wipe.log
+          cat check-wipe.log
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            grep -q "^$target: passed: " check-wipe.log
+          done
+      - name: Prove the mem-wipe gate catches planted regressions
+        run: cargo --locked xtask check-wipe --self-test
       - name: Run tests
         run: cargo nextest run --workspace --profile ci --retries 0 --no-tests fail --locked
       - name: Run doc-tests
@@ -151,14 +179,27 @@ jobs:
             done
           done
       - name: Run the tests that need root, each named
-        # The dumpable attribute after an exec under another uid and after
-        # a set-id exec (the direct id-change reset is not observed: no
-        # site changes an id), and a peer under another uid, through
-        # nextest's target runner.
+        # The dumpable attribute after an exec under another uid (an
+        # ordinary exec: 1) and after a set-id exec, and a peer under
+        # another uid, through nextest's target runner. The direct id-change
+        # reset is not observed: no site changes an id. The set-id case's
+        # helper is started under the test id (the id change happens
+        # there), takes the controls and checks 0, then execs a set-user-id
+        # copy with no id change of its own. fs.suid_dumpable is set to 2 on
+        # this throwaway runner (its default is 0), so that exec's value is
+        # told apart from the helper's 0 carried over and from an ordinary
+        # exec's 1; the test refuses any other value and never sets it.
+        # The same test then shows the set-user-id copy refusing to be the
+        # helper (its effective uid is root's) before it starts the program
+        # the helper would; one test, so no two preflights run at once. The set-id case is for a disposable
+        # guest, as this runner is, which is its access boundary: its check
+        # that no account, group or thread holds its id is a snapshot taken
+        # before the set-id copy is made.
         timeout-minutes: 10
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo
         run: |
+          sudo sysctl -w fs.suid_dumpable=2
           privileged="unix_nodump::tests::kernel::an_exec_as_another_user_resets_the_attribute_and_disable_dumps_restores_it
           unix_nodump::tests::kernel::a_set_id_exec_resets_the_attribute_to_suid_dumpable_and_disable_dumps_restores_it
           linux_peercred::tests::kernel::peer_credentials_name_a_peer_under_another_uid"
@@ -179,7 +220,10 @@ jobs:
     # 24.04 and 26.04. Each lane names the target it proves, the sites
     # check-abi must have proved, and the native tests that must have run;
     # check-abi also checks that $CC is that target's compiler (its
-    # architecture and C library).
+    # architecture and C library). A lane's withheld sites are those whose
+    # qualified constants its headers do not name (ADR 0005, sheet 14): the
+    # crate does not compile them for that target, so the lane checks that
+    # neither their tests nor check-abi's report name them.
     strategy:
       fail-fast: false
       matrix:
@@ -193,6 +237,7 @@ jobs:
             nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
             nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
             cc: musl-gcc
+            withheld: linux-fdpass
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
@@ -202,6 +247,7 @@ jobs:
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
             nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
             cc: musl-gcc
+            withheld: linux-fdpass
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-26.04
             nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
@@ -211,6 +257,7 @@ jobs:
             nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
             nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
             cc: musl-gcc
+            withheld: linux-fdpass
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-26.04-arm
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
@@ -220,6 +267,7 @@ jobs:
             nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
             nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
             cc: musl-gcc
+            withheld: linux-fdpass
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     permissions:
@@ -227,16 +275,18 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs linux-rtnetlink
+      WITHHELD: ${{ matrix.withheld }}
       NATIVE_TESTS: >-
         linux_clock::tests::read_clock_boot_advances_and_never_goes_back
         linux_clock::tests::read_clock_awake_advances_and_never_goes_back
         linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names
         linux_random::tests::getrandom_reports_a_full_piece_of_at_most_256_bytes
         mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257
-        unix_nodump::tests::disable_dumps_in_this_process_reads_back_not_dumpable
+        unix_nodump::tests::kernel::disable_dumps_reads_back_not_dumpable_and_zeroes_both_core_limits
         linux_dontdump::tests::secret_buffer_new_advises_its_whole_block_through_the_call
         linux_peercred::tests::kernel::peer_credentials_of_a_socket_pair_name_this_process_s_effective_ids
         linux_peercred::tests::kernel::peer_credentials_refuse_a_listener_wrapped_as_a_stream
+        linux_peercred::tests::kernel::peer_credentials_refuse_a_reconnected_datagram_socket_of_a_pair
         linux_fdpass::tests::kernel::one_descriptor_arrives_close_on_exec_and_nothing_else_stays_open
         linux_fdpass::tests::kernel::three_descriptors_are_truncated_and_what_was_delivered_is_closed
         linux_udp6::tests::kernel::an_ipv4_socket_bound_first_shares_its_port_with_this_one
@@ -288,8 +338,28 @@ jobs:
           cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked > nextest.log 2>&1
           cat nextest.log
           for test in $NATIVE_TESTS; do
-            grep -Eq "PASS .* ironafs-os $test\$" nextest.log
+            module="${test%%::*}"
+            if [[ " $WITHHELD " == *" ${module//_/-} "* ]]; then
+              # `set -e` ignores a negated command, so fail explicitly.
+              if grep -Eq "ironafs-os $module::" nextest.log; then exit 1; fi
+            else
+              grep -Eq "PASS .* ironafs-os $test\$" nextest.log
+            fi
           done
+      - name: Close a pidfd the kernel installs, where it offers SO_PASSPIDFD
+        if: ${{ !contains(matrix.withheld, 'linux-fdpass') }}
+        # Linux 6.5 or later, which every runner of this matrix has; python3
+        # sets the option, since no site of ADR 0005 does.
+        run: |
+          test=linux_fdpass::tests::kernel::a_pidfd_the_kernel_installs_is_closed_and_the_message_refused
+          cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked --run-ignored only -E "test(=$test)" > pidfd.log 2>&1 || { cat pidfd.log; exit 1; }
+          cat pidfd.log
+          grep -Eq "PASS .* ironafs-os $test\$" pidfd.log
+      - name: Prove mem-wipe's stores survive the release profile on the target
+        run: |
+          cargo --locked xtask check-wipe > check-wipe.log
+          cat check-wipe.log
+          grep -q "^$TARGET: passed: " check-wipe.log
       - name: Lint ironafs-os for the target, its C library's declarations included
         env:
           CARGO_BUILD_WARNINGS: deny
@@ -300,14 +370,30 @@ jobs:
         run: |
           cargo --locked xtask check-abi --target "$TARGET" > check-abi.log
           cat check-abi.log
-          grep -q "^check-abi: $TARGET: " check-abi.log
+          grep -q "^check-abi: $TARGET: the system's C compiler accepted " check-abi.log
           for site in $SITES; do
-            grep -q "$site (" check-abi.log
+            case " $WITHHELD " in
+              *" $site "*) if grep -q "$site" check-abi.log; then exit 1; fi ;;
+              *) grep -q "$site (" check-abi.log ;;
+            esac
           done
       - name: Prove the declaration check catches planted mismatches
         env:
           CC: ${{ matrix.cc || 'cc' }}
         run: cargo --locked xtask check-abi --self-test
+      - name: Compare the musl build's own sites with the copy
+        # The production library built for this musl target, its sites read
+        # from the files that build compiled (ADR 0005, point 6.7), and a
+        # site planted for this target alone caught (a synthetic input: the
+        # planted file added to that build's file list).
+        if: matrix.cc == 'musl-gcc'
+        run: |
+          cargo --locked xtask check-os > check-os.log
+          cat check-os.log
+          grep -Eq "^check-os: .* on [^;]*${TARGET}[,;]" check-os.log
+          cargo --locked xtask check-os --self-test > check-os-self-test.log
+          cat check-os-self-test.log
+          grep -qx "caught: a site planted for a musl target alone (synthetic input: added to its build's file list): $TARGET" check-os-self-test.log
       - name: Run linux-udp6's sandbox test under a filter that denies AF_INET6
         # systemd's RestrictAddressFamilies answers a denied family's
         # socket() with EAFNOSUPPORT (systemd.exec(5)), as the daemon's own
@@ -367,24 +453,52 @@ jobs:
           grep -q ' 3 passed' netns.log
 
   os-linux-glibc-2-28:
-    name: os-linux (glibc 2.28, aarch64)
+    name: os-linux (glibc 2.28, ${{ matrix.target }})
     # The oldest glibc of the build goal (ADR 0004, L42, point 3; ADR 0005,
-    # point 5.5): ironafs-os built and its tests run on AlmaLinux 8. The
-    # conditional glibc 2.17 artefact is qualified separately, before it is
-    # offered.
-    runs-on: ubuntu-24.04-arm
+    # point 5.5): ironafs-os built and its tests run on AlmaLinux 8, on
+    # each Linux architecture. Each lane proves the target it built and
+    # the runtime it ran on, requires the named native tests of every site,
+    # and proves every site's declarations against glibc 2.28's headers
+    # (with the kernel's own, which linux-rtnetlink's need). The tests run
+    # under nextest, as everywhere else: some count this process's open
+    # descriptors, which holds only with a process to each test (libtest's
+    # threads share one). The conditional glibc 2.17 artefact is not offered
+    # until it is qualified separately.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Each lane's own AlmaLinux 8 image, by its architecture's digest
+          # in the same multi-architecture index.
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            runner: ubuntu-24.04
+            image: docker.io/library/almalinux:8@sha256:974135fa35c47f8406ae9f81e8479fe0c372bdd64244a48770848466ceb694ce
+            nextest: cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            image: docker.io/library/almalinux:8@sha256:34a85f19e05e28243249d45dd3842621741a43b110865ca80575c9b4e083cc29
+            nextest: cargo-nextest-0.9.151-aarch64-unknown-linux-gnu.tar.gz
+            nextest_sha256: 3e35e8f6913af92558ba09d7155f74e35dd1f0024ef3cd891637433ae4eacbdd
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
     container:
-      image: docker.io/library/almalinux:8@sha256:34a85f19e05e28243249d45dd3842621741a43b110865ca80575c9b4e083cc29
+      image: ${{ matrix.image }}
     env:
+      TARGET: ${{ matrix.target }}
+      ARCH: ${{ matrix.arch }}
       SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs linux-rtnetlink
       NATIVE_TESTS: >-
         linux_clock::tests::read_clock_boot_advances_and_never_goes_back
+        linux_clock::tests::read_clock_awake_advances_and_never_goes_back
         linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names
+        linux_random::tests::getrandom_reports_a_full_piece_of_at_most_256_bytes
         mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257
-        unix_nodump::tests::disable_dumps_in_this_process_reads_back_not_dumpable
+        unix_nodump::tests::kernel::disable_dumps_reads_back_not_dumpable_and_zeroes_both_core_limits
         linux_dontdump::tests::secret_buffer_new_advises_its_whole_block_through_the_call
         linux_peercred::tests::kernel::peer_credentials_of_a_socket_pair_name_this_process_s_effective_ids
         linux_fdpass::tests::kernel::one_descriptor_arrives_close_on_exec_and_nothing_else_stays_open
@@ -401,33 +515,61 @@ jobs:
       - name: Install a C toolchain and Rust
         run: |
           dnf --assumeyes install gcc glibc-headers kernel-headers
-          ldd --version | head -n 1 | grep -q ' 2\.28$'
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs > rustup-init.sh
           sh rustup-init.sh -y --default-toolchain none --profile minimal
           "$HOME/.cargo/bin/rustup" toolchain install --profile minimal --no-self-update --no-update
-      - name: Run ironafs-os's unit tests on glibc 2.28
-        # The unit tests alone (the doctests run in the next step), one at
-        # a time, since some count this process's open descriptors. The
-        # ignored tests are exactly those the source marks, and the named
-        # native tests of every site passed.
+      - name: Prove the runtime and the target
+        # Each output is read whole into a variable before it is tested, so
+        # no command writes into a pipe that closes early (SIGPIPE under
+        # pipefail).
         run: |
-          "$HOME/.cargo/bin/cargo" test -p ironafs-os --lib --locked -- --test-threads 1 > test.log 2>&1 || { cat test.log; exit 1; }
-          cat test.log
-          marked=$(grep -rE '^\s*#\[ignore' crates/ironafs-os/src | wc -l)
-          grep -Eq "^test result: ok\. [1-9][0-9]* passed; 0 failed; $marked ignored;" test.log
+          glibc=$(ldd --version | sed -n 1p)
+          echo "$glibc"
+          case "$glibc" in
+            *' 2.28') ;;
+            *) echo "not glibc 2.28: $glibc"; exit 1 ;;
+          esac
+          test "$(uname -m)" = "$ARCH"
+          host=$("$HOME/.cargo/bin/rustc" -vV | sed -n 's/^host: //p')
+          echo "rustc host: $host"
+          test "$host" = "$TARGET"
+      - name: Install cargo-nextest
+        # The release binaries need glibc 2.27 at most (their symbol
+        # versions), so they run on glibc 2.28.
+        env:
+          ARCHIVE: ${{ matrix.nextest }}
+          ARCHIVE_SHA256: ${{ matrix.nextest_sha256 }}
+        run: |
+          download_dir=$(mktemp -d)
+          cd "$download_dir" || exit
+          curl --fail --silent --show-error --location --output "$ARCHIVE" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/$ARCHIVE"
+          printf '%s  %s\n' "$ARCHIVE_SHA256" "$ARCHIVE" | sha256sum -c -
+          tar -xzf "$ARCHIVE"
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          install -d "$cargo_bin"
+          install -m 0755 cargo-nextest "$cargo_bin/cargo-nextest"
+      - name: Run ironafs-os's tests on glibc 2.28, real system calls included
+        # The log is printed before the status is tested, so a failure shows
+        # its cause.
+        run: |
+          status=0
+          "$HOME/.cargo/bin/cargo" nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked > nextest.log 2>&1 || status=$?
+          cat nextest.log
+          test "$status" -eq 0
           for test in $NATIVE_TESTS; do
-            grep -q "^test $test \.\.\. ok\$" test.log
+            grep -Eq "PASS .* ironafs-os $test\$" nextest.log
           done
       - name: Run ironafs-os's doctests on glibc 2.28
         run: |
-          "$HOME/.cargo/bin/cargo" test -p ironafs-os --doc --locked > doc.log 2>&1 || { cat doc.log; exit 1; }
+          "$HOME/.cargo/bin/cargo" test -p ironafs-os --doc --target "$TARGET" --locked > doc.log 2>&1 || { cat doc.log; exit 1; }
           cat doc.log
           grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' doc.log
       - name: Prove the declarations against glibc 2.28's headers
         run: |
-          "$HOME/.cargo/bin/cargo" --locked xtask check-abi > check-abi.log
+          "$HOME/.cargo/bin/cargo" --locked xtask check-abi --target "$TARGET" > check-abi.log
           cat check-abi.log
-          grep -q '^check-abi: aarch64-unknown-linux-gnu: ' check-abi.log
+          grep -q "^check-abi: $TARGET: the system's C compiler accepted " check-abi.log
           for site in $SITES; do
             grep -q "$site (" check-abi.log
           done
@@ -470,6 +612,9 @@ jobs:
               linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names \
               linux_random::tests::arguments_pass_the_buffer_address_and_length_and_zeros_each_as_a_long \
               unix_nodump::tests::disable_dumps_in_this_process_reads_back_not_dumpable \
+              unix_nodump::tests::stand_in::a_failure_of_each_call_is_reported_with_its_errno \
+              linux_peercred::tests::stand_in::a_type_other_than_a_stream_is_refused \
+              fdpass::tests::accept_adopts_and_closes_a_pidfd_and_refuses \
               linux_dontdump::tests::secret_buffer_new_advises_its_whole_block_through_the_call \
               linux_peercred::tests::peer_credentials_of_a_socket_pair_name_this_process \
               linux_fdpass::tests::a_sent_descriptor_arrives_as_a_new_descriptor_for_the_same_socket \
@@ -519,16 +664,60 @@ jobs:
         if: github.event_name == 'push'
         run: cargo --locked xtask trailers main
 
+  fuzz:
+    name: fuzz (${{ matrix.runner }})
+    # Fuzzing runs on Linux runners, on the fuzz crate's pinned nightly (ADR
+    # 0004, O47, point 4). Pull requests replay the tracked seeds once; the
+    # time-bounded fuzzing run is the scheduled job's. The engine's output is
+    # never shown: a failure is reported by target and digest (O30).
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Install the fuzz crate's pinned nightly
+        working-directory: fuzz
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+          cargo --version
+      - name: Install cargo-fuzz
+        run: |
+          cargo install --locked --version =0.13.2 cargo-fuzz
+          cargo fuzz --version
+      - name: Check the fuzz crate's formatting
+        working-directory: fuzz
+        run: cargo fmt --check
+      - name: Run Clippy on the fuzz crate
+        working-directory: fuzz
+        env:
+          CARGO_BUILD_WARNINGS: deny
+        run: cargo clippy --all-targets --locked
+      - name: Replay every fuzz target's tracked seeds
+        run: cargo --locked xtask fuzz
+
   ci-ok:
     name: ci-ok
-    needs: [lint, test, os-linux, os-linux-glibc-2-28, miri, trailers]
+    needs: [lint, test, os-linux, os-linux-glibc-2-28, miri, trailers, fuzz]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - name: Require lint, test, os-linux, glibc 2.28, Miri and trailer check success
+      - name: Require lint, test, os-linux, glibc 2.28, Miri, trailer and fuzz check success
         env:
           LINT_RESULT: ${{ needs.lint.result }}
           TEST_RESULT: ${{ needs.test.result }}
@@ -536,6 +725,7 @@ jobs:
           OLD_GLIBC_RESULT: ${{ needs.os-linux-glibc-2-28.result }}
           MIRI_RESULT: ${{ needs.miri.result }}
           TRAILERS_RESULT: ${{ needs.trailers.result }}
+          FUZZ_RESULT: ${{ needs.fuzz.result }}
         run: |
-          printf 'lint: %s\ntest: %s\nos-linux: %s\nglibc 2.28: %s\nmiri: %s\ntrailers: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$OS_LINUX_RESULT" "$OLD_GLIBC_RESULT" "$MIRI_RESULT" "$TRAILERS_RESULT"
-          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$OS_LINUX_RESULT" == success && "$OLD_GLIBC_RESULT" == success && "$MIRI_RESULT" == success && "$TRAILERS_RESULT" == success ]]
+          printf 'lint: %s\ntest: %s\nos-linux: %s\nglibc 2.28: %s\nmiri: %s\ntrailers: %s\nfuzz: %s\n' "$LINT_RESULT" "$TEST_RESULT" "$OS_LINUX_RESULT" "$OLD_GLIBC_RESULT" "$MIRI_RESULT" "$TRAILERS_RESULT" "$FUZZ_RESULT"
+          [[ "$LINT_RESULT" == success && "$TEST_RESULT" == success && "$OS_LINUX_RESULT" == success && "$OLD_GLIBC_RESULT" == success && "$MIRI_RESULT" == success && "$TRAILERS_RESULT" == success && "$FUZZ_RESULT" == success ]]

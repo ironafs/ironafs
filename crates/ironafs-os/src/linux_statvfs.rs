@@ -20,6 +20,7 @@ use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd};
 
+use crate::retry::retried;
 use crate::space::{SpaceError, available};
 use abi::statvfs;
 
@@ -66,13 +67,8 @@ pub fn available_space(directory: BorrowedFd<'_>) -> Result<u64, SpaceError> {
 /// the caller's check.
 fn measure(descriptor: BorrowedFd<'_>) -> Result<u64, SpaceError> {
     let mut figures = statvfs::zeroed();
-    loop {
-        match query(descriptor, &mut figures) {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(SpaceError::Failed(error)),
-            Ok(()) => return available(figures.f_bavail, figures.f_frsize),
-        }
-    }
+    retried(|| query(descriptor, &mut figures)).map_err(SpaceError::Failed)?;
+    available(figures.f_bavail, figures.f_frsize)
 }
 
 /// One `fstatvfs` call on `descriptor`, into `figures`.

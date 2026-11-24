@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A string whose length is the declared bound + 1 (note.title, bound 32: length 33).
+
+type note
+breaks 5.4, point 3.2
+expect LengthOverBound test.note.title
+offset 0
+extent none
+requests none
+input 00000021 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000

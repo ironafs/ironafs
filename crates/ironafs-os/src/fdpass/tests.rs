@@ -11,18 +11,11 @@ use std::cell::RefCell;
 use std::io;
 use std::rc::Rc;
 
-use super::{FdPassError, Received, Rules, accept, retried, sent};
+use super::{FdPassError, LINUX, Received, accept, sent};
 
-/// Linux's values on the allowlisted targets.
-const RULES: Rules = Rules {
-    level: 1,
-    rights: 1,
-    truncated: 8,
-    one: 20,
-    two: 24,
-    capacity: 24,
-    data: 1,
-};
+mod held;
+
+use held::{Log, adopter};
 
 /// A valid receive of descriptor 7.
 const ONE: Received = Received {
@@ -36,31 +29,12 @@ const ONE: Received = Received {
     byte: 1,
 };
 
-/// What happened to the stand-in descriptors: adopted, and dropped.
-#[derive(Default)]
-struct Log {
-    adopted: Vec<i32>,
-    dropped: Vec<i32>,
-}
-
-/// A stand-in descriptor: records its drop.
-struct Held(i32, Rc<RefCell<Log>>);
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        self.1.borrow_mut().dropped.push(self.0);
-    }
-}
-
 /// Runs `accept` over `received`; returns the descriptor handed out, if
 /// any, the error, if any, and the log, after the result was dropped (so a
 /// descriptor handed out is in `dropped` too).
 fn run(received: &Received) -> (Option<i32>, Option<FdPassError>, Log) {
     let log = Rc::new(RefCell::new(Log::default()));
-    let result = accept(&RULES, *received, |descriptor| {
-        log.borrow_mut().adopted.push(descriptor);
-        Held(descriptor, Rc::clone(&log))
-    });
+    let result = accept(&LINUX, *received, adopter(&log));
     let (handed, error) = match result {
         Ok(held) => (Some(held.0), None),
         Err(error) => (None, Some(error)),
@@ -166,6 +140,97 @@ fn accept_adopts_no_integer_of_a_header_that_fails_a_check() {
     }
 }
 
+/// A receive that delivered the peer's pidfd, 9, with the data byte.
+const PIDFD: Received = Received {
+    kind: 4,
+    payload: [9, 0],
+    ..ONE
+};
+
+#[test]
+fn accept_adopts_and_closes_a_pidfd_and_refuses() {
+    let (handed, error, log) = run(&PIDFD);
+    assert_eq!(handed, None);
+    assert!(matches!(error, Some(FdPassError::PeerPidfd)), "{error:?}");
+    assert_eq!(log.adopted, [9]);
+    assert_eq!(log.dropped, [9]);
+}
+
+#[test]
+fn accept_closes_a_pidfd_whatever_else_the_receive_reported() {
+    for (case, received, expected) in [
+        (
+            "the end of the stream",
+            Received { count: 0, ..PIDFD },
+            "Closed",
+        ),
+        ("truncation", Received { flags: 8, ..PIDFD }, "Truncated"),
+        (
+            "a wrong data byte",
+            Received { byte: 0, ..PIDFD },
+            "PeerPidfd",
+        ),
+    ] {
+        let (handed, error, log) = run(&received);
+        assert_eq!(handed, None, "{case}");
+        assert!(
+            format!("{error:?}").starts_with(&format!("Some({expected}")),
+            "{case}: {error:?}"
+        );
+        assert_eq!(log.adopted, [9], "{case}");
+        assert_eq!(log.dropped, [9], "{case}");
+    }
+}
+
+#[test]
+fn accept_adopts_no_integer_of_a_pidfd_header_that_fails_a_check() {
+    for (case, received) in [
+        ("a wrong level", Received { level: 0, ..PIDFD }),
+        (
+            "a length of two",
+            Received {
+                length: 24,
+                payload: [9, 8],
+                ..PIDFD
+            },
+        ),
+        (
+            "a short control length",
+            Received {
+                control: 19,
+                ..PIDFD
+            },
+        ),
+        (
+            "a header length past the control length",
+            Received {
+                control: 20,
+                length: 24,
+                ..PIDFD
+            },
+        ),
+    ] {
+        let (handed, error, log) = run(&received);
+        assert_eq!(handed, None, "{case}");
+        assert!(
+            matches!(error, Some(FdPassError::BadControl)),
+            "{case}: {error:?}"
+        );
+        assert_eq!(log.adopted, Vec::<i32>::new(), "{case}");
+    }
+}
+
+#[test]
+fn accept_never_adopts_a_negative_pidfd() {
+    let (handed, error, log) = run(&Received {
+        payload: [-1, 0],
+        ..PIDFD
+    });
+    assert_eq!(handed, None);
+    assert!(matches!(error, Some(FdPassError::PeerPidfd)), "{error:?}");
+    assert_eq!(log.adopted, Vec::<i32>::new());
+}
+
 #[test]
 fn accept_with_no_control_data_is_no_descriptor() {
     let (handed, error, log) = run(&Received {
@@ -206,7 +271,7 @@ fn accept_never_adopts_a_negative_value_and_closes_the_other_one() {
 fn accept_hands_out_only_the_valid_case_and_never_leaks_across_the_sweep() {
     for control in [0, 15, 16, 19, 20, 21, 23, 24, 25, 32] {
         for length in [0, 15, 16, 19, 20, 21, 23, 24, 25, 28] {
-            for (level, kind) in [(1, 1), (0, 1), (1, 2), (2, 0)] {
+            for (level, kind) in [(1, 1), (0, 1), (1, 2), (2, 0), (1, 4), (0, 4)] {
                 for (flags, count, byte) in [(0, 1, 1), (8, 1, 1), (0, 0, 1), (0, 1, 0)] {
                     let received = Received {
                         count,
@@ -223,7 +288,10 @@ fn accept_hands_out_only_the_valid_case_and_never_leaks_across_the_sweep() {
                         && (length == 20 || length == 24)
                         && length <= control
                         && (level, kind) == (1, 1);
+                    let pidfd =
+                        (20..=24).contains(&control) && length == 20 && (level, kind) == (1, 4);
                     let delivered = match (header, length) {
+                        (false, _) if pidfd => vec![7],
                         (false, _) => vec![],
                         (true, 20) => vec![7],
                         (true, _) => vec![7, 8],
@@ -251,26 +319,6 @@ fn sent_accepts_exactly_the_one_data_byte() {
     for count in [0, 2] {
         assert!(matches!(sent(count), Err(FdPassError::ShortSend(found)) if found == count));
     }
-}
-
-#[test]
-fn retried_repeats_an_interrupted_call_and_stops_at_any_other_result() {
-    let mut calls = 0;
-    let result = retried(|| {
-        calls += 1;
-        if calls < 3 {
-            Err(io::Error::from(io::ErrorKind::Interrupted))
-        } else {
-            Ok(1)
-        }
-    });
-    assert_eq!((result.unwrap(), calls), (1, 3));
-    let mut calls = 0;
-    let result = retried(|| {
-        calls += 1;
-        Err(io::Error::from_raw_os_error(32))
-    });
-    assert_eq!((result.unwrap_err().raw_os_error(), calls), (Some(32), 1));
 }
 
 #[test]

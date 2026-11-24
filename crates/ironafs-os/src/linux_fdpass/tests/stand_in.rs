@@ -13,8 +13,8 @@ use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 
 use super::super::abi::stand_in::{Plan, calls, plan};
-use super::super::abi::{iovec, msghdr};
-use super::super::{receive_fd, send_fd, send_message};
+use super::super::abi::{SCM_RIGHTS, SOL_SOCKET, cmsghdr, iovec, msghdr};
+use super::super::{Control, SPACE, receive_fd, receive_message, send_fd, send_message};
 use crate::fdpass::FdPassError;
 
 /// `EPIPE` and `ECONNRESET`.
@@ -77,4 +77,56 @@ fn a_malformed_message_after_an_interruption_fails_with_einval_not_eintr() {
     assert_eq!(first.kind(), io::ErrorKind::Interrupted);
     let second = send_message(sender.as_fd(), &message).unwrap_err();
     assert_eq!(second.raw_os_error(), Some(EINVAL));
+}
+
+#[test]
+fn a_header_of_no_descriptor_count_after_an_interruption_fails_with_einval() {
+    // The same for a control message whose header length is neither one
+    // descriptor's nor two's.
+    let (sender, _receiver) = UnixStream::pair().unwrap();
+    let mut byte = 1_u8;
+    let mut buffer = iovec {
+        iov_base: (&raw mut byte).cast(),
+        iov_len: 1,
+    };
+    let mut control = Control {
+        header: cmsghdr::new(16, SOL_SOCKET, SCM_RIGHTS).unwrap(),
+        descriptors: [0, 0],
+    };
+    let message = msghdr::new(&raw mut buffer, (&raw mut control).cast(), SPACE).unwrap();
+    plan(Plan::Interrupt(1));
+    let first = send_message(sender.as_fd(), &message).unwrap_err();
+    assert_eq!(first.kind(), io::ErrorKind::Interrupted);
+    let second = send_message(sender.as_fd(), &message).unwrap_err();
+    assert_eq!(second.raw_os_error(), Some(EINVAL));
+}
+
+/// A receive whose control buffer is shorter than one descriptor's space.
+fn short_receive(receiver: &UnixStream) -> io::Error {
+    let mut byte = 0_u8;
+    let mut buffer = iovec {
+        iov_base: (&raw mut byte).cast(),
+        iov_len: 1,
+    };
+    let mut control = Control {
+        header: cmsghdr::new(0, 0, 0).unwrap(),
+        descriptors: [0, 0],
+    };
+    let mut message = msghdr::new(&raw mut buffer, (&raw mut control).cast(), SPACE - 1).unwrap();
+    receive_message(receiver.as_fd(), &mut message).unwrap_err()
+}
+
+#[test]
+fn a_malformed_receive_fails_with_einval_on_an_empty_stream() {
+    let (_sender, receiver) = UnixStream::pair().unwrap();
+    assert_eq!(short_receive(&receiver).raw_os_error(), Some(EINVAL));
+}
+
+#[test]
+fn a_malformed_receive_fails_with_einval_and_leaves_the_queued_message() {
+    let (sender, receiver) = UnixStream::pair().unwrap();
+    let (passed, _far) = UnixStream::pair().unwrap();
+    send_fd(&sender, passed.as_fd()).unwrap();
+    assert_eq!(short_receive(&receiver).raw_os_error(), Some(EINVAL));
+    receive_fd(&receiver).unwrap();
 }
