@@ -44,7 +44,7 @@ required review of its own family's work.
 | Family | Models used here (id as recorded in trailers) | Reached through | Agent ids |
 |---|---|---|---|
 | Anthropic (Claude) | Claude Opus 5.5 (`claude-opus-5-5`), default; Claude Mythos 5.2 (`claude-mythos-5-2`, what Claude Code's `fable` alias serves) for the strongest seats; Claude Haiku 5.5 (`claude-haiku-5-5`) and Sonnet for light work, including Claude Code's own background steps | Claude Code CLI, Claude subscription | `claude-code` |
-| OpenAI (GPT) | GPT-6.2 Sol (`gpt-6.2-sol`), default; GPT-6.2 Astra (`gpt-6.2-astra`) for the strongest seats | codex CLI, ChatGPT subscription; for read-only seats when codex usage runs low, the Responses API on the owner's OpenAI API credit (`gpt-6.2-sol` only; [docs/workflow.md](docs/workflow.md) §2) | `codex`; `openai` for the API lane |
+| OpenAI (GPT) | GPT-6.2 Sol (`gpt-6.2-sol`), default; GPT-6.2 Astra (`gpt-6.2-astra`) for the strongest seats | codex CLI, ChatGPT subscription; for read-only seats, also the Responses API on the owner's OpenAI API credit, the same models by another route ([docs/workflow.md](docs/workflow.md) §2) | `codex` |
 | Google (Gemini) | Gemini 4 Carbon (`gemini-4-carbon-medium`, also for its security seats; `gemini-4-carbon-high` for other class S and R and strongest seats); Gemini Flash and Argon for light work only | Antigravity CLI (`agy`) | `gemini`, `agy` |
 | Zhipu / Z.ai (GLM) | GLM 5.3 (`glm-5.3`); GLM 5.3 Flash (`glm-5.3-flash`) for small helper steps | Claude Code CLI on Z.ai's endpoint, GLM Coding Plan | `glm` |
 | DeepSeek | DeepSeek V4.1 Flash (`deepseek-flash`) | Claude Code CLI on DeepSeek's endpoint, DeepSeek API | `deepseek` |
@@ -67,9 +67,9 @@ the defaults above change, this table changes in the same commit.
 | Implementer | Anthropic | `claude-code` (subagents the controller dispatches) |
 | Implementer for extra capacity | OpenAI | `codex` |
 | Implementer when codex is out of quota | Google | `agy` |
-| Design, research, rulings (read-only) | OpenAI | `codex`, or `openai` when codex usage runs low |
+| Design, research, rulings (read-only) | OpenAI | `codex` |
 | First reviewer of implemented code | Zhipu | `glm` |
-| Second review family where the class needs two | OpenAI, Google, DeepSeek or Anthropic, whichever wrote none of the change and is not already the first reviewer | `codex` or `openai` (read-only), `gemini`, `deepseek`, `claude-code` |
+| Second review family where the class needs two | OpenAI, Google, DeepSeek or Anthropic, whichever wrote none of the change and is not already the first reviewer | `codex` (read-only), `gemini`, `deepseek`, `claude-code` |
 | Claude review seats (never the only reviewer of Claude's work) | Anthropic | `claude-code` |
 
 The accounts are flat-rate subscriptions or usage-billed, and not all of them
@@ -115,8 +115,8 @@ its exact commit message, and nothing lands without their approval.
 |---|---|---|---|---|---|
 | Claude Opus 5.5 (Anthropic) | yes | yes (main implementer, as subagents) | yes | yes (default Claude seat) | no: Mythos takes Claude's security seats |
 | Claude Mythos 5.2 (Anthropic) | | promoted implementation only | the strongest seats: judgements, class R designs, architecture ADRs, load-bearing research synthesis | judgements | yes, every Claude security review |
-| GPT-6.2 Sol (OpenAI, via codex) | | yes (extra capacity, separate tasks) | yes, read-only | yes, read-only, never codex's own work | no: Astra takes GPT's security seats |
-| GPT-6.2 Astra (OpenAI, via codex) | | after two recorded failures on the same defect | the strongest seats: judgements, class R designs, architecture ADRs, load-bearing research synthesis | judgements | yes, the default GPT security seat |
+| GPT-6.2 Sol (OpenAI, via codex; read-only seats also via the API) | | yes (extra capacity, separate tasks; codex CLI only) | yes, read-only | yes, read-only, never codex's own work | no: Astra takes GPT's security seats |
+| GPT-6.2 Astra (OpenAI, via codex; read-only seats also via the API) | | after two recorded failures on the same defect | the strongest seats: judgements, class R designs, architecture ADRs, load-bearing research synthesis | judgements | yes, the default GPT security seat |
 | Gemini 4 Carbon (Google, via agy) | | when codex is out of quota | | yes, second family | yes, at `gemini-4-carbon-medium`, when it wrote neither the design nor the code ([record](docs/reviews/2026-11-22-gemini-security-seat.md)) |
 | GLM 5.3 (Zhipu) | | | second view | yes, first reviewer | yes, when it wrote neither the design nor the code |
 | DeepSeek V4.1 Flash (DeepSeek) | | | research | yes, second family, off-peak (paid) | |

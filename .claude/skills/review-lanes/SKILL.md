@@ -19,11 +19,11 @@ not copy them here.
 ## Approvals for this repository
 
 All four outside families are approved for IronAFS source (owner,
-2026-11-18). CLIs first. The one API-platform lane is `openai_lane.py` on
-the owner's OpenAI API credit (owner, 2026-11-23): a GPT read-only seat
-when the codex CLI's usage runs low, used at `gpt-6.2-sol` only, OpenAI family,
-agent id `openai`; never an implementer (`docs/workflow.md` §2). How to run
-it is in the global `openai-lane` skill.
+2026-11-18). CLIs first. GPT read-only seats may also run through
+`openai_lane.py` on the owner's OpenAI API credit (owner, 2026-11-23): the
+same models, pins and effort by another route, whichever has quota; credited
+as `codex`, with the route named in the record; never for writing code
+(`docs/workflow.md` §2). How to run it is in the global `openai-lane` skill.
 
 ## Which seat, by class
 
