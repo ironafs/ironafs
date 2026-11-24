@@ -128,7 +128,7 @@ pub use linux_peercred::peer_credentials;
 #[cfg(target_os = "linux")]
 pub use linux_random::fill_random;
 #[cfg(target_os = "linux")]
-pub use linux_rtnetlink::RouteSocket;
+pub use linux_rtnetlink::{RouteSocket, Wake};
 #[cfg(target_os = "linux")]
 pub use linux_statvfs::available_space;
 #[cfg(target_os = "linux")]
@@ -136,7 +136,7 @@ pub use linux_udp6::udp6_socket;
 pub use mem_wipe::wipe;
 pub use peer::{PeerCredentials, PeerError};
 pub use random::RandomError;
-pub use route::RouteError;
+pub use route::{Ready, Receipt, RouteError, Sent, Waited};
 pub use space::SpaceError;
 pub use udp6::Udp6Error;
 #[cfg(target_os = "linux")]

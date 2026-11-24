@@ -296,6 +296,12 @@ jobs:
         linux_rtnetlink::tests::kernel::a_dump_is_answered_on_the_request_socket_ending_in_done
         linux_rtnetlink::tests::kernel::an_address_dump_of_every_family_returns_the_host_s_addresses
         linux_rtnetlink::tests::kernel::a_dump_datagram_larger_than_the_buffer_is_truncated
+        linux_rtnetlink::tests::kernel::a_wait_with_nothing_ready_times_out
+        linux_rtnetlink::tests::kernel::a_wake_signalled_from_another_thread_ends_a_blocked_wait
+        linux_rtnetlink::tests::kernel::a_wake_signalled_before_the_wait_ends_it_at_once_and_the_wait_clears_nothing
+        linux_rtnetlink::tests::kernel::two_signals_are_cleared_by_one_clear
+        linux_rtnetlink::tests::kernel::a_receive_with_nothing_queued_returns_nothing_queued_without_blocking
+        linux_rtnetlink::tests::kernel::a_timeout_below_one_millisecond_is_not_passed_as_0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -539,6 +545,12 @@ jobs:
         linux_rtnetlink::tests::kernel::a_dump_is_answered_on_the_request_socket_ending_in_done
         linux_rtnetlink::tests::kernel::an_address_dump_of_every_family_returns_the_host_s_addresses
         linux_rtnetlink::tests::kernel::a_dump_datagram_larger_than_the_buffer_is_truncated
+        linux_rtnetlink::tests::kernel::a_wait_with_nothing_ready_times_out
+        linux_rtnetlink::tests::kernel::a_wake_signalled_from_another_thread_ends_a_blocked_wait
+        linux_rtnetlink::tests::kernel::a_wake_signalled_before_the_wait_ends_it_at_once_and_the_wait_clears_nothing
+        linux_rtnetlink::tests::kernel::two_signals_are_cleared_by_one_clear
+        linux_rtnetlink::tests::kernel::a_receive_with_nothing_queued_returns_nothing_queued_without_blocking
+        linux_rtnetlink::tests::kernel::a_timeout_below_one_millisecond_is_not_passed_as_0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -670,7 +682,13 @@ jobs:
               route::tests::the_sweep_of_every_field_returns_only_the_kernel_s_whole_datagram \
               linux_udp6::tests::stand_in::a_missing_family_and_an_address_in_use_are_told_apart_through_the_calls \
               linux_statvfs::tests::stand_in::an_interrupted_query_is_made_again \
-              linux_rtnetlink::tests::stand_in::an_interrupted_send_and_receive_are_each_made_again \
+              linux_rtnetlink::tests::stand_in::an_interrupted_send_and_receive_are_returned_and_never_made_again \
+              linux_rtnetlink::tests::stand_in::an_interrupted_wait_is_returned_and_another_failure_is_an_error \
+              linux_rtnetlink::tests::stand_in::pollnval_on_either_entry_and_pollerr_on_the_wake_are_errors \
+              linux_rtnetlink::tests::stand_in::both_entries_ready_are_both_reported \
+              linux_rtnetlink::tests::stand_in::an_error_or_a_hangup_with_nothing_queued_reports_the_socket_and_receives_nothing \
+              linux_rtnetlink::tests::stand_in::a_wait_asks_pollin_on_exactly_the_two_entries_with_the_timeout_rounded_up \
+              route::tests::the_sweep_of_reports_accepts_exactly_what_the_sheet_allows \
               linux_rtnetlink::tests::stand_in::an_overflow_and_another_failure_are_told_apart_through_the_receive \
               linux_peercred::tests::stand_in::a_short_and_an_over_long_length_from_the_call_are_refused \
               linux_dontdump::tests::stand_in::a_failed_exclusion_hands_out_no_buffer \

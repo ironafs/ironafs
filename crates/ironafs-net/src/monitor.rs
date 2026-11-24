@@ -24,15 +24,19 @@
 //!   socket is made again.
 //!
 //! Both sockets live in the locked state, so the thread that changes the
-//! monitor can reach the other thread's socket. **No receive blocks for
-//! ever:** whoever needs a blocked thread to look again (a stop, a loss
-//! that abandons a dump, a resume) sends that thread's socket a wake
-//! ([`ironafs_netgen::wake`]), which the kernel answers on it. A socket
-//! is replaced only under the lock, and a stop is decided under the lock
-//! before the wakes are sent to the sockets then in place, so no thread
-//! can start a receive that the stop's wake misses. A wake that cannot be
-//! sent, or whose acknowledgement the kernel drops, is the residual the
-//! specification names (5.7, point 7; section 13, Q6).
+//! monitor can reach the other thread's socket. **No thread waits for
+//! ever:** each has its own [`Wake`], and waits on its socket and that
+//! wake together for at most [`ROUTE_WAIT_HORIZON`] before it receives,
+//! which never waits (ADR 0005, sheet 23). Whoever needs a thread to look
+//! again (a stop, a loss that abandons a dump, a resume) decides it under
+//! the lock and then signals that thread's wake. Each turn of a thread
+//! clears its wake before it reads the state, so a signal made after the
+//! read ends the wait. A failed signal or clear stops the source.
+//!
+//! TODO(#97): this driver is interim. It keeps 5.7's two threads and only
+//! puts sheet 23's wait and wakes under them; section 5.8 of the
+//! specification (attempts and their deadlines, the stop model, the
+//! startup handoff) replaces it.
 //!
 //! When either thread ends, or the handle is dropped, the source stops;
 //! the handle's drop joins both threads. A hook that drops the handle runs
@@ -48,18 +52,24 @@ use std::fmt;
 use std::io;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle, ThreadId};
+use std::time::Duration;
 
-use ironafs_netgen::{Consumers, Loss, Monitor, Reader, Request, StopRequest, Stopped, wake};
-use ironafs_os::{RouteError, RouteSocket};
+use ironafs_netgen::{Consumers, Loss, Monitor, Reader, Request, StopRequest, Stopped};
+use ironafs_os::{Receipt, RouteError, RouteSocket, Sent, Waited, Wake};
 
 /// The receive buffer, in bytes (docs/specs/network-generation.md, 5.5,
 /// point 1).
 const BUFFER: usize = 65_536;
 
+/// The longest wait on a route socket and its wake (ADR 0005, sheet 23:
+/// 1 second, accepted by the owner, 2026-11-22). With nothing to do, a
+/// thread looks again once per horizon.
+const ROUTE_WAIT_HORIZON: Duration = Duration::from_secs(1);
+
 /// Why the monitor did not start.
 #[derive(Debug)]
 pub enum MonitorError {
-    /// A route socket could not be made.
+    /// A route socket or a wake could not be made.
     Socket(RouteError),
     /// A thread could not be started.
     Thread(io::Error),
@@ -102,12 +112,14 @@ struct State {
 }
 
 /// The state, the signal that wakes the snapshot thread while it waits
-/// for work, and the request with which a hook that drops the handle stops
-/// the source.
+/// for work, each thread's wake, and the request with which a hook that
+/// drops the handle stops the source.
 #[derive(Debug)]
 struct Shared {
     state: Mutex<State>,
     work: Condvar,
+    notify_wake: Wake,
+    request_wake: Wake,
     stop: StopRequest,
 }
 
@@ -123,19 +135,26 @@ impl Shared {
         })
     }
 
-    /// Wakes both threads: the snapshot thread's wait, and each receive on
-    /// the sockets now in place. Called after the change it signals, with
-    /// the lock released.
+    /// Wakes both threads: the snapshot thread's wait for work, and each
+    /// thread's wait on its socket. Called after the change it signals,
+    /// with the lock released.
     fn wake_all(&self) {
-        let (notify, request) = {
-            let state = self.lock();
-            (Arc::clone(&state.notify), Arc::clone(&state.request))
-        };
         self.work.notify_all();
-        // A failed wake leaves that thread to its next datagram; the
-        // source's state is already decided.
-        let _ = notify.send(&wake());
-        let _ = request.send(&wake());
+        let signalled = self
+            .notify_wake
+            .signal()
+            .and_then(|()| self.request_wake.signal());
+        if signalled.is_err() {
+            self.failed_wake();
+        }
+    }
+
+    /// A wake that cannot be signalled or cleared is not recoverable (ADR
+    /// 0005, sheet 23): the source stops, and each thread finds the stop
+    /// at its next look, at most one horizon later.
+    fn failed_wake(&self) {
+        self.lock().monitor.stop();
+        self.work.notify_all();
     }
 }
 
@@ -211,8 +230,9 @@ pub fn spawn(
     // The notify socket joins its groups before the monitor may ask for
     // anything, so no change falls between the subscription and the
     // snapshot.
-    let sockets = RouteSocket::notify().and_then(|notify| Ok((notify, RouteSocket::request()?)));
-    let (notify, request) = match sockets {
+    let sockets = RouteSocket::notify()
+        .and_then(|notify| Ok((notify, RouteSocket::request()?, Wake::new()?, Wake::new()?)));
+    let (notify, request, notify_wake, request_wake) = match sockets {
         Ok(sockets) => sockets,
         Err(error) => {
             monitor.stop();
@@ -228,6 +248,8 @@ pub fn spawn(
             request: Arc::new(request),
         }),
         work: Condvar::new(),
+        notify_wake,
+        request_wake,
         stop: stop_request,
     });
     let mut handle = MonitorHandle {
@@ -287,6 +309,7 @@ fn stop(shared: &Shared) {
 fn follow(shared: &Shared) -> Result<(), Stopped> {
     let mut buffer = vec![0_u8; BUFFER];
     loop {
+        cleared(shared, &shared.notify_wake)?;
         let notify = {
             let state = shared.lock();
             if state.monitor.is_stopped() {
@@ -294,7 +317,9 @@ fn follow(shared: &Shared) -> Result<(), Stopped> {
             }
             Arc::clone(&state.notify)
         };
-        let received = notify.receive(&mut buffer);
+        let Some(received) = turn(&notify, &shared.notify_wake, &mut buffer) else {
+            continue;
+        };
         let mut state = shared.lock();
         if state.monitor.is_stopped() {
             return Err(Stopped);
@@ -317,12 +342,14 @@ fn follow(shared: &Shared) -> Result<(), Stopped> {
             state.monitor.subscribed();
         }
         let changed = (state.monitor.request(), state.monitor.barrier()) != before;
-        let request = Arc::clone(&state.request);
         drop(state);
         if changed {
             shared.work.notify_all();
-            // The snapshot thread may be blocked on a dump just abandoned.
-            let _ = request.send(&wake());
+            // The snapshot thread may be waiting on a dump just abandoned.
+            if shared.request_wake.signal().is_err() {
+                shared.failed_wake();
+                return Err(Stopped);
+            }
         }
     }
 }
@@ -347,7 +374,7 @@ fn snapshots(shared: &Shared) -> Result<(), Stopped> {
                     && barrier_sent != Some(barrier)
                 {
                     barrier_sent = Some(barrier);
-                    if state.notify.send(&barrier.bytes()).is_err() {
+                    if !sent(&state.notify, &barrier.bytes()) {
                         state.monitor.dump_failed(Loss::Failed)?;
                     }
                     continue;
@@ -359,24 +386,35 @@ fn snapshots(shared: &Shared) -> Result<(), Stopped> {
                 });
             }
         };
-        if request.send(&asked.bytes()).is_err() {
+        if !sent(&request, &asked.bytes()) {
             shared.lock().monitor.dump_failed(Loss::Failed)?;
             renew(shared)?;
             continue;
         }
         let (next, barrier) = loop {
-            let received = request.receive(&mut buffer);
+            cleared(shared, &shared.request_wake)?;
+            {
+                let state = shared.lock();
+                if state.monitor.is_stopped() {
+                    return Err(Stopped);
+                }
+                let next = state.monitor.request();
+                if next != Some(asked) {
+                    break (next, state.monitor.barrier().is_some());
+                }
+            }
+            let received = turn(&request, &shared.request_wake, &mut buffer);
             let mut state = shared.lock();
             if state.monitor.is_stopped() {
                 return Err(Stopped);
             }
             let monitor = &mut state.monitor;
             match received {
-                Ok(count) => monitor.reply(buffer.get(..count).unwrap_or_default())?,
-                Err(RouteError::BadSender | RouteError::NotKernel(_)) => {}
-                Err(RouteError::Overflow(_)) => monitor.dump_failed(Loss::Overflow)?,
-                Err(RouteError::Truncated) => monitor.dump_failed(Loss::Truncated)?,
-                Err(_) => monitor.dump_failed(Loss::Failed)?,
+                None | Some(Err(RouteError::BadSender | RouteError::NotKernel(_))) => {}
+                Some(Ok(count)) => monitor.reply(buffer.get(..count).unwrap_or_default())?,
+                Some(Err(RouteError::Overflow(_))) => monitor.dump_failed(Loss::Overflow)?,
+                Some(Err(RouteError::Truncated)) => monitor.dump_failed(Loss::Truncated)?,
+                Some(Err(_)) => monitor.dump_failed(Loss::Failed)?,
             }
             if state.monitor.is_stopped() {
                 return Err(Stopped);
@@ -411,5 +449,45 @@ fn renew(shared: &Shared) -> Result<(), Stopped> {
             Ok(())
         }
         Err(_) => shared.lock().monitor.dump_failed(Loss::Failed),
+    }
+}
+
+/// Clears `wake` at the start of a turn, before the state is read, so a
+/// signal made after the read ends the turn's wait. A failed clear stops
+/// the source.
+fn cleared(shared: &Shared, wake: &Wake) -> Result<(), Stopped> {
+    if wake.clear().is_err() {
+        shared.failed_wake();
+        return Err(Stopped);
+    }
+    Ok(())
+}
+
+/// One wait on `socket` and `wake`, to [`ROUTE_WAIT_HORIZON`], then, if
+/// the socket was reported, one receive: the datagram's length or the
+/// receive's error, or `None` when there is nothing to hand over (a
+/// timeout, an interruption, the wake alone, nothing queued), so the
+/// caller looks at the state again. A failed wait is a failed receive.
+fn turn(socket: &RouteSocket, wake: &Wake, buffer: &mut [u8]) -> Option<Result<usize, RouteError>> {
+    match socket.wait(wake, ROUTE_WAIT_HORIZON) {
+        Ok(Waited::Ready(ready)) if ready.socket() => match socket.receive(buffer) {
+            Ok(Receipt::Datagram(count)) => Some(Ok(count)),
+            Ok(Receipt::NothingQueued | Receipt::Interrupted) => None,
+            Err(error) => Some(Err(error)),
+        },
+        Ok(Waited::Ready(_) | Waited::TimedOut | Waited::Interrupted) => None,
+        Err(error) => Some(Err(error)),
+    }
+}
+
+/// Sends `request` on `socket`, made again while a signal interrupts it:
+/// whether every byte went.
+fn sent(socket: &RouteSocket, request: &[u8]) -> bool {
+    loop {
+        match socket.send(request) {
+            Ok(Sent::All) => return true,
+            Ok(Sent::Interrupted) => {}
+            Err(_) => return false,
+        }
     }
 }

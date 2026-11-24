@@ -3,13 +3,15 @@
 
 //! The C declarations of site `linux-rtnetlink`, named as the C headers
 //! name them, written from `netlink(7)`, `rtnetlink(7)`, `socket(2)`,
-//! `bind(2)`, `send(2)`, `recvmsg(2)`, `<sys/socket.h>`, `<sys/uio.h>` and
-//! the kernel's `<linux/netlink.h>` and `<linux/rtnetlink.h>` (which glibc
-//! and musl both build on: neither declares `struct sockaddr_nl`), and
-//! proved on each Linux target by `cargo xtask check-abi` (ADR 0005, point
-//! 5.6), with `foreign` and the C library's own file. `struct msghdr` is
-//! declared per C library (point 5.2), as `linux-fdpass`'s is; the other
-//! structs and the constants are the same in both.
+//! `bind(2)`, `send(2)`, `recvmsg(2)`, `eventfd(2)`, `poll(2)`,
+//! `<sys/socket.h>`, `<sys/uio.h>`, `<sys/eventfd.h>`, `<poll.h>`,
+//! `<errno.h>` and the kernel's `<linux/netlink.h>` and
+//! `<linux/rtnetlink.h>` (which glibc and musl both build on: neither
+//! declares `struct sockaddr_nl`), and proved on each Linux target by
+//! `cargo xtask check-abi` (ADR 0005, point 5.6), with `foreign` and the C
+//! library's own file. `struct msghdr`, `struct pollfd` and `nfds_t` are
+//! declared per C library (point 5.2), as `linux-fdpass`'s `struct msghdr`
+//! is; the other structs and the constants are the same in both.
 //!
 //! The notify socket's groups are the owner's set (ADR 0005, sheet 23):
 //! links, the addresses and routes of both families, the policy rules of
@@ -20,7 +22,7 @@
 //! `1 << (number - 1)` (`netlink(7)`: `nl_groups` is a bit mask, one bit
 //! per group; the nexthops' group, 32, is the last it can carry).
 
-use core::ffi::{c_char, c_int, c_ushort, c_void};
+use core::ffi::{c_char, c_int, c_short, c_ushort, c_void};
 
 /// `socklen_t`: an unsigned 32-bit integer in glibc and musl.
 #[expect(
@@ -90,6 +92,38 @@ pub(super) const MSG_TRUNC: c_int = 32;
 /// (`netlink(7)`).
 pub(super) const ENOBUFS: c_int = 105;
 
+/// `MSG_DONTWAIT`: the send or receive does not wait (`send(2)`,
+/// `recvmsg(2)`).
+pub(super) const MSG_DONTWAIT: c_int = 64;
+
+/// `EAGAIN`: a send that would wait for buffer space, a receive with
+/// nothing queued, or a wake's transfer that would wait (`send(2)`,
+/// `recvmsg(2)`, `eventfd(2)`).
+pub(super) const EAGAIN: c_int = 11;
+
+/// `EINTR`: a signal interrupted the call before it did anything.
+pub(super) const EINTR: c_int = 4;
+
+/// `EFD_CLOEXEC`: the wake's descriptor is close-on-exec (`eventfd(2)`).
+pub(super) const EFD_CLOEXEC: c_int = 524_288;
+
+/// `EFD_NONBLOCK`: the wake's reads and writes do not wait (`eventfd(2)`).
+pub(super) const EFD_NONBLOCK: c_int = 2048;
+
+/// `POLLIN`: data to read; on the wake, its counter is not 0 (`poll(2)`,
+/// `eventfd(2)`).
+pub(super) const POLLIN: c_short = 1;
+
+/// `POLLERR`: an error condition, reported whether asked for or not
+/// (`poll(2)`).
+pub(super) const POLLERR: c_short = 8;
+
+/// `POLLHUP`: a hang-up, reported whether asked for or not (`poll(2)`).
+pub(super) const POLLHUP: c_short = 16;
+
+/// `POLLNVAL`: the descriptor is not open (`poll(2)`).
+pub(super) const POLLNVAL: c_short = 32;
+
 /// `RTMGRP_LINK`: link changes.
 pub(super) const RTMGRP_LINK: u32 = 1;
 
@@ -123,17 +157,17 @@ pub(super) const NOTIFY_GROUPS: u32 = 2_147_747_281;
 /// `sizeof(struct sockaddr_nl)` (proved against that expression).
 pub(super) const SOCKADDR_NL_SIZE: socklen_t = 12;
 
-// Each C library's `struct msghdr`. No site is in either file, so a musl
-// build's sites are the glibc build's.
+// Each C library's `struct msghdr`, `struct pollfd` and `nfds_t`. No site
+// is in either file, so a musl build's sites are the glibc build's.
 #[cfg(target_env = "gnu")]
 mod gnu;
 #[cfg(target_env = "musl")]
 mod musl;
 
 #[cfg(target_env = "gnu")]
-pub(super) use gnu::msghdr;
+pub(super) use gnu::{msghdr, nfds_t, pollfd};
 #[cfg(target_env = "musl")]
-pub(super) use musl::msghdr;
+pub(super) use musl::{msghdr, nfds_t, pollfd};
 
 // The foreign functions, or under Miri, which cannot call them, the
 // in-crate stand-ins of ADR 0005, point 6.5, which the same calls reach,
@@ -144,6 +178,6 @@ mod foreign;
 pub(super) mod stand_in;
 
 #[cfg(not(miri))]
-pub(super) use foreign::{bind, last_error, recvmsg, sendto, socket};
+pub(super) use foreign::{bind, eventfd, last_error, poll, recvmsg, sendto, socket};
 #[cfg(miri)]
-pub(super) use stand_in::{bind, last_error, recvmsg, sendto, socket};
+pub(super) use stand_in::{bind, eventfd, last_error, poll, recvmsg, sendto, socket};

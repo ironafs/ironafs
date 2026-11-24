@@ -2,20 +2,30 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The tests of `linux-rtnetlink` (ADR 0005, sheet 23) that need the
-//! running kernel, so Miri does not build them. Unprivileged: a dump
-//! answered on the request socket, ending in `NLMSG_DONE`; an address dump
-//! of every family returning the host's addresses; a dump datagram
-//! read into a buffer too small for it, refused as truncated; a notify
-//! socket joins its groups. In a network namespace of their own, with
-//! `CAP_NET_ADMIN` there (ignored tests, run so): an address, a route and
-//! a policy rule of each family, and a link change, each seen on the
-//! notify socket when added and when removed; a nexthop object, seen when
-//! added and when removed; an overflow provoked by a
-//! burst the socket does not read; and a datagram another netlink socket
-//! sends to the notify socket's group, refused as not the kernel's. The
-//! namespace tests share it, and one's burst or forged datagram reaches
-//! the others' notify sockets, so they run one at a time
+//! running kernel, so Miri does not build them, item by item of the
+//! sheet's *Test:* paragraph. Unprivileged: a dump answered on the request
+//! socket, ending in `NLMSG_DONE`; an address dump of every family
+//! returning the host's addresses; a dump datagram read into a buffer too
+//! small for it, refused as truncated; a notify socket joins its groups;
+//! and the wait: with nothing ready it times out; a wake signalled from
+//! another thread ends a blocked wait; a wake signalled before the wait
+//! ends it at once; two signals are cleared by one clear; a receive with
+//! nothing queued returns "nothing queued" without blocking; a timeout
+//! below one millisecond is not passed as 0. In a network namespace of
+//! their own, with `CAP_NET_ADMIN` there (ignored tests, run so): an
+//! address, a route and a policy rule of each family, and a link change,
+//! each seen on the notify socket when added and when removed; a nexthop
+//! object, seen when added and when removed; an overflow provoked by a
+//! burst the socket does not read, where the wait reports the socket and
+//! the receive returns the overflow error; and a datagram another netlink
+//! socket sends to the notify socket's group, refused as not the kernel's.
+//! The namespace tests share it, and one's burst or forged datagram
+//! reaches the others' notify sockets, so they run one at a time
 //! (`--test-threads 1`).
+//!
+//! Every receive here follows a wait that reported the socket, since a
+//! receive never waits; "interrupted" and the wait's refused reports are
+//! tested through the stand-ins, which return them on demand (point 6.5).
 //!
 //! The messages are read here with this test's own minimal reader of the
 //! netlink header and of the address, route, rule and link messages
@@ -26,10 +36,40 @@
 
 use std::fmt::Write as _;
 use std::io::Write as _;
+use std::thread;
+use std::time::Duration;
 
-use super::super::RouteSocket;
+use super::super::{RouteSocket, Wake};
+use crate::clock::OsClock;
 use crate::dump::harness::Command;
-use crate::route::RouteError;
+use crate::linux_clock::read_clock;
+use crate::route::{Ready, Receipt, RouteError, Waited};
+
+/// How long a test waits for what it expects before it fails.
+const PATIENCE: Duration = Duration::from_secs(30);
+
+/// The awake clock, in nanoseconds.
+fn now() -> u64 {
+    read_clock(OsClock::Awake).unwrap()
+}
+
+/// The next datagram on `socket`, or the receive's error: each receive
+/// follows a wait, on the socket and a wake no one signals, that reported
+/// the socket; "nothing queued" waits again.
+fn next(socket: &RouteSocket, buffer: &mut [u8]) -> Result<usize, RouteError> {
+    let wake = Wake::new().unwrap();
+    loop {
+        match socket.wait(&wake, PATIENCE).unwrap() {
+            Waited::Ready(ready) => assert!(ready.socket() && !ready.woken, "{ready:?}"),
+            Waited::TimedOut => panic!("nothing arrived within {PATIENCE:?}"),
+            Waited::Interrupted => continue,
+        }
+        match socket.receive(buffer)? {
+            Receipt::Datagram(count) => return Ok(count),
+            Receipt::NothingQueued | Receipt::Interrupted => {}
+        }
+    }
+}
 
 /// `struct nlmsghdr`'s length, and the message types and flags used.
 const HEADER: usize = 16;
@@ -178,7 +218,7 @@ fn events(datagram: &[u8]) -> Vec<Event> {
 fn wait_for(socket: &RouteSocket, wanted: &Event) {
     let mut buffer = vec![0_u8; 32_768];
     loop {
-        let count = socket.receive(&mut buffer).unwrap();
+        let count = next(socket, &mut buffer).unwrap();
         if events(&buffer[..count]).contains(wanted) {
             return;
         }
@@ -238,7 +278,7 @@ fn a_dump_is_answered_on_the_request_socket_ending_in_done() {
     let mut buffer = vec![0_u8; 32_768];
     let mut seen = Vec::new();
     while !seen.contains(&NLMSG_DONE) {
-        let count = socket.receive(&mut buffer).unwrap();
+        let count = next(&socket, &mut buffer).unwrap();
         seen.extend(types(&buffer[..count]));
         assert!(!seen.contains(&NLMSG_ERROR), "{seen:?}");
     }
@@ -252,7 +292,7 @@ fn an_address_dump_of_every_family_returns_the_host_s_addresses() {
     let mut buffer = vec![0_u8; 32_768];
     let mut seen = Vec::new();
     while !seen.contains(&NLMSG_DONE) {
-        let count = socket.receive(&mut buffer).unwrap();
+        let count = next(&socket, &mut buffer).unwrap();
         seen.extend(types(&buffer[..count]));
         assert!(!seen.contains(&NLMSG_ERROR), "{seen:?}");
     }
@@ -265,7 +305,7 @@ fn a_dump_datagram_larger_than_the_buffer_is_truncated() {
     socket.send(&dump_links()).unwrap();
     let mut buffer = [0_u8; 16];
     assert!(matches!(
-        socket.receive(&mut buffer),
+        next(&socket, &mut buffer),
         Err(RouteError::Truncated)
     ));
 }
@@ -273,6 +313,97 @@ fn a_dump_datagram_larger_than_the_buffer_is_truncated() {
 #[test]
 fn a_notify_socket_joins_its_groups_without_privilege() {
     RouteSocket::notify().unwrap();
+}
+
+#[test]
+fn a_wait_with_nothing_ready_times_out() {
+    let socket = RouteSocket::request().unwrap();
+    let wake = Wake::new().unwrap();
+    let before = now();
+    assert_eq!(
+        socket.wait(&wake, Duration::from_millis(50)).unwrap(),
+        Waited::TimedOut
+    );
+    assert!(now() - before >= 50_000_000);
+}
+
+#[test]
+fn a_wake_signalled_from_another_thread_ends_a_blocked_wait() {
+    let socket = RouteSocket::request().unwrap();
+    let wake = Wake::new().unwrap();
+    let before = now();
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            thread::sleep(Duration::from_millis(100));
+            wake.signal().unwrap();
+        });
+        assert_eq!(
+            socket.wait(&wake, PATIENCE).unwrap(),
+            Waited::Ready(Ready {
+                woken: true,
+                ..Ready::default()
+            })
+        );
+    });
+    let waited = now() - before;
+    assert!(waited >= 100_000_000, "{waited}");
+    assert!(waited < 10_000_000_000, "{waited}");
+}
+
+#[test]
+fn a_wake_signalled_before_the_wait_ends_it_at_once_and_the_wait_clears_nothing() {
+    let socket = RouteSocket::request().unwrap();
+    let wake = Wake::new().unwrap();
+    wake.signal().unwrap();
+    let before = now();
+    for _ in 0..2 {
+        assert_eq!(
+            socket.wait(&wake, PATIENCE).unwrap(),
+            Waited::Ready(Ready {
+                woken: true,
+                ..Ready::default()
+            })
+        );
+    }
+    assert!(now() - before < 10_000_000_000);
+}
+
+#[test]
+fn two_signals_are_cleared_by_one_clear() {
+    let socket = RouteSocket::request().unwrap();
+    let wake = Wake::new().unwrap();
+    assert!(!wake.clear().unwrap());
+    wake.signal().unwrap();
+    wake.signal().unwrap();
+    assert!(wake.clear().unwrap());
+    assert!(!wake.clear().unwrap());
+    assert_eq!(
+        socket.wait(&wake, Duration::from_millis(10)).unwrap(),
+        Waited::TimedOut
+    );
+}
+
+#[test]
+fn a_receive_with_nothing_queued_returns_nothing_queued_without_blocking() {
+    let socket = RouteSocket::request().unwrap();
+    let mut buffer = [0_u8; 64];
+    let before = now();
+    assert_eq!(socket.receive(&mut buffer).unwrap(), Receipt::NothingQueued);
+    assert!(now() - before < 10_000_000_000);
+}
+
+#[test]
+fn a_timeout_below_one_millisecond_is_not_passed_as_0() {
+    // A 0 would return at once; one millisecond, the rounded-up value,
+    // waits at least that long (poll(2) rounds the timeout up).
+    let socket = RouteSocket::request().unwrap();
+    let wake = Wake::new().unwrap();
+    let before = now();
+    assert_eq!(
+        socket.wait(&wake, Duration::from_nanos(1)).unwrap(),
+        Waited::TimedOut
+    );
+    assert!(now() - before >= 1_000_000);
 }
 
 #[test]
@@ -368,9 +499,10 @@ fn a_burst_the_socket_does_not_read_is_an_overflow() {
         .write_all(lines.as_bytes())
         .unwrap();
     assert!(child.wait().unwrap().success(), "ip -batch -");
+    // Each receive follows a wait that reported the socket (`next`).
     let mut buffer = vec![0_u8; 32_768];
     let overflowed = loop {
-        match socket.receive(&mut buffer) {
+        match next(&socket, &mut buffer) {
             Ok(_) => {}
             Err(RouteError::Overflow(error)) => break error,
             Err(other) => panic!("{other:?}"),
@@ -396,7 +528,7 @@ fn a_datagram_another_netlink_socket_sends_to_the_group_is_not_the_kernel_s() {
     assert!(status.success());
     let mut buffer = vec![0_u8; 4096];
     assert!(matches!(
-        socket.receive(&mut buffer),
+        next(&socket, &mut buffer),
         Err(RouteError::NotKernel(port)) if port != 0
     ));
 }

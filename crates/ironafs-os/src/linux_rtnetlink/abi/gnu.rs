@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! glibc's `struct msghdr` (site `linux-rtnetlink`): `msg_iovlen` and
-//! `msg_controllen` are `size_t` (`recvmsg(2)`, glibc's
-//! `<bits/socket.h>`).
+//! glibc's `struct msghdr`, `struct pollfd` and `nfds_t` (site
+//! `linux-rtnetlink`): `msg_iovlen` and `msg_controllen` are `size_t`
+//! (`recvmsg(2)`, glibc's `<bits/socket.h>`); `nfds_t` is `unsigned long
+//! int` (glibc's `<sys/poll.h>`).
 
-use core::ffi::{c_int, c_void};
+use core::ffi::{c_int, c_short, c_ulong, c_void};
 
 use super::{iovec, socklen_t};
 
@@ -85,4 +86,21 @@ impl msghdr {
     pub(in crate::linux_rtnetlink) fn flags(&self) -> c_int {
         self.msg_flags
     }
+}
+
+/// `nfds_t`: the number of entries `poll` is given (glibc's `unsigned long int`).
+#[expect(
+    non_camel_case_types,
+    reason = "the C name, which the ABI check matches"
+)]
+pub(in crate::linux_rtnetlink) type nfds_t = c_ulong;
+
+/// `struct pollfd`: one descriptor `poll` waits on, the events asked for,
+/// and the events it reported (`poll(2)`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(in crate::linux_rtnetlink) struct pollfd {
+    pub(in crate::linux_rtnetlink) fd: c_int,
+    pub(in crate::linux_rtnetlink) events: c_short,
+    pub(in crate::linux_rtnetlink) revents: c_short,
 }

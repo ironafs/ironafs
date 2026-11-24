@@ -3,10 +3,10 @@
 
 //! The foreign declarations of site `linux-rtnetlink`.
 
-use core::ffi::{c_int, c_void};
+use core::ffi::{c_int, c_uint, c_void};
 use std::io;
 
-use super::{msghdr, sockaddr, socklen_t};
+use super::{msghdr, nfds_t, pollfd, sockaddr, socklen_t};
 
 /// The errno the last failed call on this thread set.
 pub(in crate::linux_rtnetlink) fn last_error() -> io::Error {
@@ -21,13 +21,18 @@ pub(in crate::linux_rtnetlink) fn last_error() -> io::Error {
 // `send(2)`, `recvmsg(2)` and `<sys/socket.h>` declare them in glibc and
 // musl (without `_GNU_SOURCE`, glibc's address parameters are `const
 // struct sockaddr *`, not its transparent union), with each library's own
-// `struct msghdr`. All four are in the C library itself, so no `#[link]`
-// is needed beyond the C library the standard library links. `socket`
-// reads nothing of ours; `bind` reads `addrlen` bytes at `addr`, `sendto`
-// `len` bytes at `buf` and `addrlen` at `dest_addr`, and `recvmsg` writes
-// the message's address, data, lengths and flags through its pointers, so
-// each pointer must be valid for that; `crate::linux_rtnetlink` passes
-// only its own locals and its caller's borrowed slices.
+// `struct msghdr`; `int eventfd(unsigned int initval, int flags)`, as
+// `eventfd(2)` and `<sys/eventfd.h>` declare it; and `int poll(struct
+// pollfd *fds, nfds_t nfds, int timeout)`, as `poll(2)` and `<poll.h>`
+// declare it, with each library's own `struct pollfd` and `nfds_t`. All
+// six are in the C library itself, so no `#[link]` is needed beyond the
+// C library the standard library links. `socket` and `eventfd` read
+// nothing of ours; `bind` reads `addrlen` bytes at `addr`, `sendto` `len`
+// bytes at `buf` and `addrlen` at `dest_addr`, `recvmsg` writes the
+// message's address, data, lengths and flags through its pointers, and
+// `poll` reads and writes `nfds` entries at `fds`, so each pointer must be
+// valid for that; `crate::linux_rtnetlink` passes only its own locals and
+// its caller's borrowed slices.
 #[expect(unsafe_code, reason = "linux-rtnetlink")]
 unsafe extern "C" {
     pub(in crate::linux_rtnetlink) fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
@@ -49,4 +54,7 @@ unsafe extern "C" {
         msg: *mut msghdr,
         flags: c_int,
     ) -> isize;
+    pub(in crate::linux_rtnetlink) fn eventfd(initval: c_uint, flags: c_int) -> c_int;
+    pub(in crate::linux_rtnetlink) fn poll(fds: *mut pollfd, nfds: nfds_t, timeout: c_int)
+    -> c_int;
 }

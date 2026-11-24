@@ -3,9 +3,9 @@
 
 //! The retry of a system call a signal interrupted (`EINTR`), shared by the
 //! sites whose calls are made again when interrupted: descriptor passing
-//! (sheet 14), route-netlink sockets (sheet 23) and the free-space query
-//! (sheet 22). It holds no site: it is compiled on every target its
-//! callers are, glibc's and musl's alike, and in the tests.
+//! (sheet 14) and the free-space query (sheet 22). It holds no site: it is
+//! compiled on every target its callers are, glibc's and musl's alike, and
+//! in the tests.
 
 use std::io;
 

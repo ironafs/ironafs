@@ -981,6 +981,8 @@
         "module": "linux_rtnetlink",
         "headers": [
           "errno.h",
+          "poll.h",
+          "sys/eventfd.h",
           "sys/socket.h",
           "sys/uio.h",
           "linux/netlink.h",
@@ -1009,6 +1011,14 @@
               {
                 "name": "recvmsg",
                 "safe": false
+              },
+              {
+                "name": "eventfd",
+                "safe": false
+              },
+              {
+                "name": "poll",
+                "safe": false
               }
             ]
           }
@@ -1018,9 +1028,17 @@
             "kind": "call",
             "operation": "abi::socket",
             "arguments": [
-              "domain",
-              "kind",
-              "protocol"
+              "AF_NETLINK",
+              "KIND",
+              "NETLINK_ROUTE"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::eventfd",
+            "arguments": [
+              "0",
+              "WAKE_FLAGS"
             ]
           },
           {
@@ -1036,7 +1054,7 @@
             "arguments": [
               "descriptor",
               "address",
-              "length"
+              "NAME_LENGTH"
             ]
           },
           {
@@ -1046,9 +1064,9 @@
               "descriptor",
               "buffer",
               "length",
-              "flags",
+              "MSG_DONTWAIT",
               "address",
-              "address_length"
+              "NAME_LENGTH"
             ]
           },
           {
@@ -1057,7 +1075,16 @@
             "arguments": [
               "descriptor",
               "pointer",
-              "flags"
+              "MSG_DONTWAIT"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::poll",
+            "arguments": [
+              "pointer",
+              "ENTRIES",
+              "timeout"
             ]
           }
         ],
@@ -1067,7 +1094,8 @@
             "sockaddr",
             "sockaddr_nl",
             "iovec",
-            "msghdr"
+            "msghdr",
+            "pollfd"
           ],
           "constants": [
             "AF_NETLINK",
@@ -1076,6 +1104,15 @@
             "NETLINK_ROUTE",
             "MSG_TRUNC",
             "ENOBUFS",
+            "MSG_DONTWAIT",
+            "EAGAIN",
+            "EINTR",
+            "EFD_CLOEXEC",
+            "EFD_NONBLOCK",
+            "POLLIN",
+            "POLLERR",
+            "POLLHUP",
+            "POLLNVAL",
             "RTMGRP_LINK",
             "RTMGRP_IPV4_IFADDR",
             "RTMGRP_IPV4_ROUTE",
@@ -1089,11 +1126,12 @@
           ],
           "aliases": [
             "socklen_t",
-            "sa_family_t"
+            "sa_family_t",
+            "nfds_t"
           ]
         },
         "stand_in": {
-          "functions": 4,
+          "functions": 6,
           "blocks": [
             {
               "operation": "core::ptr::read",
@@ -1148,6 +1186,19 @@
               "arguments": [
                 "msg",
                 "message"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "pointer"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "pointer",
+                "entry"
               ]
             }
           ]
