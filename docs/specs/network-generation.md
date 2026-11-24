@@ -5,8 +5,11 @@
 
 Status: draft (2026-11-21). Raised in issue #97.
 
-Kind: behaviour and format (the route-netlink messages the Linux monitor
-reads). Class: S: grants (C23, point 2) and per-server trust (C32,
+Kind: behaviour. It has a protocol part, the route-netlink messages the
+Linux monitor reads from the kernel, a peer IronAFS does not control
+(5.4 and 5.6); both kinds are class S, so it takes `behaviour`, as the
+specifications README's "Kinds" allows, and that part follows the rules
+for protocol specifications. Class: S: grants (C23, point 2) and per-server trust (C32,
 point 1) depend on it, and its decoder reads input from outside the
 process.
 
