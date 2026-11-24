@@ -30,15 +30,7 @@ use libfuzzer_sys::fuzz_target;
 )]
 mod route;
 
-use route::{PollRules, Ready, RouteError, judged};
-
-/// Sheet 23's Linux values.
-const LINUX: PollRules = PollRules {
-    readable: 1,
-    error: 8,
-    hangup: 16,
-    invalid: 32,
-};
+use route::{LINUX_POLL, PollRules, Ready, RouteError, judged};
 
 /// The input, read front to back; past its end every byte reads as zero.
 struct Bytes<'a>(&'a [u8]);
@@ -72,7 +64,7 @@ impl Bytes<'_> {
 /// distinct single bits the input picks.
 fn rules(bytes: &mut Bytes<'_>) -> PollRules {
     if bytes.byte() % 2 == 0 {
-        return LINUX;
+        return LINUX_POLL;
     }
     let bit = |shift: u8| 1_i16 << (shift % 16);
     let picked = PollRules {
@@ -85,7 +77,7 @@ fn rules(bytes: &mut Bytes<'_>) -> PollRules {
     if all.iter().fold(0, |sum, bit| sum | bit).count_ones() == 4 {
         picked
     } else {
-        LINUX
+        LINUX_POLL
     }
 }
 

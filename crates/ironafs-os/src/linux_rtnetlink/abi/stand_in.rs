@@ -18,7 +18,10 @@
 //! Each records the call, in order, on this thread. A test can [`plan`]
 //! the next `sendto` and `recvmsg` answers instead: interrupted by a
 //! signal some number of times (-1 with `EINTR`), or failed once with an
-//! errno; and queue a `poll` answer of -1 with `EINTR` or another errno.
+//! errno; queue a `poll` answer of -1 with `EINTR` or another errno; and
+//! make the next `socket`, `bind` or `eventfd` fail once ([`fail`]). The
+//! other end of each descriptor `socket` and `eventfd` make is kept
+//! ([`peer`]), so a test can see that descriptor closed.
 //! [`last_error`] returns that errno, as the C library's would be.
 //!
 //! A call of a shape a stand-in does not model is refused with -1 and
@@ -30,7 +33,9 @@ use std::collections::VecDeque;
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
 
-use super::{EAGAIN, MSG_TRUNC, iovec, msghdr, nfds_t, pollfd, sockaddr, sockaddr_nl, socklen_t};
+use super::{
+    EAGAIN, EINTR, MSG_TRUNC, iovec, msghdr, nfds_t, pollfd, sockaddr, sockaddr_nl, socklen_t,
+};
 pub(in crate::linux_rtnetlink) use crate::stand_in_errno::last_error;
 use crate::stand_in_errno::{refused, set_errno};
 
@@ -53,10 +58,9 @@ pub(in crate::linux_rtnetlink) enum Call {
     Failed,
     /// The initial value and the flags.
     Eventfd(c_uint, c_int),
-    /// Each entry's events asked for and `revents` as passed (whether its
-    /// descriptor was non-negative, too), the count of entries, and the
-    /// timeout.
-    Poll(Vec<(bool, c_short, c_short)>, nfds_t, c_int),
+    /// Each entry's descriptor, events asked for and `revents` as passed,
+    /// the count of entries, and the timeout.
+    Poll(Vec<(c_int, c_short, c_short)>, nfds_t, c_int),
 }
 
 /// A datagram the next `recvmsg` returns.
@@ -86,10 +90,54 @@ thread_local! {
     static ANSWERS: RefCell<VecDeque<Answer>> = const { RefCell::new(VecDeque::new()) };
     static SHORT: Cell<bool> = const { Cell::new(false) };
     static PLAN: Cell<Plan> = const { Cell::new(Plan::Answer) };
+    static OPENING: Cell<Option<(Opening, c_int)>> = const { Cell::new(None) };
+    static PEERS: RefCell<Vec<UnixStream>> = const { RefCell::new(Vec::new()) };
 }
 
-/// `EINTR`.
-const EINTR: c_int = 4;
+/// A call that makes or binds a descriptor, which a test can make fail
+/// once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::linux_rtnetlink) enum Opening {
+    Socket,
+    Bind,
+    Eventfd,
+}
+
+/// Makes the next `call` on this thread fail once, with -1 and `errno`.
+pub(in crate::linux_rtnetlink) fn fail(call: Opening, errno: c_int) {
+    OPENING.with(|opening| opening.set(Some((call, errno))));
+}
+
+/// Whether `call` is planned to fail; if so, the plan is used up and its
+/// errno set.
+fn failing(call: Opening) -> bool {
+    match OPENING.with(Cell::get) {
+        Some((planned, errno)) if planned == call => {
+            OPENING.with(|opening| opening.set(None));
+            set_errno(errno);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// One end of a fresh local socket pair, as a new descriptor; the other
+/// end is kept, so a test can see the first closed ([`peer`]).
+fn descriptor() -> c_int {
+    match UnixStream::pair() {
+        Ok((ours, peer)) => {
+            PEERS.with(|peers| peers.borrow_mut().push(peer));
+            ours.into_raw_fd()
+        }
+        Err(_) => refused(),
+    }
+}
+
+/// The kept end of the last descriptor `socket` or `eventfd` made on this
+/// thread.
+pub(in crate::linux_rtnetlink) fn peer() -> Option<UnixStream> {
+    PEERS.with(|peers| peers.borrow_mut().pop())
+}
 
 /// The next `sendto` and `recvmsg` answers.
 #[derive(Clone, Copy, Debug)]
@@ -166,10 +214,10 @@ pub(in crate::linux_rtnetlink) unsafe fn socket(
     protocol: c_int,
 ) -> c_int {
     record(Call::Socket(domain, kind, protocol));
-    match UnixStream::pair() {
-        Ok((ours, _peer)) => ours.into_raw_fd(),
-        Err(_) => refused(),
+    if failing(Opening::Socket) {
+        return -1;
     }
+    descriptor()
 }
 
 /// Reads the address as `bind` would.
@@ -186,6 +234,9 @@ pub(in crate::linux_rtnetlink) unsafe fn bind(
 ) -> c_int {
     if sockfd < 0 || usize::try_from(addrlen) != Ok(NAME) {
         return refused();
+    }
+    if failing(Opening::Bind) {
+        return -1;
     }
     let pointer: *const sockaddr_nl = addr.cast();
     #[expect(unsafe_code, reason = "linux-rtnetlink: Miri stand-in")]
@@ -326,10 +377,10 @@ pub(in crate::linux_rtnetlink) unsafe fn recvmsg(
 #[expect(unsafe_code, reason = "linux-rtnetlink: Miri stand-in")]
 pub(in crate::linux_rtnetlink) unsafe fn eventfd(initval: c_uint, flags: c_int) -> c_int {
     record(Call::Eventfd(initval, flags));
-    match UnixStream::pair() {
-        Ok((ours, _peer)) => ours.into_raw_fd(),
-        Err(_) => refused(),
+    if failing(Opening::Eventfd) {
+        return -1;
     }
+    descriptor()
 }
 
 /// Reads every entry and writes the oldest queued answer as `poll`
@@ -360,7 +411,7 @@ pub(in crate::linux_rtnetlink) unsafe fn poll(
     record(Call::Poll(
         entries
             .iter()
-            .map(|entry| (entry.fd >= 0, entry.events, entry.revents))
+            .map(|entry| (entry.fd, entry.events, entry.revents))
             .collect(),
         nfds,
         timeout,

@@ -14,25 +14,13 @@ use std::io;
 use std::time::Duration;
 
 use super::{
-    PollRules, Ready, Receipt, Received, RouteError, Rules, Sent, Waited, checked, judged,
-    milliseconds, receive_failed, send_failed, sent, transferred, wait_failed,
+    LINUX, LINUX_POLL, PollRules, Ready, Receipt, Received, RouteError, Rules, Sent, Waited,
+    checked, judged, milliseconds, receive_failed, send_failed, sent, transferred, wait_failed,
 };
 
-const RULES: Rules = Rules {
-    family: 16,
-    name_length: 12,
-    truncated: 32,
-    overflow: 105,
-    would_block: 11,
-    interrupted: 4,
-};
+const RULES: Rules = LINUX;
 
-const POLL: PollRules = PollRules {
-    readable: 1,
-    error: 8,
-    hangup: 16,
-    invalid: 32,
-};
+const POLL: PollRules = LINUX_POLL;
 
 /// A whole 100-byte datagram from the kernel, into a 4096-byte buffer.
 const KERNEL: Received = Received {

@@ -249,6 +249,23 @@ pub(crate) struct Rules {
     pub(crate) interrupted: i32,
 }
 
+/// Sheet 23's values on the allowlisted Linux targets: `linux_rtnetlink`
+/// asserts that its rules, read from the declarations `check-abi` proves
+/// against the C headers, are these, and the tests and the fuzz target
+/// check with them.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "used by the Linux site")
+)]
+pub(crate) const LINUX: Rules = Rules {
+    family: 16,
+    name_length: 12,
+    truncated: 32,
+    overflow: 105,
+    would_block: 11,
+    interrupted: 4,
+};
+
 /// What one receive returned, read out of the receiver's own buffers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(
@@ -390,6 +407,19 @@ pub(crate) struct PollRules {
     /// `POLLNVAL`.
     pub(crate) invalid: i16,
 }
+
+/// Sheet 23's `poll` bits on the allowlisted Linux targets, as [`LINUX`]
+/// is its other values.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "used by the Linux site")
+)]
+pub(crate) const LINUX_POLL: PollRules = PollRules {
+    readable: 1,
+    error: 8,
+    hangup: 16,
+    invalid: 32,
+};
 
 /// What a wait that returned a positive `count` reported, judged from the
 /// two `revents` values copied out of its entries (ADR 0005, sheet 23): on

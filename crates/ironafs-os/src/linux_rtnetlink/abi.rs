@@ -146,7 +146,9 @@ pub(super) const RTMGRP_IPV6_ROUTE: u32 = 1024;
 pub(super) const RTNLGRP_IPV6_RULE: u32 = 19;
 
 /// `RTNLGRP_NEXTHOP`: the nexthop objects' group number (Linux 5.3 and
-/// later; a kernel without it ignores the bit).
+/// later). What a `bind` with its bit does on a kernel before 5.3 is
+/// unmeasured: an open question of ADR 0005, sheet 23, and of the
+/// network-change monitor's specification (section 13, Q5).
 pub(super) const RTNLGRP_NEXTHOP: u32 = 32;
 
 /// The notify socket's group mask: the six `RTMGRP_*` masks, the IPv6

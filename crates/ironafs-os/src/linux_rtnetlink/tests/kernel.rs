@@ -499,11 +499,21 @@ fn a_burst_the_socket_does_not_read_is_an_overflow() {
         .write_all(lines.as_bytes())
         .unwrap();
     assert!(child.wait().unwrap().success(), "ip -batch -");
-    // Each receive follows a wait that reported the socket (`next`).
+    // The writer has exited, so every notification of the burst is queued
+    // or dropped: the wait reports the socket at once, and a drain that
+    // finds nothing queued before the overflow error has missed it.
+    let wake = Wake::new().unwrap();
+    assert!(matches!(
+        socket.wait(&wake, PATIENCE).unwrap(),
+        Waited::Ready(ready) if ready.socket() && !ready.woken
+    ));
     let mut buffer = vec![0_u8; 32_768];
     let overflowed = loop {
-        match next(&socket, &mut buffer) {
-            Ok(_) => {}
+        match socket.receive(&mut buffer) {
+            Ok(Receipt::Datagram(_) | Receipt::Interrupted) => {}
+            Ok(Receipt::NothingQueued) => {
+                panic!("the burst of 8000 changes drained without an overflow (ENOBUFS)")
+            }
             Err(RouteError::Overflow(error)) => break error,
             Err(other) => panic!("{other:?}"),
         }

@@ -38,8 +38,8 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::time::Duration;
 
 use crate::route::{
-    PollRules, Receipt, Received, RouteError, Rules, Sent, WAKE_BYTES, Waited, checked, judged,
-    milliseconds, receive_failed, send_failed, sent, transferred, wait_failed,
+    LINUX, LINUX_POLL, PollRules, Receipt, Received, RouteError, Rules, Sent, WAKE_BYTES, Waited,
+    checked, judged, milliseconds, receive_failed, send_failed, sent, transferred, wait_failed,
 };
 use abi::{
     AF_NETLINK, EAGAIN, EFD_CLOEXEC, EFD_NONBLOCK, EINTR, ENOBUFS, MSG_DONTWAIT, MSG_TRUNC,
@@ -105,6 +105,19 @@ const POLL_RULES: PollRules = PollRules {
     invalid: POLLNVAL,
 };
 
+const _: () = assert!(
+    RULES.family == LINUX.family
+        && RULES.name_length == LINUX.name_length
+        && RULES.truncated == LINUX.truncated
+        && RULES.overflow == LINUX.overflow
+        && RULES.would_block == LINUX.would_block
+        && RULES.interrupted == LINUX.interrupted
+        && POLL_RULES.readable == LINUX_POLL.readable
+        && POLL_RULES.error == LINUX_POLL.error
+        && POLL_RULES.hangup == LINUX_POLL.hangup
+        && POLL_RULES.invalid == LINUX_POLL.invalid
+);
+
 /// A route-netlink socket, close-on-exec: a notify socket subscribed to
 /// the fixed group set, or a request socket.
 #[derive(Debug)]
@@ -157,8 +170,7 @@ impl RouteSocket {
     /// [`RouteError::ShortSend`] if the call reports fewer bytes than
     /// `request` holds. An interrupted send is [`Sent::Interrupted`].
     pub fn send(&self, request: &[u8]) -> Result<Sent, RouteError> {
-        let kernel = address(0);
-        match send_to(self.socket.as_fd(), request, &kernel) {
+        match send_to(self.socket.as_fd(), request) {
             Ok(count) => sent(count, request.len()),
             Err(error) => send_failed(RULES, error),
         }
@@ -286,6 +298,15 @@ fn address(groups: u32) -> sockaddr_nl {
     }
 }
 
+/// The kernel's address, the only one a send names: the family, port id 0
+/// and no groups, every other field zero.
+const KERNEL: sockaddr_nl = sockaddr_nl {
+    nl_family: FAMILY,
+    nl_pad: 0,
+    nl_pid: 0,
+    nl_groups: 0,
+};
+
 /// The receive's sender address before the call: every field zero, the
 /// family included, so only an address the call wrote can pass the
 /// checks.
@@ -381,19 +402,21 @@ fn bind_to(socket: BorrowedFd<'_>, local: &sockaddr_nl) -> io::Result<()> {
     Ok(())
 }
 
-/// One `sendto` call of `request` on `socket`, to `kernel`, with
-/// `MSG_DONTWAIT`: the bytes it sent.
-fn send_to(socket: BorrowedFd<'_>, request: &[u8], kernel: &sockaddr_nl) -> io::Result<usize> {
+/// One `sendto` call of `request` on `socket`, to the kernel ([`KERNEL`]),
+/// with `MSG_DONTWAIT`: the bytes it sent.
+fn send_to(socket: BorrowedFd<'_>, request: &[u8]) -> io::Result<usize> {
     let descriptor: c_int = socket.as_raw_fd();
     let buffer: *const c_void = request.as_ptr().cast();
     let length: usize = request.len();
-    let address: *const sockaddr = (&raw const *kernel).cast();
+    let kernel: sockaddr_nl = KERNEL;
+    let address: *const sockaddr = (&raw const kernel).cast();
     #[expect(unsafe_code, reason = "linux-rtnetlink")]
     // SAFETY: `sendto(2)` reads `len` bytes at `buf` and `addrlen` bytes
     // at `dest_addr`, and writes nothing of ours. `buffer` and `length`
     // are the caller's slice, borrowed for the call; `address` points to
-    // `kernel`, the caller's local `struct sockaddr_nl` naming the kernel
-    // (port id 0, no groups), and `NAME_LENGTH` is its size; so the call
+    // `kernel`, this function's local copy of `KERNEL`, the `struct
+    // sockaddr_nl` naming the kernel (port id 0, no groups), and
+    // `NAME_LENGTH` is its size; so the call
     // reads only memory it may read, and nothing keeps either pointer
     // afterwards. The flags are `MSG_DONTWAIT` alone, so the call does not
     // wait for buffer space. `descriptor` is borrowed from the socket's

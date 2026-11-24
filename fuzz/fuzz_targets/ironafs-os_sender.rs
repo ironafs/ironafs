@@ -33,17 +33,7 @@ use libfuzzer_sys::fuzz_target;
 )]
 mod route;
 
-use route::{Received, RouteError, Rules, checked};
-
-/// Sheet 23's Linux values.
-const LINUX: Rules = Rules {
-    family: 16,
-    name_length: 12,
-    truncated: 32,
-    overflow: 105,
-    would_block: 11,
-    interrupted: 4,
-};
+use route::{LINUX, Received, RouteError, Rules, checked};
 
 /// The input, read front to back; past its end every byte reads as zero.
 struct Bytes<'a>(&'a [u8]);

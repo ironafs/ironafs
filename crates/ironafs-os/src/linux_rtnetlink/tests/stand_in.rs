@@ -11,10 +11,12 @@
 //! sender address and a wrong family; an error or a hangup with nothing
 //! queued.
 
+use std::io::{self, Read};
+use std::os::fd::AsRawFd;
 use std::time::Duration;
 
 use super::super::abi::stand_in::{
-    Answer, Call, Plan, Reply, answer, calls, plan, reply, short_sends,
+    Answer, Call, Opening, Plan, Reply, answer, calls, fail, peer, plan, reply, short_sends,
 };
 use super::super::abi::{
     AF_NETLINK, EFD_CLOEXEC, EFD_NONBLOCK, MSG_DONTWAIT, NETLINK_ROUTE, POLLERR, POLLHUP, POLLIN,
@@ -271,6 +273,12 @@ fn a_receive_that_writes_no_sender_is_no_sender() {
 #[test]
 fn a_wait_asks_pollin_on_exactly_the_two_entries_with_the_timeout_rounded_up() {
     let (socket, wake) = pair();
+    // The route socket's descriptor first, the wake's second.
+    let entries = vec![
+        (socket.socket.as_raw_fd(), POLLIN, 0),
+        (wake.descriptor.as_raw_fd(), POLLIN, 0),
+    ];
+    assert_ne!(entries[0].0, entries[1].0);
     for (timeout, milliseconds) in [
         (Duration::ZERO, 0),
         (Duration::from_nanos(1), 1),
@@ -280,15 +288,51 @@ fn a_wait_asks_pollin_on_exactly_the_two_entries_with_the_timeout_rounded_up() {
     ] {
         answer(Answer::Report(0, 0, 0));
         assert_eq!(socket.wait(&wake, timeout).unwrap(), Waited::TimedOut);
-        assert_eq!(
-            calls(),
-            [Call::Poll(
-                vec![(true, POLLIN, 0), (true, POLLIN, 0)],
-                2,
-                milliseconds
-            )]
-        );
+        assert_eq!(calls(), [Call::Poll(entries.clone(), 2, milliseconds)]);
     }
+}
+
+/// Whether the descriptor whose other end is `peer` is closed: a read on
+/// the other end then finds the end of the stream at once.
+fn closed(mut peer: std::os::unix::net::UnixStream) -> bool {
+    peer.set_nonblocking(true).unwrap();
+    match peer.read(&mut [0_u8; 1]) {
+        Ok(0) => true,
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => false,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_failed_socket_or_eventfd_is_returned_with_its_errno_and_adopts_nothing() {
+    // A -1 adopted would be undefined behaviour, which Miri reports.
+    let _ = calls();
+    fail(Opening::Socket, 24);
+    assert!(matches!(
+        RouteSocket::request(),
+        Err(RouteError::Open(error)) if error.raw_os_error() == Some(24)
+    ));
+    assert_eq!(calls().len(), 1, "no bind after a failed socket");
+    fail(Opening::Eventfd, 23);
+    assert!(matches!(
+        Wake::new(),
+        Err(RouteError::WakeOpen(error)) if error.raw_os_error() == Some(23)
+    ));
+}
+
+#[test]
+fn a_failed_bind_is_returned_with_its_errno_and_closes_the_socket() {
+    let _ = calls();
+    fail(Opening::Bind, 98);
+    assert!(matches!(
+        RouteSocket::notify(),
+        Err(RouteError::Bind(error)) if error.raw_os_error() == Some(98)
+    ));
+    assert!(closed(peer().unwrap()), "the socket was left open");
+    // A socket that is kept is not closed: the check can tell them apart.
+    let kept = RouteSocket::request().unwrap();
+    assert!(!closed(peer().unwrap()));
+    drop(kept);
 }
 
 #[test]
