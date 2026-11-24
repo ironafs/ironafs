@@ -16,15 +16,11 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::os::fd::AsRawFd;
 
 use super::super::udp6_socket;
+use crate::descriptors::open_descriptors;
 use crate::udp6::Udp6Error;
 
 /// `O_CLOEXEC` in `/proc/self/fdinfo`'s octal `flags`.
 const O_CLOEXEC: u32 = 0o2_000_000;
-
-/// The number of this process's open descriptors.
-fn open_descriptors() -> usize {
-    std::fs::read_dir("/proc/self/fd").unwrap().count()
-}
 
 /// The port `socket` is bound to.
 fn port(socket: &UdpSocket) -> u16 {

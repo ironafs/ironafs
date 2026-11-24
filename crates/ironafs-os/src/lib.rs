@@ -66,6 +66,11 @@ compile_error!(
 );
 
 mod clock;
+// The open-descriptor count of the Linux kernel tests.
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+#[cfg(not(miri))]
+mod descriptors;
 mod dump;
 // The descriptor-passing checks, used by `linux_fdpass` and by their tests
 // on every target.

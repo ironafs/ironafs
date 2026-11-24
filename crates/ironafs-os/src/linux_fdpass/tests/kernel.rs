@@ -21,16 +21,12 @@ use std::process::Stdio;
 
 use super::super::abi::{SCM_RIGHTS, SOL_SOCKET, cmsghdr, iovec, msghdr};
 use super::super::{DATA, ONE, RULES, SPACE, adopt, receive_fd, send_fd, send_message};
+use crate::descriptors::open_descriptors;
 use crate::dump::harness::Command;
 use crate::fdpass::{FdPassError, Received, accept};
 
 /// `O_CLOEXEC` in `/proc/self/fdinfo`'s octal `flags`.
 const O_CLOEXEC: u32 = 0o2_000_000;
-
-/// The number of this process's open descriptors.
-fn open_descriptors() -> usize {
-    std::fs::read_dir("/proc/self/fd").unwrap().count()
-}
 
 /// Whether `descriptor` is open in this process.
 fn is_open(descriptor: i32) -> bool {
