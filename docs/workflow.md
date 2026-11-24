@@ -246,7 +246,7 @@ every other model pin in this file, `AI.md` and the skills.
 | Class I and P required reviews, P contracts, refutations and verifications on I and P work, research synthesis that is not load-bearing | `gpt-6.2-sol`, high | Opus (`claude-opus-5-5`) | `gemini-4-carbon-medium` | `glm-5.4`, high | `deepseek-flash`, default |
 | Class S and R implementation | `gpt-6.2-sol`, high (extra capacity) | Opus (`claude-opus-5-5`), the default implementer | `gemini-4-carbon-high` (when codex is out of quota) | — | — |
 | Ordinary class S and R reviews, S design review before code, refutations on S and R work, reproduction, the consistency pass | `gpt-6.2-sol`, xhigh | Opus (`claude-opus-5-5`) | `gemini-4-carbon-high` | `glm-5.4`, high | `deepseek-flash`, default |
-| **Strongest:** the judgement seat, security reviews, class R designs, format freezes, architecture ADRs, promoted implementation, synthesis of a load-bearing research question | `gpt-6.2-astra`, xhigh | Mythos 5.2 (`claude-mythos-5-2`) | `gemini-4-carbon-high`, where eligible; `gemini-4-carbon-medium` for security reviews and security disputes | `glm-5.3`, max | `deepseek-flash`, max, where eligible |
+| **Strongest:** the judgement seat, security reviews, class R designs, format freezes, architecture ADRs, promoted implementation, synthesis of a load-bearing research question | `gpt-6.2-astra`, xhigh | Mythos 5.2 (`claude-mythos-5-2`) | `gemini-4-carbon-high`, where eligible; `gemini-4-carbon-medium` for security reviews and security disputes | `glm-5.4`, max | `deepseek-flash`, max, where eligible |
 
 - **Precedence.** A seat in the strongest row never runs on a lower tier; if
   no eligible family is available at that tier, the change waits (the stop

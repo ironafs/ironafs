@@ -48,7 +48,7 @@ first, step 1 below). In short:
 |---|---|---|---|---|
 | codex (GPT) | `gpt-6.2-sol` medium | `gpt-6.2-sol` high | `gpt-6.2-sol` xhigh | `gpt-6.2-astra` xhigh |
 | gemini | `gemini-3.8-flash-medium` (helpers), `gemini-4-argon-medium` (gathering) | `gemini-4-carbon-medium` | `gemini-4-carbon-high` | `gemini-4-carbon-high`; `gemini-4-carbon-medium` for security reviews and security disputes |
-| glm | `glm-5.3-flash` (helpers), `glm-5.4` high (gathering) | `glm-5.4` high | `glm-5.4` high | `glm-5.3` max |
+| glm | `glm-5.3-flash` (helpers), `glm-5.4` high (gathering) | `glm-5.4` high | `glm-5.4` high | `glm-5.4` max |
 | deepseek | `deepseek-flash` default | `deepseek-flash` default | `deepseek-flash` default | `deepseek-flash` max |
 | Claude | Haiku (helpers), Sonnet (gathering) | Opus 5.5 | Opus 5.5 | Mythos 5.2 (`fable` alias, serves `claude-mythos-5-2`) |
 
