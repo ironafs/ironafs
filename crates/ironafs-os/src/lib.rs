@@ -77,7 +77,6 @@ mod random;
 // target.
 #[cfg(any(test, target_os = "linux"))]
 mod retry;
-mod route;
 mod space;
 mod udp6;
 
@@ -93,8 +92,6 @@ mod linux_fdpass;
 mod linux_peercred;
 #[cfg(target_os = "linux")]
 mod linux_random;
-#[cfg(target_os = "linux")]
-mod linux_rtnetlink;
 #[cfg(target_os = "linux")]
 mod linux_statvfs;
 #[cfg(target_os = "linux")]
@@ -118,15 +115,12 @@ pub use linux_peercred::peer_credentials;
 #[cfg(target_os = "linux")]
 pub use linux_random::fill_random;
 #[cfg(target_os = "linux")]
-pub use linux_rtnetlink::RouteSocket;
-#[cfg(target_os = "linux")]
 pub use linux_statvfs::available_space;
 #[cfg(target_os = "linux")]
 pub use linux_udp6::udp6_socket;
 pub use mem_wipe::wipe;
 pub use peer::{PeerCredentials, PeerError};
 pub use random::RandomError;
-pub use route::RouteError;
 pub use space::SpaceError;
 pub use udp6::Udp6Error;
 #[cfg(target_os = "linux")]
