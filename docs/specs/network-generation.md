@@ -1357,6 +1357,96 @@ Not applicable: the monitor talks only to the local kernel.
   evidence for that time, recorded here, and feeds row 23's own
   qualification.
 
+### 13.1 Measurements
+
+Made with the ignored tests of
+`crates/ironafs-os/src/linux_rtnetlink/tests/kernel/measure.rs`, through
+row 23's site alone, each as root in a network namespace of its own; the
+manually dispatched workflow `.github/workflows/measure.yml` runs the
+same tests on the hosted runners. Times are from the awake clock; "max"
+is the longest of all rounds. EXECUTED 2026-11-24 unless marked pending.
+
+**Venues.**
+
+- **Arm64 guest:** the podman Linux machine, kernel
+  `7.1.4-200.fc44.aarch64`, in a container with `CAP_NET_ADMIN`. Q8's
+  hour overlapped a software-emulated guest (the Q5 venue below) in a
+  second container; Q7 and Q9 ran alone.
+- **Kernel before 5.3:** Debian 10's generic arm64 cloud image, version
+  `20240703-1797` (`debian-10-generic-arm64.tar.xz`, SHA-512
+  `e3f7c27d539ea0a0c93dd6e9b6fd00e6967c48d5e43fc0b07236fc74ccf865fc2b6994877cad4666425ccb552cfb8472511ba91330aa729dd95528099fa10523`,
+  from cloud.debian.org), kernel `4.19.0-27-arm64` (Debian `4.19.316-1`),
+  booted under QEMU 10.0.13's software emulation (`virt`, Cortex-A72),
+  running the static musl build of the tests. Under the Apple
+  Hypervisor (`vfkit`), with the image's own boot loader and with the
+  kernel booted directly, the guest showed no output and never wrote its
+  disk, twice; that venue was not used.
+- **Hosted Ubuntu runners (24.04 and 26.04, x86_64 and Arm64):** the
+  only Linux rows of the supported matrix (ADR 0004, L37, point 1; L38
+  has none), so Ubuntu 24.04's is the oldest supported kernel: pending
+  the workflow's dispatch. The oldest candidate, RHEL 7.9's
+  `3.10.0-1160` series (L39, point 3), is x86_64 only and was not
+  measured: no x86_64 guest runs here.
+
+**Q5. The nexthop bit on a kernel before 5.3.** On `4.19.0-27-arm64`,
+which has no nexthop objects (`ip nexthop add` fails), the notify
+socket's bind with the nexthop bit succeeds, and the socket then
+receives a link, an address, a route and a rule change, each seen; the
+barrier's no-op is acknowledged. On `7.1.4-200.fc44.aarch64` the same,
+with nexthop objects present. The oldest supported kernel (Ubuntu
+24.04's): pending.
+
+**Q7. The deadline durations.** At the caps' worst case (1,024 links
+and 4,096 addresses, counted in each dump), 1,000 rounds of each, on
+`7.1.4-200.fc44.aarch64` (the hosted runners: pending). The barrier's backlog: 24 address additions
+and removals before each no-op, queuing 161,280 of the receive buffer's
+212,992 bytes; under churn, the churn itself, left unread until it
+queued three quarters of the buffer. A round with no answer within 10
+seconds is a failed round.
+
+| Churn | Round trip | Failed | p50 | p99 | Max |
+|---|---|---|---|---|---|
+| none | link dump | 0 | 1.03 ms | 1.22 ms | 1.59 ms |
+| none | address dump | 0 | 0.41 ms | 0.49 ms | 0.81 ms |
+| none | barrier | 0 | 0.21 ms | 0.25 ms | 0.38 ms |
+| routes | link dump | 0 | 1.63 ms | 2.42 ms | 4.35 ms |
+| routes | address dump | 0 | 0.51 ms | 0.69 ms | 0.89 ms |
+| routes | barrier | 409 | 0.27 ms | 1.18 ms | 3.36 ms (of 591) |
+
+- `DUMP_DEADLINE` (10 seconds) **stands** on this kernel: the longest
+  round trip, 4.35 ms, is under a tenth of it, and no round failed.
+- `BARRIER_DEADLINE` (10 seconds) stands without churn (0.38 ms, no
+  failed round). Under route churn 409 rounds failed: in 412 rounds the
+  socket overflowed, the churn adding notifications faster than the
+  backlog was drained, and an overflow drops queued messages, the
+  acknowledgement among them. The harness counts overflows and failures
+  per run, not per round, so that each failed round overflowed is a lead,
+  not yet shown; until it is, the duration does not stand under churn by
+  this question's rule. An overflow is a loss to the monitor either way
+  (5.5, point 1), so no longer deadline would let such a barrier publish.
+
+**Q8. Error and hangup without a cause.** On `7.1.4-200.fc44.aarch64`,
+an hour of route churn with an unread 8,000-change address burst each
+minute (60): 979,291,405 waits reported the socket, 261,325 with
+`POLLERR` and none with `POLLHUP`; 265,447 receives returned the
+overflow error. Every `POLLERR` was explained by the error return of
+the receive that followed: no unexplained flag.
+
+**Q9. A send that waits inside the kernel.** The same rounds as Q7, on
+`7.1.4-200.fc44.aarch64`; each send's own duration, 1,000 of each:
+
+| Churn | Send | p50 | p99 | Max |
+|---|---|---|---|---|
+| none | link dump request | 22 µs | 28 µs | 50 µs |
+| none | address dump request | 36 µs | 45 µs | 130 µs |
+| none | barrier | 5 µs | 11 µs | 20 µs |
+| routes | link dump request | 28 µs | 52 µs | 99 µs |
+| routes | address dump request | 47 µs | 69 µs | 210 µs |
+| routes | barrier | 11 µs | 48 µs | 337 µs |
+
+The longest send, 337 µs, is the evidence 5.8, point 3, names for this
+kernel: no send waited for longer than that.
+
 ## 14. Review
 
 Not yet reviewed.
