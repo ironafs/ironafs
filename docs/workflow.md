@@ -224,7 +224,7 @@ Disagreements are settled on evidence, never by counting.
   and records the judgement as moot; every other review and merge gate
   still applies.
 - **The record** (§4, "After the run") gives both positions, the seat, the
-  served model and effort, the deciding facts with their sources, and the
+  served model and effort (and a GPT seat's route), the deciding facts with their sources, and the
   controller's check.
 
 ### Model routing

@@ -60,6 +60,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-45-fuzz](2026-11-21-m2a-45-fuzz.md) | Issue #45: the excluded `fuzz/` crate, its pinned tooling, the deny-file and replay checks, and the XDR decode target |
 | [2026-11-21-m2a-81-keepalive](2026-11-21-m2a-81-keepalive.md) | Issue #81: the keepalive, callback trust and server time specification, first version from documents only, with the callback specification's lowering count |
 | [2026-11-22-gemini-security-seat](2026-11-22-gemini-security-seat.md) | The owner's decision: Gemini Carbon may hold the security seat, at `gemini-4-carbon-medium` |
+| [2026-11-23-gpt-api-route](2026-11-23-gpt-api-route.md) | The owner's decision: GPT read-only seats may also run on the OpenAI API, the same models by another route |
 | [2026-11-21-m2a-57-os-part-a](2026-11-21-m2a-57-os-part-a.md) | Issue #57, part A: `ironafs-os`'s first sites (clocks, random source, wipe), `check-os` and `check-abi` |
 | [2026-11-21-m2a-93-config-syntax](2026-11-21-m2a-93-config-syntax.md) | Issue #93, part (a) and the cell name: `ironafs-config`'s strict TOML subset and the canonical cell name |
 | [2026-11-21-m2a-93-config-schema](2026-11-21-m2a-93-config-schema.md) | Issue #93, part (b): the configuration schema, its unknown-key rules and layering (draft; four recorded blockers) |
@@ -75,7 +76,8 @@ One file per reviewed change, `YYYY-MM-DD-<slug>.md`, added in the same squash
 commit as the change ([ADR 0002](../adr/0002-ai-use-and-attribution.md)). Each
 record lists:
 
-- **every seat:** agent id, served model, effort and verdict;
+- **every seat:** agent id, served model, effort and verdict, and for a
+  GPT seat its route (the codex CLI or the API, `docs/workflow.md` §2);
 - **every finding:** what it was, its `origin:` (pre-existing, or
   introduced by fix round N) and `kind:` (correctness, contract,
   consistency between parts, missing mechanism, or other), and whether it

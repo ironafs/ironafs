@@ -224,7 +224,7 @@ a pass:
   it; reading alone never settles it.
 - Write the record: in the ADR's Review section for an ADR, otherwise in
   `docs/reviews/YYYY-MM-DD-<slug>.md`. Give the seat, served model, effort,
-  verdict, and each finding with its disposition. Redact paths outside the
+  verdict (and a GPT seat's route: codex CLI or API), and each finding with its disposition. Redact paths outside the
   repository, hostnames, cell names and keys. Also:
   - tag each finding `origin:` (pre-existing, or introduced by fix round
     N) and `kind:` (correctness, contract, consistency between parts,
