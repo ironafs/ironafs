@@ -45,6 +45,9 @@ use crate::dump::harness::Command;
 use crate::linux_clock::read_clock;
 use crate::route::{Ready, Receipt, RouteError, Waited};
 
+// The measurements of the specification's section 13, Q5, Q7 to Q9.
+mod measure;
+
 /// How long a test waits for what it expects before it fails.
 const PATIENCE: Duration = Duration::from_secs(30);
 

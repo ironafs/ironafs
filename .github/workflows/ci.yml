@@ -470,7 +470,7 @@ jobs:
         run: |
           sudo env "PATH=$PATH" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
             unshare --net -- cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 \
-            --no-tests fail --locked --run-ignored only --test-threads 1 -E 'test(/^linux_rtnetlink::/)' \
+            --no-tests fail --locked --run-ignored only --test-threads 1 -E 'test(/^linux_rtnetlink::/) - test(/::measure::/)' \
             > netns.log 2>&1 || { cat netns.log; exit 1; }
           cat netns.log
           grep -q ' 4 passed' netns.log

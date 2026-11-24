@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# The network-change monitor's measurements on the hosted Ubuntu runners
+# (docs/specs/network-generation.md, section 13, Q5, Q7, Q8 and Q9). Run by
+# hand only; it gates nothing. Each measurement is an ignored test of
+# ironafs-os, run as root in a network namespace of its own, that prints
+# one `measure q<n>` line per result.
+
+name: Measure
+
+on:
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: Q7 and Q9 rounds per measurement (the spec asks for at least 1000)
+        default: "1000"
+        required: true
+      seconds:
+        description: Q8's soak, in seconds (the spec asks for an hour)
+        default: "3600"
+        required: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  measure:
+    name: measure (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, ubuntu-26.04, ubuntu-26.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    env:
+      IRONAFS_MEASURE_ROUNDS: ${{ inputs.rounds }}
+      IRONAFS_MEASURE_SECONDS: ${{ inputs.seconds }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install --profile minimal --no-self-update --no-update
+          rustc --version
+      - name: Build the measurements
+        run: cargo test -p ironafs-os --lib --locked --no-run
+      - name: Run each measurement, as root in a network namespace of its own
+        run: |
+          uname -r
+          for test in q5_the_notify_socket_binds_with_the_nexthop_bit_and_receives_each_kind \
+            q7_and_q9_each_round_trip_and_send_at_the_caps_worst_case \
+            q8_every_report_is_explained_by_its_receive_over_overflows_and_churn; do
+            sudo env "PATH=$PATH" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+              "IRONAFS_MEASURE_ROUNDS=$IRONAFS_MEASURE_ROUNDS" "IRONAFS_MEASURE_SECONDS=$IRONAFS_MEASURE_SECONDS" \
+              unshare --net -- cargo test -p ironafs-os --lib --locked -- --ignored --exact --nocapture \
+              "linux_rtnetlink::tests::kernel::measure::$test" 2>&1 | tee -a measure.log
+          done
+          grep '^measure q' measure.log
