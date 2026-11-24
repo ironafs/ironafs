@@ -405,6 +405,439 @@ any byte it covers is read, and every sum uses checked arithmetic.
    reader still sees the old generation; it is a residual like C23,
    point 4's, bounded by how fast the thread reads.
 
+### 5.8 Stop, wake and barrier model
+
+Status: designed, not yet built. This subsection is the design of the
+monitor's driver under ADR 0005, sheet 23, as amended on 2026-11-22
+(row 23: the bounded wait, the wake descriptor and non-blocking sends
+and receives). The current driver is the one 5.7, point 7 describes.
+When the driver is rebuilt to this design, this subsection replaces
+5.7, point 4's rule for accepting the barrier, 5.7, point 7's threads,
+wakes and residuals, section 6's row for sequence 0 as the wake's, and
+section 13, Q6; the rest of 5.7 stands. Where a point applies sheet 23,
+it quotes the text it applies.
+
+1. **The parts** `[OWN]`.
+   - **Two workers,** each a thread of `ironafs-net` that owns one route
+     socket: the **notify worker** receives on the notify socket, makes
+     it again after its losses, and sends the barrier on it; the
+     **request worker** sends the dumps on the request socket, receives
+     their answers, and makes that socket again. A worker sends and
+     receives only on its own socket. The barrier moves from the request
+     worker (5.7, point 7) to the notify worker, because its answer
+     arrives on the notify socket and its deadline is the notify
+     worker's to watch.
+   - **Two wakes,** one per worker, each one `eventfd` of sheet 23 ("make
+     a wake (one `eventfd`), signal it from any thread, and clear it").
+     A worker's wake is split in two handles over the same descriptor:
+     the **owner side,** which clears and waits, is made with the worker
+     and moved into its thread, and is neither `Clone` nor shared; the
+     **signal side,** which only signals, is cloned to the other worker,
+     the handle and the resume input. So no thread can clear or wait on
+     a wake that is not its own (sheet 23: "Each thread that waits on a
+     route socket has its own wake; no other thread waits on it or
+     clears it").
+   - **One state lock** (a `Mutex`) over: the monitor of 5.7, the
+     attempts (point 6), the two sockets now in place, each with an
+     **instance number** from a `u64` counter that is never reused, and
+     the stop (point 3).
+   - **The clock** is the daemon's shared `Clock` (ADR 0004, C37),
+     handed to `spawn`. Only the workers sample it. `ironafs-netgen` calls no seam: it is given each sample
+     as a value (a `Stamp`, or the failure), so its decisions stay pure
+     and are tested without threads. `ironafs-netgen` therefore depends
+     on `ironafs-time` (pure, `no_std` with `alloc`), its only
+     dependency, and `ironafs-net` on `ironafs-time` for the `Clock`
+     interface (section 13, Q4, gains both edges).
+
+2. **What is done under the lock** `[OWN]`. Only: the monitor's calls
+   (the consumers' hooks among them), registering and ending attempts,
+   installing a socket made outside the lock, reading or applying the
+   stop, and taking a clock sample, which reads clocks and waits for
+   nothing. **Never under the lock:** a send, a receive, a wait, a
+   wake's signal or clear, making a socket, or joining a thread (sheet
+   23: "the caller never sends under its state lock"; "wait, with the
+   lock released"). A wake's signal and clear are I/O on a descriptor;
+   keeping them outside the lock keeps every call that enters the
+   kernel for a descriptor outside it.
+
+3. **The stop.**
+   - **Who decides it.** Each stop is decided under the lock, by
+     `Monitor::stop` (every hook told once, reads fail): by the handle's
+     drop on a thread that is not a worker; by a worker that ends, for
+     any reason, through its exit guard; by the monitor itself
+     (exhaustion, 8 failed snapshots in a row, 5.5, point 4); by a
+     failed signal or clear of a wake (below); or by a hook's request
+     (the next bullet). The stop is the first thing each lock hold
+     checks, so nothing is applied after it.
+   - **A hook's request is not a stop.** A hook runs under the lock and
+     cannot stop the source itself; it asks (`StopRequest`, 5.3,
+     point 3). The monitor applies the request after the hooks of the
+     move being told and before the publisher stores that move's value,
+     so the move is never published. Every lock hold of a worker, the
+     handle and the resume input ends by applying a request still
+     pending, so no lock is released with a request pending.
+     `Monitor::is_stopped` is true only once the stop is applied; the
+     pending request is read separately (`stop_asked`). So a driver that
+     leaves its loop on `is_stopped` never leaves a generation readable.
+   - **How each worker is woken.** The thread that decided the stop
+     releases the lock, then signals the wake of each worker that is not
+     itself: the handle and the resume input signal both, a worker the
+     other. The signals are sent from a drop guard armed before the
+     lock is taken, so a hook that unwinds while told of the stop does
+     not skip them (sheet 23: "A stop ... is decided under the caller's
+     state lock and then signals that worker's wake").
+   - **How a worker ends.** At every lock hold it finds the stop and
+     returns, without sending or waiting again. Its exit guard finds the
+     source already stopped and does nothing more. A worker that the
+     signal reached ends at once; one that the signal did not reach
+     ends at its next return from a wait, within `ROUTE_WAIT_HORIZON`
+     (point 5), since every wait is finite. So the handle's drop, which
+     joins both workers, returns within one horizon plus the hooks' run
+     and one non-blocking call each (5.3, point 3: hooks never block).
+     A hook that drops the handle on a worker only asks for the stop,
+     joins nothing, and that worker ends after the hook returns, as
+     now (5.3, point 3).
+   - **Failed wake I/O is fatal.** A signal or a clear that fails (an
+     error, or a transfer other than 8 bytes, as the site reports it) is
+     reported by the thread that saw it: it takes the lock, stops the
+     source (`Monitor::stop`: every consumer told, reads fail, no fresh
+     snapshot), releases, and signals the wakes it still can; a worker
+     then ends. The other worker sees the stop within one horizon even
+     if its own wake cannot be signalled (sheet 23: "A failed signal or
+     clear is fatal"; "consumers are invalidated at once and the source
+     stops, with no fresh snapshot").
+   - **No netlink message ends a receive.** The netlink wake
+     (`NLMSG_NOOP` of sequence 0, 5.7, point 7) is removed: a receive
+     never blocks (`MSG_DONTWAIT`), and a wait ends on its own wake or
+     its timeout (sheet 23: "The wake replaces any netlink message sent
+     only to end a receive").
+
+4. **A worker's turn,** in this order (sheet 23: "clear its wake; take
+   the state lock and read what it must act on (a stop, its outstanding
+   attempts and their deadlines); release the lock; wait, with the lock
+   released"):
+   1. Clear its own wake.
+   2. Take the lock. If stopped, release and end. Take a fresh sample
+      and end, as expired, each of its own attempts whose deadline has
+      passed or whose latched doubt has moved (point 6); if the sample
+      failed, end every one of its own attempts that way. Read: its
+      socket and that socket's instance; whether the monitor needs that
+      socket made again; whether a dump (request worker) or a barrier
+      (notify worker) is wanted with no attempt of its own live for it;
+      and the deadlines of its live attempts. With a valid sample,
+      register each wanted attempt (point 6). Release.
+   3. If its socket must be made again: make it with the lock released,
+      then take the lock, install it under a new instance number unless
+      the source stopped meanwhile, and, for the notify socket, tell the
+      monitor it is subscribed (5.7, points 1 and 6); release, and start
+      the turn again.
+   4. Send each attempt registered in step 2, without the lock, on the
+      socket instance it was registered for (point 6).
+   5. Take a fresh sample and compute the timeout (point 5), without the
+      lock.
+   6. Wait on its socket and its own wake, with that timeout.
+   7. On "timed out", "interrupted", or the wake alone: start the turn
+      again. On the socket ready (readable, error or hangup), with or
+      without the wake: take the lock; if stopped, release and end; end
+      each attempt due as in step 2; release; then receive (step 8). So
+      the stop and every deadline change are handled before the socket
+      is read (sheet 23: "the worker handles the stop and any deadline
+      change before it receives from the socket").
+   8. Receive until "nothing queued", taking the lock for each outcome
+      (point 6 for a datagram, point 7 for an error or hangup the receive
+      does not explain), then start the turn again. "Interrupted", a
+      loss that makes the socket again, and a stop also end the
+      receiving.
+
+   **Every change another worker must see is followed by its signal.**
+   A lock hold that changes what the other worker must act on (the
+   dump the monitor asks for, the barrier it wants, an attempt of the
+   other worker ended by this hold, a stop, a fresh subscription) is
+   followed, after its release, by a signal of that worker's wake.
+   **Why no signal is missed** `[OWN]`: a signaller changes the state
+   under the lock before it signals, and a worker clears before it
+   reads under the lock. If the worker's clear comes after a signal,
+   its read comes after the change that signal follows, and sees it. If
+   the clear comes before the signal, the signal stays in the counter
+   and ends the worker's next wait at once (sheet 23: "So a signal made
+   after the read is still in the counter, and ends the wait"). Neither
+   order loses a stop: the two failure cases, a signal made before the
+   clear whose change the read misses, and a read made before the
+   change whose signal is cleared unseen, need a signal made before its
+   change, which this order forbids.
+
+5. **Every wait is finite** (sheet 23: "always has a finite timeout";
+   "never more than a named horizon constant, `ROUTE_WAIT_HORIZON` (1
+   second ...)"). The timeout is the time left, on the awake clock, from
+   the sample of step 5 to the earliest deadline among the worker's own
+   live attempts, capped at `ROUTE_WAIT_HORIZON`; with no attempt live,
+   it is the horizon. A failed sample gives the horizon too (sheet 23:
+   "Meanwhile each wait takes `ROUTE_WAIT_HORIZON` as its timeout"), and
+   the next turn ends the worker's attempts as expired. A timeout of
+   zero is passed as zero, never as a negative (infinite) value; the
+   site rounds a remainder below one millisecond up. **After every
+   return,** "interrupted" included, the turn starts again from step 1,
+   so the next timeout comes from a fresh sample and an earlier one is
+   never passed again (sheet 23: "an earlier timeout is never passed
+   again"). An interrupted send is the same: the worker takes the lock,
+   checks the stop and that the attempt is still live, and from a fresh
+   sample that it is in time, then sends again with the lock released,
+   or ends the attempt as expired. An idle worker wakes once per horizon.
+
+6. **Attempts** (sheet 23: "Each attempt is registered before its
+   send"; "One terminal transition per attempt"; "An answer is accepted
+   only while its attempt is live and in time").
+   1. **Kinds.** A link dump and an address dump, the request
+      worker's; a barrier, the notify worker's. At most one dump
+      attempt and one barrier attempt are live at a time.
+   2. **Registration,** under the lock, with a valid sample taken in
+      that hold: an **id** from a `u64` counter never reused; the
+      **sequence** the monitor gives the request (5.7, points 2 and 4);
+      the **socket instance** it will be sent on; a **deadline** on the
+      awake clock, the sample's awake instant plus the kind's duration
+      (point 8), as an `AwakeDeadline`; and the **latched doubt,** the
+      sample's awake doubt count. Only then is the request sent, with
+      the lock released. A deadline that does not fit in 64-bit
+      nanoseconds is treated as a failed sample: nothing is registered
+      and the snapshot waits. While samples fail nothing is registered,
+      so no deadline is set until a valid sample returns (C37, point
+      5).
+   3. **Why not `Deadline`.** The seams specification's `Deadline`
+      latches doubt in the same way, but its constructors may be called
+      only from a crate's one named sampling function, with `from` a
+      request's recorded arrival or a reply's `first_sent`
+      (`docs/specs/seams-and-scheduling.md`, 5.3, point 2). An attempt
+      starts at its own registration, which is neither. So the monitor
+      keeps the pair (an `AwakeDeadline` and the latched count), and
+      checks both as point 2 of that section checks a `Deadline`: a
+      deadline whose clock's count has moved above its latch has failed.
+      This is a named departure from reusing `Deadline` `[OWN]`; using
+      it would need that section to admit a third `from`.
+   4. **An answer,** a record of the attempt's sequence received on its
+      socket instance, is checked in the lock hold that handles its
+      datagram, before any record of that datagram is applied: the
+      attempt is live, the datagram came on the attempt's socket
+      instance, and a fresh sample taken in that hold shows the deadline
+      not passed and the awake doubt count not above the latch. If the
+      attempt fails the time check, it ends as expired first, and the
+      datagram is then handled with that attempt gone. On the notify
+      socket, a datagram's notifications are applied whatever the
+      barrier's fate (5.7, point 5); only the barrier's answer depends on
+      it. A failed sample in that hold ends every attempt of that worker
+      as expired, and the datagram is handled the same way.
+   5. **A dump's answer.** Each intermediate record that passes is
+      applied to the fresh tables and the attempt stays live. Its
+      terminal answer is its `NLMSG_DONE` with a status of 0 or more,
+      which ends it as completed (and asks for the next dump or the
+      barrier, 5.7, points 2 and 4). An `NLMSG_ERROR` of its sequence, a
+      negative status, and every other check of section 7's dump row end
+      it as failed, with that row's cause.
+   6. **The barrier's answer.** The datagram is checked whole first
+      (5.7, point 4). The barrier is accepted only if the datagram holds
+      **exactly one record of the barrier's sequence, and that record is
+      an `NLMSG_ERROR` of error 0 echoing an `NLMSG_NOOP` header.** Any
+      other record of that sequence, before or after it (a second
+      acknowledgement, an error, an `NLMSG_DONE`, a link or address
+      record, any type at all), ends the barrier as refused. This
+      replaces 5.7, point 4's "exactly one `NLMSG_ERROR` of the
+      barrier's sequence", which let other record types of that sequence
+      pass.
+   7. **The terminal transition.** An attempt ends only through one
+      function, under the lock, given the attempt's id and an outcome:
+      completed, failed (a refusal or a bad answer, with its cause),
+      send failed, receive failed, expired, or abandoned. It acts
+      only if that id is live: it removes the attempt and tells the
+      monitor; every later call with that id finds it gone and does
+      nothing. So a send failure, an expiry and an answer racing for one
+      attempt are decided by whichever takes the lock first, and once.
+      A send failure carries the id of the attempt it sent for, never
+      the sequence alone, so it cannot end a newer attempt (sheet 23: "A
+      send failure is charged to the attempt whose id it carries").
+      Failed, send failed ("would block", a short send and any other
+      error), receive failed and expired each count once as a failed
+      snapshot (5.5,
+      point 4, and section 7). Abandoned, the end of an attempt whose
+      snapshot a loss restarted (5.7, point 6), is not counted: the loss
+      is.
+   8. **After an attempt ends.** A dump attempt that did not complete
+      leaves its socket to be made again before the next dump (5.7,
+      point 7), so a reply to it can arrive only on a socket no worker
+      reads any more. A barrier attempt that did not complete leaves the
+      notify socket in place: a late acknowledgement of it carries a
+      sequence no live attempt has, and is skipped.
+   9. **A late reply to an ended attempt** does nothing: it is not
+      applied, not counted, and moves nothing (sheet 23: "So a late
+      acknowledgement cannot publish, even if it takes the lock before
+      the expiry path does": if it takes the lock first, its own fresh
+      sample finds the deadline passed).
+   10. **Sequences are never reused on a socket that may still answer
+       them.** The monitor's one `u32` counter wraps and skips 0
+       (section 6); 0 stays unused so that no attempt's sequence is a
+       default value. Each socket instance records the first sequence
+       issued on it; before the counter would issue it again on that
+       instance, the request worker makes its socket again, and the
+       notify worker makes its socket again as a loss (failed receive,
+       section 7). At one attempt per millisecond the counter wraps
+       after about 50 days.
+
+7. **Error and hangup on a route socket.** The worker applies sheet 23's
+   rule as written: "A wait that reports `POLLERR` or `POLLHUP` on the
+   route socket is followed by a receive. `POLLERR` is explained only by
+   an error return of that receive: `ENOBUFS` takes the overflow path
+   above, and any other error is a failed receive. `POLLHUP` is
+   explained by no receive outcome." A flag the receive does not
+   explain is a failed receive on that socket: a datagram received with
+   it is not applied; on the notify socket it is a loss (failed, section
+   7: consumers told at once, the socket made again before any
+   snapshot); on the request socket it ends the live dump attempt as
+   receive failed (counted, section 7's request-socket row) and the
+   socket is made again. This fails closed
+   whatever the kernel does, so the code does not wait on the
+   measurement; whether it happens at all is UNVERIFIED (section 13,
+   Q8).
+
+8. **Deadline durations,** named constants of `ironafs-netgen`
+   `[OWN]`, provisional until section 13, Q7, is measured:
+   - `DUMP_DEADLINE`, 10 seconds, for each link and address dump: from
+     the request's registration to its `NLMSG_DONE`.
+   - `BARRIER_DEADLINE`, 10 seconds, from the barrier's registration to
+     its acknowledgement, which the kernel queues after every
+     notification already queued (5.7, point 4), so it also waits for
+     the notify worker to read that backlog.
+   - Why these values: an attempt that expires is counted, and 8 in a
+     row stop the source, so a deadline too short turns a slow but
+     working kernel into a stopped source; a deadline too long only
+     delays the retake after a lost answer, while nothing is readable.
+     So the value is set long, far above an expected round trip of
+     milliseconds, and the worst case on a kernel that never answers is
+     8 deadlines, 80 seconds, before the stop.
+   - Each must stay above `ROUTE_WAIT_HORIZON`, so that a worker checks
+     an attempt at least once before it expires.
+
+9. **The group set and the nexthops.** Under sheet 23 the group set
+   becomes final only by an amendment of row 23, accepted by the owner
+   (ADR 0005, point 7.1); until then row 23 stays approved-only on
+   every target. 5.1, point 3's decision is the proposal that amendment
+   restates. The text proposed for sheet 23's first obligation, in
+   place of the sentences from "the group set is a constant" to "a
+   measurement on a kernel before 5.3 settles the open question", not
+   applied here:
+
+   > The group set is a constant of eight groups, each joined by its
+   > mask bit `1 << (group - 1)` in `nl_groups` (netlink(7)): links
+   > (`RTNLGRP_LINK`), the addresses, routes and policy rules of IPv4
+   > (`RTNLGRP_IPV4_IFADDR`, `RTNLGRP_IPV4_ROUTE`,
+   > `RTNLGRP_IPV4_RULE`) and of IPv6 (`RTNLGRP_IPV6_IFADDR`,
+   > `RTNLGRP_IPV6_ROUTE`, `RTNLGRP_IPV6_RULE`), and nexthop objects
+   > (`RTNLGRP_NEXTHOP`, group 32, mask bit `1 << 31`), for the reason
+   > the network-change monitor's specification gives (its 5.1, point
+   > 3: a change to a nexthop object changes where the routes using it
+   > lead, and the kernel's reporting of those routes can be turned
+   > off). Point 5.6's check proves each group number against the
+   > build's `<linux/rtnetlink.h>`, which must be from Linux 5.3 or
+   > later or carry the nexthop group's backport. Whether a bind that
+   > names the nexthop bit succeeds on a running kernel before 5.3 is
+   > UNVERIFIED; if it fails, the monitor does not start, and no
+   > network generation is readable on that kernel. Revisit this row if
+   > a supported kernel refuses that bind.
+
+   Accepting it needs section 13, Q5, measured on the oldest supported
+   Linux kernel, because a refused bind leaves that kernel with no
+   network generation at all.
+
+10. **The failure cases this model excludes,** each by the point named:
+    - a stop a worker can miss, by a signal made before the clear or a
+      read made before the signal: point 4's order and its argument;
+      even a lost signal costs at most one horizon (points 3 and 5);
+    - a wait with no finite timeout, or a timeout reused after
+      `EINTR`: point 5;
+    - an attempt sent before it is registered, or a reply matched to an
+      ended attempt: point 6, items 2, 4, 7 and 9;
+    - a worker that waits on another worker's wake: point 1 (the owner
+      side is moved into its worker and cannot be cloned);
+    - a lock held across a wait or a send: point 2, and point 4's steps
+      3 to 8, which take the lock only between those calls;
+    - a failed signal or clear that is not fatal: point 3.
+
+11. **Tests, written before the code** (sheet 23: "The caller's design
+    tests, through a seam over this site and a test clock"). The driver
+    reaches the site through a seam of `ironafs-net` with two
+    implementations: the site itself, and a scripted one whose wait
+    returns what the test holds (ready, wake, both, timed out,
+    interrupted, an error or hangup flag) and whose signal and clear
+    can be made to fail. The clock is `ironafs-test-support`'s
+    `SeededClock`, advanced, failed and restored by the test. A test
+    that needs an interleaving drives the turn's steps one at a time
+    from the test's own thread, so the order is the test's, not the
+    scheduler's. Each test is shown failing against a planted copy of
+    the defect it names.
+    1. A lost wake: the other worker's signal fails; the source stops at
+       once; a worker whose wake was never signalled still ends within
+       one horizon of the test clock, and the handle's drop returns.
+    2. A signal between the read (step 2) and the wait: the wait returns
+       at once with the wake.
+    3. A signal before the clear (step 1) with its change made before
+       the signal: the read of step 2 sees the change.
+    4. The wake and the socket ready at once with a stop decided: the
+       worker ends without receiving.
+    5. The wake and the socket ready at once with an earlier deadline:
+       the expiry is taken before the datagram is read.
+    6. The wait, a send and a receive each interrupted repeatedly, the
+       clock advanced between returns: each next timeout comes from a
+       fresh sample and is never the earlier one; the interrupted send
+       is not sent again once its deadline has passed.
+    7. A wait timeout: the scripted wait records each timeout passed;
+       none is above the horizon and none is negative.
+    8. A dump that is never answered: it expires at its deadline,
+       counts once, and the socket is made again; eight in a row stop
+       the source.
+    9. A late acknowledgement after its barrier expired, both when the
+       expiry takes the lock first and when the acknowledgement does
+       (the clock advanced past the deadline before its hold): it never
+       publishes, and the barrier counts once.
+    10. A send failure racing an expiry of the same attempt: it counts
+        once; a send failure for an ended attempt does not end a newer
+        one.
+    11. An attempt's send made only after its registration: the scripted
+        socket refuses a send whose sequence no live attempt holds.
+    12. A clock that fails and returns between two of the monitor's
+        samples (the doubt count moved above an attempt's latch): every
+        outstanding attempt expires once; nothing is registered while
+        samples fail, and each wait meanwhile is the horizon.
+    13. An intermediate dump record before its deadline is applied; one
+        at or after it is not, and the attempt expires.
+    14. An error or hangup flag followed by an empty receive, and by a
+        valid datagram: the datagram is not applied; on the notify
+        socket a loss and a fresh socket; on the request socket a
+        failed dump, counted once, and a fresh socket.
+    15. The barrier's datagram with a valid acknowledgement and an
+        `NLMSG_DONE`, and with a link record, of the barrier's sequence,
+        each before and after the acknowledgement: refused, nothing
+        published.
+    16. A hook that asks for the stop during a move: the publisher never
+        stores that move's value. The test reads every value the
+        publisher stores (a store log kept for tests), not only the
+        reader after the call, so moving the stop check below the store
+        fails it. `is_stopped` is false while the request is only
+        pending inside the move, and no lock hold ends with it pending.
+    17. The hook-drops-the-handle test keeps the handle in the test's
+        own ownership until the hook takes it, and the hook drops its
+        sender on any "stopped" move, so a stop before the first
+        snapshot ends the test at once, as a failure, instead of a
+        timeout.
+    18. A wake's owner side cannot be cloned or sent to another worker
+        (a compile-fail doc-test).
+    19. A sequence about to be issued again on the same socket instance:
+        the socket is made again first.
+    The Linux tests of section 10, point 4, stay, and gain: the
+    handle's drop on an idle host returns within one horizon. No test
+    writes a file at a path another user could predict: the overflow
+    burst in `ironafs-os`'s kernel test
+    (`a_burst_the_socket_does_not_read_is_an_overflow`) goes to
+    `ip -batch -` on its standard input, as `ironafs-net`'s own overflow
+    test does, instead of a file in the temporary directory named by
+    the process id.
+
 ## 6. Arithmetic
 
 | Sum | Bound | At overflow |
@@ -528,6 +961,30 @@ Not applicable: the monitor talks only to the local kernel.
   blocked receive when it passes (a receive timeout or a `poll` with a
   wake descriptor, each a new site of ADR 0005). Until then these stay
   residuals.
+- **Q7. The deadline durations** (5.8, point 8): `DUMP_DEADLINE` and
+  `BARRIER_DEADLINE` are provisional. The measurement that settles them,
+  before the driver uses them: on each supported kernel (the Arm64 guest
+  and the hosted Ubuntu runners, and the oldest supported kernel), in a
+  network namespace holding the caps' worst case (1,024 links and 4,096
+  addresses, 5.5, point 3), the time from registration to `NLMSG_DONE`
+  of each dump, and to the barrier's acknowledgement behind a backlog
+  that fills the notify socket's receive buffer, over at least 1,000
+  rounds each, with and without route churn. A duration stands if the
+  longest round trip measured is at most a tenth of it; otherwise it is
+  raised to ten times that, and the evidence is recorded here.
+- **Q8. Error and hangup without a cause** (5.8, point 7): whether a
+  route socket ever reports `POLLERR` or `POLLHUP` that the following
+  receive does not explain. The measurement: on each supported kernel,
+  in a network namespace, a soak of each overflow the tests provoke
+  (5.5, point 1; section 10, point 4) and of an hour of address and
+  route churn, logging every wait's `revents` with the receive that
+  followed; a flag that no receive explained, or none ever, is
+  recorded with its kernel. It does not block the code, which fails
+  closed either way (5.8, point 7). It blocks marking row 23
+  implemented: a kernel that raised such flags often would keep the
+  generation unavailable (a loss each time on the notify socket) or
+  stop the source (8 failed dumps on the request socket), and only the
+  measurement can rule that out.
 
 ## 14. Review
 
