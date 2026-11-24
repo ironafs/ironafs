@@ -55,6 +55,9 @@ const ROUND_LIMIT: Duration = Duration::from_secs(10);
 /// The awake time allowed to drain queued notifications before a barrier.
 const PREP_DRAIN_LIMIT_NS: u64 = 100_000_000;
 
+/// The awake time allowed to refill the notify queue after draining it.
+const PREP_REFILL_LIMIT_NS: u64 = 10_000_000_000;
+
 /// The receive buffer, as the monitor's (spec 5.5, point 1).
 const BUFFER: usize = 65_536;
 
@@ -301,10 +304,10 @@ fn queued(descriptor: i32) -> Option<u64> {
 /// The notify socket's receive buffer, as the kernel sizes it.
 fn receive_buffer() -> u64 {
     fs::read_to_string("/proc/sys/net/core/rmem_default")
-        .unwrap()
+        .expect("read the notify receive-buffer size")
         .trim()
         .parse()
-        .unwrap()
+        .expect("parse the notify receive-buffer size")
 }
 
 /// What a wait reported and the receive that followed show: `None` if the
@@ -568,39 +571,43 @@ fn drain_before_barrier(socket: &RouteSocket, buffer: &mut [u8], sequence: u32) 
     }
 }
 
-/// One barrier round on the notify socket. The backlog is `changes`
-/// address additions and removals; with none (under churn), the socket is
-/// drained, then left unread until the churn has queued 75 per cent of
-/// its receive buffer.
+/// Refill the drained queue and return the size observed at or above the target.
+fn refill_before_barrier(socket: &RouteSocket, churn: bool, target: u64, sequence: u32) -> u64 {
+    let descriptor = socket.socket.as_raw_fd();
+    let waiting = now();
+    loop {
+        let fill = queued(descriptor).unwrap_or_else(|| {
+            panic!("barrier sequence={sequence} could not measure the preparation queue")
+        });
+        assert!(
+            now() - waiting < PREP_REFILL_LIMIT_NS,
+            "barrier sequence={sequence} preparation refill exhausted, fill={fill}, target={target}"
+        );
+        if fill >= target {
+            return fill;
+        }
+        if churn {
+            thread::sleep(Duration::from_millis(1));
+        } else {
+            batch(
+                "address add 2001:db8:ff::1/128 dev lo\n\
+                 address del 2001:db8:ff::1/128 dev lo\n",
+            );
+        }
+    }
+}
+
+/// One barrier round after verifying the notify queue's prepared backlog.
 fn barrier_round(
     socket: &RouteSocket,
     wake: &Wake,
     buffer: &mut [u8],
-    changes: usize,
+    churn: bool,
+    target: u64,
     sequence: u32,
 ) -> BarrierRound {
     let pre_send_overflows = drain_before_barrier(socket, buffer, sequence);
-    let mut lines = String::new();
-    for index in 0..changes {
-        writeln!(lines, "address add 2001:db8:ff::{:x}/128 dev lo", index + 1).unwrap();
-    }
-    for index in 0..changes {
-        writeln!(lines, "address del 2001:db8:ff::{:x}/128 dev lo", index + 1).unwrap();
-    }
-    if changes == 0 {
-        let target = receive_buffer() * 3 / 4;
-        let waiting = now();
-        while queued(socket.socket.as_raw_fd()).unwrap_or(0) < target {
-            assert!(
-                now() - waiting < 10_000_000_000,
-                "barrier sequence={sequence} preparation refill exhausted before {target} bytes"
-            );
-            thread::sleep(Duration::from_millis(1));
-        }
-    } else {
-        batch(&lines);
-    }
-    let fill = queued(socket.socket.as_raw_fd()).unwrap_or(0);
+    let fill = refill_before_barrier(socket, churn, target, sequence);
     let started = now();
     let sent = socket.send(&request(NLMSG_NOOP, NLM_F_REQUEST | NLM_F_ACK, sequence));
     let send_time = now() - started;
@@ -632,37 +639,6 @@ fn barrier_round(
     }
 }
 
-/// The changes whose notifications fill the notify socket's receive buffer
-/// to between 75 and 95 per cent, found by doubling then halving.
-fn calibrated(socket: &RouteSocket, wake: &Wake, buffer: &mut [u8]) -> (usize, u64) {
-    let limit = receive_buffer();
-    let mut changes = 8;
-    let mut low = 0;
-    let mut high = usize::MAX;
-    for round in 0..40 {
-        let BarrierRound {
-            fill, overflowed, ..
-        } = barrier_round(socket, wake, buffer, changes, 1_000_000 + round);
-        let fraction = fill * 100 / limit;
-        if overflowed || fraction > 95 {
-            high = changes;
-        } else if fraction < 75 {
-            low = changes;
-        } else {
-            return (changes, fill);
-        }
-        changes = if high == usize::MAX {
-            changes * 2
-        } else {
-            usize::midpoint(low, high)
-        };
-        if changes == low || changes == high {
-            break;
-        }
-    }
-    (changes, 0)
-}
-
 #[test]
 #[ignore = "a measurement (spec Q7 and Q9): as root in a network namespace of its own, with iproute2"]
 fn q7_and_q9_each_round_trip_and_send_at_the_caps_worst_case() {
@@ -680,23 +656,22 @@ fn q7_and_q9_each_round_trip_and_send_at_the_caps_worst_case() {
     let wake = Wake::new().unwrap();
     let mut buffer = vec![0_u8; BUFFER];
 
+    let receive_buffer = receive_buffer();
+    let target = receive_buffer
+        .checked_mul(3)
+        .map(|bytes| bytes / 4)
+        .filter(|target| *target > 0)
+        .expect("compute a positive backlog target from the notify receive-buffer size");
+    println!(
+        "measure q7 kernel={kernel} backlog_target_bytes={target} receive_buffer={receive_buffer}"
+    );
+
     for &churn in modes {
         // Keep sequence identities the same when either mode runs on its own.
         let mut sequence = if churn {
             1 + 3 * u32::try_from(rounds).unwrap()
         } else {
             1
-        };
-        let changes = if churn {
-            0
-        } else {
-            let (changes, fill) = calibrated(&notify, &wake, &mut buffer);
-            println!(
-                "measure q7 kernel={kernel} backlog_changes={changes} backlog_fill_bytes={fill} \
-                 receive_buffer={}",
-                receive_buffer()
-            );
-            changes
         };
         let active_churn = churn.then(Churn::start);
         let label = if churn { "routes" } else { "none" };
@@ -731,7 +706,7 @@ fn q7_and_q9_each_round_trip_and_send_at_the_caps_worst_case() {
             sequence += 1;
             records.push((
                 sequence,
-                barrier_round(&notify, &wake, &mut buffer, changes, sequence),
+                barrier_round(&notify, &wake, &mut buffer, churn, target, sequence),
             ));
         }
         drop(active_churn);

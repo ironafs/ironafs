@@ -36,11 +36,10 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm, ubuntu-26.04, ubuntu-26.04-arm]
         measurement:
-          # Each barrier allows a 100 ms drain and up to 11 s for an ACK.
-          # The no-churn job also calibrates up to 40 rounds and runs Q5.
-          - { name: none, timeout: 240 }
-          # Churn also allows 10 s of refill per round. At 1,000 rounds
-          # the barrier budget is about 352 minutes, before dumps and setup.
+          # Each barrier allows a 100 ms drain, 10 s of refill, and up to
+          # 11 s for an ACK. At 1,000 rounds that is about 352 minutes per
+          # mode, before dumps and setup. The no-churn job also runs Q5.
+          - { name: none, timeout: 360 }
           - { name: routes, timeout: 360 }
           - { name: soak, timeout: 90 }
     runs-on: ${{ matrix.runner }}
@@ -109,9 +108,7 @@ jobs:
               fi
 
               run_measurement q7_and_q9_each_round_trip_and_send_at_the_caps_worst_case
-              if [[ "$MEASUREMENT" == none ]]; then
-                require_line '^measure q7 kernel=[^ ]+ backlog_changes=[0-9]+ backlog_fill_bytes=[0-9]+ receive_buffer=[0-9]+$'
-              fi
+              require_line '^measure q7 kernel=[^ ]+ backlog_target_bytes=[1-9][0-9]* receive_buffer=[1-9][0-9]*$'
               for dump in links addresses; do
                 require_line "^measure q7 kernel=[^ ]+ churn=$MEASUREMENT dump=$dump objects="
                 require_line "^measure q9 kernel=[^ ]+ churn=$MEASUREMENT send=dump-$dump n="
