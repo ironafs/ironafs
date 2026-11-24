@@ -63,9 +63,12 @@ fn dump_links() -> Vec<u8> {
     request
 }
 
-/// The message types in one datagram, each message's length checked
-/// against the datagram.
-fn types(datagram: &[u8]) -> Vec<u16> {
+/// The messages of one datagram, each its type and its payload (the
+/// bytes after the header, to its length), each message's length checked
+/// against what is left of the datagram. The next message starts at the
+/// length rounded up to four bytes, or at the datagram's end if that is
+/// past it.
+fn messages(datagram: &[u8]) -> Vec<(u16, &[u8])> {
     let mut found = Vec::new();
     let mut rest = datagram;
     while rest.len() >= HEADER {
@@ -75,10 +78,19 @@ fn types(datagram: &[u8]) -> Vec<u16> {
             "a message of {length} bytes in {} left",
             rest.len()
         );
-        found.push(u16::from_ne_bytes(rest[4..6].try_into().unwrap()));
-        rest = &rest[(length + 3) & !3..];
+        let kind = u16::from_ne_bytes(rest[4..6].try_into().unwrap());
+        found.push((kind, &rest[HEADER..length]));
+        rest = &rest[((length + 3) & !3).min(rest.len())..];
     }
     found
+}
+
+/// The message types in one datagram.
+fn types(datagram: &[u8]) -> Vec<u16> {
+    messages(datagram)
+        .into_iter()
+        .map(|(kind, _)| kind)
+        .collect()
 }
 
 /// One notification, as this test's reader of `rtnetlink(7)`'s messages
@@ -94,19 +106,11 @@ struct Event {
     mtu: Option<u32>,
 }
 
-/// The events of one datagram, each message's and attribute's length
-/// checked against what holds it.
+/// The events of one datagram, each message's length checked by
+/// [`messages`] and each attribute's against what holds it.
 fn events(datagram: &[u8]) -> Vec<Event> {
     let mut found = Vec::new();
-    let mut rest = datagram;
-    while rest.len() >= HEADER {
-        let length = u32::from_ne_bytes(rest[0..4].try_into().unwrap()) as usize;
-        assert!(
-            (HEADER..=rest.len()).contains(&length),
-            "a message of {length} bytes"
-        );
-        let kind = u16::from_ne_bytes(rest[4..6].try_into().unwrap());
-        let payload = &rest[HEADER..length];
+    for (kind, payload) in messages(datagram) {
         // The fixed part before the attributes, the prefix length's
         // offset in it, and the attribute naming the object.
         let shape = match kind {
@@ -147,7 +151,6 @@ fn events(datagram: &[u8]) -> Vec<Event> {
             }
             found.push(event);
         }
-        rest = &rest[((length + 3) & !3).min(rest.len())..];
     }
     found
 }
