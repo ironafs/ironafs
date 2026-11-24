@@ -20,6 +20,8 @@ publish = false
 # standards rule 20), with its version so cargo-deny does not read the path
 # as a wildcard.
 [workspace.dependencies]
+ironafs-netgen = { path = "crates/ironafs-netgen", version = "=0.0.0" }
+ironafs-os = { path = "crates/ironafs-os", version = "=0.0.0" }
 ironafs-test-support = { path = "crates/ironafs-test-support", version = "=0.0.0" }
 ironafs-time = { path = "crates/ironafs-time", version = "=0.0.0" }
 

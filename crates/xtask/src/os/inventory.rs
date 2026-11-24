@@ -406,9 +406,10 @@ fn qualified(
 
 /// The C expressions a row's ABI check compares constants with
 /// (`expressions`, optional): an object from a constant's name to an
-/// expression `well_formed` accepts, since each is written into the C
-/// file, naming at least one C name: a literal alone (`4`) would compare
-/// the constant with itself and prove nothing.
+/// expression `well_formed` accepts (a group mask is an or of shifted
+/// bits), since each is written into the C file, naming at least one C
+/// name: a literal alone (`4`) would compare the constant with itself and
+/// prove nothing.
 fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
     let Some(expressions) = code.get("expressions") else {
         return Ok(Vec::new());
@@ -433,8 +434,8 @@ fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
             } else {
                 Err(format!(
                     "`expressions` maps {name:?} to {value:?}: a constant's name must map to an \
-                     expression of names, numbers, spaces, `*`, `+` and balanced parentheses \
-                     that names at least one C name"
+                     expression of names, numbers, spaces, balanced parentheses and the \
+                     operators `*`, `+`, `-`, `|`, `<<` and `>>` that names at least one C name"
                 ))
             }
         })
@@ -442,26 +443,41 @@ fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
 }
 
 /// Whether `expression` may stand in the ABI check's `(<expression>) ==
-/// <value>`: names, numbers, spaces, `*` and `+`, and parentheses that
-/// balance and never close more than they opened, so the expression cannot
-/// leave its own parentheses. No quote, `#`, `;`, `/`, comma, comparison
-/// or line break can appear, so nothing can end the assertion it stands in.
+/// <value>`: names, numbers and spaces; parentheses that balance and never
+/// close more than they opened, so the expression cannot leave its own
+/// parentheses; and the operators `*`, `+`, `-`, `|`, `<<` and `>>` only
+/// (no `||`, no comparison). No quote, `#`, `;`, `/`, comma or line break
+/// can appear, so nothing can end the assertion it stands in.
 fn well_formed(expression: &str) -> bool {
     if expression.trim().is_empty() {
         return false;
     }
+    let bytes = expression.as_bytes();
     let mut depth = 0_usize;
-    for byte in expression.bytes() {
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
         match byte {
             b'(' => depth += 1,
             b')' => match depth.checked_sub(1) {
                 Some(less) => depth = less,
                 None => return false,
             },
-            b'*' | b'+' | b' ' | b'_' => {}
+            b'|' if bytes.get(at + 1) == Some(&b'|') => return false,
+            b'<' | b'>' => {
+                let pair = bytes.get(at + 1) == Some(&byte);
+                let third = bytes
+                    .get(at + 2)
+                    .is_some_and(|next| *next == b'<' || *next == b'>');
+                if !pair || third {
+                    return false;
+                }
+                at += 1;
+            }
+            b'*' | b'+' | b'-' | b'|' | b' ' | b'_' => {}
             other if other.is_ascii_alphanumeric() => {}
             _ => return false,
         }
+        at += 1;
     }
     depth == 0
 }
@@ -707,7 +723,9 @@ fn adoption_problems(id: &str, blocks: &str, code: &Code) -> Option<String> {
 /// approves: every declared function and every block's callee is named in
 /// the row's foreign-item or block column; a block with no `#[link]` is
 /// linked from the C library or libSystem, and a `#[link]` names the
-/// library the row does; the `safe fn` declarations are those the declared
+/// library the row does (an `OwnedFd::from_raw_fd` adoption is named by a
+/// row that says its descriptor is "adopted as an `OwnedFd`", as point 6.3
+/// spells it); the `safe fn` declarations are those the declared
 /// column allows; a row whose block column says "one" holds one site in
 /// `unsafe`, and one that says "one that adopts" exactly one adoption;
 /// and the copy's open flag is the ADR's (an open owner
@@ -742,8 +760,15 @@ fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
             ));
         }
     }
+    // A row may name its adoption only as what it adopts: row 23's
+    // "each descriptor adopted as an `OwnedFd`", which point 6.3 spells
+    // `OwnedFd::from_raw_fd`.
+    let adopts_owned_fd = foreign.contains("adopted as an `OwnedFd`");
     for block in &code.blocks {
-        if !approved(block.callee()) {
+        let named_adoption = block.kind == BlockKind::Adopt
+            && block.operation == "OwnedFd::from_raw_fd"
+            && adopts_owned_fd;
+        if !named_adoption && !approved(block.callee()) {
             found.push(format!(
                 "{id}: a block calls `{}`, which the ADR's row does not name (point 7.1)",
                 block.operation

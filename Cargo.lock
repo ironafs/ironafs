@@ -32,6 +32,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironafs-net"
+version = "0.0.0"
+dependencies = [
+ "ironafs-netgen",
+ "ironafs-os",
+]
+
+[[package]]
+name = "ironafs-netgen"
+version = "0.0.0"
+
+[[package]]
 name = "ironafs-os"
 version = "0.0.0"
 

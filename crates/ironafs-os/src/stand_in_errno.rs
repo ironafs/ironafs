@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The errno of the Miri stand-ins of `linux-udp6` and `linux-statvfs`
-//! (ADR 0005, point 6.5): set by a planned failure or a refused call, on
-//! this thread, and read back as the C library's errno would be. It holds
-//! no site.
+//! The errno of the Miri stand-ins of `linux-udp6`, `linux-statvfs` and
+//! `linux-rtnetlink` (ADR 0005, point 6.5): set by a planned failure or a
+//! refused call, on this thread, and read back as the C library's errno
+//! would be. It holds no site.
 
 use core::ffi::c_int;
 use std::cell::Cell;

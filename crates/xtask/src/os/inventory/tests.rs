@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use super::{BlockKind, Status, adr_binding_problems, adr_rows, parse, problems};
+use super::{Block, BlockKind, Code, Status, adr_binding_problems, adr_rows, parse, problems};
 
 fn repository_file(path: &str) -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -95,6 +95,13 @@ fn parse_reads_a_row_s_c_expressions_and_refuses_any_outside_their_alphabet() {
             "CMSG_LEN(sizeof(int))".to_owned()
         )]
     );
+    assert_eq!(
+        clock(&parse(&with("{\"GROUPS\": \"A | B | (1u << (C - 1)) >> 0\"}")).unwrap()).expressions,
+        [(
+            "GROUPS".to_owned(),
+            "A | B | (1u << (C - 1)) >> 0".to_owned()
+        )]
+    );
     for refused in [
         "{\"X\": \"1) || (0\"}",
         "{\"X\": \"1) | (0\"}",
@@ -105,8 +112,6 @@ fn parse_reads_a_row_s_c_expressions_and_refuses_any_outside_their_alphabet() {
         "{\"X\": \"1 < 2\"}",
         "{\"X\": \"1 > 2\"}",
         "{\"X\": \"1 <<< 2\"}",
-        "{\"X\": \"A | (1 << (B - 1))\"}",
-        "{\"X\": \"sizeof(int)) + (0\"}",
         "{\"X\": \"1 /* 2 */\"}",
         "{\"X\": \"1, 2\"}",
         "{\"X\": \"1; int y\"}",
@@ -366,10 +371,65 @@ fn problems_bind_the_recorded_code_to_the_adr_row() {
     assert_caught(&text, &cases);
 }
 
+/// The code of a row holding one adoption block and nothing else.
+fn adopting(module: &str) -> Code {
+    Code {
+        module: module.to_owned(),
+        headers: Vec::new(),
+        defines: Vec::new(),
+        expressions: Vec::new(),
+        qualified: Vec::new(),
+        structs: Vec::new(),
+        constants: Vec::new(),
+        aliases: Vec::new(),
+        stand_in: None,
+        extern_blocks: Vec::new(),
+        blocks: vec![Block {
+            kind: BlockKind::Adopt,
+            operation: "OwnedFd::from_raw_fd".to_owned(),
+            arguments: vec!["descriptor".to_owned()],
+        }],
+        impls: 0,
+    }
+}
+
+#[test]
+fn an_owned_fd_adoption_is_approved_by_a_row_that_adopts_its_descriptor_as_an_owned_fd() {
+    let inventory = parse(&inventory_text()).unwrap();
+    let row = |id: &str| inventory.rows.iter().find(|row| row.id == id).unwrap();
+    // Row 23 names the adoption as "each descriptor adopted as an
+    // `OwnedFd`" (and point 6.3 names `OwnedFd::from_raw_fd` for it).
+    let rtnetlink = row("linux-rtnetlink");
+    assert_eq!(
+        adr_binding_problems(rtnetlink, &adopting("linux_rtnetlink")),
+        [] as [String; 0]
+    );
+    // Row 22 adopts nothing.
+    let statvfs = row("linux-statvfs");
+    let found = adr_binding_problems(statvfs, &adopting("linux_statvfs"));
+    assert!(
+        found.iter().any(|problem| problem
+            .contains("calls `OwnedFd::from_raw_fd`, which the ADR's row does not name")),
+        "{found:?}"
+    );
+    // Another adoption on a row that adopts an `OwnedFd` is still refused.
+    let mut handle = adopting("linux_rtnetlink");
+    if let Some(block) = handle.blocks.first_mut() {
+        block.operation = "OwnedHandle::from_raw_handle".to_owned();
+    }
+    assert_eq!(
+        adr_binding_problems(rtnetlink, &handle),
+        [
+            "linux-rtnetlink: a block calls `OwnedHandle::from_raw_handle`, which the ADR's row does \
+          not name (point 7.1)"
+        ]
+    );
+}
+
 #[test]
 fn a_row_that_adopts_one_descriptor_holds_exactly_one_adoption() {
     let inventory = parse(&inventory_text()).unwrap();
-    for id in ["linux-udp6", "linux-fdpass"] {
+    for id in ["linux-udp6", "linux-rtnetlink", "linux-fdpass"] {
         let row = inventory.rows.iter().find(|row| row.id == id).unwrap();
         let code = row.code.clone().unwrap();
         assert_eq!(adr_binding_problems(row, &code), [] as [String; 0], "{id}");

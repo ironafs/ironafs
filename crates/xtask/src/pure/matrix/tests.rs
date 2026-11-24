@@ -22,14 +22,15 @@ fn triple(name: &str, target: &str, profile: &str) -> Triple {
 }
 
 #[test]
-fn pure_list_names_the_thirteen_crates_of_c4_point_1() {
+fn pure_list_names_c4_point_1_s_crates_and_the_network_generation_s() {
     let names = pure_list();
-    assert_eq!(names.len(), 13);
+    assert_eq!(names.len(), 14);
     for name in [
         "ironafs-rxkad",
         "ironafs-auth",
         "ironafs-rxgk",
         "ironafs-time",
+        "ironafs-netgen",
     ] {
         assert!(names.contains(&name), "{name}");
     }

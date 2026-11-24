@@ -274,7 +274,7 @@ jobs:
       contents: read
     env:
       TARGET: ${{ matrix.target }}
-      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs
+      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs linux-rtnetlink
       WITHHELD: ${{ matrix.withheld }}
       NATIVE_TESTS: >-
         linux_clock::tests::read_clock_boot_advances_and_never_goes_back
@@ -293,6 +293,15 @@ jobs:
         linux_udp6::tests::kernel::a_port_held_by_another_ipv6_socket_is_in_use_and_nothing_stays_open
         linux_statvfs::tests::kernel::the_answer_for_proc_is_what_stat_says
         linux_statvfs::tests::kernel::the_answer_for_the_root_and_temporary_directories_is_what_stat_says
+        linux_rtnetlink::tests::kernel::a_dump_is_answered_on_the_request_socket_ending_in_done
+        linux_rtnetlink::tests::kernel::an_address_dump_of_every_family_returns_the_host_s_addresses
+        linux_rtnetlink::tests::kernel::a_dump_datagram_larger_than_the_buffer_is_truncated
+        linux_rtnetlink::tests::kernel::a_wait_with_nothing_ready_times_out
+        linux_rtnetlink::tests::kernel::a_wake_signalled_from_another_thread_ends_a_blocked_wait
+        linux_rtnetlink::tests::kernel::a_wake_signalled_before_the_wait_ends_it_at_once_and_the_wait_clears_nothing
+        linux_rtnetlink::tests::kernel::two_signals_are_cleared_by_one_clear
+        linux_rtnetlink::tests::kernel::a_receive_with_nothing_queued_returns_nothing_queued_without_blocking
+        linux_rtnetlink::tests::kernel::a_timeout_below_one_millisecond_is_not_passed_as_0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -304,10 +313,19 @@ jobs:
           rustc --version
       - name: Install musl's C compiler wrapper and headers
         if: matrix.cc == 'musl-gcc'
+        # musl-gcc searches musl's headers only; linux-rtnetlink's
+        # declarations are the kernel's own (<linux/netlink.h>), which no C
+        # library declares, so the kernel's headers (linux, asm,
+        # asm-generic), and nothing of glibc's, join its search path.
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends musl-tools
+          sudo apt-get install --yes --no-install-recommends musl-tools linux-libc-dev
           musl-gcc --version
+          headers="$RUNNER_TEMP/kernel-headers"
+          mkdir -p "$headers"
+          ln -s /usr/include/linux /usr/include/asm-generic "$headers/"
+          ln -s "/usr/include/$(uname -m)-linux-gnu/asm" "$headers/asm"
+          echo "C_INCLUDE_PATH=$headers" >> "$GITHUB_ENV"
       - name: Install cargo-nextest
         env:
           ARCHIVE: ${{ matrix.nextest }}
@@ -415,6 +433,21 @@ jobs:
             --run-ignored only -E 'test(/^linux_statvfs::/)' > statvfs.log 2>&1 || { cat statvfs.log; exit 1; }
           cat statvfs.log
           grep -q ' 2 passed' statvfs.log
+      - name: Run the network-change monitor's unprivileged tests
+        # The monitor (ironafs-net) over the target's route sockets: six
+        # tests, before any step builds as root. Each is checked by name.
+        run: |
+          cargo nextest run -p ironafs-net --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked \
+            > monitor.log 2>&1 || { cat monitor.log; exit 1; }
+          cat monitor.log
+          for test in the_first_snapshot_publishes_a_generation \
+            a_resume_moves_the_generation_then_a_snapshot_moves_it_again \
+            a_hook_that_panics_leaves_nothing_readable_and_the_source_halted \
+            dropping_the_handle_stops_the_source_and_ends_both_threads \
+            a_hook_that_panics_on_the_stop_still_lets_both_threads_end \
+            a_hook_that_drops_the_handle_stops_the_source_before_publishing; do
+            grep -Eq "PASS .* ironafs-net::it monitor::$test\$" monitor.log
+          done
       - name: Run linux-udp6's kernel tests at bindv6only 0 and at 1, each in a network namespace of its own
         # The value is set in the namespace and checked from inside the test
         # run (an ignored test), so the port-sharing cases are known to have
@@ -430,6 +463,30 @@ jobs:
             cat "udp6-$value.log"
             grep -q ' 7 passed' "udp6-$value.log"
           done
+      - name: Run the network-namespace tests of linux-rtnetlink, as root in a namespace of their own
+        # After every unprivileged step, since it builds as root. One test at
+        # a time: they share the namespace, and one's burst or forged
+        # datagram reaches the others.
+        run: |
+          sudo env "PATH=$PATH" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+            unshare --net -- cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 \
+            --no-tests fail --locked --run-ignored only --test-threads 1 -E 'test(/^linux_rtnetlink::/) - test(/::measure::/)' \
+            > netns.log 2>&1 || { cat netns.log; exit 1; }
+          cat netns.log
+          grep -q ' 4 passed' netns.log
+      - name: Run the network-change monitor's network-namespace tests, as root in a namespace of their own
+        # The monitor (ironafs-net): two tests that change the namespace's
+        # addresses, routes and rules, one at a time. Each is checked by name.
+        run: |
+          sudo env "PATH=$PATH" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+            unshare --net -- cargo nextest run -p ironafs-net --target "$TARGET" --profile ci --retries 0 \
+            --no-tests fail --locked --run-ignored only --test-threads 1 > monitor-netns.log 2>&1 \
+            || { cat monitor-netns.log; exit 1; }
+          cat monitor-netns.log
+          for test in an_address_a_route_and_a_policy_rule_each_move_the_generation \
+            an_overflow_moves_the_generation_then_a_snapshot_moves_it_again; do
+            grep -Eq "PASS .* ironafs-net::it monitor::$test\$" monitor-netns.log
+          done
 
   os-linux-glibc-2-28:
     name: os-linux (glibc 2.28, ${{ matrix.target }})
@@ -437,11 +494,12 @@ jobs:
     # point 5.5): ironafs-os built and its tests run on AlmaLinux 8, on
     # each Linux architecture. Each lane proves the target it built and
     # the runtime it ran on, requires the named native tests of every site,
-    # and proves every site's declarations against glibc 2.28's headers.
-    # The tests run under nextest, as everywhere else: some count this
-    # process's open descriptors, which holds only with a process to each
-    # test (libtest's threads share one). The conditional glibc 2.17
-    # artefact is not offered until it is qualified separately.
+    # and proves every site's declarations against glibc 2.28's headers
+    # (with the kernel's own, which linux-rtnetlink's need). The tests run
+    # under nextest, as everywhere else: some count this process's open
+    # descriptors, which holds only with a process to each test (libtest's
+    # threads share one). The conditional glibc 2.17 artefact is not offered
+    # until it is qualified separately.
     strategy:
       fail-fast: false
       matrix:
@@ -469,7 +527,7 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       ARCH: ${{ matrix.arch }}
-      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs
+      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs linux-rtnetlink
       NATIVE_TESTS: >-
         linux_clock::tests::read_clock_boot_advances_and_never_goes_back
         linux_clock::tests::read_clock_awake_advances_and_never_goes_back
@@ -484,13 +542,22 @@ jobs:
         linux_udp6::tests::kernel::a_port_held_by_another_ipv6_socket_is_in_use_and_nothing_stays_open
         linux_statvfs::tests::kernel::the_answer_for_proc_is_what_stat_says
         linux_statvfs::tests::kernel::a_descriptor_that_is_not_a_directory_s_is_refused_and_nothing_stays_open
+        linux_rtnetlink::tests::kernel::a_dump_is_answered_on_the_request_socket_ending_in_done
+        linux_rtnetlink::tests::kernel::an_address_dump_of_every_family_returns_the_host_s_addresses
+        linux_rtnetlink::tests::kernel::a_dump_datagram_larger_than_the_buffer_is_truncated
+        linux_rtnetlink::tests::kernel::a_wait_with_nothing_ready_times_out
+        linux_rtnetlink::tests::kernel::a_wake_signalled_from_another_thread_ends_a_blocked_wait
+        linux_rtnetlink::tests::kernel::a_wake_signalled_before_the_wait_ends_it_at_once_and_the_wait_clears_nothing
+        linux_rtnetlink::tests::kernel::two_signals_are_cleared_by_one_clear
+        linux_rtnetlink::tests::kernel::a_receive_with_nothing_queued_returns_nothing_queued_without_blocking
+        linux_rtnetlink::tests::kernel::a_timeout_below_one_millisecond_is_not_passed_as_0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install a C toolchain and Rust
         run: |
-          dnf --assumeyes install gcc
+          dnf --assumeyes install gcc glibc-headers kernel-headers
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs > rustup-init.sh
           sh rustup-init.sh -y --default-toolchain none --profile minimal
           "$HOME/.cargo/bin/rustup" toolchain install --profile minimal --no-self-update --no-update
@@ -609,8 +676,20 @@ jobs:
               linux_udp6::tests::stand_in::the_calls_are_socket_then_ipv6_only_set_to_one_then_bind \
               linux_udp6::tests::stand_in::a_failed_option_leaves_the_socket_unbound \
               linux_statvfs::tests::measure_queries_the_descriptor_s_filesystem_through_the_call \
+              linux_rtnetlink::tests::stand_in::a_short_sender_address_and_a_wrong_family_are_no_sender \
+              linux_rtnetlink::tests::stand_in::a_reply_from_another_port_is_refused \
+              linux_rtnetlink::tests::stand_in::a_reply_longer_than_the_buffer_is_truncated \
+              route::tests::the_sweep_of_every_field_returns_only_the_kernel_s_whole_datagram \
               linux_udp6::tests::stand_in::a_missing_family_and_an_address_in_use_are_told_apart_through_the_calls \
               linux_statvfs::tests::stand_in::an_interrupted_query_is_made_again \
+              linux_rtnetlink::tests::stand_in::an_interrupted_send_and_receive_are_returned_and_never_made_again \
+              linux_rtnetlink::tests::stand_in::an_interrupted_wait_is_returned_and_another_failure_is_an_error \
+              linux_rtnetlink::tests::stand_in::pollnval_on_either_entry_and_pollerr_on_the_wake_are_errors \
+              linux_rtnetlink::tests::stand_in::both_entries_ready_are_both_reported \
+              linux_rtnetlink::tests::stand_in::an_error_or_a_hangup_with_nothing_queued_reports_the_socket_and_receives_nothing \
+              linux_rtnetlink::tests::stand_in::a_wait_asks_pollin_on_exactly_the_two_entries_with_the_timeout_rounded_up \
+              route::tests::the_sweep_of_reports_accepts_exactly_what_the_sheet_allows \
+              linux_rtnetlink::tests::stand_in::an_overflow_and_another_failure_are_told_apart_through_the_receive \
               linux_peercred::tests::stand_in::a_short_and_an_over_long_length_from_the_call_are_refused \
               linux_dontdump::tests::stand_in::a_failed_exclusion_hands_out_no_buffer \
               linux_dontdump::tests::stand_in::a_dropped_buffer_is_all_zero_when_its_memory_is_released \

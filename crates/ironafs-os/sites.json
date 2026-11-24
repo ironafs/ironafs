@@ -972,10 +972,237 @@
       "blocks": "one per call (six); one that adopts a descriptor, a route socket's or the wake descriptor's (one private function)",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved"
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented"
+      },
+      "code": {
+        "module": "linux_rtnetlink",
+        "headers": [
+          "errno.h",
+          "poll.h",
+          "sys/eventfd.h",
+          "sys/socket.h",
+          "sys/uio.h",
+          "linux/netlink.h",
+          "linux/rtnetlink.h"
+        ],
+        "expressions": {
+          "NOTIFY_GROUPS": "RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV4_ROUTE | RTMGRP_IPV4_RULE | RTMGRP_IPV6_IFADDR | RTMGRP_IPV6_ROUTE | (1u << (RTNLGRP_IPV6_RULE - 1)) | (1u << (RTNLGRP_NEXTHOP - 1))",
+          "SOCKADDR_NL_SIZE": "sizeof(struct sockaddr_nl)"
+        },
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "socket",
+                "safe": false
+              },
+              {
+                "name": "bind",
+                "safe": false
+              },
+              {
+                "name": "sendto",
+                "safe": false
+              },
+              {
+                "name": "recvmsg",
+                "safe": false
+              },
+              {
+                "name": "eventfd",
+                "safe": false
+              },
+              {
+                "name": "poll",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "abi::socket",
+            "arguments": [
+              "AF_NETLINK",
+              "KIND",
+              "NETLINK_ROUTE"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::eventfd",
+            "arguments": [
+              "0",
+              "WAKE_FLAGS"
+            ]
+          },
+          {
+            "kind": "adopt",
+            "operation": "OwnedFd::from_raw_fd",
+            "arguments": [
+              "descriptor"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::bind",
+            "arguments": [
+              "descriptor",
+              "address",
+              "NAME_LENGTH"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::sendto",
+            "arguments": [
+              "descriptor",
+              "buffer",
+              "length",
+              "MSG_DONTWAIT",
+              "address",
+              "NAME_LENGTH"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::recvmsg",
+            "arguments": [
+              "descriptor",
+              "pointer",
+              "MSG_DONTWAIT"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::poll",
+            "arguments": [
+              "pointer",
+              "ENTRIES",
+              "timeout"
+            ]
+          }
+        ],
+        "impls": 0,
+        "c_facts": {
+          "structs": [
+            "sockaddr",
+            "sockaddr_nl",
+            "iovec",
+            "msghdr",
+            "pollfd"
+          ],
+          "constants": [
+            "AF_NETLINK",
+            "SOCK_RAW",
+            "SOCK_CLOEXEC",
+            "NETLINK_ROUTE",
+            "MSG_TRUNC",
+            "ENOBUFS",
+            "MSG_DONTWAIT",
+            "EAGAIN",
+            "EINTR",
+            "EFD_CLOEXEC",
+            "EFD_NONBLOCK",
+            "POLLIN",
+            "POLLERR",
+            "POLLHUP",
+            "POLLNVAL",
+            "RTMGRP_LINK",
+            "RTMGRP_IPV4_IFADDR",
+            "RTMGRP_IPV4_ROUTE",
+            "RTMGRP_IPV4_RULE",
+            "RTMGRP_IPV6_IFADDR",
+            "RTMGRP_IPV6_ROUTE",
+            "RTNLGRP_IPV6_RULE",
+            "RTNLGRP_NEXTHOP",
+            "NOTIFY_GROUPS",
+            "SOCKADDR_NL_SIZE"
+          ],
+          "aliases": [
+            "socklen_t",
+            "sa_family_t",
+            "nfds_t"
+          ]
+        },
+        "stand_in": {
+          "functions": 6,
+          "blocks": [
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "pointer"
+              ]
+            },
+            {
+              "operation": "core::ptr::copy_nonoverlapping",
+              "arguments": [
+                "source",
+                "target",
+                "len"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "pointer"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "msg"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "buffers"
+              ]
+            },
+            {
+              "operation": "core::ptr::copy_nonoverlapping",
+              "arguments": [
+                "source",
+                "target",
+                "written"
+              ]
+            },
+            {
+              "operation": "core::ptr::copy_nonoverlapping",
+              "arguments": [
+                "from",
+                "address",
+                "named"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "msg",
+                "message"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "pointer"
+              ]
+            },
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "pointer",
+                "entry"
+              ]
+            }
+          ]
+        }
       }
     },
     {

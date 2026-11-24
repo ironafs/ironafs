@@ -65,6 +65,7 @@ the evidence that refutes it.
 | [2026-11-21-m2a-93-config-schema](2026-11-21-m2a-93-config-schema.md) | Issue #93, part (b): the configuration schema, its unknown-key rules and layering (draft; four recorded blockers) |
 | [2026-11-21-m2a-57-os-parts-bc](2026-11-21-m2a-57-os-parts-bc.md) | Issue #57, parts B and C: `ironafs-os`'s dump controls, secret buffer, peer credentials and descriptor passing, and their checks |
 | [2026-11-21-m2a-57-os-part-e](2026-11-21-m2a-57-os-part-e.md) | Issue #57, part E: `ironafs-os`'s IPv6-only UDP socket and free-space query, and their checks |
+| [2026-11-21-m2a-97-netgen](2026-11-21-m2a-97-netgen.md) | Issue #97, part 1: the network-generation source, its consumers' hooks and the Linux monitor |
 | [2026-11-23-gpt-api-route](2026-11-23-gpt-api-route.md) | The owner's decision: GPT read-only seats may also run on the OpenAI API, the same models by another route |
 
 ADRs carry their review records in their own Review sections
