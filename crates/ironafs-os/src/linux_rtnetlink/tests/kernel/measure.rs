@@ -14,7 +14,9 @@
 //! summary line per result, with key=value fields. Q7 also prints one line
 //! per barrier attempt. The tests fail only when the measurement could not
 //! be made. Counts and durations come from `IRONAFS_MEASURE_ROUNDS` (Q7 and
-//! Q9; default 1,000) and `IRONAFS_MEASURE_SECONDS` (Q8; default 3,600).
+//! Q9; 1–1,000, default 1,000) and `IRONAFS_MEASURE_SECONDS` (Q8;
+//! 1–4,800, default 3,600). Q7 and Q9 run both churn modes by default.
+//! `IRONAFS_MEASURE_CHURN` selects only `none` or `routes`.
 //! Times are read from the awake clock (`CLOCK_MONOTONIC`), in
 //! nanoseconds.
 
@@ -50,6 +52,9 @@ const ADDRESSES: usize = 4096;
 /// the monitor would have ended the attempt anyway.
 const ROUND_LIMIT: Duration = Duration::from_secs(10);
 
+/// The awake time allowed to drain queued notifications before a barrier.
+const PREP_DRAIN_LIMIT_NS: u64 = 100_000_000;
+
 /// The receive buffer, as the monitor's (spec 5.5, point 1).
 const BUFFER: usize = 65_536;
 
@@ -61,12 +66,17 @@ fn kernel() -> String {
         .to_owned()
 }
 
-/// A number from the environment, or `default`.
-fn setting(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+/// A positive number up to the measurement's budget, or the default if unset.
+fn setting(name: &str, default: u64, max: u64) -> u64 {
+    match std::env::var(name) {
+        Ok(value) => value
+            .parse()
+            .ok()
+            .filter(|value| (1..=max).contains(value))
+            .unwrap_or_else(|| panic!("{name} must be an integer from 1 through {max}")),
+        Err(std::env::VarError::NotPresent) => default,
+        Err(error) => panic!("cannot read {name}: {error}"),
+    }
 }
 
 /// Runs `lines` through `ip -batch -`, which must succeed.
@@ -491,6 +501,7 @@ struct BarrierRound {
     outcome: BarrierOutcome,
     send_time: u64,
     fill: u64,
+    pre_send_overflows: u64,
     overflowed: bool,
 }
 
@@ -539,6 +550,24 @@ fn failed_barriers_are_counted_with_their_own_overflow_observation() {
     );
 }
 
+/// Drain the notify socket before building a fresh backlog for this sequence.
+fn drain_before_barrier(socket: &RouteSocket, buffer: &mut [u8], sequence: u32) -> u64 {
+    let started = now();
+    let mut overflows = 0;
+    loop {
+        assert!(
+            now() - started < PREP_DRAIN_LIMIT_NS,
+            "barrier sequence={sequence} preparation drain exhausted, pre_send_overflows={overflows}"
+        );
+        match socket.receive(buffer) {
+            Ok(Receipt::NothingQueued) => return overflows,
+            Ok(Receipt::Datagram(_) | Receipt::Interrupted) => {}
+            Err(RouteError::Overflow(_)) => overflows += 1,
+            Err(error) => panic!("barrier sequence={sequence} preparation drain failed: {error}"),
+        }
+    }
+}
+
 /// One barrier round on the notify socket. The backlog is `changes`
 /// address additions and removals; with none (under churn), the socket is
 /// drained, then left unread until the churn has queued 75 per cent of
@@ -550,6 +579,7 @@ fn barrier_round(
     changes: usize,
     sequence: u32,
 ) -> BarrierRound {
+    let pre_send_overflows = drain_before_barrier(socket, buffer, sequence);
     let mut lines = String::new();
     for index in 0..changes {
         writeln!(lines, "address add 2001:db8:ff::{:x}/128 dev lo", index + 1).unwrap();
@@ -558,12 +588,13 @@ fn barrier_round(
         writeln!(lines, "address del 2001:db8:ff::{:x}/128 dev lo", index + 1).unwrap();
     }
     if changes == 0 {
-        while let Ok(Receipt::Datagram(_)) = socket.receive(buffer) {}
         let target = receive_buffer() * 3 / 4;
         let waiting = now();
-        while queued(socket.socket.as_raw_fd()).unwrap_or(0) < target
-            && now() - waiting < 10_000_000_000
-        {
+        while queued(socket.socket.as_raw_fd()).unwrap_or(0) < target {
+            assert!(
+                now() - waiting < 10_000_000_000,
+                "barrier sequence={sequence} preparation refill exhausted before {target} bytes"
+            );
             thread::sleep(Duration::from_millis(1));
         }
     } else {
@@ -596,6 +627,7 @@ fn barrier_round(
         outcome,
         send_time,
         fill,
+        pre_send_overflows,
         overflowed,
     }
 }
@@ -634,23 +666,41 @@ fn calibrated(socket: &RouteSocket, wake: &Wake, buffer: &mut [u8]) -> (usize, u
 #[test]
 #[ignore = "a measurement (spec Q7 and Q9): as root in a network namespace of its own, with iproute2"]
 fn q7_and_q9_each_round_trip_and_send_at_the_caps_worst_case() {
+    let rounds = setting("IRONAFS_MEASURE_ROUNDS", 1000, 1000);
+    let modes: &[bool] = match std::env::var("IRONAFS_MEASURE_CHURN").as_deref() {
+        Ok("none") => &[false],
+        Ok("routes") => &[true],
+        Err(std::env::VarError::NotPresent) => &[false, true],
+        _ => panic!("IRONAFS_MEASURE_CHURN must be none or routes"),
+    };
     worst_case();
-    let rounds = setting("IRONAFS_MEASURE_ROUNDS", 1000);
     let kernel = kernel();
     let request_socket = RouteSocket::request().unwrap();
     let notify = RouteSocket::notify().unwrap();
     let wake = Wake::new().unwrap();
     let mut buffer = vec![0_u8; BUFFER];
-    let (changes, fill) = calibrated(&notify, &wake, &mut buffer);
-    println!(
-        "measure q7 kernel={kernel} backlog_changes={changes} backlog_fill_bytes={fill} \
-         receive_buffer={}",
-        receive_buffer()
-    );
-    let mut sequence = 1_u32;
-    for churn in [false, true] {
-        let _churn = churn.then(Churn::start);
+
+    for &churn in modes {
+        // Keep sequence identities the same when either mode runs on its own.
+        let mut sequence = if churn {
+            1 + 3 * u32::try_from(rounds).unwrap()
+        } else {
+            1
+        };
+        let changes = if churn {
+            0
+        } else {
+            let (changes, fill) = calibrated(&notify, &wake, &mut buffer);
+            println!(
+                "measure q7 kernel={kernel} backlog_changes={changes} backlog_fill_bytes={fill} \
+                 receive_buffer={}",
+                receive_buffer()
+            );
+            changes
+        };
+        let active_churn = churn.then(Churn::start);
         let label = if churn { "routes" } else { "none" };
+        let mut dump_summaries = String::new();
         for (name, kind) in [("links", RTM_GETLINK), ("addresses", RTM_GETADDR)] {
             let mut times = Vec::new();
             let mut sends = Vec::new();
@@ -667,73 +717,88 @@ fn q7_and_q9_each_round_trip_and_send_at_the_caps_worst_case() {
                     None => failed += 1,
                 }
             }
-            println!(
+            writeln!(
+                dump_summaries,
                 "measure q7 kernel={kernel} churn={label} dump={name} objects={counted} \
-                 failed={failed} {}",
-                summary(&mut times)
-            );
-            println!(
-                "measure q9 kernel={kernel} churn={label} send=dump-{name} {}",
+                 failed={failed} {}\nmeasure q9 kernel={kernel} churn={label} send=dump-{name} {}",
+                summary(&mut times),
                 summary(&mut sends)
-            );
+            )
+            .unwrap();
         }
-        let mut times = Vec::new();
-        let mut sends = Vec::new();
-        let mut counts = BarrierCounts::default();
-        let mut fills = Vec::new();
+        let mut records = Vec::with_capacity(usize::try_from(rounds).unwrap());
         for _ in 0..rounds {
             sequence += 1;
-            let backlog = if churn { 0 } else { changes };
-            let BarrierRound {
-                outcome,
-                send_time,
-                fill,
-                overflowed,
-            } = barrier_round(&notify, &wake, &mut buffer, backlog, sequence);
-            sends.push(send_time);
-            fills.push(fill);
-            counts.record(&outcome, overflowed);
-            let outcome = match outcome {
-                BarrierOutcome::Acknowledged(time) => {
-                    times.push(time);
-                    "acknowledged"
-                }
-                BarrierOutcome::TimedOut => "timed_out",
-                BarrierOutcome::SendFailed => "send_failed",
-            };
-            println!(
-                "measure q7-round kernel={kernel} churn={label} sequence={sequence} \
-                 outcome={outcome} overflow_observed={overflowed} fill_bytes={fill} send_ns={send_time}"
-            );
+            records.push((
+                sequence,
+                barrier_round(&notify, &wake, &mut buffer, changes, sequence),
+            ));
         }
-        let BarrierCounts {
+        drop(active_churn);
+        print!("{dump_summaries}");
+
+        report_barriers(&kernel, label, records);
+    }
+}
+
+/// Report barrier evidence after the round loop and churn have ended.
+fn report_barriers(kernel: &str, label: &str, records: Vec<(u32, BarrierRound)>) {
+    let mut times = Vec::new();
+    let mut sends = Vec::new();
+    let mut counts = BarrierCounts::default();
+    let mut fills = Vec::new();
+    for (sequence, round) in records {
+        let BarrierRound {
+            outcome,
+            send_time,
+            fill,
+            pre_send_overflows,
             overflowed,
-            failed_with_overflow,
-            failed_without_overflow,
-        } = counts;
-        let failed = failed_with_overflow + failed_without_overflow;
-        fills.sort_unstable();
+        } = round;
+        sends.push(send_time);
+        fills.push(fill);
+        counts.record(&outcome, overflowed);
+        let outcome = match outcome {
+            BarrierOutcome::Acknowledged(time) => {
+                times.push(time);
+                "acknowledged"
+            }
+            BarrierOutcome::TimedOut => "timed_out",
+            BarrierOutcome::SendFailed => "send_failed",
+        };
         println!(
-            "measure q7 kernel={kernel} churn={label} barrier failed={failed} overflowed={overflowed} \
-             failed_with_observed_overflow={failed_with_overflow} \
-             failed_without_observed_overflow={failed_without_overflow} \
-             fill_min={} fill_max={} {}",
-            fills.first().copied().unwrap_or(0),
-            fills.last().copied().unwrap_or(0),
-            summary(&mut times)
-        );
-        println!(
-            "measure q9 kernel={kernel} churn={label} send=barrier {}",
-            summary(&mut sends)
+            "measure q7-round kernel={kernel} churn={label} sequence={sequence} \
+             outcome={outcome} pre_send_overflows={pre_send_overflows} \
+             overflow_observed={overflowed} fill_bytes={fill} send_ns={send_time}"
         );
     }
+    let BarrierCounts {
+        overflowed,
+        failed_with_overflow,
+        failed_without_overflow,
+    } = counts;
+    let failed = failed_with_overflow + failed_without_overflow;
+    fills.sort_unstable();
+    println!(
+        "measure q7 kernel={kernel} churn={label} barrier failed={failed} overflowed={overflowed} \
+         failed_with_observed_overflow={failed_with_overflow} \
+         failed_without_observed_overflow={failed_without_overflow} \
+         fill_min={} fill_max={} {}",
+        fills.first().copied().unwrap_or(0),
+        fills.last().copied().unwrap_or(0),
+        summary(&mut times)
+    );
+    println!(
+        "measure q9 kernel={kernel} churn={label} send=barrier {}",
+        summary(&mut sends)
+    );
 }
 
 #[test]
 #[ignore = "a measurement (spec Q8): as root in a network namespace of its own, with iproute2"]
 fn q8_every_report_is_explained_by_its_receive_over_overflows_and_churn() {
+    let seconds = setting("IRONAFS_MEASURE_SECONDS", 3600, 4800);
     ip("link set lo up");
-    let seconds = setting("IRONAFS_MEASURE_SECONDS", 3600);
     let kernel = kernel();
     let socket = RouteSocket::notify().unwrap();
     let wake = Wake::new().unwrap();
