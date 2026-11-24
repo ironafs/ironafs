@@ -66,13 +66,28 @@ compile_error!(
 );
 
 mod clock;
+// The open-descriptor count of the Linux kernel tests.
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+#[cfg(not(miri))]
+mod descriptors;
 mod dump;
+// The errno of the Miri stand-ins of `linux_udp6` and `linux_statvfs`.
+#[cfg(miri)]
+#[cfg(target_os = "linux")]
+mod stand_in_errno;
 // The descriptor-passing checks, used by `linux_fdpass` and by their tests
 // on every target.
 #[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 mod fdpass;
 mod peer;
 mod random;
+// The EINTR retry, used by the Linux sites and by the tests on every
+// target.
+#[cfg(any(test, target_os = "linux"))]
+mod retry;
+mod space;
+mod udp6;
 
 #[cfg(target_os = "linux")]
 mod linux_clock;
@@ -86,6 +101,10 @@ mod linux_fdpass;
 mod linux_peercred;
 #[cfg(target_os = "linux")]
 mod linux_random;
+#[cfg(target_os = "linux")]
+mod linux_statvfs;
+#[cfg(target_os = "linux")]
+mod linux_udp6;
 mod mem_wipe;
 #[cfg(target_os = "linux")]
 mod unix_nodump;
@@ -104,8 +123,14 @@ pub use linux_fdpass::{receive_fd, send_fd};
 pub use linux_peercred::peer_credentials;
 #[cfg(target_os = "linux")]
 pub use linux_random::fill_random;
+#[cfg(target_os = "linux")]
+pub use linux_statvfs::available_space;
+#[cfg(target_os = "linux")]
+pub use linux_udp6::udp6_socket;
 pub use mem_wipe::wipe;
 pub use peer::{PeerCredentials, PeerError};
 pub use random::RandomError;
+pub use space::SpaceError;
+pub use udp6::Udp6Error;
 #[cfg(target_os = "linux")]
 pub use unix_nodump::disable_dumps;

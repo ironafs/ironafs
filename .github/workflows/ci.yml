@@ -274,7 +274,7 @@ jobs:
       contents: read
     env:
       TARGET: ${{ matrix.target }}
-      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass
+      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs
       WITHHELD: ${{ matrix.withheld }}
       NATIVE_TESTS: >-
         linux_clock::tests::read_clock_boot_advances_and_never_goes_back
@@ -289,6 +289,10 @@ jobs:
         linux_peercred::tests::kernel::peer_credentials_refuse_a_reconnected_datagram_socket_of_a_pair
         linux_fdpass::tests::kernel::one_descriptor_arrives_close_on_exec_and_nothing_else_stays_open
         linux_fdpass::tests::kernel::three_descriptors_are_truncated_and_what_was_delivered_is_closed
+        linux_udp6::tests::kernel::an_ipv4_socket_bound_first_shares_its_port_with_this_one
+        linux_udp6::tests::kernel::a_port_held_by_another_ipv6_socket_is_in_use_and_nothing_stays_open
+        linux_statvfs::tests::kernel::the_answer_for_proc_is_what_stat_says
+        linux_statvfs::tests::kernel::the_answer_for_the_root_and_temporary_directories_is_what_stat_says
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -379,16 +383,64 @@ jobs:
           cargo --locked xtask check-os --self-test > check-os-self-test.log
           cat check-os-self-test.log
           grep -qx "caught: a site planted for a musl target alone (synthetic input: added to its build's file list): $TARGET" check-os-self-test.log
+      - name: Run linux-udp6's sandbox test under a filter that denies AF_INET6
+        # systemd's RestrictAddressFamilies answers a denied family's
+        # socket() with EAFNOSUPPORT (systemd.exec(5)), as the daemon's own
+        # unit would; the test binary runs as this user under it.
+        run: |
+          binary=$(cargo test -p ironafs-os --lib --target "$TARGET" --locked --no-run --message-format json \
+            | python3 -c 'import json, sys
+          for line in sys.stdin:
+              item = json.loads(line)
+              if item.get("reason") == "compiler-artifact" and item.get("executable") and item.get("profile", {}).get("test"):
+                  print(item["executable"])')
+          test -x "$binary"
+          sudo systemd-run --quiet --wait --pipe --collect -p User="$(id -un)" -p RestrictAddressFamilies='~AF_INET6' \
+            "$binary" --ignored --exact linux_udp6::tests::kernel::a_sandbox_that_denies_the_family_is_unsupported \
+            > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
+          cat sandbox.log
+          grep -q '^test result: ok\. 1 passed;' sandbox.log
+      - name: Run the filesystem tests of linux-statvfs on filesystems made for them
+        # A tmpfs of one mebibyte, and an ext4 that reserves 5% for its
+        # superuser (so a query of the wrong field is caught).
+        run: |
+          sudo mkdir -p /mnt/ironafs-tmpfs /mnt/ironafs-reserved
+          sudo mount -t tmpfs -o size=1m,mode=1777 tmpfs /mnt/ironafs-tmpfs
+          truncate -s 64M "$RUNNER_TEMP/reserved.img"
+          mkfs.ext4 -q -m 5 "$RUNNER_TEMP/reserved.img"
+          sudo mount -o loop "$RUNNER_TEMP/reserved.img" /mnt/ironafs-reserved
+          sudo chmod 1777 /mnt/ironafs-reserved
+          IRONAFS_OS_TEST_TMPFS=/mnt/ironafs-tmpfs IRONAFS_OS_TEST_RESERVED=/mnt/ironafs-reserved \
+            cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail --locked \
+            --run-ignored only -E 'test(/^linux_statvfs::/)' > statvfs.log 2>&1 || { cat statvfs.log; exit 1; }
+          cat statvfs.log
+          grep -q ' 2 passed' statvfs.log
+      - name: Run linux-udp6's kernel tests at bindv6only 0 and at 1, each in a network namespace of its own
+        # The value is set in the namespace and checked from inside the test
+        # run (an ignored test), so the port-sharing cases are known to have
+        # run at 0, where only IPV6_V6ONLY lets them pass.
+        run: |
+          for value in 0 1; do
+            sudo env "PATH=$PATH" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+              "TARGET=$TARGET" "IRONAFS_OS_TEST_BINDV6ONLY=$value" unshare --net -- sh -c '
+                sysctl -q -w net.ipv6.bindv6only="$IRONAFS_OS_TEST_BINDV6ONLY" && ip link set lo up &&
+                cargo nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 --no-tests fail \
+                  --locked --run-ignored all -E "test(/^linux_udp6::tests::kernel::/) - test(/sandbox/)"' \
+              > "udp6-$value.log" 2>&1 || { cat "udp6-$value.log"; exit 1; }
+            cat "udp6-$value.log"
+            grep -q ' 7 passed' "udp6-$value.log"
+          done
 
   os-linux-glibc-2-28:
     name: os-linux (glibc 2.28, ${{ matrix.target }})
     # The oldest glibc of the build goal (ADR 0004, L42, point 3; ADR 0005,
     # point 5.5): ironafs-os built and its tests run on AlmaLinux 8, on
     # each Linux architecture. Each lane proves the target it built and
-    # the runtime it ran on, and requires the named clock, random and wipe
-    # tests. The tests run under nextest, as everywhere else: some count
-    # this process's open descriptors, which holds only with a process to
-    # each test (libtest's threads share one). The conditional glibc 2.17
+    # the runtime it ran on, requires the named native tests of every site,
+    # and proves every site's declarations against glibc 2.28's headers.
+    # The tests run under nextest, as everywhere else: some count this
+    # process's open descriptors, which holds only with a process to each
+    # test (libtest's threads share one). The conditional glibc 2.17
     # artefact is not offered until it is qualified separately.
     strategy:
       fail-fast: false
@@ -417,12 +469,21 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       ARCH: ${{ matrix.arch }}
+      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs
       NATIVE_TESTS: >-
         linux_clock::tests::read_clock_boot_advances_and_never_goes_back
         linux_clock::tests::read_clock_awake_advances_and_never_goes_back
         linux_random::tests::fill_random_fills_buffers_of_each_size_the_sheet_names
         linux_random::tests::getrandom_reports_a_full_piece_of_at_most_256_bytes
         mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257
+        unix_nodump::tests::kernel::disable_dumps_reads_back_not_dumpable_and_zeroes_both_core_limits
+        linux_dontdump::tests::secret_buffer_new_advises_its_whole_block_through_the_call
+        linux_peercred::tests::kernel::peer_credentials_of_a_socket_pair_name_this_process_s_effective_ids
+        linux_fdpass::tests::kernel::one_descriptor_arrives_close_on_exec_and_nothing_else_stays_open
+        linux_udp6::tests::kernel::an_ipv4_socket_bound_first_shares_its_port_with_this_one
+        linux_udp6::tests::kernel::a_port_held_by_another_ipv6_socket_is_in_use_and_nothing_stays_open
+        linux_statvfs::tests::kernel::the_answer_for_proc_is_what_stat_says
+        linux_statvfs::tests::kernel::a_descriptor_that_is_not_a_directory_s_is_refused_and_nothing_stays_open
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -475,6 +536,30 @@ jobs:
           for test in $NATIVE_TESTS; do
             grep -Eq "PASS .* ironafs-os $test\$" nextest.log
           done
+      - name: Run ironafs-os's doctests on glibc 2.28
+        run: |
+          "$HOME/.cargo/bin/cargo" test -p ironafs-os --doc --target "$TARGET" --locked > doc.log 2>&1 || { cat doc.log; exit 1; }
+          cat doc.log
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' doc.log
+      - name: Prove the declarations against glibc 2.28's headers
+        # glibc 2.28's headers do not name SCM_PIDFD, so check-abi withholds
+        # linux-fdpass here (ADR 0005, sheet 14): the lane requires that
+        # verdict and no proof of the row, and a proof of every other site.
+        env:
+          WITHHELD: linux-fdpass
+        run: |
+          "$HOME/.cargo/bin/cargo" --locked xtask check-abi --target "$TARGET" > check-abi.log
+          cat check-abi.log
+          grep -q "^check-abi: $TARGET: the system's C compiler accepted " check-abi.log
+          for site in $SITES; do
+            case " $WITHHELD " in
+              *" $site "*)
+                grep -q "^check-abi: $TARGET: withheld $site: " check-abi.log
+                if grep -q "$site (" check-abi.log; then exit 1; fi
+                ;;
+              *) grep -q "$site (" check-abi.log ;;
+            esac
+          done
 
   miri:
     name: miri
@@ -521,6 +606,11 @@ jobs:
               linux_peercred::tests::peer_credentials_of_a_socket_pair_name_this_process \
               linux_fdpass::tests::a_sent_descriptor_arrives_as_a_new_descriptor_for_the_same_socket \
               fdpass::tests::accept_hands_out_only_the_valid_case_and_never_leaks_across_the_sweep \
+              linux_udp6::tests::stand_in::the_calls_are_socket_then_ipv6_only_set_to_one_then_bind \
+              linux_udp6::tests::stand_in::a_failed_option_leaves_the_socket_unbound \
+              linux_statvfs::tests::measure_queries_the_descriptor_s_filesystem_through_the_call \
+              linux_udp6::tests::stand_in::a_missing_family_and_an_address_in_use_are_told_apart_through_the_calls \
+              linux_statvfs::tests::stand_in::an_interrupted_query_is_made_again \
               linux_peercred::tests::stand_in::a_short_and_an_over_long_length_from_the_call_are_refused \
               linux_dontdump::tests::stand_in::a_failed_exclusion_hands_out_no_buffer \
               linux_dontdump::tests::stand_in::a_dropped_buffer_is_all_zero_when_its_memory_is_released \

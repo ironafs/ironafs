@@ -17,8 +17,19 @@
 //!
 //! - the size and alignment of each struct, and each field's offset, as
 //!   `repr(C)` lays them out for the target's data model;
-//! - each field's type, by a `_Generic` selection with no default, so a
-//!   field of the wrong type with the right size and offset fails;
+//! - each field's type, by a `_Generic` selection with no default over
+//!   the field's address (`T *`), so a field of the wrong type with the
+//!   right size and offset fails, and a C array member, which as a value
+//!   would decay to a pointer, never passes for a pointer field; an array
+//!   member (`[T; N]`) as `T (*)[N]`, so its element type and count are
+//!   both checked. A struct's last field may be an
+//!   opaque array of integers (its name starts `_opaque` and it is
+//!   private): space a C library fills with fields that are never read and
+//!   whose names differ between libraries or releases (`struct statvfs`'s
+//!   spares). Only a tail `OPAQUE_TAILS` approves, by row, struct, the C
+//!   member it follows, element and count, may be opaque; it is bound by
+//!   where that C member ends and by its length to the struct's end; a
+//!   struct of opaque fields alone is refused;
 //! - each constant's value, against its C name, or against the C
 //!   expression sites.json maps it to (`expressions`), for a value a macro
 //!   gives, such as `CMSG_LEN(sizeof(int))`;
@@ -85,13 +96,50 @@ const CHECK: &str = "check-abi";
 /// the compiler Cargo selects; `check-os`'s pinned runs use their own.
 pub(crate) const BUILD_DIR: &str = "xtask-check-os";
 
-/// A type as a declaration writes it: a name (its path's last segment) or
-/// a raw pointer.
+/// A type as a declaration writes it: a name (its path's last segment), a
+/// raw pointer, or an array (a struct member only, as `[T; N]`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CType {
     Named(String),
     Pointer { constant: bool, to: Box<CType> },
+    Array { of: Box<CType>, count: usize },
 }
+
+/// The prefix of an opaque field's name: the last field of a struct, an
+/// array, standing for space a C library fills with fields this crate
+/// never reads and names differently between libraries or releases
+/// (`struct statvfs`'s spare fields). Only a tail `OPAQUE_TAILS` approves
+/// may carry it; it is bound by where the C member before it ends and by
+/// its length to the struct's end, and the named fields before it keep
+/// their offsets and types.
+const OPAQUE: &str = "_opaque";
+
+/// An opaque tail this check approves: in `row`'s declarations,
+/// `structure`'s last field `field`, following the C member `after`, an
+/// array of `count` `element`s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OpaqueTail {
+    pub(crate) row: &'static str,
+    pub(crate) structure: &'static str,
+    pub(crate) field: &'static str,
+    pub(crate) after: &'static str,
+    pub(crate) element: &'static str,
+    pub(crate) count: usize,
+}
+
+/// The opaque tails approved, each a class S change of this check, never
+/// of a row's own inventory entry: `struct statvfs`'s 24 bytes after
+/// `f_namemax` (glibc 2.28 `int __f_spare[6]`, glibc 2.41 `unsigned int
+/// f_type` and `int __f_spare[5]`, musl `unsigned int f_type` and `int
+/// __reserved[5]`, measured).
+pub(crate) const OPAQUE_TAILS: &[OpaqueTail] = &[OpaqueTail {
+    row: "linux-statvfs",
+    structure: "statvfs",
+    field: "_opaque_tail",
+    after: "f_namemax",
+    element: "c_int",
+    count: 6,
+}];
 
 /// A `#[repr(C)]` struct and its fields in order.
 #[derive(Debug, PartialEq, Eq)]
@@ -124,6 +172,9 @@ pub(crate) struct Declarations {
     pub(crate) ffi_names: Vec<String>,
     /// Every import of the file, `core::ffi`'s included.
     pub(crate) imports: Vec<Import>,
+    /// The opaque tails `OPAQUE_TAILS` approves for the row: the only
+    /// fields that may be opaque.
+    pub(crate) opaque: Vec<OpaqueTail>,
 }
 
 /// The sizes of C's integer types on the target.
@@ -184,6 +235,12 @@ pub(crate) fn declarations(
         match ident(Some(token)).filter(|_| !token.raw) {
             Some("struct") => {
                 repr_c_only(tokens, at).map_err(|error| format!("line {line}: {error}"))?;
+                if public_opaque(tokens, at) {
+                    return Err(format!(
+                        "line {line}: an opaque field is private, so no code outside its \
+                         struct's module reads it"
+                    ));
+                }
                 let (item, next) = read_struct(tokens, at)
                     .ok_or_else(|| format!("line {line}: a struct that cannot be read"))?;
                 found.structs.push(item);
@@ -407,6 +464,19 @@ fn repr_c_only(tokens: &[Token], at: usize) -> Result<(), String> {
     }
 }
 
+/// Whether the struct at `at` gives an opaque field a visibility.
+fn public_opaque(tokens: &[Token], at: usize) -> bool {
+    let Some(close) = matching(tokens, at + 2, '{', '}') else {
+        return false;
+    };
+    let body = tokens.get(at + 3..close).unwrap_or_default();
+    body.iter().enumerate().any(|(index, token)| {
+        ident(Some(token)) == Some("pub")
+            && ident(body.get(skip_visibility(body, index)))
+                .is_some_and(|name| name.starts_with(OPAQUE))
+    })
+}
+
 /// Skips a visibility (`pub`, `pub(...)`) at `at`.
 fn skip_visibility(tokens: &[Token], mut at: usize) -> usize {
     if ident(tokens.get(at)) == Some("pub") {
@@ -423,6 +493,27 @@ fn skip_visibility(tokens: &[Token], mut at: usize) -> usize {
 
 /// Reads a type starting at `at`; returns it and the index after it.
 fn read_type(tokens: &[Token], at: usize) -> Option<(CType, usize)> {
+    if punct(tokens.get(at)) == Some('[') {
+        let (of, next) = read_type(tokens, at + 1)?;
+        if punct(tokens.get(next)) != Some(';') {
+            return None;
+        }
+        let digits = ident(tokens.get(next + 1))?;
+        if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let count = digits.parse().ok()?;
+        if punct(tokens.get(next + 2)) != Some(']') {
+            return None;
+        }
+        return Some((
+            CType::Array {
+                of: Box::new(of),
+                count,
+            },
+            next + 3,
+        ));
+    }
     if punct(tokens.get(at)) == Some('*') {
         let constant = match ident(tokens.get(at + 1))? {
             "const" => true,
@@ -654,6 +745,7 @@ fn c_name(found: &CType, declarations: &Declarations, model: DataModel) -> Resul
             Resolved::Struct(name) => Ok(format!("struct {name}")),
             Resolved::Alias(name, _) => Ok(name.to_owned()),
         },
+        CType::Array { .. } => Err(ARRAY_PLACE.to_owned()),
         CType::Pointer { constant, to } => {
             let base = c_name(to, declarations, model)?;
             Ok(if *constant {
@@ -663,6 +755,34 @@ fn c_name(found: &CType, declarations: &Declarations, model: DataModel) -> Resul
             })
         }
     }
+}
+
+/// Where an array may stand.
+const ARRAY_PLACE: &str = "an array is a struct member only, never a parameter or return type";
+
+/// The C type of a pointer to a struct member, which `_Generic` compares
+/// with the member's address: `T (*)[N]` for an array, so the element type
+/// and the count are checked; `T *` for any other member. The address,
+/// not the member's value: a value undergoes lvalue conversion, so a C
+/// array member would decay to a pointer and match a pointer field, and
+/// its top-level qualifiers would be dropped.
+fn member_check(
+    item: &str,
+    field: &str,
+    found: &CType,
+    declarations: &Declarations,
+    model: DataModel,
+) -> Result<String, String> {
+    if let CType::Array { of, count } = found {
+        let element = c_name(of, declarations, model)?;
+        return Ok(format!(
+            "_Generic(&((struct {item} *)0)->{field}, {element} (*)[{count}]: 1)"
+        ));
+    }
+    let spelled = c_name(found, declarations, model)?;
+    Ok(format!(
+        "_Generic(&((struct {item} *)0)->{field}, {spelled} *: 1)"
+    ))
 }
 
 /// What a type's name refers to.
@@ -762,6 +882,16 @@ fn layout(
 ) -> Result<(usize, usize), String> {
     match found {
         CType::Pointer { .. } => Ok((8, 8)),
+        CType::Array { of, count } => {
+            if *count == 0 {
+                return Err("an array of no elements, which C11 does not allow".to_owned());
+            }
+            let (size, align) = layout(of, declarations, model, depth)?;
+            let total = size
+                .checked_mul(*count)
+                .ok_or_else(|| "an array larger than memory".to_owned())?;
+            Ok((total, align))
+        }
         CType::Named(name) => match resolve(name, declarations)? {
             Resolved::Scalar("c_void") => Err("`c_void` has no size".to_owned()),
             Resolved::Scalar(name) => scalar(name, model)
@@ -807,6 +937,105 @@ fn struct_layout(
         align = align.max(field_align);
     }
     Ok((offset.next_multiple_of(align), align, offsets))
+}
+
+/// The assertions of one struct: its size and alignment, and each named
+/// field's offset and type; an approved opaque tail by where the C member
+/// before it ends and by the bytes from there to the struct's end.
+fn struct_assertions(
+    item: &Struct,
+    declarations: &Declarations,
+    model: DataModel,
+) -> Result<Vec<(String, String)>, String> {
+    let name = &item.name;
+    let (size, align, offsets) = struct_layout(item, declarations, model, 0)?;
+    let mut found = vec![
+        (
+            format!("sizeof(struct {name}) == {size}"),
+            format!("sizeof(struct {name})"),
+        ),
+        (
+            format!("_Alignof(struct {name}) == {align}"),
+            format!("_Alignof(struct {name})"),
+        ),
+    ];
+    let last = item.fields.len().saturating_sub(1);
+    if item
+        .fields
+        .iter()
+        .all(|(field, _)| field.starts_with(OPAQUE))
+        && !item.fields.is_empty()
+    {
+        return Err(format!(
+            "struct {name}: every member is opaque, so no member would be checked"
+        ));
+    }
+    for (index, ((field, field_type), offset)) in item.fields.iter().zip(offsets).enumerate() {
+        if field.starts_with(OPAQUE) {
+            let Some(tail) = declarations
+                .opaque
+                .iter()
+                .find(|tail| tail.structure == name && tail.field == field)
+            else {
+                return Err(format!(
+                    "struct {name}: `{field}` is opaque, but xtask's allowlist of opaque tails \
+                     does not approve it"
+                ));
+            };
+            let before = index
+                .checked_sub(1)
+                .and_then(|previous| item.fields.get(previous))
+                .map(|(previous, _)| previous.as_str());
+            if index != last
+                || before != Some(tail.after)
+                || !tail_array(field_type, tail, declarations)
+            {
+                return Err(format!(
+                    "struct {name}: the opaque tail `{field}` is the last field, after `{}`, and \
+                     {} of {}, as xtask's allowlist approves it",
+                    tail.after, tail.count, tail.element
+                ));
+            }
+            let (length, _) = layout(field_type, declarations, model, 0)?;
+            let after = tail.after;
+            found.push((
+                format!(
+                    "offsetof(struct {name}, {after}) + sizeof(((struct {name} *)0)->{after}) == \
+                     {offset}"
+                ),
+                format!("the start of {name}'s opaque tail"),
+            ));
+            found.push((
+                format!("sizeof(struct {name}) - {offset} == {length}"),
+                format!("the length of {name}'s opaque tail"),
+            ));
+            continue;
+        }
+        found.push((
+            format!("offsetof(struct {name}, {field}) == {offset}"),
+            format!("offsetof(struct {name}, {field})"),
+        ));
+        found.push((
+            member_check(name, field, field_type, declarations, model)?,
+            format!("type of {name}.{field}"),
+        ));
+    }
+    Ok(found)
+}
+
+/// Whether `found` is `tail`'s array: `count` of its integer `element`.
+fn tail_array(found: &CType, tail: &OpaqueTail, declarations: &Declarations) -> bool {
+    let CType::Array { of, count } = found else {
+        return false;
+    };
+    let CType::Named(element) = of.as_ref() else {
+        return false;
+    };
+    let resolved = match resolve(element, declarations) {
+        Ok(Resolved::Scalar(name)) => name.strip_prefix("core::ffi::").unwrap_or(name),
+        _ => return false,
+    };
+    *count == tail.count && resolved == tail.element
 }
 
 /// Which of `names` the row's headers, with its feature macros, do not
@@ -907,27 +1136,21 @@ pub(crate) fn c_source(
             ),
         }
     }
+    for tail in &declarations.opaque {
+        let held = declarations.structs.iter().any(|item| {
+            item.name == tail.structure && item.fields.iter().any(|(field, _)| field == tail.field)
+        });
+        if !held {
+            return Err(format!(
+                "xtask's allowlist approves the opaque tail `{}.{}`, which the declarations do \
+                 not hold",
+                tail.structure, tail.field
+            ));
+        }
+    }
     for item in &declarations.structs {
-        let name = &item.name;
-        let (size, align, offsets) = struct_layout(item, declarations, model, 0)?;
-        assert(
-            format!("sizeof(struct {name}) == {size}"),
-            format!("sizeof(struct {name})"),
-        );
-        assert(
-            format!("_Alignof(struct {name}) == {align}"),
-            format!("_Alignof(struct {name})"),
-        );
-        for ((field, field_type), offset) in item.fields.iter().zip(offsets) {
-            assert(
-                format!("offsetof(struct {name}, {field}) == {offset}"),
-                format!("offsetof(struct {name}, {field})"),
-            );
-            let spelled = c_name(field_type, declarations, model)?;
-            assert(
-                format!("_Generic(((struct {name} *)0)->{field}, {spelled}: 1)"),
-                format!("type of {name}.{field}"),
-            );
+        for (condition, what) in struct_assertions(item, declarations, model)? {
+            assert(condition, what);
         }
     }
     unmapped_expressions(expressions, declarations)?;
@@ -1118,6 +1341,10 @@ fn canonical(
                 CType::Pointer { constant, to } => Ok(CType::Pointer {
                     constant: *constant,
                     to: Box::new(walk(to, file, row)?),
+                }),
+                CType::Array { of, count } => Ok(CType::Array {
+                    of: Box::new(walk(of, file, row)?),
+                    count: *count,
                 }),
                 CType::Named(name) => {
                     if name.starts_with("core::ffi::") || PRIMITIVES.contains(&name.as_str()) {
@@ -1622,10 +1849,15 @@ fn prove_row(
     };
     let model = DataModel::of(target);
     let failed = |problem: String| Ok(Some(Proof::Failed(format!("{}: {problem}", row.id))));
-    let found = match row_declarations(crate_dir, &code.module, read, target)? {
+    let mut found = match row_declarations(crate_dir, &code.module, read, target)? {
         Ok(found) => found,
         Err(error) => return failed(error),
     };
+    found.opaque = OPAQUE_TAILS
+        .iter()
+        .filter(|tail| tail.row == row.id)
+        .copied()
+        .collect();
     if let Some(problem) = fact_problem(&row.id, code, &found, crate_dir, read, model, dir)? {
         return failed(problem);
     }

@@ -33,7 +33,8 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
-use crate::fdpass::{FdPassError, LINUX, Received, Rules, accept, retried, sent};
+use crate::fdpass::{FdPassError, LINUX, Received, Rules, accept, sent};
+use crate::retry::retried;
 use abi::{
     MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_NOSIGNAL, SCM_PIDFD, SCM_RIGHTS, SOL_SOCKET, cmsghdr, iovec,
     msghdr,

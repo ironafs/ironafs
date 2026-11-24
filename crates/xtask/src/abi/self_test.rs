@@ -32,7 +32,15 @@
 //!   `link_name`), a `packed` struct, a renaming import, a type alias, an
 //!   import under an attribute holding brackets (alone, and after a cfg,
 //!   which a nearest-bracket scan would drop), and a C type name not
-//!   imported from `core::ffi`.
+//!   imported from `core::ffi`; and by the generator, a live member
+//!   renamed opaque that xtask's allowlist does not approve, and a struct
+//!   of opaque members alone.
+//!
+//! On Linux a second fixture, `struct sockaddr` from `<sys/socket.h>`
+//! (whose `sa_data` is `char[14]` in glibc and musl, while macOS adds a
+//! length byte), must compile, and with its array's element type changed
+//! at the same size (`uint8_t`, which is not `char`) must fail at the
+//! array's assertion.
 //!
 //! The fixture's headers are Unix headers. On a Windows host, which has no
 //! row with a foreign item yet, the self-test says so and passes; the
@@ -72,6 +80,18 @@ const FIXTURE: &str = "use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong};\
                        \x20   fn strlen(s: *const c_char) -> usize;\n\
                        }\n";
 
+/// The Linux fixture of an array member, its header, and its plant.
+const ARRAY_FIXTURE: &str = "use core::ffi::{c_char, c_ushort};\n\
+                             #[repr(C)]\n\
+                             struct sockaddr {\n    sa_family: c_ushort,\n    sa_data: [c_char; 14],\n}\n";
+const ARRAY_HEADERS: &[&str] = &["sys/socket.h"];
+const ARRAY_PLANT: (&str, &str, &str, &str) = (
+    "an array member's element type changed at the same size",
+    "[c_char; 14]",
+    "[u8; 14]",
+    "->sa_data, uint8_t (*)[14]: 1",
+);
+
 /// The fixture's constants compared with a C expression, as sites.json's
 /// `expressions` maps a value a macro gives.
 const EXPRESSIONS: &[(&str, &str)] = &[("TIMESPEC_SIZE", "sizeof(struct timespec)")];
@@ -83,13 +103,13 @@ const COMPILER: &[(&str, &str, &str, &str)] = &[
         "a member type changed at the same size and offset",
         "tv_nsec: c_long",
         "tv_nsec: c_ulong",
-        "->tv_nsec, unsigned long: 1",
+        "->tv_nsec, unsigned long *: 1",
     ),
     (
         "a member's size changed",
         "tv_sec: c_long",
         "tv_sec: c_int",
-        "->tv_sec, int: 1",
+        "->tv_sec, int *: 1",
     ),
     (
         "a constant changed by one",
@@ -151,6 +171,18 @@ const UNNAMED_NAME: &str = "IRONAFS_CHECK_ABI_SELF_TEST_UNNAMED";
 /// Declarations the reader must refuse: the case, the text it replaces,
 /// and a phrase of the reader's error.
 const READER: &[(&str, &str, &str, &str)] = &[
+    (
+        "a live member renamed opaque, which the allowlist does not approve",
+        "    tv_nsec: c_long,\n",
+        "    _opaque_nsec: [c_long; 1],\n",
+        "allowlist of opaque tails does not approve it",
+    ),
+    (
+        "a struct of opaque members alone",
+        "struct timespec {\n    tv_sec: c_long,\n    tv_nsec: c_long,\n}",
+        "struct timespec {\n    _opaque: [c_long; 2],\n}",
+        "every member is opaque",
+    ),
     (
         "a type alias",
         "const EINTR",
@@ -222,9 +254,6 @@ enum Stage {
 ///
 /// Returns the first case that did not end as planted.
 pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
-    let report = |output: &mut dyn Write, line: String| {
-        writeln!(output, "{line}").map_err(Error::io("report check-abi self-test"))
-    };
     if cfg!(windows) {
         let (applies, host) = applies_here()?;
         if applies {
@@ -247,31 +276,11 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
             return Err(failure("the fixture", error));
         }
     }
-    for (index, (name, from, to, label)) in COMPILER.iter().enumerate() {
-        let planted = plant(name, from, to)?;
-        match stage(&planted, &dir.join(format!("compiler-{index}.c")))? {
-            Stage::Compiler(error, at) if at.contains(label) => {
-                report(output, format!("caught by the C compiler: {name}: {error}"))?;
-            }
-            Stage::Compiler(error, at) => {
-                return Err(failure(
-                    name,
-                    format!("the compiler failed at `{at}`, not at `{label}`: {error}"),
-                ));
-            }
-            Stage::Reader(error) | Stage::Generator(error) => {
-                return Err(failure(
-                    name,
-                    format!("stopped before the compiler, which it must reach: {error}"),
-                ));
-            }
-            Stage::Compiled => {
-                return Err(failure(name, "the C compiler accepted it".to_owned()));
-            }
-        }
-    }
+    array_fixture(dir, output)?;
+    let planted_count = compiler_stage(dir, output)?;
     char_sign_and_probe(dir, output)?;
     non_integer_aliases(dir, output)?;
+    array_as_pointer(dir, output)?;
     for (name, from, to, phrase) in READER {
         let planted = plant(name, from, to)?;
         match stage(&planted, &dir.join("reader.c"))? {
@@ -304,7 +313,7 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
              were refused by the reader, a missing fact was found, and a copy that leaves out \
              or adds a type alias was caught, as was a type taken from outside the row's \
              declaration files",
-            COMPILER.len() + 1 + NON_INTEGER.len(),
+            planted_count + 2 + NON_INTEGER.len(),
             READER.len()
         ),
     )
@@ -395,11 +404,10 @@ fn recorded_facts_case(output: &mut impl Write) -> Result<(), Error> {
             ));
         }
     }
-    writeln!(
+    report(
         output,
-        "caught: a type alias declared but not recorded, and one recorded but not declared"
+        "caught: a type alias declared but not recorded, and one recorded but not declared",
     )
-    .map_err(Error::io("report check-abi self-test"))
 }
 
 /// A row of four declaration files, read for a glibc target: each C
@@ -482,13 +490,12 @@ fn foreign_import_case(dir: &Path, output: &mut impl Write) -> Result<(), Error>
             Ok(_) => return Err(failure(CASE, format!("{import}: accepted"))),
         }
     }
-    writeln!(
+    report(
         output,
         "caught: a declaration's type imported from another module, an inactive re-export \
          beside a binding through an inline module, an inactive re-export alone, a nested \
-         import, an import under another cfg, and a glob"
+         import, an import under another cfg, and a glob",
     )
-    .map_err(Error::io("report check-abi self-test"))
 }
 
 fn declarations_of(
@@ -502,9 +509,6 @@ fn declarations_of(
 /// compiler must refuse, and the probe of qualified constants, which must
 /// report only the unnamed one.
 fn char_sign_and_probe(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
-    let report = |output: &mut dyn Write, line: String| {
-        writeln!(output, "{line}").map_err(Error::io("report check-abi self-test"))
-    };
     let (byte, label) = other_sign_byte();
     let name = "an alias of c_char naming a typedef of the other sign";
     let planted = plant(
@@ -560,9 +564,6 @@ const NON_INTEGER: &[(&str, &str, &str)] = &[
 /// Each of [`NON_INTEGER`]'s aliases, which pass the size, alignment and
 /// sign assertions, must fail at the integer-type assertion.
 fn non_integer_aliases(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
-    let report = |output: &mut dyn Write, line: String| {
-        writeln!(output, "{line}").map_err(Error::io("report check-abi self-test"))
-    };
     let label = "is an integer type other than _Bool";
     for (index, (name, typedef, alias)) in NON_INTEGER.iter().enumerate() {
         let planted = plant(name, "const EINTR", &format!("{alias}\nconst EINTR"))?;
@@ -580,9 +581,143 @@ fn non_integer_aliases(dir: &Path, output: &mut impl Write) -> Result<(), Error>
     Ok(())
 }
 
+/// Each compiler-stage plant must fail at its assertion; returns how many
+/// ran.
+fn compiler_stage(dir: &Path, output: &mut impl Write) -> Result<usize, Error> {
+    let compiler = compiler_cases()?;
+    let count = compiler.len();
+    for (index, case) in compiler.into_iter().enumerate() {
+        let Planted {
+            name,
+            source: planted,
+            headers,
+            expressions,
+            label,
+        } = case;
+        match stage_of(
+            &planted,
+            headers,
+            expressions,
+            &dir.join(format!("compiler-{index}.c")),
+            "",
+        )? {
+            Stage::Compiler(error, at) if at.contains(label) => {
+                report(output, format!("caught by the C compiler: {name}: {error}"))?;
+            }
+            Stage::Compiler(error, at) => {
+                return Err(failure(
+                    name,
+                    format!("the compiler failed at `{at}`, not at `{label}`: {error}"),
+                ));
+            }
+            Stage::Reader(error) | Stage::Generator(error) => {
+                return Err(failure(
+                    name,
+                    format!("stopped before the compiler, which it must reach: {error}"),
+                ));
+            }
+            Stage::Compiled => {
+                return Err(failure(name, "the C compiler accepted it".to_owned()));
+            }
+        }
+    }
+    Ok(count)
+}
+
+/// A C struct with an eight-byte array member, placed in the generated
+/// file, and its Rust declaration: with the array declared as one, it must
+/// compile; declared as a pointer, of the same size, alignment and offset
+/// on LP64, it must fail at the member's type assertion, which compares
+/// the member's address, so the array cannot decay to a pointer and match.
+fn array_as_pointer(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    const TYPEDEF: &str = "struct holder { long a; char b[8]; };";
+    const HOLDER: &str =
+        "#[repr(C)]\nstruct holder {\n    a: c_long,\n    b: [c_char; 8],\n}\nconst EINTR";
+    let name = "an array member declared as a pointer of the same size";
+    let label = "->b, char * *: 1";
+    let clean = plant(name, "const EINTR", HOLDER)?;
+    match stage_with(&clean, &dir.join("holder.c"), TYPEDEF)? {
+        Stage::Compiled => {}
+        Stage::Reader(error) | Stage::Generator(error) | Stage::Compiler(error, _) => {
+            return Err(failure(
+                name,
+                format!("the array itself was refused: {error}"),
+            ));
+        }
+    }
+    let planted = plant(
+        name,
+        "const EINTR",
+        &HOLDER.replacen("b: [c_char; 8]", "b: *mut c_char", 1),
+    )?;
+    match stage_with(&planted, &dir.join("holder-pointer.c"), TYPEDEF)? {
+        Stage::Compiler(error, at) if at.contains(label) => {
+            report(output, format!("caught by the C compiler: {name}: {error}"))
+        }
+        Stage::Compiler(error, _) | Stage::Reader(error) | Stage::Generator(error) => {
+            Err(failure(name, format!("not refused at `{label}`: {error}")))
+        }
+        Stage::Compiled => Err(failure(name, "the C compiler accepted it".to_owned())),
+    }
+}
+
+/// On Linux, the array fixture must compile.
+fn array_fixture(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    match stage_of(ARRAY_FIXTURE, ARRAY_HEADERS, &[], &dir.join("array.c"), "")? {
+        Stage::Compiled => report(output, "passed: the array fixture".to_owned()),
+        Stage::Reader(error) | Stage::Generator(error) | Stage::Compiler(error, _) => {
+            Err(failure("the array fixture", error))
+        }
+    }
+}
+
+/// One mismatch planted for the C compiler: its name, the planted
+/// declarations with their headers and expressions, and the assertion's
+/// label the compiler's error must carry.
+struct Planted {
+    name: &'static str,
+    source: String,
+    headers: &'static [&'static str],
+    expressions: &'static [(&'static str, &'static str)],
+    label: &'static str,
+}
+
+/// The compiler-stage plants: the fixture's, and on Linux the array
+/// fixture's.
+fn compiler_cases() -> Result<Vec<Planted>, Error> {
+    let mut cases = Vec::new();
+    for &(name, from, to, label) in COMPILER {
+        cases.push(Planted {
+            name,
+            source: plant(name, from, to)?,
+            headers: HEADERS,
+            expressions: EXPRESSIONS,
+            label,
+        });
+    }
+    if cfg!(target_os = "linux") {
+        let (name, from, to, label) = ARRAY_PLANT;
+        cases.push(Planted {
+            name,
+            source: plant_in(ARRAY_FIXTURE, name, from, to)?,
+            headers: ARRAY_HEADERS,
+            expressions: &[],
+            label,
+        });
+    }
+    Ok(cases)
+}
+
 fn plant(name: &'static str, from: &str, to: &str) -> Result<String, Error> {
-    if FIXTURE.contains(from) {
-        Ok(FIXTURE.replacen(from, to, 1))
+    plant_in(FIXTURE, name, from, to)
+}
+
+fn plant_in(fixture: &str, name: &'static str, from: &str, to: &str) -> Result<String, Error> {
+    if fixture.contains(from) {
+        Ok(fixture.replacen(from, to, 1))
     } else {
         Err(failure(
             name,
@@ -599,6 +734,17 @@ fn stage(source: &str, file: &Path) -> Result<Stage, Error> {
 /// [`stage`], with `typedefs` (C text) placed in the generated file after
 /// its preamble, before the first assertion.
 fn stage_with(source: &str, file: &Path, typedefs: &str) -> Result<Stage, Error> {
+    stage_of(source, HEADERS, EXPRESSIONS, file, typedefs)
+}
+
+/// [`stage_with`], for a fixture of its own `headers` and `expressions`.
+fn stage_of(
+    source: &str,
+    headers: &[&str],
+    expressions: &[(&str, &str)],
+    file: &Path,
+    typedefs: &str,
+) -> Result<Stage, Error> {
     let tokens = tokens_with_strings(source).map_err(|error| Error::SelfTest {
         check: CHECK,
         case: "reading the fixture",
@@ -608,8 +754,8 @@ fn stage_with(source: &str, file: &Path, typedefs: &str) -> Result<Stage, Error>
     if let Err(error) = declarations(&tokens, "C", &mut found) {
         return Ok(Stage::Reader(error));
     }
-    let headers: Vec<String> = HEADERS.iter().map(|header| (*header).to_owned()).collect();
-    let expressions: Vec<(String, String)> = EXPRESSIONS
+    let headers: Vec<String> = headers.iter().map(|header| (*header).to_owned()).collect();
+    let expressions: Vec<(String, String)> = expressions
         .iter()
         .map(|(name, expression)| ((*name).to_owned(), (*expression).to_owned()))
         .collect();
@@ -640,6 +786,11 @@ fn stage_with(source: &str, file: &Path, typedefs: &str) -> Result<Stage, Error>
 fn error_line(error: &str, file: &Path) -> Option<usize> {
     let rest = error.strip_prefix(&*file.to_string_lossy())?;
     rest.strip_prefix(':')?.split(':').next()?.parse().ok()
+}
+
+/// Writes one line of the self-test's report.
+fn report(output: &mut dyn Write, line: impl std::fmt::Display) -> Result<(), Error> {
+    writeln!(output, "{line}").map_err(Error::io("report check-abi self-test"))
 }
 
 fn failure(case: &'static str, why: String) -> Error {

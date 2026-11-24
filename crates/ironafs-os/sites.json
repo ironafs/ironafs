@@ -780,10 +780,120 @@
       "blocks": "one per call (three); one that adopts the descriptor (`OwnedFd::from_raw_fd`)",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved"
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented"
+      },
+      "code": {
+        "module": "linux_udp6",
+        "headers": [
+          "errno.h",
+          "sys/socket.h",
+          "netinet/in.h"
+        ],
+        "expressions": {
+          "OPTION_LENGTH": "sizeof(int)",
+          "SOCKADDR_IN6_SIZE": "sizeof(struct sockaddr_in6)"
+        },
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "socket",
+                "safe": false
+              },
+              {
+                "name": "setsockopt",
+                "safe": false
+              },
+              {
+                "name": "bind",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "abi::socket",
+            "arguments": [
+              "domain",
+              "kind",
+              "protocol"
+            ]
+          },
+          {
+            "kind": "adopt",
+            "operation": "OwnedFd::from_raw_fd",
+            "arguments": [
+              "descriptor"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::setsockopt",
+            "arguments": [
+              "descriptor",
+              "level",
+              "option",
+              "value",
+              "length"
+            ]
+          },
+          {
+            "kind": "call",
+            "operation": "abi::bind",
+            "arguments": [
+              "descriptor",
+              "address",
+              "length"
+            ]
+          }
+        ],
+        "impls": 0,
+        "c_facts": {
+          "structs": [
+            "sockaddr",
+            "in6_addr",
+            "sockaddr_in6"
+          ],
+          "constants": [
+            "AF_INET6",
+            "SOCK_DGRAM",
+            "SOCK_CLOEXEC",
+            "IPPROTO_IPV6",
+            "IPV6_V6ONLY",
+            "OPTION_LENGTH",
+            "SOCKADDR_IN6_SIZE",
+            "EAFNOSUPPORT",
+            "EADDRINUSE"
+          ],
+          "aliases": [
+            "socklen_t",
+            "sa_family_t",
+            "in_port_t"
+          ]
+        },
+        "stand_in": {
+          "functions": 3,
+          "blocks": [
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "pointer"
+              ]
+            },
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "pointer"
+              ]
+            }
+          ]
+        }
       }
     },
     {
@@ -796,10 +906,60 @@
       "blocks": "one",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved"
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented"
+      },
+      "code": {
+        "module": "linux_statvfs",
+        "headers": [
+          "sys/statvfs.h"
+        ],
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "fstatvfs",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "abi::fstatvfs",
+            "arguments": [
+              "fd",
+              "buffer"
+            ]
+          }
+        ],
+        "impls": 0,
+        "c_facts": {
+          "structs": [
+            "statvfs"
+          ],
+          "constants": [],
+          "aliases": [
+            "fsblkcnt_t",
+            "fsfilcnt_t"
+          ]
+        },
+        "stand_in": {
+          "functions": 1,
+          "blocks": [
+            {
+              "operation": "core::ptr::write",
+              "arguments": [
+                "buf",
+                "figures"
+              ]
+            }
+          ]
+        }
       }
     },
     {

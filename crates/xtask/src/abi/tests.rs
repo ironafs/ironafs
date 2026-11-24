@@ -4,8 +4,9 @@
 //! Tests for the declaration reader and the C it generates.
 
 use super::{
-    CType, DataModel, Declarations, Function, Recorded, Struct, c_source, canonical, declarations,
-    fact_differences, identity, object_macros, preamble, required_constants, scan_defines,
+    CType, DataModel, Declarations, Function, OPAQUE_TAILS, OpaqueTail, Recorded, Struct, c_source,
+    canonical, declarations, fact_differences, identity, object_macros, preamble,
+    required_constants, scan_defines,
 };
 use crate::rust_source::tokens_with_strings;
 
@@ -149,7 +150,7 @@ fn c_source_asserts_layout_member_types_constants_and_function_types() {
         "_Static_assert(sizeof(struct timespec) == 16, \"linux-clock: sizeof(struct timespec)\");",
         "_Static_assert(_Alignof(struct timespec) == 8, \"linux-clock: _Alignof(struct timespec)\");",
         "_Static_assert(offsetof(struct timespec, tv_nsec) == 8, \"linux-clock: offsetof(struct timespec, tv_nsec)\");",
-        "_Static_assert(_Generic(((struct timespec *)0)->tv_sec, long: 1), \"linux-clock: type of timespec.tv_sec\");",
+        "_Static_assert(_Generic(&((struct timespec *)0)->tv_sec, long *: 1), \"linux-clock: type of timespec.tv_sec\");",
         "_Static_assert(CLOCK_BOOTTIME == 7, \"linux-clock: CLOCK_BOOTTIME\");",
         "_Static_assert(NEGATIVE == -1, \"linux-clock: NEGATIVE\");",
         "_Static_assert(_Generic(&clock_gettime, int (*)(int, struct timespec *): 1), \"linux-clock: type of clock_gettime\");",
@@ -230,7 +231,7 @@ fn c_source_resolves_type_names_by_identity_not_spelling() {
     assert!(
         c_source("row", &[], &[], &[], &written_out, DataModel::Lp64)
             .unwrap()
-            .contains("_Generic(((struct ok *)0)->a, long: 1)")
+            .contains("_Generic(&((struct ok *)0)->a, long *: 1)")
     );
 }
 
@@ -324,7 +325,7 @@ fn c_source_names_an_alias_by_its_c_typedef_and_asserts_its_size_alignment_and_s
         "_Static_assert(_Alignof(rlim_t) == 8, \"unix-nodump: _Alignof(rlim_t)\");",
         "_Static_assert((rlim_t)-1 > 0, \"unix-nodump: rlim_t is unsigned\");",
         "_Static_assert(sizeof(struct rlimit) == 16, \"unix-nodump: sizeof(struct rlimit)\");",
-        "_Static_assert(_Generic(((struct rlimit *)0)->rlim_max, rlim_t: 1), \"unix-nodump: type of rlimit.rlim_max\");",
+        "_Static_assert(_Generic(&((struct rlimit *)0)->rlim_max, rlim_t *: 1), \"unix-nodump: type of rlimit.rlim_max\");",
         "_Static_assert(_Generic(&setrlimit, int (*)(int, const struct rlimit *): 1), \"unix-nodump: type of setrlimit\");",
     ] {
         assert!(
@@ -915,4 +916,185 @@ fn clock_boottime_is_a_required_fact_and_asserted_under_the_default_source() {
         Ok(())
     );
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn c_source_asserts_an_array_member_by_its_element_type_and_count() {
+    let found = read(
+        "use core::ffi::{c_char, c_ushort};\n\
+         #[repr(C)]\nstruct in6_addr { s6_addr32: [u32; 4] }\n\
+         #[repr(C)]\nstruct sockaddr { sa_family: c_ushort, sa_data: [c_char; 14] }\n\
+         #[repr(C)]\nstruct holder { family: c_ushort, address: in6_addr }\n",
+    );
+    let source = c_source("row", &[], &[], &[], &found, DataModel::Lp64).unwrap();
+    for line in [
+        "_Static_assert(sizeof(struct in6_addr) == 16, \"row: sizeof(struct in6_addr)\");",
+        "_Static_assert(_Alignof(struct in6_addr) == 4, \"row: _Alignof(struct in6_addr)\");",
+        "_Static_assert(_Generic(&((struct in6_addr *)0)->s6_addr32, uint32_t (*)[4]: 1), \"row: type of in6_addr.s6_addr32\");",
+        "_Static_assert(sizeof(struct sockaddr) == 16, \"row: sizeof(struct sockaddr)\");",
+        "_Static_assert(offsetof(struct sockaddr, sa_data) == 2, \"row: offsetof(struct sockaddr, sa_data)\");",
+        "_Static_assert(_Generic(&((struct sockaddr *)0)->sa_data, char (*)[14]: 1), \"row: type of sockaddr.sa_data\");",
+        "_Static_assert(offsetof(struct holder, address) == 4, \"row: offsetof(struct holder, address)\");",
+        "_Static_assert(sizeof(struct holder) == 20, \"row: sizeof(struct holder)\");",
+    ] {
+        assert!(
+            source.lines().any(|found| found == line),
+            "{line}\n{source}"
+        );
+    }
+}
+
+/// The tail every case below approves: `s`'s `_opaque`, two `c_int`s
+/// after `a`.
+const TAIL: OpaqueTail = OpaqueTail {
+    row: "row",
+    structure: "s",
+    field: "_opaque",
+    after: "a",
+    element: "c_int",
+    count: 2,
+};
+
+/// The declarations of `source`, with `tails` the opaque tails xtask's
+/// allowlist approves for its row.
+fn read_with_opaque(source: &str, tails: &[OpaqueTail]) -> Declarations {
+    let mut found = read(source);
+    found.opaque = tails.to_vec();
+    found
+}
+
+#[test]
+fn c_source_binds_an_opaque_tail_by_where_the_c_member_before_it_ends_and_its_length() {
+    let tail = OpaqueTail {
+        structure: "statvfs",
+        field: "_opaque_tail",
+        after: "f_namemax",
+        count: 6,
+        ..TAIL
+    };
+    let found = read_with_opaque(
+        "use core::ffi::{c_int, c_ulong};\n\
+         #[repr(C)]\nstruct statvfs { f_bsize: c_ulong, f_namemax: c_ulong, _opaque_tail: [c_int; 6] }\n",
+        &[tail],
+    );
+    let source = c_source("row", &[], &[], &[], &found, DataModel::Lp64).unwrap();
+    for line in [
+        "_Static_assert(sizeof(struct statvfs) == 40, \"row: sizeof(struct statvfs)\");",
+        "_Static_assert(offsetof(struct statvfs, f_namemax) == 8, \"row: offsetof(struct statvfs, f_namemax)\");",
+        "_Static_assert(offsetof(struct statvfs, f_namemax) + sizeof(((struct statvfs *)0)->f_namemax) == 16, \"row: the start of statvfs's opaque tail\");",
+        "_Static_assert(sizeof(struct statvfs) - 16 == 24, \"row: the length of statvfs's opaque tail\");",
+    ] {
+        assert!(
+            source.lines().any(|found| found == line),
+            "{line}\n{source}"
+        );
+    }
+    assert!(!source.contains("_opaque_tail"), "{source}");
+}
+
+#[test]
+fn c_source_refuses_an_opaque_field_the_allowlist_does_not_approve_as_written() {
+    let approved = "use core::ffi::{c_int, c_ulong};\n#[repr(C)]\nstruct s { b: c_ulong, a: c_ulong, _opaque: [c_int; 2] }\n";
+    for (source, tails, error) in [
+        (
+            // A live member renamed opaque, which the allowlist does not name.
+            approved,
+            &[][..],
+            "struct s: `_opaque` is opaque, but xtask's allowlist of opaque tails does not approve it",
+        ),
+        (
+            // The member before the tail removed and the tail grown over it:
+            // size, alignment and the other offsets unchanged.
+            "use core::ffi::{c_int, c_ulong};\n#[repr(C)]\nstruct s { b: c_ulong, _opaque: [c_int; 4] }\n",
+            &[TAIL][..],
+            "struct s: the opaque tail `_opaque` is the last field, after `a`, and 2 of c_int, as xtask's allowlist approves it",
+        ),
+        (
+            "use core::ffi::{c_int, c_ulong};\n#[repr(C)]\nstruct s { b: c_ulong, a: c_ulong, _opaque: [c_int; 3] }\n",
+            &[TAIL][..],
+            "struct s: the opaque tail `_opaque` is the last field, after `a`, and 2 of c_int, as xtask's allowlist approves it",
+        ),
+        (
+            "use core::ffi::{c_uint, c_ulong};\n#[repr(C)]\nstruct s { b: c_ulong, a: c_ulong, _opaque: [c_uint; 2] }\n",
+            &[TAIL][..],
+            "struct s: the opaque tail `_opaque` is the last field, after `a`, and 2 of c_int, as xtask's allowlist approves it",
+        ),
+        (
+            "use core::ffi::{c_int, c_ulong};\n#[repr(C)]\nstruct s { _opaque: [c_int; 2], a: c_ulong }\n",
+            &[TAIL][..],
+            "struct s: the opaque tail `_opaque` is the last field, after `a`, and 2 of c_int, as xtask's allowlist approves it",
+        ),
+        (
+            // A struct whose every member is opaque checks no member.
+            "use core::ffi::c_int;\n#[repr(C)]\nstruct s { _opaque: [c_int; 2] }\n",
+            &[TAIL][..],
+            "struct s: every member is opaque, so no member would be checked",
+        ),
+        (
+            approved,
+            &[
+                TAIL,
+                OpaqueTail {
+                    structure: "t",
+                    ..TAIL
+                },
+            ][..],
+            "xtask's allowlist approves the opaque tail `t._opaque`, which the declarations do not hold",
+        ),
+    ] {
+        assert_eq!(
+            c_source(
+                "row",
+                &[],
+                &[],
+                &[],
+                &read_with_opaque(source, tails),
+                DataModel::Lp64
+            )
+            .unwrap_err(),
+            error
+        );
+    }
+}
+
+#[test]
+fn the_allowlist_approves_only_statvfs_s_tail_after_f_namemax() {
+    assert_eq!(
+        OPAQUE_TAILS,
+        [OpaqueTail {
+            row: "linux-statvfs",
+            structure: "statvfs",
+            field: "_opaque_tail",
+            after: "f_namemax",
+            element: "c_int",
+            count: 6,
+        }]
+    );
+}
+
+#[test]
+fn declarations_refuse_an_opaque_field_others_can_reach() {
+    assert_eq!(
+        refused(
+            "use core::ffi::c_int;\n#[repr(C)]\nstruct s { a: c_int, pub(super) _opaque: [c_int; 2] }\n"
+        ),
+        "line 3: an opaque field is private, so no code outside its struct's module reads it"
+    );
+}
+
+#[test]
+fn c_source_refuses_an_array_parameter_and_a_zero_length_array() {
+    let parameter = read(
+        "use core::ffi::c_int;\n\
+         unsafe extern \"C\" { fn f(a: [c_int; 2]) -> c_int; }\n",
+    );
+    assert_eq!(
+        c_source("row", &[], &[], &[], &parameter, DataModel::Lp64).unwrap_err(),
+        "an array is a struct member only, never a parameter or return type"
+    );
+    let empty = read("use core::ffi::c_int;\n#[repr(C)]\nstruct s { a: c_int, b: [c_int; 0] }\n");
+    assert_eq!(
+        c_source("row", &[], &[], &[], &empty, DataModel::Lp64).unwrap_err(),
+        "an array of no elements, which C11 does not allow"
+    );
 }

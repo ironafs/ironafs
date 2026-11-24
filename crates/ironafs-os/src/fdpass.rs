@@ -294,17 +294,3 @@ pub(crate) fn sent(count: usize) -> Result<(), FdPassError> {
         Err(FdPassError::ShortSend(count))
     }
 }
-
-/// Makes `call` until it is not interrupted by a signal (`EINTR`).
-///
-/// # Errors
-///
-/// The first error that is not an interruption.
-pub(crate) fn retried(mut call: impl FnMut() -> io::Result<usize>) -> io::Result<usize> {
-    loop {
-        match call() {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            result => return result,
-        }
-    }
-}
