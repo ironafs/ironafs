@@ -972,10 +972,10 @@
       "blocks": "one per call (six); one that adopts a descriptor, a route socket's or the wake descriptor's (one private function)",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved"
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented"
       },
       "code": {
         "module": "linux_rtnetlink",
