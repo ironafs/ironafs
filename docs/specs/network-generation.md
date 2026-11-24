@@ -443,19 +443,27 @@ the text it applies.
      wait on a wake that is not its own (sheet 23: "Each thread that
      waits on a route socket has its own wake; no other thread waits on
      it or clears it").
-   - **Startup.** `spawn` starts each worker with a startup channel. A
-     worker makes its wake, sends its signal side (or the failure to
-     make it) back to `spawn`, then waits on its **start gate,** a
-     channel from `spawn` that delivers either "start" or "abort"; the
-     gate's sender dropped is an abort, so a `spawn` that fails or
-     unwinds releases it too. `spawn` sends "start" only when both
-     workers have started and both signal sides are installed in the
-     locked state, so each worker has its peer's signal side before its
-     first turn. If the second thread cannot be started, or either wake
-     cannot be made, `spawn` sends "abort" to every started worker, which
-     ends without a turn, joins them (none has entered a turn, so the
-     joins wait on no route call), stops the source, and fails, as it
-     does for a socket now.
+   - **Startup.** `spawn` starts each worker with a handoff channel. A
+     worker makes its wake and sends its signal side, or the failure to
+     make it, back to `spawn`; a handoff channel that disconnects
+     without either is a failure. The worker then waits on the **start
+     decision,** one cell shared by both workers, which `spawn` sets
+     once, to "start" or "abort", and which no worker sets. `spawn`
+     sets "start" only after both handoffs have succeeded, both signal
+     sides are installed in the locked state, and the handle that owns
+     both workers' join handles is built, so each worker has its peer's
+     signal side before its first turn. Until then a drop guard in
+     `spawn` holds the cell: if `spawn` fails or unwinds before "start"
+     is set, the guard sets "abort". Both workers read the same
+     decision, so neither can begin a turn while the other is aborted.
+     On "abort", each started worker ends without a turn; `spawn` joins
+     them (none has entered a turn, so the joins wait on no route call),
+     stops the source, and fails, as it does for a socket now. Once
+     "start" is set, the handle owns the workers, and anything after it
+     (an unwind included) ends through the handle's drop. The set of
+     started workers is fixed when the decision is set, and the
+     completion result (test 17) is set only after that and after every
+     started worker has ended.
    - **One monitor per process** `[OWN]`. `spawn` refuses to start a
      monitor while another one's state still exists in the process (a
      process-wide flag, set by `spawn` and cleared when the state is
@@ -525,7 +533,10 @@ the text it applies.
      move being told and before the publisher stores that move's value,
      so the move is never published. Every lock hold of a worker, the
      handle and the resume input ends by applying a request still
-     pending. So no lock is released with a request pending, and no
+     pending, then reading the stop: a worker whose hold stopped the
+     source (by that request, an eighth failure or exhaustion) ends
+     after the release, signalling its peer, and never goes on to a
+     send or a wait. So no lock is released with a request pending, and no
      request can arrive between the publisher's check and its store
      from another thread. `Monitor::is_stopped` is true only once the
      stop is applied; the pending request is read separately
@@ -583,7 +594,9 @@ the text it applies.
    released"):
    1. Clear its own wake.
    2. Take the lock. In this order, each step ending the hold early
-      where it says so:
+      where it says so (and, as every hold does, point 3, ending with a
+      last read of the stop: a hold whose own transitions stopped the
+      source ends its worker after the release):
       - If stopped, release and end.
       - Take a fresh sample. End, as expired, each of its own attempts
         whose deadline has passed or whose latched doubt has moved
@@ -591,9 +604,6 @@ the text it applies.
         attempts that way.
       - If its socket must be made again, register nothing: release,
         and go to step 3.
-      - If its socket instance has pending flags (step 7), register
-        nothing: release, and go to step 8, which resolves them before
-        any registration or another wait (point 7).
       - Read whether a dump (request worker) or a barrier (notify
         worker) is wanted with no attempt of its own live for it, and,
         with a valid sample, register it (point 6, item 2) and commit
@@ -615,10 +625,15 @@ the text it applies.
       deadlines and latches copied in step 2: if the sample failed, a
       deadline has passed, or the awake doubt count is above a latch,
       take the lock; if stopped, release and end; end each affected
-      attempt still live, as expired (once, point 6, item 7); release.
-      Then, with a valid sample, if that hold left work wanted of this
-      worker, start the turn again; otherwise compute the timeout from
-      the sample (point 5). With a failed sample, register nothing and
+      attempt still live, as expired (once, point 6, item 7), and apply
+      any request those transitions' hooks left pending; then read the
+      stop and the renewal state again, since an expiry can itself stop
+      the source (the eighth failure, or a hook's deferred drop) or mark
+      the socket to be made again; release. If the source stopped, end
+      (signalling the peer, point 3). If the socket must be made again,
+      go to step 3. Then, with a valid sample, if that hold left work
+      wanted of this worker, start the turn again; otherwise compute the
+      timeout from the sample (point 5). With a failed sample, register nothing and
       wait with the horizon: a failed sample never restarts the turn, so
       a clock that keeps failing leaves each worker waiting one horizon
       per turn, still receiving and handling notifications, not
@@ -630,22 +645,23 @@ the text it applies.
       - an error of the wait itself: point 7, then start the turn
         again;
       - the socket ready (readable, error or hangup), with or without
-        the wake: record the error and hangup flags as **pending** on
-        that socket instance; take the lock; if stopped, release and
-        end; end each attempt due as in step 2; release; then receive
-        (step 8). So the stop and every deadline change are handled
+        the wake: take the lock; if stopped, release and end; end each
+        attempt due as in step 2; record any error and hangup flags as
+        **pending** on that socket instance, in the locked state, which
+        holds off the barrier's publication until they are resolved
+        (point 7); read the stop again; release; then receive (step
+        8). So the stop and every deadline change are handled
         before the socket is read (sheet 23: "the worker handles the
         stop and any deadline change before it receives from the
         socket").
    8. Receive, taking the lock for each outcome (point 6 for a
-      datagram, point 7 for a pending flag the receive does not
-      explain), until the first of: "nothing queued"; `RECEIVE_BATCH`
-      receives in this turn; a loss that makes the socket again; a stop;
-      "interrupted". Then start the turn again. Pending flags stay
-      pending across that return, an "interrupted" receive included,
-      and select the next turn's action (step 2), until a receive
-      outcome on the same socket instance resolves them (point 7); they
-      are dropped only with the instance.
+      datagram, point 7 for pending flags), until the first of:
+      "nothing queued"; `RECEIVE_BATCH` receives in this turn; a loss
+      that makes the socket again; a stop; "interrupted". Then start the
+      turn again. With flags pending, the first receive's outcome,
+      whatever it is ("interrupted" included), resolves them in its own
+      hold (point 7), so no flag outlives the turn that recorded it and
+      no retry loop follows it.
       `RECEIVE_BATCH` is a named constant of `ironafs-net`, 16
       datagrams `[OWN]`: large enough that one turn drains an ordinary
       burst, small enough that a notify socket that never empties still
@@ -842,31 +858,44 @@ the text it applies.
      followed by a receive. `POLLERR` is explained only by an error
      return of that receive: `ENOBUFS` takes the overflow path above, and
      any other error is a failed receive. `POLLHUP` is explained by no
-     receive outcome." The flags stay pending (point 4, steps 2 and 8):
-     the next turn, after its stop and deadline checks, receives before
-     it registers anything or waits again. A pending `POLLERR` stays
-     pending across an "interrupted" receive, and the receive is made
-     again on the next turn, with no new readiness report needed. A
-     pending `POLLHUP` is resolved by the first receive outcome,
-     "interrupted" included, since no outcome explains it. A flag the
-     resolving outcome does not explain, and `POLLHUP` always, is a
-     failed receive on that socket: a datagram received with it is not
-     applied, and:
-     - on the notify socket it is a loss (failed, section 7: consumers
-       told at once, the socket made again before any snapshot);
-     - on the request socket, with a dump attempt live, that attempt
-       ends as receive failed (counted, section 7's request-socket row),
+     receive outcome." The flags are recorded under the lock in step
+     7's hold and resolved by the first receive's outcome, in that
+     outcome's own hold (point 4, step 8):
+     - `ENOBUFS` after `POLLERR` takes the overflow path (on the notify
+       socket a loss, overflow; on the request socket a failed dump,
+       section 7);
+     - any other outcome, "interrupted" included (it is an error return
+       other than `ENOBUFS`, which the sheet makes "a failed receive"),
+       and any outcome at all after `POLLHUP`, is a failed receive on
+       that socket: a datagram received with it is not applied.
+     A failed receive, and so a resolution, is in every case:
+     - on the notify socket, a loss (failed, section 7: consumers told
+       at once, the socket made again before any snapshot);
+     - on the request socket, with a dump attempt live, that attempt's
+       end as receive failed (counted, section 7's request-socket row),
        which withholds the generation and restarts the snapshot, and the
-       socket is made again before the next dump;
-     - on the request socket with no dump attempt live, it is a loss of
-       the request socket, not counted: under the lock the generation is
+       socket made again before the next dump;
+     - on the request socket with no dump attempt live, a loss of the
+       request socket, not counted: under the lock the generation is
        withheld and every consumer told at once (as for any loss, 5.7,
        point 6), the snapshot in progress, if any, is abandoned (a live
-       barrier with it, so it cannot publish), and the socket is marked
-       to be made again; the fresh snapshot's first dump waits for that
-       renewal (step 2's order). So no generation stays readable across
-       the fault (sheet 23: "consumers are invalidated at once, and the
-       socket is made again, before any snapshot can publish").
+       barrier with it), and the socket is marked to be made again; the
+       fresh snapshot's first dump waits for that renewal (step 2's
+       order).
+     So every resolution of a flag withholds the generation and
+     abandons the snapshot in progress (sheet 23: "consumers are
+     invalidated at once, and the socket is made again, before any
+     snapshot can publish").
+   - **Publication is held off while a flag is pending.** Between step
+     7's hold, which records the flags, and the hold that resolves them,
+     the other worker may take the lock. While flags are pending on
+     either socket instance, no barrier is accepted: a datagram that
+     would accept it is handled as if no barrier were live (its
+     notifications applied, the acknowledgement skipped), and the
+     barrier stays live, to be abandoned by the resolution, which the
+     list above shows abandons the snapshot in every case. So no
+     snapshot publishes across a recorded fault, and the skipped
+     acknowledgement loses nothing.
    - This fails closed whatever the kernel does, so the code does not
      wait on the measurement; whether an unexplained flag happens at
      all is UNVERIFIED (section 13, Q8).
@@ -1049,24 +1078,33 @@ the text it applies.
         the wake is kept, the source does not stop, and it is counted
         once; eight in a row with no snapshot completed stop the source.
         Separately, a failed clear and a failed signal stop it at once.
-    26. `POLLERR` followed by an interrupted receive: the flag stays
-        pending, the next turn receives again before registering or
-        waiting, with no new readiness report from the scripted wait,
-        and resolves it. `POLLHUP` followed by an interrupted receive: a
-        failed receive at once, after the stop and deadline checks.
+    26. `POLLERR` followed by an interrupted receive, and `POLLHUP`
+        followed by an interrupted receive: each is a failed receive at
+        once, after the stop and deadline checks, with the socket made
+        again; the scripted receive keeps interrupting past the live
+        attempt's expiry, and recovery still proceeds (no turn receives
+        for that flag again).
     27. A datagram on the notify socket with notifications and no record
         of the live barrier's sequence, followed by the acknowledgement
         in a later datagram: the first is applied as notifications and
         neither refuses nor accepts the barrier; the second publishes.
-    28. A readable generation, no dump attempt live, and an unexplained
-        flag on the request socket: reads fail at once, every consumer
-        is told, nothing is counted, a barrier in progress cannot
-        publish, and the next dump is sent only on the renewed socket.
-    29. Startup: the second thread fails to start, and separately the
-        second worker's wake cannot be made: the first worker receives
-        "abort" and ends without a turn, `spawn` joins it, stops the
-        source and fails, and the completion result is set. A `spawn`
-        that unwinds drops the gate's sender, which aborts too.
+    28. An idle source with a readable generation and no dump attempt
+        live, then an unexplained flag on the request socket: reads fail
+        at once, every consumer is told, nothing is counted, and the
+        next dump is sent only on the renewed socket.
+    32. An unavailable source with a live barrier and no dump attempt
+        live: the request worker records `POLLHUP` in step 7's hold; the
+        barrier's acknowledgement then reaches the notify worker before
+        the request worker's receive resolves the flag. Nothing
+        publishes; the acknowledgement is skipped; the resolution
+        abandons the snapshot; the next snapshot publishes normally.
+    29. Startup: the second thread fails to start; the second worker's
+        wake cannot be made; a handoff channel disconnects; and `spawn`
+        unwinds after the first worker's handoff and before "start":
+        in each, both started workers read "abort" and end without a
+        turn, `spawn` joins them, stops the source and fails, and the
+        completion result is set once both have ended. No worker begins
+        a turn before "start".
     30. One monitor per process: a second `spawn` is refused while a
         monitor's state exists, and allowed once it is dropped. The
         drop's comparison is tested on its own: a mark naming another
@@ -1074,6 +1112,9 @@ the text it applies.
     31. A stop that lands between a send's commit and its call: the
         send is made, its outcome is discarded, and the worker ends at
         its next lock hold.
+    33. An expiry in step 5 that is the eighth failure, and one whose
+        hook drops the handle: the worker ends after that hold, signals
+        its peer, and does not wait the horizon.
     The Linux tests of section 10, point 4, stay, and gain: the
     handle's drop on an idle host returns. The rebuild also moves the
     burst in `ironafs-os`'s kernel test
