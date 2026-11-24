@@ -446,7 +446,14 @@ the text it applies.
    - **Startup.** `spawn` starts each worker with a handoff channel. A
      worker makes its wake and sends its signal side, or the failure to
      make it, back to `spawn`; a handoff channel that disconnects
-     without either is a failure. The worker then waits on the **start
+     without either is a failure. **A handoff send never waits:** each
+     handoff channel has room for its one message, and each worker
+     sends on it exactly once, so the send completes whether or not
+     `spawn` still holds the receiver (a send to a dropped receiver
+     returns at once with the message refused, and the worker ends).
+     This rule is chosen over dropping the receivers before the joins
+     `[OWN]` because it removes the wait itself rather than ordering
+     around it. The worker then waits on the **start
      decision,** one cell shared by both workers, which `spawn` sets
      once, to "start" or "abort", and which no worker sets.
      **Until "start", the join handles belong to `spawn`'s startup
@@ -460,6 +467,12 @@ the text it applies.
      every exit before that step (a failure returned, or an unwind) the
      guard's drop first sets "abort", which releases every worker still
      waiting at the decision, and only then joins the workers it holds.
+     **No join waits on a send or on the decision:** before "start" a
+     worker is only ever making its wake (a call that does not wait),
+     sending its handoff (which never waits, above), or waiting on the
+     decision (which "abort", set before the first join, ends); after
+     any of these it ends. So each join waits only for a worker that is
+     already ending.
      Both workers read the same decision, so neither can begin a turn
      while the other is aborted, and none has entered a turn, so the
      joins wait on no route call. `spawn` then stops the source and
@@ -1126,7 +1139,11 @@ the text it applies.
         each: no worker enters a turn; every worker still waiting at the
         decision reads "abort"; "abort" is set before any join begins;
         `spawn` stops the source and fails; and the completion result is
-        set once every worker that actually started has ended.
+        set once every worker that actually started has ended. A further
+        case aborts while a worker's handoff send is in progress, the
+        guard still holding or already having dropped that receiver: the
+        send completes without waiting, the worker reads "abort" or sees
+        its message refused and ends, and the join returns.
     30. One monitor per process: a second `spawn` is refused while a
         monitor's state exists, and allowed once it is dropped. The
         drop's comparison is tested on its own: a mark naming another
