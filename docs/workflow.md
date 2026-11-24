@@ -73,7 +73,7 @@ included). Code is written only through the codex CLI.
 | **Implementer** | Claude Code subagents, Opus 5.5 | Dispatched by the controller, one task at a time, with a written brief, test first. The default from M2a: the designs are Claude-written, so Claude implementing keeps one author family and leaves GLM and GPT free for the required and security seats. |
 | **Implementer for extra capacity** | codex CLI, `gpt-6.2-sol` | `codex exec` with a written brief, on a task separate from Claude's; `medium` effort for mechanical I/P work, `high` for S and R. Its seats exclude OpenAI and the design's family. |
 | **Implementer when codex is out of quota** | agy CLI (Gemini) | Same brief; a session allowlist that denies git. Brief paths must sit inside `--add-dir`. |
-| **First reviewer of implemented code** | GLM 5.3 (`glm-review`) | Headless Claude Code on Z.ai's endpoint, read-only. |
+| **First reviewer of implemented code** | GLM 5.4 (`glm-review`) | Headless Claude Code on Z.ai's endpoint, read-only. |
 | **Second family when the class needs two** | GPT read-only, Gemini Carbon via agy (`gemini-review`), DeepSeek (`deepseek-review`) or a Claude seat, whichever wrote none of the change and is not already the first reviewer | DeepSeek off-peak only (not Mon–Fri 01–04 or 06–10 UTC). |
 | **Design, rulings, research, refutations on work codex did not write** | GPT read-only: `codex exec -s read-only -m gpt-6.2-sol - < brief.md`; `-m gpt-6.2-astra -c model_reasoning_effort=xhigh` for the strongest row (§2, "Model routing"); either may run through `openai_lane.py` on the API credit (above) | GLM second when a second view is needed. |
 | **Claude seats** (review, reproduction, hard judgement, security) | Claude Code subagents: Opus by default; Mythos 5.2 (`claude-mythos-5-2`, Claude Code's `fable` alias) for the strongest row of §2's "Model routing", including every Claude security review | Never a required seat on Claude-written work. |
@@ -241,11 +241,11 @@ every other model pin in this file, `AI.md` and the skills.
 | Seat | GPT | Claude | Gemini | GLM | DeepSeek |
 |---|---|---|---|---|---|
 | **Light:** optional helpers | `gpt-6.2-sol`, medium | Haiku (`claude-haiku-5-5`) | `gemini-3.8-flash-medium` | `glm-5.3-flash` | `deepseek-flash`, default |
-| **Light:** research gathering | `gpt-6.2-sol`, medium | Sonnet (`claude-sonnet-5-5`) | `gemini-4-argon-medium` | `glm-5.3`, high | `deepseek-flash`, default |
+| **Light:** research gathering | `gpt-6.2-sol`, medium | Sonnet (`claude-sonnet-5-5`) | `gemini-4-argon-medium` | `glm-5.4`, high | `deepseek-flash`, default |
 | Class I and P implementation (`high` where it is not mechanical) | `gpt-6.2-sol`, medium (extra capacity) | Opus (`claude-opus-5-5`), the default implementer | `gemini-4-carbon-medium` (when codex is out of quota) | — | — |
-| Class I and P required reviews, P contracts, refutations and verifications on I and P work, research synthesis that is not load-bearing | `gpt-6.2-sol`, high | Opus (`claude-opus-5-5`) | `gemini-4-carbon-medium` | `glm-5.3`, high | `deepseek-flash`, default |
+| Class I and P required reviews, P contracts, refutations and verifications on I and P work, research synthesis that is not load-bearing | `gpt-6.2-sol`, high | Opus (`claude-opus-5-5`) | `gemini-4-carbon-medium` | `glm-5.4`, high | `deepseek-flash`, default |
 | Class S and R implementation | `gpt-6.2-sol`, high (extra capacity) | Opus (`claude-opus-5-5`), the default implementer | `gemini-4-carbon-high` (when codex is out of quota) | — | — |
-| Ordinary class S and R reviews, S design review before code, refutations on S and R work, reproduction, the consistency pass | `gpt-6.2-sol`, xhigh | Opus (`claude-opus-5-5`) | `gemini-4-carbon-high` | `glm-5.3`, high | `deepseek-flash`, default |
+| Ordinary class S and R reviews, S design review before code, refutations on S and R work, reproduction, the consistency pass | `gpt-6.2-sol`, xhigh | Opus (`claude-opus-5-5`) | `gemini-4-carbon-high` | `glm-5.4`, high | `deepseek-flash`, default |
 | **Strongest:** the judgement seat, security reviews, class R designs, format freezes, architecture ADRs, promoted implementation, synthesis of a load-bearing research question | `gpt-6.2-astra`, xhigh | Mythos 5.2 (`claude-mythos-5-2`) | `gemini-4-carbon-high`, where eligible; `gemini-4-carbon-medium` for security reviews and security disputes | `glm-5.3`, max | `deepseek-flash`, max, where eligible |
 
 - **Precedence.** A seat in the strongest row never runs on a lower tier; if
