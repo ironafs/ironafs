@@ -1801,10 +1801,10 @@ fn check_target(
     }
     if (musl || mode == Mode::LegacyGlibc228) && incomplete.len() != 1 {
         violations.push(format!(
-            "{target}: expected one {} result for {}: MISSING {}",
+            "{target}: expected one {} result for {}, found {} incomplete results",
             if musl { "withheld" } else { "partial" },
             qualified::FDPASS_ROW,
-            qualified::PIDFD
+            incomplete.len()
         ));
     }
     if !violations.is_empty() {

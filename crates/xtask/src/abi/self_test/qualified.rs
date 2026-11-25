@@ -4,7 +4,8 @@
 //! Compiler fixtures for the qualified socket name and its evidence rules.
 
 use super::{declarations_of, failure, plant_in, report};
-use crate::abi::{Declarations, Mode, Proof, prove_declarations, prove_withheld};
+use crate::abi::qualified::baseline;
+use crate::abi::{Declarations, Mode, Proof, compile, prove_declarations, prove_withheld};
 use crate::os::inventory::{Code, Row};
 use crate::rust_source::tokens_with_strings;
 use crate::{Error, fixture};
@@ -54,7 +55,7 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
     };
     let gnu = format!("{BASE}{AARCH64}{GLIBC}{CONTROLS}");
     gnu_lanes(&row, code.clone(), &header, &gnu, dir)?;
-    baseline_controls(&row, code.clone(), &header, &gnu, dir)?;
+    baseline_controls(&row, code.clone(), &header, &gnu, dir, output)?;
     row.code = Some(code);
     musl_lane(&mut row, &header, dir)?;
     report(
@@ -171,6 +172,7 @@ fn baseline_controls(
     header: &Path,
     gnu: &str,
     dir: &Path,
+    output: &mut impl Write,
 ) -> Result<(), Error> {
     for (case, contents, expected) in [
         (
@@ -219,19 +221,48 @@ fn baseline_controls(
             expected,
         )?;
     }
-    code.defines.clear();
-    for (case, feature) in [
-        ("missing GNU feature define", ""),
-        ("late GNU feature define", "#define _GNU_SOURCE 1\n"),
-    ] {
-        fixture::write_file(header, &format!("{gnu}{feature}"))?;
-        refused(
-            case,
-            &prove_gnu(row, &code, dir, DECLARATIONS, Mode::LegacyGlibc228)?,
-            "_GNU_SOURCE",
-        )?;
+    let case = "late GNU feature define";
+    let glibc = plant_in(
+        GLIBC,
+        case,
+        "#define __USE_GNU 1\n",
+        "#if defined(_GNU_SOURCE)\n#define __USE_GNU 1\n#endif\n",
+    )?;
+    fixture::write_file(header, &format!("{AARCH64}{glibc}{CONTROLS}"))?;
+    let source =
+        baseline(row, &code, GNU, Mode::LegacyGlibc228).map_err(|error| failure(case, error))?;
+    if let Err(error) = compile(&source, &dir.join("fdpass-early-gnu.c"))? {
+        return Err(failure(case, format!("the early define failed: {error}")));
     }
-    Ok(())
+    let define = "#define _GNU_SOURCE 1\n";
+    let include = format!("#include <{}>\n", header.display());
+    let late = plant_in(&source, case, define, "")?;
+    let late = plant_in(&late, case, &include, &format!("{include}{define}"))?;
+    match compile(&late, &dir.join("fdpass-late-gnu.c"))? {
+        Err(error)
+            if error.contains("the socket baseline requires __USE_GNU after the glibc headers") =>
+        {
+            report(
+                output,
+                format!("passed: early GNU feature define; caught a late define: {error}"),
+            )?;
+        }
+        Err(error) => {
+            return Err(failure(
+                case,
+                format!("refused for another reason: {error}"),
+            ));
+        }
+        Ok(()) => return Err(failure(case, "the late define compiled".to_owned())),
+    }
+
+    code.defines.clear();
+    fixture::write_file(header, gnu)?;
+    refused(
+        "missing GNU feature define",
+        &prove_gnu(row, &code, dir, DECLARATIONS, Mode::LegacyGlibc228)?,
+        "the socket baseline requires _GNU_SOURCE before the headers",
+    )
 }
 
 /// The approved-only socket row needs a conclusive result from its headers.
