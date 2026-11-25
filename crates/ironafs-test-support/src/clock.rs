@@ -404,6 +404,7 @@ impl SeededClock {
         if cancel.is_set() {
             return Some(Waited::Cancelled);
         }
+        let raised = signal.is_set();
         let mut state = self.state();
         let passed = match (deadline.boot_at(), deadline.awake_at()) {
             (Some(at), _) => state
@@ -419,7 +420,7 @@ impl SeededClock {
             Err(_) => Some(Waited::ClockFailed),
             Ok((_, doubt)) if doubt > deadline.latched_doubt() => Some(Waited::ClockFailed),
             Ok((true, _)) => Some(Waited::DeadlinePassed),
-            Ok((false, _)) if signal.is_set() => Some(Waited::Signalled),
+            Ok((false, _)) if raised => Some(Waited::Signalled),
             Ok((false, _)) => None,
         }
     }

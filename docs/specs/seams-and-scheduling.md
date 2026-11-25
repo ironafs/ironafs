@@ -822,16 +822,25 @@ encoding is the simulator's specification's.
    [OWN: the protocol closes the lost-wake gap that a flag and a
    condition variable leave between the check and the sleep.]
 
-4. **Outcome precedence,** evaluated once per wake, in this order:
-   `Cancelled` if the cancel token has fired; else `ClockFailed` if the
-   deadline's clock cannot be read or its doubt count is above the
-   deadline's latched count (point 2); else `DeadlinePassed` if the clock
-   reads at or past the deadline; else `Signalled` if the signal is raised. A
-   value published after the deadline passed therefore never wins a wait
-   [OWN: a late answer must never look like a timely one, C46, point 4].
-   Whether a result recorded before the deadline wins is decided by the
-   owner of that result, not by the wait: for `Rpc`, the call owner
-   (5.4, point 4).
+4. **Wait evaluation.** Each evaluation first checks the cancel token. If
+   it has fired, return `Cancelled` without observing the signal or the
+   clock. Otherwise take a snapshot of the signal's flag with neither the
+   clock's state lock nor the waker's mutex held. Then observe the
+   deadline's clock and its doubt count together once.
+
+   A failed clock read or a doubt count above the deadline's latched
+   count (point 2) gives `ClockFailed`. Otherwise a reading at or past the
+   deadline gives `DeadlinePassed`. Otherwise a raised snapshot gives
+   `Signalled`. With no outcome yet, follow the wait protocol in point 3.
+
+   `Signalled` requires a raised snapshot followed by a valid, unexpired
+   clock observation. While the deadline's clock does not go back, the
+   snapshot therefore precedes the deadline. If the awake clock goes back
+   below a deadline it had already passed, the wait can return
+   `Signalled`: the regression moves only the boot doubt count (point 2).
+   A raised flag gives no evidence of which publication raised it. The
+   result's owner decides which result wins and whether it met the
+   deadline, for `Rpc` the call owner (5.4, point 4 and C46, point 4).
 
 5. **The primitives,** in `ironafs-sync`, flags and bounded storage over
    `Clock::wait`, the same code in production and under the simulator:
