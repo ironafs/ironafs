@@ -35,10 +35,17 @@ struct Observation {
     capacity: usize,
 }
 
-/// Carries the observation buffer for one encode call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WipeObservation {
+    len_before: usize,
+    zeroed_to_capacity: bool,
+}
+
+/// Carries the observations for one encode call.
 struct Traced<'a, T> {
     value: &'a T,
-    phases: &'a Cell<[Option<Observation>; 3]>,
+    phases: Cell<[Option<Observation>; 3]>,
+    wipes: Cell<[Option<WipeObservation>; 2]>,
 }
 
 impl<T: Classified> Classified for Traced<'_, T> {
@@ -68,16 +75,34 @@ impl<T: Encode> Encode for Traced<'_, T> {
         });
         self.phases.set(phases);
     }
+
+    fn observe_wipe(&self, len_before: usize, out: &[u8], capacity: usize) {
+        let mut wipes = self.wipes.get();
+        let slot = wipes.iter_mut().find(|slot| slot.is_none()).unwrap();
+        *slot = Some(WipeObservation {
+            len_before,
+            zeroed_to_capacity: zeroed_to_capacity(out, capacity),
+        });
+        self.wipes.set(wipes);
+    }
 }
 
 /// Traces one call without requesting storage from inside the encode path.
-fn trace<T, R>(value: &T, call: impl FnOnce(&Traced<'_, T>) -> R) -> (R, [Option<Observation>; 3]) {
-    let phases = Cell::new([None; 3]);
-    let result = call(&Traced {
+fn trace<T, R>(
+    value: &T,
+    call: impl FnOnce(&Traced<'_, T>) -> R,
+) -> (R, [Option<Observation>; 3], [Option<WipeObservation>; 2]) {
+    let traced = Traced {
         value,
-        phases: &phases,
-    });
-    (result, phases.into_inner())
+        phases: Cell::new([None; 3]),
+        wipes: Cell::new([None; 2]),
+    };
+    let result = call(&traced);
+    (
+        result,
+        traced.phases.into_inner(),
+        traced.wipes.into_inner(),
+    )
 }
 
 const MESSAGE: Message = Message {
@@ -286,7 +311,7 @@ fn encode_over_message_cap_reserves_nothing() {
 #[test]
 fn encode_into_requests_once_and_never_grows() {
     let mut out = Vec::new();
-    let (result, phases) = trace(&Short(b"abc"), |value| {
+    let (result, phases, _) = trace(&Short(b"abc"), |value| {
         encode_message(&MESSAGE, value, &mut out)
     });
     result.unwrap();
@@ -296,7 +321,7 @@ fn encode_into_requests_once_and_never_grows() {
     let mut out = Vec::with_capacity(8);
     out.push(0xee);
     let before = (out.as_ptr(), out.capacity());
-    let (result, phases) = trace(&Short(b"abc"), |value| {
+    let (result, phases, _) = trace(&Short(b"abc"), |value| {
         encode_message(&MESSAGE, value, &mut out)
     });
     result.unwrap();
@@ -487,6 +512,10 @@ fn encoder_debug_shows_no_output_bytes() {
     encode_with(&MESSAGE, &Peek).unwrap();
 }
 
+fn zeroed_to_capacity(out: &[u8], capacity: usize) -> bool {
+    out.len() == capacity && out.iter().all(|byte| *byte == 0)
+}
+
 #[test]
 fn zero_to_capacity_overwrites_contents_and_spare_capacity() {
     let mut out = Vec::with_capacity(16);
@@ -494,8 +523,7 @@ fn zero_to_capacity_overwrites_contents_and_spare_capacity() {
     out.truncate(3);
     let before = (out.as_ptr(), out.capacity());
     zero_to_capacity(&mut out);
-    assert_eq!(out.len(), out.capacity());
-    assert!(out.iter().all(|byte| *byte == 0));
+    assert!(zeroed_to_capacity(&out, out.capacity()));
     assert_eq!((out.as_ptr(), out.capacity()), before);
 }
 
@@ -939,17 +967,30 @@ fn assert_caller_sizing_refusal<T: Encode + MessageType>(
     expected: Error,
     out: &mut Vec<u8>,
 ) {
+    let len_before = out.len();
     let before = (out.as_ptr(), out.capacity());
-    let (result, phases) = trace(value, |value| super::encode_into(value, out));
+    let (result, phases, wipes) = trace(value, |value| super::encode_into(value, out));
     assert_eq!(result, Err(expected));
     assert_eq!(phases, sizing_phases(before.1));
     assert_eq!(out.as_slice(), []);
     assert_eq!((out.as_ptr(), out.capacity()), before);
+    assert_wipes(wipes, [len_before, 0]);
+}
+
+#[track_caller]
+fn assert_wipes(wipes: [Option<WipeObservation>; 2], lengths_before: [usize; 2]) {
+    assert_eq!(
+        wipes,
+        lengths_before.map(|len_before| Some(WipeObservation {
+            len_before,
+            zeroed_to_capacity: true,
+        }))
+    );
 }
 
 #[track_caller]
 fn assert_sizing_refusal<T: Encode + MessageType>(value: &T, expected: Error) {
-    let (result, phases) = trace(value, |observed| super::encode(observed));
+    let (result, phases, _) = trace(value, |observed| super::encode(observed));
     assert_eq!(result, Err(expected));
     assert_eq!(phases, sizing_phases(0));
     assert_caller_sizing_refusal(value, expected, &mut Vec::new());
@@ -1348,18 +1389,19 @@ fn assert_word_report<T: Encode + MessageType>(value: &T, bytes: u64) {
     };
     assert_eq!(super::encoded_len(value), length);
     if bytes == 4 {
-        let (result, phases) = trace(value, |observed| super::encode(observed));
+        let (result, phases, _) = trace(value, |observed| super::encode(observed));
         assert_eq!(result, Err(SOURCE));
         let capacity = phases[2].unwrap().capacity;
         assert!(capacity >= 4);
         assert_sizing_reserve_write(phases, 0, capacity);
 
         let mut out = Vec::new();
-        let (result, phases) = trace(value, |value| super::encode_into(value, &mut out));
+        let (result, phases, wipes) = trace(value, |value| super::encode_into(value, &mut out));
         assert_eq!(result, Err(SOURCE));
         assert!(out.capacity() >= 4);
         assert_sizing_reserve_write(phases, 0, out.capacity());
         assert_eq!(out.as_slice(), []);
+        assert_wipes(wipes, [0, 4]);
     } else {
         assert_sizing_refusal(value, super::too_large(&T::MESSAGE));
     }

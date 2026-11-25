@@ -39,6 +39,10 @@ pub trait Encode: Classified {
     #[cfg(test)]
     fn observe_phase(&self, _: tests::Phase, _: usize, _: usize) {}
 
+    /// Reports the initialized bytes immediately before the wipe clears them.
+    #[cfg(test)]
+    fn observe_wipe(&self, _: usize, _: &[u8], _: usize) {}
+
     /// Writes the value, with an encoder typed for its own type: a
     /// component of another type is written through [`Encoder::put`],
     /// which checks its secrecy. So this builds:
@@ -332,8 +336,21 @@ fn encode_message<T: Encode + ?Sized>(
     value: &T,
     out: &mut Vec<u8>,
 ) -> Result<(), Error> {
-    wipe(out);
-    let mut output = Output { out, keep: false };
+    #[cfg(test)]
+    let observe_wipe = |len_before, bytes: &[u8], capacity| {
+        value.observe_wipe(len_before, bytes, capacity);
+    };
+    wipe(
+        out,
+        #[cfg(test)]
+        &observe_wipe,
+    );
+    let mut output = Output {
+        out,
+        keep: false,
+        #[cfg(test)]
+        observe_wipe: &observe_wipe,
+    };
     write(message, value, output.out)?;
     output.keep = true;
     Ok(())
@@ -345,12 +362,18 @@ fn encode_message<T: Encode + ?Sized>(
 struct Output<'o> {
     out: &'o mut Vec<u8>,
     keep: bool,
+    #[cfg(test)]
+    observe_wipe: &'o dyn Fn(usize, &[u8], usize),
 }
 
 impl Drop for Output<'_> {
     fn drop(&mut self) {
         if !self.keep {
-            wipe(self.out);
+            wipe(
+                self.out,
+                #[cfg(test)]
+                self.observe_wipe,
+            );
         }
     }
 }
@@ -425,8 +448,12 @@ fn write<T: Encode + ?Sized>(message: &Message, value: &T, out: &mut Vec<u8>) ->
 /// and leaves it empty with the same capacity. Best effort: the compiler
 /// may remove these writes, so the caller's wiper is what holds
 /// ([`encode_into`]).
-fn wipe(out: &mut Vec<u8>) {
+fn wipe(out: &mut Vec<u8>, #[cfg(test)] observe_wipe: &dyn Fn(usize, &[u8], usize)) {
+    #[cfg(test)]
+    let len_before = out.len();
     zero_to_capacity(out);
+    #[cfg(test)]
+    observe_wipe(len_before, out, out.capacity());
     out.clear();
 }
 
