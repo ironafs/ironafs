@@ -5,7 +5,8 @@
 
 Status: accepted (2026-11-20), by the owner, after the review rounds
 recorded below. Raised in issue #20. Amended 2026-11-20 (#32) and
-2026-11-21 (#101, #53).
+2026-11-21 (#101, #53). Partly superseded by [ADR 0006](0006-rx-unprotected-packets.md)
+(C30, C31, C32 and O23, as its "What it supersedes" states), 2026-11-21.
 
 ## Context
 
@@ -774,6 +775,14 @@ The full record, with every finding and its disposition, is
     The owner accepted the amendment with ADR 0005 on 2026-11-21. The
     record is
     [docs/reviews/2026-11-21-adr-0005-review.md](../reviews/2026-11-21-adr-0005-review.md).
+- **Correction, 2026-11-22:** C13 point 2 now takes its handle
+  operations from C7 point 3 instead of a partial list, so the check it
+  states covers subscription to change notification, which C7 point 3
+  already sends through it; release and release directory (C7 point 4)
+  stay outside it. C13 point 2's main clause already said "every handle
+  operation", and the fix for finding R1-44 of the ADR 0004 review record
+  ([docs/reviews/2026-11-20-adr-0004-review.md](../reviews/2026-11-20-adr-0004-review.md))
+  widened the check to all handle operations. No decision changed.
 - **Amendment, 2026-11-21 (#53): seven working decisions for M2a, in
   eight amendments. O50, points 1, 3 and 4, and its "Revisit if"; O12,
   points 1 and 2; O40, point 2; C34, point 2; C4, points 1 and 3; N46,
@@ -860,11 +869,11 @@ The full record, with every finding and its disposition, is
     review rounds 13 to 17,
     [docs/reviews/2026-11-21-m2-plus-plan.md](../reviews/2026-11-21-m2-plus-plan.md)).
     M2a's two callers need these functions before the provider
-    decisions of M2b and of M5 or M6. The same decision leaves coding
-    standards rule 21 unedited, so C5, point 1, states the precedence:
-    it is the one departure from rule 21, scoped to two functions and
-    two callers and dated, and rule 21 holds everywhere else. The
-    schema digest is defined there by C44's message definitions. The
+    decisions of M2b and of M5 or M6. C5, point 1, states the
+    precedence and scope of the exception. On 2026-11-21 the owner
+    chose one dated pointer from rule 21 to C5, point 1, with the
+    wording of rule 21 otherwise unchanged. The schema digest is
+    defined there by C44's message definitions. The
     implementation is never treated as approved cryptography: under
     `fips = "require"` (O31, point 4, Firm values) it computes no
     reference. Residuals: no cryptographer has read the code unless the
@@ -907,10 +916,10 @@ The full record, with every finding and its disposition, is
       cryptography crate come first): unchanged; the exception adds no
       dependency, and the provider's decision is still made under the
       `add-dependency` checklist at M2b-03 or M5-32.
-    - `docs/coding-standards.md` rule 21: unchanged, by the owner's
-      decision (above); C5, point 1, states the precedence, the
-      test-only cross-check after the sunset included. Whether rule 21
-      gets a dated pointer line to C5, point 1, is open for the owner.
+    - `docs/coding-standards.md` rule 21 gains the single dated
+      pointer to C5, point 1, that the owner chose on 2026-11-21. C5,
+      point 1, states the precedence, including the test-only
+      cross-check after the sunset.
       The overview's constraint 3, part 3's dependency rule, `README.md`
       and `AGENTS.md` say a dependency is used only for mainstream
       cryptography or an operating system's own interfaces; the
@@ -957,5 +966,9 @@ The full record, with every finding and its disposition, is
       test-only cross-check after the sunset reconciled with rule 21,
       whose text does not exempt test code; this round recorded; the
       planned M2a-46 dropped from the sweep (N46's check is M3-16).
-    - Further rounds: pending (the owner's answer on rule 21, then a
-      check of this round's fixes).
+    - On 2026-11-21 the owner chose option (b), the dated pointer in
+      rule 21, landing with or after this amendment. The scope follows
+      the decision recorded in #53. The integration keeps ADR 0006's
+      partial supersession and the C13, point 2 correction on main.
+      Scoped verification of the round 2 fixes, pointer and merge
+      resolution is pending.

@@ -3,7 +3,7 @@
 
 # 0004, part 1: Core
 
-Status: accepted (2026-11-20). Part of ADR 0004 ([overview](0004-architecture.md)); raised in issue #20.
+Status: accepted (2026-11-20). Part of ADR 0004 ([overview](0004-architecture.md)); raised in issue #20. Partly superseded by ADR 0006 (C30, C31, C32), 2026-11-21.
 
 ## Context
 
@@ -293,16 +293,17 @@ provider adoption ends point 1's exception.
    This is the one departure from coding standards rule 21, which says
    that mainstream cryptography, SHA-2 and HMAC among it, is never
    hand-rolled. The conflict is settled by the owner's decision of
-   2026-11-20 (#77): rule 21 is not edited, and for these two functions
-   this point takes precedence over it, for these two callers until the
-   sunset and, after it, only for the test-only cross-check above. Rule
+   2026-11-20 (#77): for these two functions this point takes precedence
+   over rule 21, for these two callers until the sunset and, after it,
+   only for the test-only cross-check above. Rule
    21's text does not exempt test code (it lists test helpers among what
    IronAFS writes, and its test and fuzz manifests follow the same
    rule), so the cross-check needs this precedence too. Everywhere else
-   rule 21 holds as written. Whether rule 21 gets a dated pointer line
-   to this point, its wording unchanged, is an open question for the
-   owner. The exception adds no dependency, so the dependency rule
-   (overview, constraint 3; rule 21's list) is unchanged. Nothing else
+   rule 21 holds as written. On 2026-11-21 the owner chose to add a
+   dated pointer from rule 21 to this exception, with the wording of
+   rule 21 otherwise unchanged. The exception adds no dependency, so the
+   dependency rule (overview, constraint 3; rule 21's list) is unchanged.
+   Nothing else
    is written in house under this exception: hashes other than SHA-256,
    MACs other than HMAC-SHA-256, key-derivation functions, ciphers and
    AEADs are never hand-rolled. rxkad's cipher remains point 2's own
@@ -616,12 +617,10 @@ on. Point 3 is our own addition.
 1. A handle is bound to its credential context (C40) and that context's
    credential generation, the node, the open mode, the binding, the rights
    at open, and the volume's incarnation (C25).
-2. Where the front end can identify the open, every handle operation
-   (C7, point 3: read, write, read directory, commit, lock, get and set
-   information, disposition and rename) checks that the handle is live and
-   takes the intersection of the rights at open with the current effective
-   rights. A right that was lost is refused; rights that remain keep
-   working.
+2. Where the front end can identify the open, every handle operation of
+   C7, point 3, checks that the handle is live and takes the intersection
+   of the rights at open with the current effective rights. A right that
+   was lost is refused; rights that remain keep working.
 3. Where the front end cannot tell opens apart (FSKit), each operation
    checks only liveness, and any reduction of rights revokes the handle.
    It must be reopened.
@@ -1411,6 +1410,10 @@ not reach the server.
 callback port differently from the calling port, or one `rx` thread limits
 measured throughput.
 
+(Partly superseded by ADR 0006: its decision 2, points 1 and 2, add how
+each initiated connection's wire identity is drawn and what ICMP and
+socket errors do. Points 1 to 4 below stand.)
+
 1. The client uses one UDP socket per address family, on port 7001 by
    convention `[DES-011]`, for outgoing calls and for the callback service.
 2. One `rx` thread owns the sockets. It never takes a cache lock.
@@ -1435,6 +1438,10 @@ is ever shared across contexts (C18).
 **Working.** Revisit if: a fileserver offers rxgk-protected callbacks to
 clients (then a protected break is authoritative evidence under C24), or
 the test cell shows a callback procedure this table lacks.
+
+(Partly superseded by ADR 0006: its decision 2, point 3, adds what an
+ABORT or BUSY on an incoming call does. The table and points 1 to 4
+below stand.)
 
 Before rxgk, nothing the callback service receives is authenticated. One
 table governs all of it:
@@ -1467,6 +1474,13 @@ data stale is bounded by C32.
 **Working.** Revisit if: M2 measurements against the test cell and through
 NAT show the intervals below serve stale data or cost too many
 revalidations.
+
+(Partly superseded by ADR 0006: its decision 2, point 4, draws the
+keepalive's epoch and connection id as its point 1 says, and point 5
+changes point 3 below: an unprotected ABORT is "an error" only as ADR
+0006, decision 1, point 6, allows; a server is held in bounded
+revalidation while a connection to it fails that decision's point 9; and
+after that hold its promises stay suspended until revalidated.)
 
 1. Callback trust is kept per server, address family and local endpoint
    generation. It is earned only by a reply from that server to the

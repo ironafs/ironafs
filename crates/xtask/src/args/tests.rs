@@ -5,7 +5,7 @@
 
 use std::ffi::OsString;
 
-use super::{Task, TrailerMode, UsageError, parse};
+use super::{CellCommand, Task, TrailerMode, UsageError, parse};
 
 #[test]
 fn parse_rejects_unknown_command() {
@@ -102,6 +102,14 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             Task::CheckDeps { self_test: true },
         ),
         (
+            &["check-fuzz-deny"][..],
+            Task::CheckFuzzDeny { self_test: false },
+        ),
+        (
+            &["check-fuzz-deny", "--self-test"][..],
+            Task::CheckFuzzDeny { self_test: true },
+        ),
+        (
             &["check-grants"][..],
             Task::CheckGrants { self_test: false },
         ),
@@ -115,9 +123,21 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             Task::CheckBans { self_test: true },
         ),
         (&["check-pure"][..], Task::CheckPure { self_test: false }),
+        (&["fuzz"][..], Task::Fuzz { self_test: false }),
+        (&["fuzz", "--self-test"][..], Task::Fuzz { self_test: true }),
         (
             &["check-pure", "--self-test"][..],
             Task::CheckPure { self_test: true },
+        ),
+        (&["check-os"][..], Task::CheckOs { self_test: false }),
+        (
+            &["check-os", "--self-test"][..],
+            Task::CheckOs { self_test: true },
+        ),
+        (&["check-seams"][..], Task::CheckSeams { self_test: false }),
+        (
+            &["check-seams", "--self-test"][..],
+            Task::CheckSeams { self_test: true },
         ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Ok(task));
@@ -132,6 +152,10 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             UsageError::UnexpectedArgument("extra".into()),
         ),
         (
+            &["check-fuzz-deny", "--all"][..],
+            UsageError::UnexpectedArgument("--all".into()),
+        ),
+        (
             &["check-bans", "--all"][..],
             UsageError::UnexpectedArgument("--all".into()),
         ),
@@ -139,7 +163,155 @@ fn parse_routes_rule_checks_with_and_without_self_test() {
             &["check-pure", "--all"][..],
             UsageError::UnexpectedArgument("--all".into()),
         ),
+        (
+            &["check-seams", "--all"][..],
+            UsageError::UnexpectedArgument("--all".into()),
+        ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
     }
+}
+
+#[test]
+fn parse_routes_check_abi_with_and_without_a_target() {
+    for (args, task) in [
+        (
+            &["check-abi"][..],
+            Task::CheckAbi {
+                self_test: false,
+                target: None,
+                mode: super::Mode::Complete,
+            },
+        ),
+        (
+            &["check-abi", "--self-test"][..],
+            Task::CheckAbi {
+                self_test: true,
+                target: None,
+                mode: super::Mode::Complete,
+            },
+        ),
+        (
+            &["check-abi", "--target", "aarch64-unknown-linux-musl"][..],
+            Task::CheckAbi {
+                self_test: false,
+                target: Some("aarch64-unknown-linux-musl".into()),
+                mode: super::Mode::Complete,
+            },
+        ),
+        (&["check-wipe"][..], Task::CheckWipe { self_test: false }),
+        (
+            &["check-wipe", "--self-test"][..],
+            Task::CheckWipe { self_test: true },
+        ),
+    ] {
+        assert_eq!(parse(args.iter().map(OsString::from)), Ok(task));
+    }
+    for (args, error) in [
+        (&["check-abi", "--target"][..], UsageError::MissingTarget),
+        (
+            &["check-abi", "--target", "x", "y"][..],
+            UsageError::UnexpectedArgument("y".into()),
+        ),
+    ] {
+        assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
+    }
+}
+
+#[test]
+fn parse_routes_legacy_abi_only_with_an_explicit_gnu_target() {
+    for target in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
+        for args in [
+            ["check-abi", "--target", target, "--legacy-glibc-2-28"],
+            ["check-abi", "--legacy-glibc-2-28", "--target", target],
+        ] {
+            assert!(
+                matches!(
+                    parse(args.into_iter().map(OsString::from)),
+                    Ok(Task::CheckAbi { self_test: false, target: Some(ref found), mode: super::Mode::LegacyGlibc228 })
+                        if found == target
+                ),
+                "{args:?}"
+            );
+        }
+    }
+    for (args, error) in [
+        (
+            &["check-abi", "--legacy-glibc-2-28"][..],
+            UsageError::MissingTarget,
+        ),
+        (
+            &["check-abi", "--self-test", "--legacy-glibc-2-28"][..],
+            UsageError::UnexpectedArgument("--legacy-glibc-2-28".into()),
+        ),
+        (
+            &[
+                "check-abi",
+                "--target",
+                "x86_64-unknown-linux-musl",
+                "--legacy-glibc-2-28",
+            ][..],
+            UsageError::UnexpectedArgument("x86_64-unknown-linux-musl".into()),
+        ),
+        (
+            &[
+                "check-abi",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--legacy-glibc-2-28",
+                "--target",
+                "aarch64-unknown-linux-gnu",
+            ][..],
+            UsageError::UnexpectedArgument("--target".into()),
+        ),
+        (
+            &[
+                "check-abi",
+                "--legacy-glibc-2-28",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--legacy-glibc-2-28",
+            ][..],
+            UsageError::UnexpectedArgument("--legacy-glibc-2-28".into()),
+        ),
+    ] {
+        assert_eq!(
+            parse(args.iter().map(OsString::from)),
+            Err(error),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn parse_cell_pin() {
+    assert_eq!(
+        parse(["cell", "pin"].into_iter().map(OsString::from)),
+        Ok(Task::Cell(CellCommand::Pin))
+    );
+}
+
+#[test]
+fn parse_cell_unknown_subcommand_reports_usage() {
+    for (args, error) in [
+        (&["cell"][..], UsageError::MissingCellSubcommand),
+        (
+            &["cell", "start"][..],
+            UsageError::UnknownCellSubcommand("start".into()),
+        ),
+        (
+            &["cell", "pin", "extra"][..],
+            UsageError::UnexpectedArgument("extra".into()),
+        ),
+    ] {
+        assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
+    }
+}
+
+#[test]
+fn usage_names_the_cell_command() {
+    let usage = UsageError::MissingCellSubcommand.to_string();
+
+    assert_eq!(usage.lines().next(), Some("missing cell subcommand"));
+    assert!(usage.ends_with(" | cell pin"));
 }

@@ -21,12 +21,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
         Command::new("cargo").args(["fmt", "--all", "--check"]),
         "cargo fmt --all --check",
     )?;
-    run_command(
-        Command::new("cargo")
-            .args(["clippy", "--all-targets", "--workspace"])
-            .env("CARGO_BUILD_WARNINGS", "deny"),
-        "cargo clippy --all-targets --workspace",
-    )?;
+    crate::bans::lint_workspace()?;
     run_command(
         Command::new("cargo").args([
             "nextest",
@@ -46,13 +41,36 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     for self_test in [false, true] {
         crate::bans::run(self_test, output)?;
         crate::deps::run(self_test, output)?;
+        crate::fuzz_deny::run(self_test, output)?;
         crate::grants::run(self_test, output)?;
         crate::pure::run(self_test, output)?;
+        crate::seams::run(self_test, output)?;
+        crate::os::run(self_test, output)?;
     }
+    // check-abi proves the host's own foreign declarations against its C
+    // headers; on a host with none it has nothing to prove (and would fail
+    // as a run that proves nothing), so the local aggregate says so. CI
+    // runs it, unconditionally, on each Linux target that has rows.
+    let (applies, host) = crate::abi::applies_here()?;
+    if applies {
+        crate::abi::run(false, None, crate::abi::Mode::Complete, output)?;
+        crate::abi::run(true, None, crate::abi::Mode::Complete, output)?;
+    } else {
+        writeln!(
+            output,
+            "skipped check-abi: no row with a foreign item is implemented on {host}"
+        )
+        .map_err(Error::io("report skipped check"))?;
+    }
+    // The replay itself needs the fuzz crate's nightly and cargo-fuzz; CI's
+    // fuzz job runs it. Its judgement is proven here.
+    crate::fuzz::run(true, output)?;
+    crate::wipe::run(false, output)?;
+    crate::wipe::run(true, output)?;
 
     check_reuse_result(
         Command::new("reuse").arg("lint").status(),
-        reuse_in_path,
+        || in_path("reuse"),
         output,
     )?;
     if cargo_has_deny()? {
@@ -84,11 +102,17 @@ fn check_reuse_result(
     }
 }
 
-fn reuse_in_path() -> bool {
-    // The OS also reports NotFound for an installed script with a missing interpreter.
-    let executable = if cfg!(windows) { "reuse.exe" } else { "reuse" };
+/// Whether an executable called `name` is in a `PATH` directory. A
+/// program that fails to start with `NotFound` may still be installed: the
+/// OS also reports `NotFound` for a script whose interpreter is missing.
+pub(crate) fn in_path(name: &str) -> bool {
+    let executable = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
     std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| dir.join(executable).symlink_metadata().is_ok())
+        std::env::split_paths(&path).any(|dir| dir.join(&executable).symlink_metadata().is_ok())
     })
 }
 

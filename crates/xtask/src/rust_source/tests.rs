@@ -3,7 +3,10 @@
 
 //! Tests for the Rust token reader and the `std` paths it finds.
 
-use super::{LexError, Token, TokenKind, std_paths, tokens, use_paths};
+use super::{
+    LexError, Token, TokenKind, core_shadows, std_paths, tokens, tokens_with_strings, use_items,
+    use_paths,
+};
 
 fn idents(source: &str) -> Vec<String> {
     tokens(source)
@@ -356,5 +359,148 @@ fn tokens_read_an_inner_attribute_at_the_start_and_a_leading_byte_order_mark() {
             .first()
             .map(|token| &token.kind),
         Some(&TokenKind::Punct('#'))
+    );
+}
+
+#[test]
+fn tokens_with_strings_keep_the_text_of_plain_and_raw_strings_only() {
+    let source = r#"#[expect(unsafe_code, reason = "linux-clock")] let a = r"x \y"; let b = b"no"; let c = c"no"; let d = "a\"b";"#;
+    let strings: Vec<String> = tokens_with_strings(source)
+        .unwrap()
+        .into_iter()
+        .filter_map(|token| match token.kind {
+            TokenKind::Str(text) => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(strings, ["linux-clock", "x \\y", "a\\\"b"]);
+    assert!(
+        tokens(source)
+            .unwrap()
+            .iter()
+            .all(|token| !matches!(token.kind, TokenKind::Str(_)))
+    );
+}
+
+#[test]
+fn core_shadows_finds_every_item_or_import_named_core() {
+    for source in [
+        "mod core { pub mod ffi {} }\n",
+        "mod core;\n",
+        "pub(crate) struct core;\n",
+        "enum core {}\n",
+        "type core = u8;\n",
+        "trait core {}\n",
+        "union core { a: u8 }\n",
+        "extern crate std as core;\n",
+        "use other::thing as core;\n",
+        "use crate::shadow::core;\n",
+        "use crate::shadow::{core, other};\n",
+        "macro_rules! core { () => {} }\n",
+        "fn f<core>() {}\n",
+        "fn f<T, core>() {}\n",
+        "impl<'a, T, core: Copy> S<'a, T> {}\n",
+        "struct S<const N: usize, core>;\n",
+        "fn f<F: Fn() -> u8, core>() {}\n",
+        "trait T<core = u8> {}\n",
+        "extern crate core;\n",
+        "mod r#core {}\n",
+    ] {
+        let found = core_shadows(&tokens(source).unwrap());
+        assert_eq!(found, [1], "{source}");
+    }
+    for source in [
+        "use core::ffi::{c_int, c_long};\n",
+        "use core::ptr;\nfn f() { core::ptr::null::<u8>(); }\n",
+        "let x = ::core::mem::size_of::<u8>();\n",
+        "// mod core\n",
+        // The value namespace: none of these can stand for the first
+        // segment of a `core::` path.
+        "fn f() { let core = 1; let _ = core; }\n",
+        "struct S { core: u8 }\nfn f(s: S) -> u8 { s.core }\n",
+        "fn f(core: u8) -> u8 { core }\n",
+        "fn g() -> S { S { core: 1 } }\n",
+        "fn core() {}\n",
+        "const core: u8 = 0;\n",
+        "static core: u8 = 0;\n",
+        "fn f(x: u8) -> bool { x < 1 && core::convert::identity(true) }\n",
+    ] {
+        assert_eq!(
+            core_shadows(&tokens(source).unwrap()),
+            Vec::<usize>::new(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn use_items_give_each_import_s_paths_attributes_depth_and_shape() {
+    let source = "use core::{ffi::c_int, cell::{self, Cell}};\n\
+                  #[cfg(target_env = \"gnu\")]\npub(super) use gnu::msghdr;\n\
+                  fn f() { use super::*; }\nuse a::b as c;\nuse a::{b\n";
+    let items = use_items(&tokens_with_strings(source).unwrap());
+    let shape: Vec<_> = items
+        .iter()
+        .map(|item| {
+            (
+                item.paths
+                    .iter()
+                    .map(|path| path.join("::"))
+                    .collect::<Vec<_>>(),
+                item.attributes.clone(),
+                item.depth,
+                item.glob,
+                item.renamed,
+                item.plain,
+            )
+        })
+        .collect();
+    let paths = |list: &[&str]| {
+        list.iter()
+            .map(|path| (*path).to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        shape,
+        [
+            (
+                paths(&["core::ffi::c_int", "core::cell", "core::cell::Cell"]),
+                vec![],
+                0,
+                false,
+                false,
+                true
+            ),
+            (
+                paths(&["gnu::msghdr"]),
+                vec!["cfg(target_env=\"gnu\")".to_owned()],
+                0,
+                false,
+                false,
+                true
+            ),
+            (paths(&["super::*"]), vec![], 1, true, false, false),
+            (paths(&["a::b"]), vec![], 0, false, true, false),
+            (paths(&["a::b"]), vec![], 0, false, false, false),
+        ]
+    );
+}
+
+#[test]
+fn use_items_match_each_attribute_s_brackets_with_nesting_counted() {
+    let source = "#[cfg(miri)]\n#[doc = stringify!([x])]\npub(super) use core::ffi::c_int;\n\
+                  #[doc = stringify!([x])]\nuse core::ffi::c_long;\n\
+                  #[cfg(miri)]\npub(in crate::a) use b::c;\n\
+                  #[cfg(miri)]\npub(crate) use d::{e, f};\n";
+    let items = use_items(&tokens_with_strings(source).unwrap());
+    let attributes: Vec<Vec<String>> = items.iter().map(|item| item.attributes.clone()).collect();
+    assert_eq!(
+        attributes,
+        [
+            vec!["cfg(miri)".to_owned(), "doc=stringify!([x])".to_owned()],
+            vec!["doc=stringify!([x])".to_owned()],
+            vec!["cfg(miri)".to_owned()],
+            vec!["cfg(miri)".to_owned()],
+        ]
     );
 }

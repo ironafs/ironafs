@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# G12's note with the budget lowered to 8 bytes: the title's 6 fit, and 6 + 4 > 8 at the target's length word.
+
+type note
+breaks 5.2, point 9.2
+expect BudgetExceeded test.note
+offset 16
+extent none
+budget 8
+requests test.note.title:6
+input 00000006 72656164 6d650000 00000001 00000004 646f6373 00000004 726f6f74 00000005 01020304 05000000

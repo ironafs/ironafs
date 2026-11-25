@@ -20,3 +20,18 @@ fail-fast = true
 retries = 0
 slow-timeout = { period = "30s", terminate-after = 2 }
 fail-fast = false
+
+# linux-udp6's kernel tests bind ports the system chooses and then bind the
+# other family to the same port; run beside each other, one test's chosen
+# port can be taken by another's before its second bind. They run one at a
+# time, in every profile.
+[test-groups]
+udp6-ports = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(ironafs-os) & test(/^linux_udp6::tests::kernel::/)'
+test-group = 'udp6-ports'
+
+[[profile.ci.overrides]]
+filter = 'package(ironafs-os) & test(/^linux_udp6::tests::kernel::/)'
+test-group = 'udp6-ports'

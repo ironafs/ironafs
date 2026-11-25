@@ -19,15 +19,20 @@ not copy them here.
 ## Approvals for this repository
 
 All four outside families are approved for IronAFS source (owner,
-2026-11-18). CLIs only; API-platform lanes are not used.
+2026-11-18). CLIs first. GPT read-only seats may also run through
+`openai_lane.py` on the owner's OpenAI API credit (owner, 2026-11-23): the
+same models, pins and effort by another route, whichever has quota; credited
+as `codex`, with the route named in the record; never for writing code
+(`docs/workflow.md` §2). How to run it is in the global `openai-lane` skill.
 
 ## Which seat, by class
 
 Use "Seats by class" in `docs/workflow.md` §2; it is authoritative, and
 `AI.md` explains it. Required seats always come from a family that did
 not write the change, as §2 defines it (any of its text or code, or the
-design it was built from), counting outside contributors' declared tools. Security reviews go to GPT read-only, a Claude seat or GLM, whichever
-wrote neither the design nor the code, never to Gemini. Embargoed security
+design it was built from), counting outside contributors' declared tools. Security reviews go to GPT read-only, a Claude seat, GLM or Gemini
+Carbon (at `gemini-4-carbon-medium`), whichever wrote neither the design
+nor the code, never to DeepSeek. Embargoed security
 work goes only to the Anthropic and OpenAI lanes until disclosure
 (`docs/workflow.md` §2). A same-family review is an extra
 self-check, never a required seat.
@@ -35,14 +40,15 @@ self-check, never a required seat.
 ## Model pins and effort
 
 The model and effort for every seat come from the routing table in
-`docs/workflow.md` §2, "Model routing", after the seat's family is chosen.
-In short:
+`docs/workflow.md` §2, "Model routing", after the seat's family is chosen
+(the judgement seat checks each candidate's availability at that pin
+first, step 1 below). In short:
 
-| Lane | Light | Standard | Class S and R reviews | Strongest |
+| Lane | Light | Standard | Ordinary class S and R reviews | Strongest |
 |---|---|---|---|---|
 | codex (GPT) | `gpt-6.2-sol` medium | `gpt-6.2-sol` high | `gpt-6.2-sol` xhigh | `gpt-6.2-astra` xhigh |
-| gemini | `gemini-3.8-flash-medium` (helpers), `gemini-4-argon-medium` (gathering) | `gemini-4-carbon-medium` | `gemini-4-carbon-high` | `gemini-4-carbon-high` |
-| glm | `glm-5.3-flash` | `glm-5.3` high | `glm-5.3` high | `glm-5.3` max |
+| gemini | `gemini-3.8-flash-medium` (helpers), `gemini-4-argon-medium` (gathering) | `gemini-4-carbon-medium` | `gemini-4-carbon-high` | `gemini-4-carbon-high`; `gemini-4-carbon-medium` for security reviews and security disputes |
+| glm | `glm-5.3-flash` (helpers), `glm-5.4` high (gathering) | `glm-5.4` high | `glm-5.4` high | `glm-5.4` max |
 | deepseek | `deepseek-flash` default | `deepseek-flash` default | `deepseek-flash` default | `deepseek-flash` max |
 | Claude | Haiku (helpers), Sonnet (gathering) | Opus 5.5 | Opus 5.5 | Mythos 5.2 (`fable` alias, serves `claude-mythos-5-2`) |
 
@@ -72,13 +78,16 @@ it concerns, both quoted from their sources, never written by you.
 
 1. **Choose the seat.** Exclude the work's authors, both disputing
    families, any family that took a side, and the controller's family if
-   the controller argued a position, and any family unavailable at its
-   strongest tier. Security disputes: only GPT read-only, Claude or GLM.
+   the controller argued a position, and any family unavailable at the
+   pin `docs/workflow.md` §2, "Model routing", assigns to this seat.
+   Security disputes: only GPT read-only, Claude, GLM or
+   Gemini Carbon (at `gemini-4-carbon-medium`).
    Embargoed work: only Anthropic and OpenAI, and nothing about the dispute
    goes elsewhere. Then take the first remaining in the order GLM, GPT
    read-only, DeepSeek, Gemini, Claude. None left: the change waits and the
    blocker is recorded.
-2. **Write the brief.** Inline both positions as A and B. Check the whole
+2. **Write the brief.** Open it with the two lines of the brief template
+   below. Inline both positions as A and B. Check the whole
    brief, and anything it points to, for anything that shows who took
    either position (family, model or lane names used that way, trailers,
    transcripts, review records of the dispute); send none. Keep a technical
@@ -105,7 +114,10 @@ it concerns, both quoted from their sources, never written by you.
 
 ## Brief template
 
-Every brief starts with "Run no credential command." and then gives:
+Every brief starts with "Run no credential command. Run no command that
+lists or prints git remotes or configuration." (`docs/workflow.md` §4).
+That holds for review, design, research, refutation and judgement briefs,
+and for implementer and fix-round briefs. A seat's brief then gives:
 
 1. **What:** a commit range pinned by sha at both ends: for a first
    review, from the merge base (`$(git merge-base main <head>)..<head>`,
@@ -134,21 +146,24 @@ Every brief starts with "Run no credential command." and then gives:
    an end marker the lane must confirm it saw. Placed before the artefact, it
    cannot detect a prompt that was silently cut short.
 
-**A fix-round brief** (for the implementer) names the findings to fix,
-quoted as the seat wrote them, and says: "Fix only what each finding names.
-Add no new mechanism; a needed mechanism becomes a specification item or a
-change of its own, and is reported, not written."
+**A fix-round brief** (for the implementer) opens with the same two
+lines, names the findings to fix, quoted as the seat wrote them, and says:
+"Fix only what each finding names. Add no new mechanism; a needed
+mechanism becomes a specification item or a change of its own, and is
+reported, not written."
 
 **An issue brief before it is filed or dispatched** gets one non-author
 review and one focused pass by a second non-author family on the same
-revision (the draft file and its sha256 prefix), with no round past two
-fix rounds (`docs/workflow.md` §3, step 3). Defer a design point only as
-that step allows.
+revision (the draft file and its sha256 prefix). After two fix rounds the
+stop rule below applies to the brief: a further fix round needs the
+owner's permission for that brief alone (`docs/workflow.md` §3, step 3).
+Defer a design point only as that step allows.
 
-**Before any round after the second**, write the convergence note
-(`docs/workflow.md` §3, step 7) and check it against the stop rule below
-before dispatching; bring it up to date before each further fix round is
-written.
+**When round 3 concludes**, write the convergence note (`docs/workflow.md`
+§3, step 7), and bring it up to date after each later verification round.
+Check it against the stop rule below before the next fix round is
+written; no fix round past the second is written or dispatched before the
+owner's answer.
 
 For Gemini, inline the artefact and forbid tools. Split inlined material at
 file boundaries, keeping each part under a measured size (about 100 KB). A
@@ -209,7 +224,7 @@ a pass:
   it; reading alone never settles it.
 - Write the record: in the ADR's Review section for an ADR, otherwise in
   `docs/reviews/YYYY-MM-DD-<slug>.md`. Give the seat, served model, effort,
-  verdict, and each finding with its disposition. Redact paths outside the
+  verdict (and a GPT seat's route: codex CLI or API), and each finding with its disposition. Redact paths outside the
   repository, hostnames, cell names and keys. Also:
   - tag each finding `origin:` (pre-existing, or introduced by fix round
     N) and `kind:` (correctness, contract, consistency between parts,
@@ -221,24 +236,36 @@ a pass:
     not passed a calibration on IronAFS material (`docs/workflow.md` §2,
     "Model routing");
   - from round 3 on, the convergence note: each seat's trend of blocker and
-    major counts, how many of the last round's findings the last fix
-    introduced, and any drift in the kind of defect found.
+    major counts and of open confirmed correctness or contract findings of
+    any severity, how many of the last round's findings the last fix
+    introduced, and any drift in the kind of defect found;
+  - for each fix round past the second: your request, your recommendation,
+    and the owner's answer with its date.
 - Only seats whose final verdict covers the landed tree go into
   `AI-Reviewed-by:` (ADR 0002).
 - Stop rule: stop when a round produces no blocker or major, every
   confirmed correctness or contract finding is resolved, whatever its
   severity, and no judgement is pending or inconclusive. After two fix
-  rounds on one change, take another only when the convergence note shows
-  the counts falling, few findings introduced by the fixes, and the kinds
-  narrowing; otherwise split it, move the mechanism into specification
-  items, redesign it, or record the blocker. If too few independent
-  families are available, the change waits.
+  rounds on one change, split it, move the mechanism into specification
+  items, redesign it, or record the blocker. A further fix round needs the
+  owner's permission for that change alone: you ask, with the latest
+  convergence note and a recommendation, and recommend another round only
+  when the note shows the counts falling, few findings introduced by the
+  fixes, and the kinds narrowing (`docs/workflow.md` §3, step 7). A
+  permission covers the fix rounds the owner names (one, unless they say
+  more) for that change and never carries to another; before each, check
+  the updated note and ask again if it no longer shows convergence. A convergence note alone never
+  extends the limit. A scoped fix of an upheld tail, or of a finding still
+  disputed after the fix rounds, counts as a fix round. A part split off
+  unconverged keeps the parent's count; a redesign starts a new count. If
+  too few independent families are available, the change waits.
 - A single seat's tail (one or two majors, no blocker, from one seat
   alone) goes to the judgement seat or, through the refutation seat, into
   specification items; never into another full round. The judgement seat
   rules whether each major holds as a correctness or contract defect in
   what the change decides:
-  one that holds is fixed by a scoped fix verified at its seat's pin, or
+  one that holds is fixed by a scoped fix verified at its seat's pin (a
+  fix round, under the stop rule above), or
   the change is split, redesigned or its blocker recorded; one that does
   not hold is closed as ruled and recorded, and any mechanism it asks for
   becomes a specification item.
@@ -248,7 +275,8 @@ a pass:
   files (a verdict covers a later sha only if every change to the files
   since was a fix verified at its finding seat's pin), as a change of its
   own, with its own class and merge; its record carries the part's
-  findings and their dispositions.
+  findings and their dispositions. The rest keeps the change's fix-round
+  count.
 - Credit follows ADR 0002 unchanged. For class I and above, if no
   required seat's final verdict covers the landed tree, a verification
   round on the final diff comes before the merge.

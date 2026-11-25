@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# tags with count 4 (bound 3) and four empty labels, 16 bytes of elements, within its cap.
+
+type tags
+breaks 5.4, point 4.2
+expect LengthOverBound test.tags
+offset 0
+extent none
+requests none
+input 00000004 00000000 00000000 00000000 00000000
