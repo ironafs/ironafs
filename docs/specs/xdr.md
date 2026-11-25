@@ -1135,6 +1135,11 @@ the generator, and nothing runs them before then (10.6):
 
 ```
 enum shade { PALE = 1, DEEP = 4, VIVID = 9 };     /* closed */
+union shaded switch (shade tone) {
+case PALE: unsigned hyper pale_value;
+case DEEP: unsigned hyper deep_value;
+default:   unsigned hyper vivid_value;
+};
 enum kind { PLAIN = 0, LINKED = 1, STAMPED = 2, RETIRED = 3 };
 union entry switch (kind k) {                     /* no arm for RETIRED, */
 case PLAIN:   void;                               /* and no default      */
@@ -1180,6 +1185,7 @@ struct sealed {                                   /* secret-bearing */
 | `test.solos` | the array | array | none | 16 | both | | | small like `test.names`, so a short count crosses it; a zero-sized element type, so the ledger, not a capacity, is what the budget reads (5.2, point 9) |
 | `test.deep` | message | message | none | 192 | both | 1024 | | exactly one value of the 16-level chain; the budget is the test types' default |
 | `test.wide` | message | message | none | 244 | both | 1024 | | exactly the TRUE arm and its discriminant; the budget is the test types' default |
+| `test.shaded` | message | message | none | 12 | both | 1024 | | a four-byte discriminant and one eight-byte arm, the same size for each arm |
 | `test.every` | message | message | none | 256 | both | 4096 | | room for one value of each profile type; the budget covers its out-of-line field and arrays |
 | `test.sealed` | message | message | none | 64 | both | 64 | | room for a full `sealed` value; the decoded value holds no copy of the secret field beyond what 5.1, point 8 allows |
 | `test.sealed.key` | `key` | opaque | 16 bytes | 16 | both | | yes | equal to its bound; the secret field of 5.1, point 8 |
@@ -1250,6 +1256,8 @@ value. Bytes are in hexadecimal, grouped by unit.
 | G11 | `entry` PLAIN (void arm); LINKED with target "x"; STAMPED with stamp 0x0102030405060708 | `00000000`; `00000001 00000001 78000000`; `00000002 01020304 05060708` | §4.15, §4.16 |
 | G12 | `note` with title "readme", what LINKED with target "docs", owner "root", body bytes `01` to `05` | `00000006 72656164 6d650000 00000001 00000004 646f6373 00000004 726f6f74 00000005 01020304 05000000` (44 bytes: 12, 12, 8 and 12 per field) | §4.14, with §4.10, §4.11 and §4.15 nested in one value. X1 §7 works a similar example; it is a cross-check of the method only, and none of its schema, values or bytes is used |
 | G13 | `void` | empty | §4.16 |
+| G14 | `shaded` PALE with `pale_value` 0x0102030405060708 | `00000001 01020304 05060708` | §4.3, §4.5, §4.15: declared discriminant selects its explicit arm |
+| G15 | `shaded` VIVID with `vivid_value` 0xfedcba9876543210 | `00000009 fedcba98 76543210` | §4.3, §4.5, §4.15: declared discriminant selects the default arm |
 
 ### 10.2 Round-trip properties
 
@@ -1264,6 +1272,11 @@ over the test types above.
   decoded value, and its canonical re-encoding.
 - **P3** Every encoding is a whole number of units, and its length equals
   the sum 5.1 gives for the value.
+
+  For `shaded`, exercise both G14 and G15 in P1 to P3. The valid
+  discriminant and the selected arm survive the value round trip. The
+  byte round trip keeps the original discriminant, including VIVID on
+  the default arm. Both messages are exactly 12 bytes.
 - **P4** The encoder refuses exactly what the decoder rejects, with the
   same cap in both directions. For each variable-length item, P4 builds
   the smallest over-size value that one guard alone decides, encodes it
@@ -1471,6 +1484,7 @@ inferred from a value that does not exist.
 | R8 | `shade` `00000002` | `UnknownEnumValue` | 5.4, point 9 |
 | R9 | `entry` with discriminant `00000003` (RETIRED: declared, no arm) | `UnknownDiscriminant` | 5.4, point 7.2 |
 | R9a | `entry` with discriminant `00000007` (not a declared `kind`) | `UnknownEnumValue`, before any arm is chosen | 5.4, point 7.1 |
+| R9b | standalone `shaded` with undeclared discriminant `00000002` and a complete eight-byte payload: `00000002 fedcba98 76543210` | `UnknownEnumValue` at offset 0, before any arm is chosen | 5.4, point 7.1 |
 | R10 | a valid `note` followed by `00000000` | `TrailingBytes`, count 4 | 5.4, point 10 |
 | R11 | a valid `note` followed by one byte `00` | `TrailingBytes`, count 1 | 5.4, point 10 |
 | R12 | a `note` input of 129 bytes, one over its message cap | `MessageTooLarge` | 5.4, point 1 |
@@ -1503,6 +1517,14 @@ not here.
 
 Its seed corpus is the golden vectors and the reject corpus. Fuzzing runs
 on the Linux runner (ADR 0004, O47, point 4).
+
+The runner includes `shaded`. Its tracked seeds include G14, G15 and
+R9b. Their executable delivery under issue #59 is class I because it
+adds fixtures for the existing discriminant rule (5.4, point 7). Run
+`cargo nextest run -p ironafs-xdr` and Linux seed replay with
+`cargo --locked xtask fuzz`. As a control for the reject case, a planted
+decoder that chooses the default arm before validating `shade` would
+accept R9b and must fail that case's exact kind and offset assertion.
 
 ### 10.5 Acceptance cases
 
