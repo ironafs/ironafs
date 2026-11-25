@@ -225,11 +225,12 @@ the message, because every item is a whole number of units
    `[X1 §3: CONFIRMED]`.
 
 2. **A union's discriminant** is a signed integer, an unsigned integer or
-   an enumeration, booleans included `[X1 §4.15, §6.4 (5): CONFIRMED]`. A
-   union without a default arm has no valid encoding for a discriminant
-   value it does not list `[X1 §4.15: CONFIRMED]`. A discriminant is a
-   value of its own type first: a default arm admits only values that type
-   admits (5.4, point 7) `[OWN]`.
+   an enumeration, booleans included `[X1 §4.15, §6.4 (5): CONFIRMED]`.
+   A discriminant is a value of its own type first (5.4, points 7 and 9)
+   `[OWN]`. A valid discriminant selects the explicit arm whose case
+   lists it. If no case lists it, it selects the default arm, if present.
+   With neither, the union has no valid encoding for that discriminant
+   `[X1 §4.15: CONFIRMED]`.
 3. **Not in the profile:** single, double and quadruple precision floating
    point `[X1 §4.6 to §4.8]`, and optional data (`T *x`) `[X1 §4.19]`.
    `[OWN]` No IronAFS specification needs them today. Optional data is
@@ -781,10 +782,8 @@ not control").
       undeclared value of a closed enumeration is `UnknownEnumValue`
       (point 9), unless a tolerance for this union's discriminant
       (point 11) normalises it first;
-   2. the valid, normalised value selects its arm, or else the default
-      arm; with neither, the decode returns `UnknownDiscriminant`
-      `[X1 §4.15: CONFIRMED]`. A default arm never admits a value that
-      step 1 rejects;
+   2. the valid, normalised value selects the arm by 5.1, point 2. If it
+      selects no arm, the decode returns `UnknownDiscriminant`;
    3. the arm is decoded.
 
    An arm the decoder does not know cannot be skipped: XDR gives an arm
@@ -857,12 +856,15 @@ not control").
 
 1. **Canonical form.** The encoder writes every item as 5.1 sets out:
    most significant byte first, zero padding, lengths and counts equal to
-   the data's, booleans as 0 or 1, enumerations only as declared values
-   (or the raw value of an open field), and unions only with a
-   discriminant that has an arm or a default arm `[X1 §3 to §4.16:
-   CONFIRMED]`.
-2. **The encoder refuses what the decoder rejects** (the `wire-format`
-   skill). `[OWN]`, except where marked:
+   the data's, booleans as 0 or 1, and enumerations only as declared
+   values `[X1 §3 to §4.16: CONFIRMED]`. An open field keeps its raw
+   value (5.4, point 9) `[OWN]`. A union is written as its discriminant
+   followed by the arm that value selects under 5.1, point 2
+   `[X1 §4.15: CONFIRMED]`.
+2. **Checks during sizing.** The encoder applies the declared bounds
+   and the caps for the output direction (the `wire-format` skill).
+   It also checks arm selection for the value round trip (P1).
+   The checks below are `[OWN]` except where marked.
    - for opaque data and strings, n is checked against the declared bound
      (bytes) and then against the cap in the "out" direction (bytes);
    - for a variable-length array, the element count n is checked against
@@ -873,7 +875,24 @@ not control").
      makes encoding a length above the declared maximum an error
      `[X1 §4.10, §4.11, §4.13: CONFIRMED]`;
    - a length or count that does not fit in 32 bits is
-     `LengthNotRepresentable`.
+     `LengthNotRepresentable`;
+   - a union's explicit arm supplies its case discriminant. Its default
+     arm keeps a discriminant of the declared type, including any raw
+     value the type admits for an open field. When sizing a default-arm
+     value, apply 5.1, point 2 to that discriminant. If it selects an
+     explicit arm, return `DefaultArmMismatch` naming the discriminant
+     field (section 7). If it selects the default arm, size the arm and
+     encode it with the stored discriminant. A mismatch violates P1
+     because a decoder can accept the resulting bytes as the explicit
+     arm when the payload fits both layouts.
+
+   For every discriminant kind, keeping the declared type lets the
+   default arm use the existing value representation and sizing pass.
+   Decoding, sizing and writing share the union's arm selection. Sizing
+   checks the stored discriminant before sizing the arm, even if every
+   arm has the same encoded size. The check is part of sizing the union
+   wherever it occurs, including inside a structure, array or another
+   union.
 3. **The wipe comes first, then the output cap, and the allocation
    never moves.** `[OWN]`, from coding standards rules 3 and 8. These
    steps run in this order, and are the same for every message,
@@ -889,11 +908,11 @@ not control").
       any later step, the cap check included, still leaves a buffer that
       held earlier bytes empty and zeroed, as best it can (step 6).
    2. Then it computes the message's encoded size, with checked
-      arithmetic, and returns `MessageTooLarge` if the size exceeds the
-      message cap, or does not fit in 64 bits or in the platform's
-      `usize` (section 6, A10). This check comes after the wipe
-      and before any allocator request and any byte of the message is
-      written.
+      arithmetic and the checks in point 2 in the same pass. It returns
+      `MessageTooLarge` if the size exceeds the message cap, or does not
+      fit in 64 bits or in the platform's `usize` (section 6, A10).
+      Sizing comes after the wipe and before the reservation call in
+      step 3 or any write of a message byte.
    3. A buffer with an allocation too small for that size is refused
       with `AllocationFailed`: no byte of the message is written, and
       the buffer stays as step 1 left it, empty and zeroed, with its
@@ -1021,6 +1040,7 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    | `InvalidBool` | a boolean is neither 0 nor 1 | field | yes | no |
    | `UnknownEnumValue` | a closed enumeration's value is not declared | field | yes | no |
    | `UnknownDiscriminant` | a union's discriminant has no arm and there is no default | field | yes | no |
+   | `DefaultArmMismatch` | a value holds the default arm but its discriminant selects an explicit arm (5.5, point 2) | discriminant field | no | yes |
    | `TrailingBytes` | bytes remain after the message | count (not from a secret-bearing message) | yes | no |
    | `BudgetExceeded` | a reservation would carry the requested bytes past the decode's effective memory budget, or its size overflows (5.2, point 9.2; section 6, A9 and A11) | message cap name; the effective memory budget: the type's, or the lower budget the test entry point was given (5.2, point 9.2) | yes | no |
    | `AllocationFailed` | a fallible reservation failed (5.2, point 9.4; 5.5, point 3); on decode, a buffer to be boxed, of an element type of nonzero size, has a capacity other than its count, checked when the item is complete and reported at its start (a buffer of a zero-sized element type is boxed whatever capacity it reports, 5.2, point 9.4); on encode, the caller's output buffer has an allocation too small for the message (5.5, point 3) | none | yes | yes |
@@ -1277,11 +1297,25 @@ over the test types above.
   discriminant and the selected arm survive the value round trip. The
   byte round trip keeps the original discriminant, including VIVID on
   the default arm. Both messages are exactly 12 bytes.
-- **P4** The encoder refuses exactly what the decoder rejects, with the
-  same cap in both directions. For each variable-length item, P4 builds
-  the smallest over-size value that one guard alone decides, encodes it
-  where the encoder can represent it, builds the same bytes by hand, and
-  expects the same kind and the same cap or field name from both:
+
+  Also attempt to encode `shaded` holding the default arm with `PALE`
+  and G14's payload. All arms have the same width and the message fits
+  `test.shaded`. G14 supplies the valid explicit arm for that
+  discriminant and payload. The invalid value's `encoded_len` and both
+  encode entry points return `DefaultArmMismatch` naming
+  `test.shaded.tone`, with no value, offset or other detail. The
+  caller's-buffer entry point leaves a buffer that held earlier bytes
+  empty and zeroed as best it can, at the same address and capacity. A
+  fresh buffer is left empty with its capacity still zero. The refusal
+  in `encoded_len` precedes the reservation call and any message write.
+  The encoder's buffer tests below check the zero writes while the
+  bytes are still initialised. These integration cases use the #167
+  fixture and are delivered under #59. Run them with
+  `cargo nextest run -p ironafs-xdr`.
+- **P4** In the following bound and cap cases, with the same cap in
+  both directions, the encoder and decoder refuse the item with the
+  same error kind and the same cap or field name. P4 builds the value
+  each case prescribes and derives its bytes by hand.
   - opaque data or a string whose cap is below its declared bound, or
     with no declared bound: n = cap + 1 gets `CapExceeded` (`note.body`);
   - opaque data or a string whose cap equals its declared bound: n =
@@ -1534,6 +1568,10 @@ are its tests.
 ### 10.6 Gaps
 
 - The dependency-graph check of section 9 (PROPOSED, #46).
+- The deterministic order of sizing errors across a message (#168).
+  The later of the arm selection amendment (#165) and the sizing order
+  amendment (#168) places `DefaultArmMismatch` in that order. Its
+  check at the union precedes sizing the arm (5.5, point 2).
 - The codec generator and its own tests (section 10's opening; the
   generator's specification, section 13, Q4). Until it lands, the test
   types are written by hand, and what 5.1 and 5.2 require of the generator
