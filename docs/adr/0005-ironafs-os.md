@@ -11,7 +11,8 @@ and where a received descriptor is an integer); amended 2026-11-22
 (#152): point 5.3 and Decision 4, the target gate; and amended
 2026-11-22 (#153): row 23 and its sheet, the route sockets' bounded
 wait; amended 2026-11-24 (#146): sheet 14, complete GNU ABI proof,
-glibc 2.28 compatibility evidence and musl withholding.
+glibc 2.28 compatibility evidence and musl withholding; amended 2026-11-25
+(#187): point 2, the ordered Linux ABI header list.
 
 ## Context
 
@@ -3244,3 +3245,11 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
   verification. DeepSeek Flash max resolved the four remaining
   non-blocking reports. The evidence, supersession sweep, and review
   rounds are in the [#146 review record](../reviews/2026-11-24-146-os-guards.md).
+- **Amendment, 2026-11-25 (#187): point 2, Linux ABI headers.**
+  The owner accepted the exact amendment before implementation (patch
+  SHA-256 prefix `2dde31ef2d3d` on `cd5aef9`). All 24 rows state their
+  ordered Linux ABI header list, and the inventory checks the mirror
+  before the Linux macro scan, assertions or qualified absence probe.
+  The [#159 review record](../reviews/2026-11-25-159-abi-headers.md)
+  records the design and code findings, native controls, and the
+  supersession sweep from the former rule recorded in the #118 review.

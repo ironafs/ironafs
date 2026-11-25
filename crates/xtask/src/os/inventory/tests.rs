@@ -559,21 +559,49 @@ fn none_means_an_empty_mirror_even_for_a_row_without_code() {
 }
 
 #[test]
-fn matching_headers_cannot_extend_a_non_linux_adr_target_scope() {
+fn linux_header_eligibility_uses_the_approved_targets_outside_parentheses() {
+    let inventory = parse(&inventory_text()).unwrap();
+    let adr = adr_text();
+    for (scope, covers_linux) in [
+        ("macOS", false),
+        ("macOS (references macOS, Linux, and Windows)", false),
+        (
+            "macOS (references other targets (GNU, Linux, and Windows))",
+            false,
+        ),
+        ("Li(qualifier)nux, macOS", false),
+        ("Linux (with a qualifier), macOS", true),
+        ("macOS (with a qualifier), Linux", true),
+    ] {
+        let mut changed = inventory.clone();
+        let row = changed
+            .rows
+            .iter_mut()
+            .find(|row| row.id == "unix-nodump")
+            .unwrap();
+        assert_eq!(row.columns[0], "Linux, macOS");
+        assert_eq!(
+            row.code.as_ref().unwrap().headers,
+            ["sys/resource.h", "sys/prctl.h"]
+        );
+        row.columns[0] = scope.to_owned();
+        let changed_adr = adr.replace(" | Linux, macOS | ", &format!(" | {scope} | "));
+        let found = problems(&changed, &changed_adr);
+        if covers_linux {
+            assert_eq!(found, [] as [String; 0], "{scope}");
+        } else {
+            assert_eq!(found.len(), 1, "{scope}: {found:?}");
+            assert!(found[0].contains("row 11 (unix-nodump) Linux ABI headers: expected `none`"));
+        }
+    }
+}
+
+#[test]
+fn a_misordered_row_does_not_get_compared_to_the_wrong_approved_headers() {
     let mut inventory = parse(&inventory_text()).unwrap();
-    let row = inventory
-        .rows
-        .iter_mut()
-        .find(|row| row.id == "unix-nodump")
-        .unwrap();
-    assert_eq!(row.columns[0], "Linux, macOS");
-    assert_eq!(
-        row.code.as_ref().unwrap().headers,
-        ["sys/resource.h", "sys/prctl.h"]
-    );
-    row.columns[0] = "macOS".to_owned();
-    let adr = adr_text().replace(" | Linux, macOS | ", " | macOS | ");
-    let found = problems(&inventory, &adr);
-    assert_eq!(found.len(), 1);
-    assert!(found[0].contains("row 11 (unix-nodump) Linux ABI headers: expected `none`"));
+    inventory.rows.swap(0, 1);
+    let found = problems(&inventory, &adr_text());
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(found[0].contains("row 2 (darwin-clock) differs from the ADR's row 1"));
+    assert!(found[1].contains("row 1 (linux-clock) differs from the ADR's row 2"));
 }

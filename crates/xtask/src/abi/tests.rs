@@ -1219,10 +1219,14 @@ fn a_shared_rows_linux_headers_stay_out_of_a_darwin_input() {
     let code = row.code.as_ref().unwrap();
     let darwin = "aarch64-apple-darwin";
     assert!(!row.implemented_on(darwin));
-    assert_eq!(
-        code.headers_for("aarch64-unknown-linux-gnu"),
-        ["sys/resource.h", "sys/prctl.h"]
-    );
+    for target in crate::os::ALLOWLIST {
+        let expected: &[&str] = if target.contains("-linux-") {
+            &["sys/resource.h", "sys/prctl.h"]
+        } else {
+            &[]
+        };
+        assert_eq!(code.headers_for(target), expected, "{target}");
+    }
     assert_eq!(
         include_names(
             &super::qualified::baseline(row, code, darwin, super::Mode::Complete).unwrap()
@@ -1258,9 +1262,34 @@ fn checked_row_headers_reach_the_macro_scan_and_c_assertions_in_order() {
         .unwrap();
     let code = row.code.as_ref().unwrap();
     let target = super::host_target().unwrap();
-    let (root, files) = row_files("checked-random-headers", &code.module, "");
-    let declarations = read("use core::ffi::c_int; const EINTR: c_int = 4;");
-    super::fact_problem(&row.id, code, &declarations, &root, &files, &target, &root).unwrap();
+    let (root, _) = row_files("checked-random-headers", &code.module, "");
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ironafs-os");
+    let arch = target.split('-').next().unwrap();
+    let files = [
+        "src/linux_random.rs".into(),
+        "src/linux_random/abi.rs".into(),
+        "src/linux_random/abi/foreign.rs".into(),
+        "src/linux_random/number.rs".into(),
+        format!("src/linux_random/number/{arch}.rs").into(),
+    ]
+    .into_iter()
+    .collect();
+    let declarations = super::row_declarations(&crate_dir, &code.module, &files, &target)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        super::fact_problem(
+            &row.id,
+            code,
+            &declarations,
+            &crate_dir,
+            &files,
+            &target,
+            &root
+        )
+        .unwrap(),
+        None
+    );
     let proof = super::prove_declarations(
         row,
         code,

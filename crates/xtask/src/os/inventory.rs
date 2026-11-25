@@ -632,14 +632,17 @@ pub(crate) fn problems(inventory: &Inventory, adr: &str) -> Vec<String> {
         ));
     }
     for (row, adr_row) in inventory.rows.iter().zip(&table) {
-        if row.number != adr_row.number || row.id != adr_row.id || row.columns != adr_row.columns {
+        let same_row = row.number == adr_row.number && row.id == adr_row.id;
+        if !same_row || row.columns != adr_row.columns {
             found.push(format!(
                 "sites.json row {} ({}) differs from the ADR's row {} ({}): the copy keeps the \
                  table's text as written",
                 row.number, row.id, adr_row.number, adr_row.id
             ));
         }
-        found.extend(header_problems(row, adr_row));
+        if same_row {
+            found.extend(header_problems(row, adr_row));
+        }
     }
     for row in &inventory.rows {
         found.extend(row_problems(row));
@@ -666,9 +669,7 @@ fn header_problems(row: &Row, adr_row: &AdrRow) -> Vec<String> {
         }
     };
     let [targets, _, _, declared, _] = &adr_row.columns;
-    let covers_linux =
-        targets == "every target" || targets.split(", ").any(|scope| scope == "Linux");
-    if !approved.is_empty() && (!covers_linux || declared == "none") {
+    if !approved.is_empty() && (declared == "none" || !covers_linux(targets)) {
         found.push(format!(
             "ADR {site} Linux ABI headers: expected `none` for a row without a Linux foreign item"
         ));
@@ -680,6 +681,24 @@ fn header_problems(row: &Row, adr_row: &AdrRow) -> Vec<String> {
         ));
     }
     found
+}
+
+/// Reads the target names outside the ADR's parenthesized qualifiers.
+fn covers_linux(targets: &str) -> bool {
+    let mut scopes = String::new();
+    let mut depth = 0_usize;
+    for character in targets.chars() {
+        match character {
+            '(' => {
+                scopes.push(' ');
+                depth += 1;
+            }
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => scopes.push(character),
+            _ => {}
+        }
+    }
+    scopes.trim() == "every target" || scopes.split(',').any(|scope| scope.trim() == "Linux")
 }
 
 /// Each musl target and the glibc target of its architecture.
