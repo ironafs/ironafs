@@ -17,7 +17,7 @@ use crate::support::heap::Owned;
 use crate::support::{encoded, hex};
 use crate::types::{
     BLOB, Blob, ENTRY, Entry, FIVE, FLAG, Five, Flag, INTS, Ints, LABEL, Label, NOTE, Note, PAIR,
-    Pair, SHADE, Shade,
+    Pair, SHADE, SHADED, Shade, Shaded,
 };
 
 const PRIMITIVE: Message = Message {
@@ -203,4 +203,24 @@ fn golden_g12_note() {
 #[test]
 fn golden_g13_void() {
     both_ways(&PRIMITIVE, &Primitive(()), "");
+}
+
+/// G14, §§4.3, 4.5 and 4.15: PALE (1), then its explicit unsigned hyper.
+#[test]
+fn golden_g14_shaded_explicit_arm() {
+    both_ways(
+        &SHADED,
+        &Shaded::Pale(0x0102_0304_0506_0708),
+        "00000001 01020304 05060708",
+    );
+}
+
+/// G15, §§4.3, 4.5 and 4.15: VIVID (9), then the default unsigned hyper.
+#[test]
+fn golden_g15_shaded_default_arm() {
+    both_ways(
+        &SHADED,
+        &Shaded::Vivid(0xfedc_ba98_7654_3210),
+        "00000009 fedcba98 76543210",
+    );
 }

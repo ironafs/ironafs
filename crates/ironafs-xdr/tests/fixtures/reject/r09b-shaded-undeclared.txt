@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# An undeclared shade with a complete default-arm payload.
+
+type shaded
+breaks 5.4, point 7.1
+expect UnknownEnumValue test.shaded.tone
+offset 0
+extent none
+requests none
+input 00000002 fedcba98 76543210
