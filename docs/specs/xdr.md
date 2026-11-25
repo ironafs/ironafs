@@ -372,7 +372,7 @@ the message, because every item is a whole number of units
      which may copy them, and nothing stops it; and a handwritten
      encoder that runs a decode and passes on its positioned error,
      which the encode entry points return as it is, a `MessageTooLarge`
-     from `encoded_len` excepted (section 7, point 2).
+     from sizing excepted (section 7, point 2).
      Review sees all five.
 
 ### 5.2 Caps
@@ -866,26 +866,31 @@ not control").
    checks that lengths and counts fit in 32 bits and applies the
    encode-only `DefaultArmMismatch` refusal to preserve the value round
    trip (P1). The checks below are `[OWN]` except where marked.
-   - for opaque data and strings, n is checked against the declared bound
-     (bytes) and then against the cap in the "out" direction (bytes);
-   - for a variable-length array, the element count n is checked against
-     the declared bound (elements), and the encoded bytes of its elements
-     against the array's cap (bytes); a count is never compared with a
-     byte cap, nor a byte total with a bound in elements;
-   - the failures are `LengthOverBound` and `CapExceeded`; XDR itself
-     makes encoding a length above the declared maximum an error
-     `[X1 §4.10, §4.11, §4.13: CONFIRMED]`;
-   - a length or count that does not fit in 32 bits is
-     `LengthNotRepresentable`;
-   - a union's explicit arm supplies its case discriminant. Its default
-     arm keeps a discriminant of the declared type, including any raw
-     value the type admits for an open field. When sizing a default-arm
-     value, apply 5.1, point 2 to that discriminant. If it selects an
-     explicit arm, return `DefaultArmMismatch` naming the discriminant
-     field (section 7). If it selects the default arm, size the arm and
-     encode it with the stored discriminant. A mismatch violates P1
-     because a decoder can accept the resulting bytes as the explicit
-     arm when the payload fits both layouts.
+
+   **Visit the value in wire order.** Visit a structure's components in
+   declaration order, an array's elements by increasing index, and a
+   union's discriminant before its arm. At a length or count, check any
+   declared bound in its own units (bytes or elements), comparing the
+   original length or count before converting to 32 bits. Above the
+   bound is `LengthOverBound`, naming the field. XDR makes encoding a
+   length or count above the declared maximum an error
+   `[X1 §4.10, §4.11, §4.13: CONFIRMED]`. Next, if the length or count
+   does not fit in 32 bits, return `LengthNotRepresentable`, naming the
+   field (section 6, A7). This conversion enforces the word's limit when
+   the declaration omits a bound. For an opaque field or string with a
+   length word, then check its own data bytes against its cap and return
+   `CapExceeded` naming that cap if it fails.
+
+   **Check the union at its discriminant.** A union's explicit arm
+   supplies its case discriminant. Its default arm keeps a discriminant
+   of the declared type, including any raw value the type admits for an
+   open field. Apply 5.1, point 2 to a default-arm value's discriminant
+   before charging its word or sizing the arm. If it selects an
+   explicit arm, return `DefaultArmMismatch` naming the discriminant
+   field (section 7). If it selects the default arm, size the arm and
+   encode it with the stored discriminant. A mismatch violates P1
+   because a decoder can accept the resulting bytes as the explicit
+   arm when the payload fits both layouts.
 
    For every discriminant kind, keeping the declared type lets the
    default arm use the existing value representation and sizing pass.
@@ -894,7 +899,59 @@ not control").
    arm has the same encoded size. The check is part of sizing the union
    wherever it occurs, including inside a structure, array or another
    union.
-3. **The wipe comes first, then the output cap, and the allocation
+
+   **Charge each encoded byte once to the message and once to each
+   active array cap.** The charge for a scalar, discriminant or
+   fixed-length opaque item is its full encoded width from 5.1. For a
+   variable-length opaque item or string, charge its length word, data
+   and padding together after its own checks. For a variable-length
+   array, after checking its count, charge the four-byte count word to
+   the message and any enclosing arrays. Then open its own cap at its
+   full byte allowance, visit its elements, and close that cap. Each
+   element's charges count against that cap while it is open. A
+   structure, fixed-length array, union wrapper or void adds no charge
+   of its own.
+
+   **The first item or array failure wins.** At each charge, test the
+   active caps from innermost to outermost. The first cap with fewer
+   remaining bytes than the charge gives `CapExceeded` naming that cap,
+   even when an outer cap has less room. A charge that fits is deducted
+   from each active cap (section 6, A13). These remaining byte counts are
+   independent of the whole-message total. A bounded stack under the
+   nesting limit (5.2, point 10) holds the counts without an allocation.
+
+   **The whole-message size is decided after the visit.** Keep the sum
+   of charges in 64 bits while it fits, and record an overflow if a
+   checked addition fails (section 6, A10). Once overflowed, the total
+   stays marked as such and the visit continues with the same item
+   checks and array charges. Exceeding the message cap or platform width
+   also leaves these checks in force. If none of them refuses the value,
+   return `MessageTooLarge` naming the message for an overflowed total,
+   a total above the message cap or one that does not fit in `usize`.
+
+   **One shared sizing context.** Add a context-taking sizing method to
+   `Encode` for generated and handwritten codecs that expose their
+   components. Pass the same context throughout the visit. It takes the
+   lengths and counts and runs the checks and charges above. A codec
+   using it visits each component through that context and propagates
+   the first error. Its standalone `encoded_len` uses the same visit
+   starting without an enclosing array or message cap, returning
+   `Result<u64, Error>`. For an overflow found by the context it returns
+   `MessageTooLarge` without a cap name or limit. Both encode entry
+   points drive the context with the message's cap.
+
+   The default implementation of the context-taking method calls the
+   existing `encoded_len` for a handwritten codec that supplies only a
+   size. Treat a successful size as one charge to the enclosing arrays
+   and the message. If that call returns an error, stop at that component
+   before charging it. There is no reported width against which to
+   check enclosing caps, and the later items are outside the visit.
+   This includes an opaque `MessageTooLarge`. Only the whole-message
+   size failures found by the shared context are deferred. The
+   deterministic order governs the events and checks that the context
+   sees. Section 7 specifies how errors returned by sizing and writing
+   reach the caller.
+3. **The wipe comes first, then sizing, and the allocation
    never moves.** `[OWN]`, from coding standards rules 3 and 8. These
    steps run in this order, and are the same for every message,
    secret-bearing or not. They describe the entry point that writes
@@ -909,9 +966,7 @@ not control").
       any later step, the cap check included, still leaves a buffer that
       held earlier bytes empty and zeroed, as best it can (step 6).
    2. Then it computes the message's encoded size, with checked
-      arithmetic and the checks in point 2 in the same pass. It returns
-      `MessageTooLarge` if the size exceeds the message cap, or does not
-      fit in 64 bits or in the platform's `usize` (section 6, A10).
+      arithmetic and the checks and order in point 2 in the same pass.
       Sizing follows the wipe. It finishes before any allocator request,
       before the reservation call in step 3, and before any message byte
       is written.
@@ -1005,9 +1060,10 @@ and fallible conversions (coding standards rule 2); none of it saturates.
 | A7 | a length to the 32-bit length word, on encode | any `usize` | `try_from`; failure is `LengthNotRepresentable` |
 | A8 | heap ratios and r × message cap, and reservation counts q and q × message cap ÷ 4, in the generator (5.2, points 9.3 and 9.5) | caps < 2³², slot sizes small | `checked_mul`, `checked_add` and a ceiling division in 64 bits; overflow refuses the definition |
 | A9 | n × element slot size, the requested bytes of a reservation | n already checked under A4 | `checked_mul` in 64 bits; overflow is `BudgetExceeded` |
-| A10 | the encoder's sum of encoded sizes, and that size as the platform's `usize` (5.5, point 3) | any value | `checked_add` in 64 bits and `try_from`; overflow or a failed conversion is `MessageTooLarge`, naming the message |
+| A10 | the encoder's sum of encoded sizes and the final conversion to `usize` (5.5, point 2) | each charge fits in 64 bits | `checked_add` in 64 bits; record overflow and continue item and array checks. On reaching the end, overflow, a failed `try_from` or a size above the message cap is `MessageTooLarge`, naming the message at the encode entry points |
 | A11 | the ledger's running total plus a request (5.2, point 9.2) | total ≤ memory budget, request from A9 | `checked_add` in 64 bits; overflow, or a sum above the budget, is `BudgetExceeded`, before anything is requested |
 | A12 | inline sizes and nesting depth, in the generator and the compile-time assertions (5.2, point 10) | sizes small, depth ≤ 16 | `checked_add` and `checked_mul`; overflow refuses the definition or fails the build |
+| A13 | active array cap's remaining bytes less the charge (5.5, point 2) | remaining ≤ cap < 2³², charge fits in 64 bits | `checked_sub` in 64 bits; underflow is `CapExceeded` naming the first failing cap, innermost to outermost |
 
 `[OWN]` for every row; the operations follow from 5.1, 5.2, 5.4 and 5.5.
 
@@ -1029,12 +1085,12 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    errors the codec builds itself. Any error kind can reach an encode
    caller: an encode entry point returns an error a handwritten encoder
    passes on, of any kind, as that encoder made it, except a
-   `MessageTooLarge` from `encoded_len`, which it replaces with the
-   message's own (point 2).
+   `MessageTooLarge` from sizing, which it replaces with the message's
+   own (point 2).
 
    | Kind | When | Also carries | Decode | Encode |
    |---|---|---|---|---|
-   | `MessageTooLarge` | the message is longer than its cap; on encode, also a computed size that overflows 64 bits or does not fit in the platform's `usize` (section 6, A10), a value that writes more or fewer bytes than its computed size, or a write past the buffer's capacity (5.5, point 3) | cap name, cap; the input's length (decode, not from a secret-bearing message) | yes | yes |
+   | `MessageTooLarge` | the message is longer than its cap; on encode, also a computed size that overflows 64 bits or does not fit in the platform's `usize` (section 6, A10), a value that writes more or fewer bytes than its computed size, or a write past the buffer's capacity (5.5, point 3) | cap name and cap at message entry points; the input's length (decode, not from a secret-bearing message) | yes | yes |
    | `Truncated` | the input ends inside an item | bytes available (not from a secret-bearing message) | yes | no |
    | `LengthOverBound` | a length or count is above the declared bound | field, bound | yes | yes |
    | `CapExceeded` | a length, count or running total is above its cap, or a read or an item passes an enclosing array's limit | cap name, cap | yes | yes |
@@ -1093,14 +1149,15 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    needs a redaction rule of its own. The encoder's errors carry no
    value from its input either: a length it refuses is named by its
    field, never printed. The encoder builds its own errors with no
-   position. The encode entry points return an error from a value's
-   `encode` or `encoded_len` as that code made it, except that a
-   `MessageTooLarge` from `encoded_len` is replaced by the message's
-   own; they remove no position. A handwritten encoder that runs a
-   decode and passes on its error passes on that decode's position, so
-   a handwritten encoder of a secret-bearing message does not return
-   such an error. The codec cannot check that; it rests on review
-   (5.1, point 8, limits).
+   position. The encode entry points pass errors on as the value's
+   code made them, including a `MessageTooLarge` returned by its
+   write method `encode`. They replace a `MessageTooLarge` returned
+   during sizing, including from `encoded_len`, with a new error
+   naming the outer message cap and its limit (5.5, point 2). A
+   handwritten encoder that runs a decode and passes on its error
+   passes on that decode's position, so a handwritten encoder of a
+   secret-bearing message does not return such an error. The codec
+   cannot check that; it rests on review (5.1, point 8, limits).
 3. **No panic is reachable** from any input (coding standards rule 1). The
    codec uses no indexing, `unwrap` or `expect` on input-derived values.
 4. **Fail closed.** A decode error means the message is not used. What the
@@ -1125,7 +1182,7 @@ integrity, anyone on the network path (ADR 0004, A13). They can try:
 | Exhausting the stack with deep nesting, a long array or a large inline value | no optional data and no recursive types (5.1, points 3 and 4) `[X1 §8: CONFIRMED]`; array elements decoded by a loop (5.1, point 4); limits on inline size and nesting depth, large values held out of line, and `decode_fits_small_stack` (5.2, point 10) |
 | Crashing the daemon | no panics, checked arithmetic (section 6; 7, point 3); the fuzz target (10.4) |
 | Two encodings of one value, used to slip a change past a check or a cache key | strict padding, booleans and enumerations (5.4, points 8 and 9); integrity over the bytes received (5.4, point 12); round-trip property P2 |
-| Leaking a secret through an error, a log or a stray copy | no value read from the input in errors; no offset or length in an error that a decode entry point returns from a secret-bearing message: the decoder builds its own errors without one, and the decode entry points remove one from any error a handwritten decoder passes on from a separate decode, which holds its position only inside that decoder, where it must not be reported (7, point 2); the encoder builds its own errors without one, and review keeps a handwritten encoder of a secret-bearing message from passing on a positioned error, which the encode entry points return as it is, except a `MessageTooLarge` from `encoded_len`, replaced by the message's own (7, point 2); in a secret-bearing message no input byte copied into the decoded value through the decoder it is given, whatever field misframing puts it in, and no value, length or count of any field of a secret-bearing message shown by `Debug` or `Display`; a secret-bearing message encoded only into the caller's buffer, whose allocation, whether it came with the buffer or the encoder's one reservation call acquired it, the encoder never grows, moves or frees, even when a value's encoding unwinds, so the caller's wipe reaches every byte written into it; and secrecy carried by one flag per type, set from the rows its cap table marks, fields capped or not and named types, and combined with the flags of its components, elements and arms, which the encoder and the decoder both read, so a type that can hold a secret does not build into a buffer the encoder returns, and each decode is made under its own type's caps, budget and secrecy (5.1, point 8, with its stated limits, among them a separate decode started inside a decoder, a handwritten encoder's forwarded error and the encoder's temporaries; 5.2, points 5 and 9.2; 5.5, points 3 and 6) |
+| Leaking a secret through an error, a log or a stray copy | no value read from the input in errors; no offset or length in an error that a decode entry point returns from a secret-bearing message: the decoder builds its own errors without one, and the decode entry points remove one from any error a handwritten decoder passes on from a separate decode, which holds its position only inside that decoder, where it must not be reported (7, point 2); the encoder builds its own errors without one, and review keeps a handwritten encoder of a secret-bearing message from passing on a positioned error, which the encode entry points return as it is, except a `MessageTooLarge` from sizing, replaced by the message's own (7, point 2); in a secret-bearing message no input byte copied into the decoded value through the decoder it is given, whatever field misframing puts it in, and no value, length or count of any field of a secret-bearing message shown by `Debug` or `Display`; a secret-bearing message encoded only into the caller's buffer, whose allocation, whether it came with the buffer or the encoder's one reservation call acquired it, the encoder never grows, moves or frees, even when a value's encoding unwinds, so the caller's wipe reaches every byte written into it; and secrecy carried by one flag per type, set from the rows its cap table marks, fields capped or not and named types, and combined with the flags of its components, elements and arms, which the encoder and the decoder both read, so a type that can hold a secret does not build into a buffer the encoder returns, and each decode is made under its own type's caps, budget and secrecy (5.1, point 8, with its stated limits, among them a separate decode started inside a decoder, a handwritten encoder's forwarded error and the encoder's temporaries; 5.2, points 5 and 9.2; 5.5, points 3 and 6) |
 | Slipping an invalid discriminant past a default arm | the discriminant is validated as its own type before dispatch (5.4, point 7) |
 | A name with NUL or `/` reaching the operating system | out of this codec's scope by design (5.1, point 6); the consumer checks it `[X1 §8: CONFIRMED]` |
 | An integer used as a size without a check | integers are not converted here (5.1, point 7); the consumer applies rule 2 |
@@ -1316,13 +1373,13 @@ over the test types above.
   bytes are still initialised. These integration cases use the #167
   fixture and are delivered under #59. Run them with
   `cargo nextest run -p ironafs-xdr`.
-- **P4** The encoder refuses exactly what the decoder rejects, with the
-  same cap in both directions, for values that can be expressed both as
-  encoder input and as wire bytes. P1 covers the additional encode-only
-  `DefaultArmMismatch` refusal. For each variable-length item, P4 builds
+- **P4** Compare refusals in the bound and cap cases below with the
+  same cap in both directions. For each variable-length item, P4 builds
   the smallest over-size value that one guard alone decides, encodes it
   where the encoder can represent it, builds the same bytes by hand, and
-  expects the same kind and the same cap or field name from both.
+  expects the same kind and the same cap or field name from both. The
+  decoder follows 5.4 for other combinations of failures. P1 covers the
+  encode-only `DefaultArmMismatch` refusal.
   - opaque data or a string whose cap is below its declared bound, or
     with no declared bound: n = cap + 1 gets `CapExceeded` (`note.body`);
   - opaque data or a string whose cap equals its declared bound: n =
@@ -1437,6 +1494,35 @@ over the test types above.
   acquired (5.5, point 6) is not checked. Not exercised directly: the
   other error kinds, an unwind in a secret-bearing message, and the
   freeing of the owned-output entry point's buffer on error.
+- **Sizing error order** (5.5, point 2; section 7). Run these cases
+  under #59 with `cargo nextest run -p ironafs-xdr`, including a 64-bit
+  venue for the synthetic `usize` lengths. Supply those lengths as
+  scalar arguments to the normal sizing operations for fields. Use a
+  handwritten `encoded_len` to report a synthetic opaque size. The
+  cases use small real values or synthetic sizes with no backing
+  payload and make no large allocations.
+
+  Check the exact error kind, name and limit where present. Both
+  entry points refuse the sizing cases before an allocator request,
+  reservation call or message write. Through the caller's-buffer
+  entry point, a populated buffer ends empty and zeroed as best the
+  encoder can, retaining its address and capacity. A fresh buffer has
+  zero capacity after a sizing refusal. For the write case, a fresh
+  caller buffer keeps the allocation acquired in step 3, empty and
+  zeroed as best the encoder can (5.5, point 3, steps 5 and 6).
+
+  | Case | Value and limits | Expected refusal |
+  |---|---|---|
+  | Declared bound and own cap | P4's `note.title` has 33 bytes, with bound and cap both 32. | `LengthOverBound` on `test.note.title`, bound 32. |
+  | Nested cap tie | `test.sizing.nested` has message cap 16. Its `outer` array with cap 4 contains one element with an `inner` array with cap 4 and one unsigned hyper. The inner count word fills the outer cap. The hyper's eight bytes cross both caps on one event. | `CapExceeded` on `test.sizing.nested.outer.inner`, cap 4, even though the outer cap has zero bytes remaining. |
+  | Enclosing cap before a later element | `test.sizing.list` has message cap 32. Its array `items` has cap 7 and holds two strings with bound and cap 8. The first has one byte of data and charges eight bytes including its length and padding. The second has nine data bytes. | `CapExceeded` on `test.sizing.list.items`, cap 7, at the first element. |
+  | Default-arm check before the discriminant charge | `test.sizing.shades` has message cap 16. Its array `items` has cap 3 and holds one `shaded` default-arm value with `PALE`. | `DefaultArmMismatch` on `test.shaded.tone`, before the four-byte charge could fail the array cap. |
+  | Message cap before a later bound | `test.sizing.bound` has message cap 16. Its prefix of five unsigned integers charges 20 bytes. Its next field `title` has five data bytes, bound 4 and cap 4. | `LengthOverBound` on `test.sizing.bound.title`, bound 4. With an empty `title`, `MessageTooLarge` on `test.sizing.bound`, cap 16. |
+  | Declared bound before length word width | `test.sizing.repr_bound.title` is a string with declared bound and cap 4 and synthetic length 2³². Its message cap is 16. | `LengthOverBound` on `test.sizing.repr_bound.title`, bound 4. |
+  | Length word width after the message cap is crossed | `test.sizing.repr` has message cap 16. Five unsigned integers charge 20 bytes. Its next field `data` is opaque with no declared bound, cap 4 and synthetic length 2³². | `LengthNotRepresentable` on `test.sizing.repr.data`. |
+  | Overflow before a later array cap | `test.sizing.overflow` has message cap 16. One opaque component reports a successful size of 2⁶⁴ − 4, then an unsigned integer adds four bytes. A following array `items` with cap 4 holds one unsigned hyper. | `CapExceeded` on `test.sizing.overflow.items`, cap 4. With empty `items`, `MessageTooLarge` on `test.sizing.overflow`, cap 16. Also call `encoded_len` with empty `items` and expect `MessageTooLarge` with no cap name or limit. |
+  | Opaque sizing report | `test.sizing.opaque` has message cap 16. Its array `items` has cap 4 and contains one opaque component. The component's `encoded_len` returns `MessageTooLarge` naming `test.sizing.source`, cap 4. A later string `title` has five data bytes, bound 4 and cap 4. Repeat with an opaque report of a successful size of eight bytes. | For the error report, `MessageTooLarge` on `test.sizing.opaque`, cap 16. For the successful report, `CapExceeded` on `test.sizing.opaque.items`, cap 4. |
+  | Opaque write error | `test.sizing.write` has message cap 16. Its handwritten codec reports a successful size of four bytes, writes one word, then returns `MessageTooLarge` naming `test.sizing.source`, cap 4. | `MessageTooLarge` on `test.sizing.source`, cap 4, from the write pass. |
 - **Secrecy on encode** (5.1, point 8) is checked by doctests that
   must fail to build, each beside a passing doctest with the same
   fixtures that differs from it in one line, so the failure has one
@@ -1575,10 +1661,8 @@ are its tests.
 ### 10.6 Gaps
 
 - The dependency-graph check of section 9 (PROPOSED, #46).
-- The deterministic order of sizing errors across a message (#168).
-  The later of the arm selection amendment (#165) and the sizing order
-  amendment (#168) places `DefaultArmMismatch` in that order. Its
-  check at the union precedes sizing the arm (5.5, point 2).
+- Executable cases for encoder sizing order (5.5, point 2; 10.2,
+  "Sizing error order") follow under #59.
 - The codec generator and its own tests (section 10's opening; the
   generator's specification, section 13, Q4). Until it lands, the test
   types are written by hand, and what 5.1 and 5.2 require of the generator
