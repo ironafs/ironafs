@@ -861,10 +861,11 @@ not control").
    value (5.4, point 9) `[OWN]`. A union is written as its discriminant
    followed by the arm that value selects under 5.1, point 2
    `[X1 §4.15: CONFIRMED]`.
-2. **Checks during sizing.** The encoder applies the declared bounds
-   and the caps for the output direction (the `wire-format` skill).
-   It also checks arm selection for the value round trip (P1).
-   The checks below are `[OWN]` except where marked.
+2. **The encoder refuses what the decoder rejects** (the `wire-format`
+   skill), using the caps for the output direction. The sizing pass also
+   checks that lengths and counts fit in 32 bits and applies the
+   encode-only `DefaultArmMismatch` refusal to preserve the value round
+   trip (P1). The checks below are `[OWN]` except where marked.
    - for opaque data and strings, n is checked against the declared bound
      (bytes) and then against the cap in the "out" direction (bytes);
    - for a variable-length array, the element count n is checked against
@@ -911,8 +912,9 @@ not control").
       arithmetic and the checks in point 2 in the same pass. It returns
       `MessageTooLarge` if the size exceeds the message cap, or does not
       fit in 64 bits or in the platform's `usize` (section 6, A10).
-      Sizing comes after the wipe and before the reservation call in
-      step 3 or any write of a message byte.
+      Sizing follows the wipe. It finishes before any allocator request,
+      before the reservation call in step 3, and before any message byte
+      is written.
    3. A buffer with an allocation too small for that size is refused
       with `AllocationFailed`: no byte of the message is written, and
       the buffer stays as step 1 left it, empty and zeroed, with its
@@ -1303,19 +1305,24 @@ over the test types above.
   `test.shaded`. G14 supplies the valid explicit arm for that
   discriminant and payload. The invalid value's `encoded_len` and both
   encode entry points return `DefaultArmMismatch` naming
-  `test.shaded.tone`, with no value, offset or other detail. The
-  caller's-buffer entry point leaves a buffer that held earlier bytes
-  empty and zeroed as best it can, at the same address and capacity. A
-  fresh buffer is left empty with its capacity still zero. The refusal
-  in `encoded_len` precedes the reservation call and any message write.
+  `test.shaded.tone`, with no value, offset or other detail. Check that
+  both encode entry points refuse during sizing, before any allocator
+  request, reservation call or message write. For the caller's-buffer
+  entry point, use two buffers that hold earlier bytes, one with
+  `0 < capacity < 12` and one with `capacity >= 12`. Both end empty and
+  zeroed as best the encoder can, at the same address and capacity. A
+  fresh zero-capacity buffer stays empty with capacity zero.
   The encoder's buffer tests below check the zero writes while the
   bytes are still initialised. These integration cases use the #167
   fixture and are delivered under #59. Run them with
   `cargo nextest run -p ironafs-xdr`.
-- **P4** In the following bound and cap cases, with the same cap in
-  both directions, the encoder and decoder refuse the item with the
-  same error kind and the same cap or field name. P4 builds the value
-  each case prescribes and derives its bytes by hand.
+- **P4** The encoder refuses exactly what the decoder rejects, with the
+  same cap in both directions, for values that can be expressed both as
+  encoder input and as wire bytes. P1 covers the additional encode-only
+  `DefaultArmMismatch` refusal. For each variable-length item, P4 builds
+  the smallest over-size value that one guard alone decides, encodes it
+  where the encoder can represent it, builds the same bytes by hand, and
+  expects the same kind and the same cap or field name from both.
   - opaque data or a string whose cap is below its declared bound, or
     with no declared bound: n = cap + 1 gets `CapExceeded` (`note.body`);
   - opaque data or a string whose cap equals its declared bound: n =
