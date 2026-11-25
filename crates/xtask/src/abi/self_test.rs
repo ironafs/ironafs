@@ -15,9 +15,8 @@
 //!   wrong size or sign, an alias of `c_char` naming a typedef of the
 //!   other sign, and aliases of integers naming typedefs of `_Bool` and
 //!   `double`. Each must fail with the assertion that names it;
-//! - by the probe of qualified constants: a name the headers do not define
-//!   is reported unnamed (so its row is withheld), and one they define is
-//!   not;
+//! - by the probe of qualified constants and the row's evidence rules:
+//!   absent names, usable declarations, broken macros and incomplete proof;
 //! - by the comparison with sites.json's record: a type alias the
 //!   declarations state but the record leaves out, and one the record
 //!   holds but no declaration states;
@@ -51,11 +50,14 @@ use std::path::Path;
 
 use super::{
     DataModel, Declarations, Recorded, applies_here, c_source, compile, declarations,
-    fact_differences, header_macros, required_constants, row_declarations, unnamed,
+    fact_differences, header_macros, preamble, required_constants, row_declarations,
 };
 use crate::Error;
+use crate::abi::qualified::unnamed;
 use crate::fixture;
 use crate::rust_source::tokens_with_strings;
+
+mod qualified;
 
 const CHECK: &str = "check-abi";
 
@@ -279,6 +281,8 @@ pub(super) fn run(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
     array_fixture(dir, output)?;
     let planted_count = compiler_stage(dir, output)?;
     char_sign_and_probe(dir, output)?;
+    qualified_name_cases(dir, output)?;
+    qualified::run(dir, output)?;
     non_integer_aliases(dir, output)?;
     array_as_pointer(dir, output)?;
     for (name, from, to, phrase) in READER {
@@ -528,7 +532,8 @@ fn char_sign_and_probe(dir: &Path, output: &mut impl Write) -> Result<(), Error>
     let headers: Vec<String> = HEADERS.iter().map(|header| (*header).to_owned()).collect();
     let names = ["EINTR".to_owned(), UNNAMED_NAME.to_owned()];
     let name = "a qualified constant the headers do not name";
-    match unnamed("self-test", &[], &headers, &names, DataModel::Lp64, "", dir)? {
+    let base = preamble("self-test", &[], &headers, DataModel::Lp64);
+    match unnamed("self-test", &base, &names, dir)? {
         Ok(absent) if absent == [UNNAMED_NAME] => report(
             output,
             format!("withheld by the probe: {name}; a named one (EINTR) was not"),
@@ -540,6 +545,70 @@ fn char_sign_and_probe(dir: &Path, output: &mut impl Write) -> Result<(), Error>
             ));
         }
         Err(error) => return Err(failure(name, error)),
+    }
+    Ok(())
+}
+
+/// The C compiler must distinguish an absent name from a broken or
+/// unusable macro, including when its diagnostic quotes the name itself.
+fn qualified_name_cases(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    let names = [UNNAMED_NAME.to_owned()];
+    let headers = HEADERS
+        .iter()
+        .map(|header| (*header).to_owned())
+        .collect::<Vec<_>>();
+    let base = preamble("qualified-fixture", &[], &headers, DataModel::Lp64);
+    for (case, setup, expected) in [
+        (
+            "a genuinely absent name",
+            String::new(),
+            Ok(names.as_slice()),
+        ),
+        (
+            "an object macro",
+            format!("#define {UNNAMED_NAME} 4\n"),
+            Ok(&[][..]),
+        ),
+        (
+            "an enum",
+            format!("enum {{ {UNNAMED_NAME} = 4 }};\n"),
+            Ok(&[][..]),
+        ),
+        (
+            "a different-name expansion",
+            format!("#define {UNNAMED_NAME} WRONG_NAME\n"),
+            Err("inconclusive qualified-name probe"),
+        ),
+        (
+            "a function-like macro",
+            format!("#define {UNNAMED_NAME}(x) (x)\n"),
+            Err("qualified-name macro check"),
+        ),
+        (
+            "a self-referential macro",
+            format!("#define {UNNAMED_NAME} {UNNAMED_NAME}\n"),
+            Err("qualified-name "),
+        ),
+        (
+            "a malformed baseline",
+            "int broken = ;\n".to_owned(),
+            Err("qualified-name baseline failed"),
+        ),
+    ] {
+        let found = unnamed("qualified-fixture", &format!("{base}{setup}"), &names, dir)?;
+        match (found, expected) {
+            (Ok(actual), Ok(expected)) if actual == expected => {}
+            (Err(error), Err(phrase)) if error.contains(phrase) => report(
+                output,
+                format!("caught by the qualified-name probe: {case}"),
+            )?,
+            (found, expected) => {
+                return Err(failure(
+                    case,
+                    format!("the probe returned {found:?}, expected {expected:?}"),
+                ));
+            }
+        }
     }
     Ok(())
 }

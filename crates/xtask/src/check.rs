@@ -53,8 +53,8 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     // runs it, unconditionally, on each Linux target that has rows.
     let (applies, host) = crate::abi::applies_here()?;
     if applies {
-        crate::abi::run(false, None, output)?;
-        crate::abi::run(true, None, output)?;
+        crate::abi::run(false, None, crate::abi::Mode::Complete, output)?;
+        crate::abi::run(true, None, crate::abi::Mode::Complete, output)?;
     } else {
         writeln!(
             output,

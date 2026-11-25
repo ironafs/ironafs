@@ -108,10 +108,9 @@ pub(crate) struct Code {
     /// with a C name: (constant, expression), for macros such as
     /// `CMSG_LEN(sizeof(int))`.
     pub(crate) expressions: Vec<(String, String)>,
-    /// Constants a target's C headers may not name (`SCM_PIDFD`, which
-    /// musl and older glibc lack): on a target whose headers do not name
-    /// one, `check-abi` withholds the row, as MISSING evidence, rather than
-    /// prove it from another target's value (ADR 0005, sheet 14).
+    /// Constants that must be asserted by their C names. For `SCM_PIDFD`,
+    /// proved absence gives partial evidence on glibc 2.28 and withholds
+    /// the approved-only musl row (ADR 0005, sheet 14).
     pub(crate) qualified: Vec<String>,
     pub(crate) extern_blocks: Vec<ExternBlock>,
     pub(crate) blocks: Vec<Block>,

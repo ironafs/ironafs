@@ -180,6 +180,7 @@ fn parse_routes_check_abi_with_and_without_a_target() {
             Task::CheckAbi {
                 self_test: false,
                 target: None,
+                mode: super::Mode::Complete,
             },
         ),
         (
@@ -187,6 +188,7 @@ fn parse_routes_check_abi_with_and_without_a_target() {
             Task::CheckAbi {
                 self_test: true,
                 target: None,
+                mode: super::Mode::Complete,
             },
         ),
         (
@@ -194,6 +196,7 @@ fn parse_routes_check_abi_with_and_without_a_target() {
             Task::CheckAbi {
                 self_test: false,
                 target: Some("aarch64-unknown-linux-musl".into()),
+                mode: super::Mode::Complete,
             },
         ),
         (&["check-wipe"][..], Task::CheckWipe { self_test: false }),
@@ -212,6 +215,71 @@ fn parse_routes_check_abi_with_and_without_a_target() {
         ),
     ] {
         assert_eq!(parse(args.iter().map(OsString::from)), Err(error));
+    }
+}
+
+#[test]
+fn parse_routes_legacy_abi_only_with_an_explicit_gnu_target() {
+    for target in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
+        for args in [
+            ["check-abi", "--target", target, "--legacy-glibc-2-28"],
+            ["check-abi", "--legacy-glibc-2-28", "--target", target],
+        ] {
+            assert!(
+                matches!(
+                    parse(args.into_iter().map(OsString::from)),
+                    Ok(Task::CheckAbi { self_test: false, target: Some(ref found), mode: super::Mode::LegacyGlibc228 })
+                        if found == target
+                ),
+                "{args:?}"
+            );
+        }
+    }
+    for (args, error) in [
+        (
+            &["check-abi", "--legacy-glibc-2-28"][..],
+            UsageError::MissingTarget,
+        ),
+        (
+            &["check-abi", "--self-test", "--legacy-glibc-2-28"][..],
+            UsageError::UnexpectedArgument("--legacy-glibc-2-28".into()),
+        ),
+        (
+            &[
+                "check-abi",
+                "--target",
+                "x86_64-unknown-linux-musl",
+                "--legacy-glibc-2-28",
+            ][..],
+            UsageError::UnexpectedArgument("x86_64-unknown-linux-musl".into()),
+        ),
+        (
+            &[
+                "check-abi",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--legacy-glibc-2-28",
+                "--target",
+                "aarch64-unknown-linux-gnu",
+            ][..],
+            UsageError::UnexpectedArgument("--target".into()),
+        ),
+        (
+            &[
+                "check-abi",
+                "--legacy-glibc-2-28",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--legacy-glibc-2-28",
+            ][..],
+            UsageError::UnexpectedArgument("--legacy-glibc-2-28".into()),
+        ),
+    ] {
+        assert_eq!(
+            parse(args.iter().map(OsString::from)),
+            Err(error),
+            "{args:?}"
+        );
     }
 }
 

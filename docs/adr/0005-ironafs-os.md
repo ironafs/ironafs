@@ -10,7 +10,8 @@ is issue #49, in the same pull request (#101). Amended 2026-11-21
 and where a received descriptor is an integer); amended 2026-11-22
 (#152): point 5.3 and Decision 4, the target gate; and amended
 2026-11-22 (#153): row 23 and its sheet, the route sockets' bounded
-wait.
+wait; amended 2026-11-24 (#146): sheet 14, complete GNU ABI proof,
+glibc 2.28 compatibility evidence and musl withholding.
 
 ## Context
 
@@ -801,25 +802,31 @@ are in its sheet below the table, under the same number.
     name it, and no installed user-space header does. It is proved by name
     on each target of point 5.3 (a target triple), against the headers of
     that target's ABI check (point 5.6), never by a value taken from
-    another target or library, and never through a C expression. On a
-    target where the row is implemented and whose headers do not declare
-    it, the check has no evidence, so it reports the row withheld there:
-    MISSING under point 5.6, and the site does not ship on that target.
-    On the musl targets the row is withheld by its status instead: it is
-    only approved there, not implemented, because musl's headers do not
-    name `SCM_PIDFD` (above). Nothing of the row is compiled, probed or
-    reported on musl: the crate gates its module to glibc, `check-os`
-    holds that gate to the copy's statuses, and `check-abi` proves only
-    the rows implemented on a target, so a musl lane's report does not name
-    the row. Probing musl's headers for the name, and requiring an absent
-    one before the row may stay withheld, is a follow-up of #57; it lands
-    before any musl release and before the next change to `check-abi`. A glibc build
-    on a host with older headers is the same target as one with newer
-    headers: the constant is the kernel's value and the target's evidence
-    is its ABI check's. `SO_TYPE` (3) and `SOCK_STREAM` (1), of row 13,
-    are named by both libraries.
-    *Revisit if* musl's headers name `SCM_PIDFD`, or a site sets
-    `SO_PASSPIDFD`.
+    another target or library, and never through a C expression.
+    An implemented GNU target requires complete ABI evidence under
+    point 5.6 from its lane whose headers declare the name. The
+    glibc 2.28 compatibility lane compiles the row using the Rust
+    constant and runs the native descriptor-passing test. When those
+    headers omit the name, the lane proves the other ABI assertions
+    and reports partial evidence. MISSING applies to the named
+    assertion in that lane. The GNU triple's row remains implemented
+    and its complete ABI evidence comes from the lane whose headers
+    name the constant. The older and newer glibc lanes share the
+    target triple and the value is the kernel's, independent of a
+    glibc symbol. The partial run alone gives no release clearance.
+    Points 5.5 to 5.7 still apply. If the compatibility lane's
+    headers name the constant, its partial check fails and the
+    exception is revisited.
+    On the musl targets the row stays approved-only and the crate's
+    glibc gate excludes it. `check-os` holds the gate to those statuses.
+    On each musl target, `check-abi` uses its own compiler and headers
+    to establish whether `SCM_PIDFD` is absent. It reports the row
+    withheld for a proved absence of that name. If the name becomes
+    available, the check fails and the withholding decision is
+    revisited. `SO_TYPE` (3) and `SOCK_STREAM` (1), of row 13, are
+    declared by both libraries.
+    *Revisit if* musl's headers or the glibc compatibility lane's
+    headers name `SCM_PIDFD`, or a site sets `SO_PASSPIDFD`.
 15. **`linux-mount`.**
     *Interface:* mount the FUSE filesystem at a path, given the FUSE
     device as a borrowed descriptor, the root mode and the numeric ids.
@@ -3186,3 +3193,16 @@ Rounds 15 to 17 reviewed commits on the pull request's branch.
       minors (a missing citation of the shared `retried` helper, one
       origin, one overbroad sentence), fixed in the commit after it;
       under the stop rule the rounds stop there.
+- **Amendment, 2026-11-24 (#146): sheet 14's ABI evidence.**
+  The owner accepted the exact sheet text before implementation, on
+  base `a234490` (patch SHA-256 prefix `a9978111da93`). Each implemented
+  GNU target requires complete ABI proof. On the same two GNU triples,
+  the glibc 2.28 jobs add native descriptor-passing tests and partial
+  ABI evidence when their headers omit `SCM_PIDFD`. Each musl lane
+  proves that its headers omit the name before reporting the row
+  withheld. The working amendment retains points 5.5 to 5.7 and the
+  row's target statuses.
+  GLM 5.4 max and Gemini Carbon High passed the final design
+  verification. DeepSeek Flash max resolved the four remaining
+  non-blocking reports. The evidence, supersession sweep, and review
+  rounds are in the [#146 review record](../reviews/2026-11-24-146-os-guards.md).

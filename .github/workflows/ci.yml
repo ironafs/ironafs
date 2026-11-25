@@ -220,10 +220,9 @@ jobs:
     # 24.04 and 26.04. Each lane names the target it proves, the sites
     # check-abi must have proved, and the native tests that must have run;
     # check-abi also checks that $CC is that target's compiler (its
-    # architecture and C library). A lane's withheld sites are those whose
-    # qualified constants its headers do not name (ADR 0005, sheet 14): the
-    # crate does not compile them for that target, so the lane checks that
-    # neither their tests nor check-abi's report name them.
+    # architecture and C library). On musl the lane checks that the
+    # approved-only row's tests are absent and that check-abi proves its
+    # qualified name absent (ADR 0005, sheet 14).
     strategy:
       fail-fast: false
       matrix:
@@ -359,11 +358,20 @@ jobs:
         run: |
           cargo --locked xtask check-abi --target "$TARGET" > check-abi.log
           cat check-abi.log
-          grep -q "^check-abi: $TARGET: the system's C compiler accepted " check-abi.log
+          prefix="check-abi: $TARGET: "
+          summary_prefix="${prefix}the system's C compiler accepted "
+          test "$(grep -c "^$summary_prefix" check-abi.log)" -eq 1
+          summary=$(sed -n "s/^$summary_prefix//p" check-abi.log)
+          incomplete=$(sed -n "/^${prefix}withheld /p; /^${prefix}partial /p" check-abi.log)
+          case "$WITHHELD" in
+            linux-fdpass) test "$incomplete" = "${prefix}withheld linux-fdpass: MISSING SCM_PIDFD" ;;
+            '') test -z "$incomplete" ;;
+            *) exit 1 ;;
+          esac
           for site in $SITES; do
-            case " $WITHHELD " in
-              *" $site "*) if grep -q "$site" check-abi.log; then exit 1; fi ;;
-              *) grep -q "$site (" check-abi.log ;;
+            case "; $summary" in
+              *"; $site ("*) test "$site" != "$WITHHELD" ;;
+              *) test "$site" = "$WITHHELD" ;;
             esac
           done
       - name: Prove the declaration check catches planted mismatches
@@ -437,7 +445,7 @@ jobs:
     # point 5.5): ironafs-os built and its tests run on AlmaLinux 8, on
     # each Linux architecture. Each lane proves the target it built and
     # the runtime it ran on, requires the named native tests of every site,
-    # and proves every site's declarations against glibc 2.28's headers.
+    # and proves the ABI assertions available against glibc 2.28's headers.
     # The tests run under nextest, as everywhere else: some count this
     # process's open descriptors, which holds only with a process to each
     # test (libtest's threads share one). The conditional glibc 2.17
@@ -542,22 +550,22 @@ jobs:
           cat doc.log
           grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' doc.log
       - name: Prove the declarations against glibc 2.28's headers
-        # glibc 2.28's headers do not name SCM_PIDFD, so check-abi withholds
-        # linux-fdpass here (ADR 0005, sheet 14): the lane requires that
-        # verdict and no proof of the row, and a proof of every other site.
-        env:
-          WITHHELD: linux-fdpass
+        # The lane requires partial evidence for linux-fdpass with only
+        # SCM_PIDFD missing and complete evidence for every other row
+        # (ADR 0005, sheet 14).
         run: |
-          "$HOME/.cargo/bin/cargo" --locked xtask check-abi --target "$TARGET" > check-abi.log
+          "$HOME/.cargo/bin/cargo" --locked xtask check-abi --target "$TARGET" --legacy-glibc-2-28 > check-abi.log
           cat check-abi.log
-          grep -q "^check-abi: $TARGET: the system's C compiler accepted " check-abi.log
+          prefix="check-abi: $TARGET: "
+          summary_prefix="${prefix}the system's C compiler accepted "
+          test "$(grep -c "^$summary_prefix" check-abi.log)" -eq 1
+          summary=$(sed -n "s/^$summary_prefix//p" check-abi.log)
+          incomplete=$(sed -n "/^${prefix}withheld /p; /^${prefix}partial /p" check-abi.log)
+          test "$incomplete" = "${prefix}partial linux-fdpass: MISSING SCM_PIDFD"
           for site in $SITES; do
-            case " $WITHHELD " in
-              *" $site "*)
-                grep -q "^check-abi: $TARGET: withheld $site: " check-abi.log
-                if grep -q "$site (" check-abi.log; then exit 1; fi
-                ;;
-              *) grep -q "$site (" check-abi.log ;;
+            case "; $summary" in
+              *"; $site ("*) test "$site" != linux-fdpass ;;
+              *) test "$site" = linux-fdpass ;;
             esac
           done
 
