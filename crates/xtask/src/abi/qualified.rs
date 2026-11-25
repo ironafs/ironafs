@@ -52,7 +52,12 @@ pub(super) fn named_assertions(code: &Code, found: &Declarations) -> Result<(), 
 /// The baseline precedes every probe of the qualified socket name. Its
 /// feature macro must precede even the common data-model includes.
 pub(super) fn baseline(row: &Row, code: &Code, target: &str, mode: Mode) -> Result<String, String> {
-    let mut source = preamble(&row.id, &code.defines, &code.headers, DataModel::of(target));
+    let mut source = preamble(
+        &row.id,
+        &code.defines,
+        code.headers_for(target),
+        DataModel::of(target),
+    );
     source.push_str(&identity(target));
     if row.id == FDPASS_ROW || row.number == "14" {
         socket_row(row, code)?;

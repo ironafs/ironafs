@@ -956,7 +956,7 @@ fn fact_problem_finds_a_gnu_only_macro_the_code_names_with_or_without_the_row_s_
             &Declarations::default(),
             &root,
             &compiled,
-            DataModel::Lp64,
+            "aarch64-unknown-linux-gnu",
             &root,
         )
         .unwrap();
@@ -985,7 +985,7 @@ fn clock_boottime_is_a_required_fact_and_asserted_under_the_default_source() {
         &Declarations::default(),
         &root,
         &compiled,
-        DataModel::Lp64,
+        "aarch64-unknown-linux-gnu",
         &root,
     )
     .unwrap();
@@ -1192,4 +1192,160 @@ fn c_source_refuses_an_array_parameter_and_a_zero_length_array() {
         c_source("row", &[], &[], &[], &empty, DataModel::Lp64).unwrap_err(),
         "an array of no elements, which C11 does not allow"
     );
+}
+
+fn checked_inventory() -> crate::os::inventory::Inventory {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    crate::os::read_inventory(&root, &root.join("crates/ironafs-os"))
+        .unwrap()
+        .unwrap()
+}
+
+fn include_names(source: &str) -> Vec<&str> {
+    source
+        .lines()
+        .filter_map(|line| line.strip_prefix("#include <")?.strip_suffix('>'))
+        .collect()
+}
+
+#[test]
+fn a_shared_rows_linux_headers_stay_out_of_a_darwin_input() {
+    let inventory = checked_inventory();
+    let row = inventory
+        .rows
+        .iter()
+        .find(|row| row.id == "unix-nodump")
+        .unwrap();
+    let code = row.code.as_ref().unwrap();
+    let darwin = "aarch64-apple-darwin";
+    assert!(!row.implemented_on(darwin));
+    for target in crate::os::ALLOWLIST {
+        let expected: &[&str] = if target.contains("-linux-") {
+            &["sys/resource.h", "sys/prctl.h"]
+        } else {
+            &[]
+        };
+        assert_eq!(code.headers_for(target), expected, "{target}");
+    }
+    assert_eq!(
+        include_names(
+            &super::qualified::baseline(row, code, darwin, super::Mode::Complete).unwrap()
+        ),
+        ["stddef.h", "stdint.h", "sys/types.h"]
+    );
+
+    // A future Darwin setrlimit proof would supply its own approved header.
+    let darwin_headers = ["sys/resource.h".to_owned()];
+    let source = c_source(
+        &row.id,
+        &[],
+        &darwin_headers,
+        &[],
+        &Declarations::default(),
+        DataModel::of(darwin),
+    )
+    .unwrap();
+    assert_eq!(
+        include_names(&source),
+        ["stddef.h", "stdint.h", "sys/types.h", "sys/resource.h"]
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn checked_row_headers_reach_the_macro_scan_and_c_assertions_in_order() {
+    let inventory = checked_inventory();
+    let row = inventory
+        .rows
+        .iter()
+        .find(|row| row.id == "linux-random")
+        .unwrap();
+    let code = row.code.as_ref().unwrap();
+    let target = super::host_target().unwrap();
+    let (root, _) = row_files("checked-random-headers", &code.module, "");
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ironafs-os");
+    let arch = target.split('-').next().unwrap();
+    let files = [
+        "src/linux_random.rs".into(),
+        "src/linux_random/abi.rs".into(),
+        "src/linux_random/abi/foreign.rs".into(),
+        "src/linux_random/number.rs".into(),
+        format!("src/linux_random/number/{arch}.rs").into(),
+    ]
+    .into_iter()
+    .collect();
+    let declarations = super::row_declarations(&crate_dir, &code.module, &files, &target)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        super::fact_problem(
+            &row.id,
+            code,
+            &declarations,
+            &crate_dir,
+            &files,
+            &target,
+            &root
+        )
+        .unwrap(),
+        None
+    );
+    let proof = super::prove_declarations(
+        row,
+        code,
+        declarations,
+        &target,
+        super::Mode::Complete,
+        &root,
+    )
+    .unwrap();
+    assert!(matches!(proof, super::Proof::Proved(_)), "{proof:?}");
+
+    let expected = [
+        "stddef.h",
+        "stdint.h",
+        "sys/types.h",
+        "errno.h",
+        "unistd.h",
+        "sys/syscall.h",
+    ];
+    let scanned = std::fs::read_to_string(root.join("linux-random-macros.c")).unwrap();
+    let asserted = std::fs::read_to_string(root.join("linux-random.c")).unwrap();
+    assert_eq!(include_names(&scanned), expected);
+    assert_eq!(include_names(&asserted), expected);
+    assert!(scanned.contains("#define _GNU_SOURCE 1\n"));
+    assert!(!asserted.contains("#define _GNU_SOURCE 1\n"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(all(target_os = "linux", target_env = "musl"))]
+#[test]
+fn checked_row_headers_reach_the_native_musl_absence_probe_in_order() {
+    let inventory = checked_inventory();
+    let row = inventory
+        .rows
+        .iter()
+        .find(|row| row.id == "linux-fdpass")
+        .unwrap();
+    let target = super::host_target().unwrap();
+    let (root, _) = row_files("checked-fdpass-headers", "fdpass", "");
+    let proof = super::prove_withheld(row, &target, &root).unwrap();
+    assert!(matches!(proof, super::Proof::Withheld(_)), "{proof:?}");
+    let expected = [
+        "stddef.h",
+        "stdint.h",
+        "sys/types.h",
+        "sys/socket.h",
+        "sys/uio.h",
+    ];
+    for name in [
+        "linux-fdpass-headers.c",
+        "linux-fdpass-SCM_PIDFD.c",
+        "linux-fdpass-SCM_PIDFD-macro.c",
+    ] {
+        let source = std::fs::read_to_string(root.join(name)).unwrap();
+        assert_eq!(include_names(&source), expected);
+        assert!(source.contains("#define _GNU_SOURCE 1\n"));
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }
