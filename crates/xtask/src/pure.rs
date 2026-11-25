@@ -32,7 +32,7 @@
 //! of crate, target and profile the compiler's own outputs show it
 //! compiled must be exactly those expected.
 
-mod matrix;
+pub(crate) mod matrix;
 mod self_test;
 
 use std::collections::BTreeSet;
@@ -939,7 +939,7 @@ fn closure_violations(workspace: &Workspace, member: &Member) -> Vec<Violation> 
 /// # Errors
 ///
 /// Returns an error if `rustc` cannot be run or prints no path.
-fn toolchain_sysroot(root: &Path) -> Result<PathBuf, Error> {
+pub(crate) fn toolchain_sysroot(root: &Path) -> Result<PathBuf, Error> {
     const COMMAND: &str = "rustc --print sysroot";
     let output = Command::new("rustc")
         .args(["--print", "sysroot"])

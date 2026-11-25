@@ -58,10 +58,9 @@ The invariants this page must keep, word for word:
 - **C9, point 5** (Working): "A commit reports success only when the
   server has accepted the store (point 1)."
 - **C13, point 2** (Firm): "Where the front end can identify the open,
-  every handle operation (C7, point 3: read, write, read directory, commit,
-  lock, get and set information, disposition and rename) checks that the
-  handle is live and takes the intersection of the rights at open with the
-  current effective rights."
+  every handle operation of C7, point 3, checks that the handle is live
+  and takes the intersection of the rights at open with the current
+  effective rights."
 - **C16, point 2** (Firm): "A reply that fails its fence is never served."
 - **C16, point 3** (Firm): "The last check is at **submission**: the
   binding checks the reply's context, generation, grant and node state in
@@ -285,9 +284,9 @@ named, and nothing else happens.
    record for this binding, are refused as 5.3 says. No id from a layer is
    an index: each is looked up, and a miss is an error.
 2. **The name cap: 255 bytes** (proposal). It is `MAX_NAME_BYTES` in
-   `ironafs-vfs`. Reasons: macOS's `NAME_MAX` is 255 bytes `[E64: CONFIRMED]`
+   `ironafs-vfs`. Reasons: macOS's `NAME_MAX` is 255 bytes `[E63: CONFIRMED]`
    (`sys/syslimits.h`); FSKit lets a volume declare its longest component and
-   refuse a longer one with `ENAMETOOLONG` rather than truncate it `[E64:
+   refuse a longer one with `ENAMETOOLONG` rather than truncate it `[E63:
    CONFIRMED]` (`FSVolume.h`, `maximumNameLength`, `truncatesLongNames`), so
    the macOS layer declares 255 and never truncates; Linux's `NAME_MAX` is
    255 bytes [UNVERIFIED: no registered source yet, section 13, Q6]. A
@@ -318,7 +317,7 @@ named, and nothing else happens.
    critical extension is [ADR 0004 N41.4: Firm].
 6. **Other byte caps.** 4,095 bytes for a link target leaves the
    terminating NUL of a 4,096-byte path buffer; the macOS layer's shorter
-   `PATH_MAX` (1,024 bytes `[E64: CONFIRMED]`) is that layer's limit to
+   `PATH_MAX` (1,024 bytes `[E63: CONFIRMED]`) is that layer's limit to
    present, not the contract's. 255 bytes for an extended-attribute name and
    65,536 for a value follow the name cap and a common system limit
    [UNVERIFIED for Linux's own limit; section 13, Q6]. The ACL and
@@ -348,7 +347,7 @@ named, and nothing else happens.
 1. **Minting.** A caller capability is minted for one binding, one
    credential context and one credential generation, from the operating
    system's statement of the caller (`Attestation`): the uid in a FUSE
-   request header `[E62: CONFIRMED]` (`fuse_in_header`), the uid in FSKit's
+   request header `[E61: CONFIRMED]` (`fuse_in_header`), the uid in FSKit's
    caller context, or an authenticated SMB session [ADR 0004 C8.1: Firm].
    A handle capability is minted for one binding and one handle the core
    opened [ADR 0004 C13.1: Firm]. Each carries a fresh nonce. An
@@ -498,9 +497,10 @@ C13.2, C13.3: Firm].
    the file are the Linux layer's (issue #92) [ADR 0004 N46.2: Working].
    It is a handle operation because it acts on an open file (C7, point 3's
    rule); C7, point 3, does not name it, and 13, Q7, asks for that line.
-   C13, point 2's check applies to every handle operation on this page,
-   including `seek`, `subscribe` and the reserved ones, whatever its
-   parenthetical list names [OWN reading; 13, Q7].
+   C13, point 2 checks every C7, point 3 handle operation, including
+   `subscribe` [ADR 0004 C13.2: Firm]. Every handle operation on this page
+   uses that check, including `seek` and the reserved ones [OWN reading;
+   13, Q7].
 6. **`commit`** follows 5.12, point 6.
 7. **The change-notification filter** is a set of the effect kinds of
    5.10: entries (names added, removed or renamed), attributes, data, and
@@ -566,7 +566,7 @@ C13.2, C13.3: Firm].
 6. **One completion.** Every request except `forget`, `cancel`,
    `acknowledge` and `purge_failed` gets exactly one completion (5.8). The
    four without a reply get none, and a layer never waits for one [OWN;
-   for FUSE, a FUSE_INTERRUPT "requires no response" `[E62: CONFIRMED]`].
+   for FUSE, a FUSE_INTERRUPT "requires no response" `[E61: CONFIRMED]`].
 7. **No made-up values.** A completion's every field comes from the core's
    state; a field the core cannot fill fails the operation rather than
    being filled with a default [ADR 0004 C46.4: Working]. The creation time
@@ -690,7 +690,7 @@ C13.2, C13.3: Firm].
    is honoured by whichever party reaches the entry first [the seams
    specification, 5.7, point 4; OWN: the single-writer rule].
 5. **Writing.** The winner writes the completion to the binding (for FUSE,
-   the one reply whose `unique` is the request's `[E62: CONFIRMED]`), then
+   the one reply whose `unique` is the request's `[E61: CONFIRMED]`), then
    removes the entry from the writing set. A write that fails (the kernel
    refused it, or the device closed) still removes it: the request is
    over, and the failure is logged [OWN].
@@ -720,16 +720,16 @@ C13.2, C13.3: Firm].
    RPC) takes only the shutdown cancel, never the request's. A `cancel`
    naming no open entry is ignored: the request was already answered, or
    never existed [OWN; FUSE documents that an interrupt may arrive for a
-   request already answered `[E63: CONFIRMED]`]. On FUSE, the interrupt's
+   request already answered `[E62: CONFIRMED]`]. On FUSE, the interrupt's
    own reply, if the layer sends one, is the FUSE codec's question: the
    kernel's documentation describes an `EAGAIN` reply to an interrupt
-   `[E63: CONFIRMED]`, while fuse(4) says the interrupt "requires no
-   response" `[E62: CONFIRMED]`; the codec's specification settles which it
+   `[E62: CONFIRMED]`, while fuse(4) says the interrupt "requires no
+   response" `[E61: CONFIRMED]`; the codec's specification settles which it
    follows (issue #92). FSKit's volume operations offer no per-operation
    cancel in the macOS 27.2 headers inspected (only `FSTask` has a
-   cancellation handler) `[E64: CONFIRMED]`, so an FSKit request ends at
+   cancellation handler) `[E63: CONFIRMED]`, so an FSKit request ends at
    its completion or its deadline. An SMB cancel names its target by
-   `MessageId` on the same connection `[E66: CONFIRMED]`; how the front end
+   `MessageId` on the same connection `[E65: CONFIRMED]`; how the front end
    completes it is S2's.
 8. **Executor full.** A request that finds the executor full is completed
    by the ingress at once with `Busy`, is counted, and never enters the
@@ -1070,10 +1070,10 @@ report of point 5 [ADR 0004 C17: Working; N47.3: Firm].
    until every layer maps it [ADR 0004 C46.2, C46.4: Working].
 2. **The mapping.** Names are symbolic; their numbers differ by system and
    are each layer's to take from its system's headers. Linux names are from
-   errno(3) `[E61: CONFIRMED]`; macOS names from the SDK's `sys/errno.h`
-   `[E64: CONFIRMED]`, and the macOS layer reports each as an `NSError` with
-   that POSIX code through FSKit's `fs_errorForPOSIXError` `[E64:
-   CONFIRMED]`; NTSTATUS names and values from MS-ERREF 2.3.1 `[E65:
+   errno(3) `[E60: CONFIRMED]`; macOS names from the SDK's `sys/errno.h`
+   `[E63: CONFIRMED]`, and the macOS layer reports each as an `NSError` with
+   that POSIX code through FSKit's `fs_errorForPOSIXError` `[E63:
+   CONFIRMED]`; NTSTATUS names and values from MS-ERREF 2.3.1 `[E64:
    CONFIRMED]`.
 
    | `VfsError` | Linux | macOS | Windows (proposed; S2 settles) |
@@ -1119,7 +1119,7 @@ report of point 5 [ADR 0004 C17: Working; N47.3: Firm].
    for that condition by its documented meaning, with these reasons:
    - `Busy` and `WouldBlock` share `EAGAIN`, which errno(3) documents as
      "Resource temporarily unavailable" and as the same value as
-     `EWOULDBLOCK` on Linux `[E61: CONFIRMED]`, as on macOS `[E64:
+     `EWOULDBLOCK` on Linux `[E60: CONFIRMED]`, as on macOS `[E63:
      CONFIRMED]`; both are retryable, so sharing a code loses nothing an
      application acts on, and the side channel tells them apart;
    - `NotYetStored` is `EIO`, the error an application already treats as
@@ -1129,31 +1129,31 @@ report of point 5 [ADR 0004 C17: Working; N47.3: Firm].
    - a lock that cannot be granted without waiting is `WouldBlock`, so a
      non-waiting POSIX lock fails with `EAGAIN`, its usual answer;
      `Conflict` is for share access and for a change that collides, and
-     `EBUSY`, "Device or resource busy" `[E61: CONFIRMED]`, is the nearest
+     `EBUSY`, "Device or resource busy" `[E60: CONFIRMED]`, is the nearest
      POSIX meaning;
-   - `Stale` is `ESTALE`, "Stale file handle" `[E61: CONFIRMED]`, the
+   - `Stale` is `ESTALE`, "Stale file handle" `[E60: CONFIRMED]`, the
      condition it names;
    - the seven added values take the errors errno(3) documents for the
      same conditions: "Not a directory", "Is a directory", "Directory not
      empty", `ENODATA` as "The named attribute does not exist", "Result too
      large", "No such device or address" (lseek(2)'s answer for data or a
-     hole past the end), and "Input/output error" `[E61: CONFIRMED]`; macOS
-     names the missing attribute `ENOATTR`, "Attribute not found" `[E64:
+     hole past the end), and "Input/output error" `[E60: CONFIRMED]`; macOS
+     names the missing attribute `ENOATTR`, "Attribute not found" `[E63:
      CONFIRMED]`; the NTSTATUS rows are error-severity values of MS-ERREF
-     2.3.1 `[E65: CONFIRMED]`. `Protocol` and `NotYetStored` share `EIO`:
+     2.3.1 `[E64: CONFIRMED]`. `Protocol` and `NotYetStored` share `EIO`:
      both tell an application the operation did not do what it asked, and
      the side channel tells them apart;
-   - on Linux `ENOTSUP` and `EOPNOTSUPP` are one value `[E61: CONFIRMED]`;
-     on macOS they differ and `ENOTSUP` is "Operation not supported" `[E64:
+   - on Linux `ENOTSUP` and `EOPNOTSUPP` are one value `[E60: CONFIRMED]`;
+     on macOS they differ and `ENOTSUP` is "Operation not supported" `[E63:
      CONFIRMED]`. Never `ENOSYS`: L2, point 4, and N43 forbid it for any
      operation a volume could later offer, and the contract answers every
      operation itself.
 3. **Windows: errors only of error severity.** An NTSTATUS's top two bits
-   are its severity, and 3 means error `[E65: CONFIRMED]` (2.3). Every
+   are its severity, and 3 means error `[E64: CONFIRMED]` (2.3). Every
    NTSTATUS in the table has error severity (values `0xC…`): MS-ERREF lists
    `STATUS_DEVICE_BUSY` as `0x80000011`, a warning, so it is not used for
    `Busy`, and `STATUS_NOTIFY_ENUM_DIR` (`0x0000010C`) is used only as the
-   change notification's "rescan" (C17, point 5), never as an error `[E65:
+   change notification's "rescan" (C17, point 5), never as an error `[E64:
    CONFIRMED]`. A test checks every NTSTATUS the SMB mapping can return has
    error severity [OWN: a warning or success status could let a client
    proceed as if the request worked, which C46, point 4, forbids]. The
@@ -1453,12 +1453,12 @@ acknowledgement deadline (5.10, point 8) fires on a healthy layer.
 | Rx | DECISION | The Rx specification, issue #55: 5.12, point 5 (the pause generation) | 5.9 point 3 |
 | Incarnation | DECISION | The volume incarnation specification, draft, issue #78 (pull request #125): 5.6, points 1 and 3 (the local volume epoch and its copy in the fence table) | 5.9 point 7, 13 Q9 |
 | IPC | DECISION | The local IPC specification, draft, issue #62: its request cap and its numbering of contract errors | 2, 5.2 |
-| E61 | DOCUMENTATION | errno(3), Linux man-pages 6.19, page dated 2026-05-28; register row E61 | 5.12 |
-| E62 | DOCUMENTATION | fuse(4), Linux man-pages 6.19, page dated 2026-02-08; register row E62: DESCRIPTION, the request and reply headers, FUSE_INTERRUPT | 5.3, 5.6, 5.8 |
-| E63 | DOCUMENTATION | The Linux kernel documentation, "FUSE", page for 7.4.0-rc3; register row E63: "Interrupting filesystem operations" | 5.8 |
-| E64 | DOCUMENTATION | macOS 27.2 SDK headers: `sys/errno.h`, `sys/syslimits.h`, FSKit's `FSKitFunctions.h`, `FSVolume.h`, `FSTask.h`; register row E64 | 5.2, 5.8, 5.12 |
-| E65 | SPECIFICATION | [MS-ERREF] 2.3, "NTSTATUS" (page updated 2024-10-30), and 2.3.1, "NTSTATUS Values" (page updated 2024-11-20); register row E65 | 5.12 |
-| E66 | SPECIFICATION | [MS-SMB2] 2.2.30, "SMB2 CANCEL Request", page updated 2026-03-06; register row E66 | 5.8 |
+| E60 | DOCUMENTATION | errno(3), Linux man-pages 6.19, page dated 2026-05-28; register row E60 | 5.12 |
+| E61 | DOCUMENTATION | fuse(4), Linux man-pages 6.19, page dated 2026-02-08; register row E61: DESCRIPTION, the request and reply headers, FUSE_INTERRUPT | 5.3, 5.6, 5.8 |
+| E62 | DOCUMENTATION | The Linux kernel documentation, "FUSE", page for 7.4.0-rc3; register row E62: "Interrupting filesystem operations" | 5.8 |
+| E63 | DOCUMENTATION | macOS 27.2 SDK headers: `sys/errno.h`, `sys/syslimits.h`, FSKit's `FSKitFunctions.h`, `FSVolume.h`, `FSTask.h`; register row E63 | 5.2, 5.8, 5.12 |
+| E64 | SPECIFICATION | [MS-ERREF] 2.3, "NTSTATUS" (page updated 2024-10-30), and 2.3.1, "NTSTATUS Values" (page updated 2024-11-20); register row E64 | 5.12 |
+| E65 | SPECIFICATION | [MS-SMB2] 2.2.30, "SMB2 CANCEL Request", page updated 2026-03-06; register row E65 | 5.8 |
 | OWN | OWN | IronAFS's own design: the caps, the table's size, the request deadline, the claim, the submission step, the drain, the fence retry count, the acknowledgement rules, the Mint check, the error table's OWN rows | as labelled |
 
 No other implementation's source was read for this page. No AFS or Rx
@@ -1521,17 +1521,14 @@ entry (5.10, point 4) is to be observed with the FUSE codec (issue #92).
   **Recommendation:** register the Linux limits with the FUSE codec (issue
   #92); settle the Windows question with L24's table, where a longer cap
   for Windows names would be a change of this page.
-- **Q7. `seek` is not in C7's lists, and C13, point 2's list is partial.**
+- **Q7. Handle operations to add to C7, point 3.**
   N46, point 2, requires the core to answer `seek`, and it acts on an open
-  file. C13, point 2 (Firm), names in parentheses the handle operations it
-  checks, and already omits C7, point 3's subscription; this page applies
-  C13, point 2's check to every handle operation (5.5, point 5).
+  file. C13, point 2 (Firm), checks every handle operation of C7, point 3,
+  including subscription. This page applies that check to every handle
+  operation (5.5, point 5).
   **Settled for this page:** adding "seek to data or hole" and the
   reserved handle operations to C7, point 3 (Working) is to be folded
-  into issue #53's amendments with Q1's. C13, point 2's parenthetical is
-  Firm text: changing it to "every handle operation of C7, point 3" keeps
-  its rule and changes only its words, and is the owner's decision,
-  raised with the same issue.
+  into issue #53's amendments with Q1's.
 - **Q8. Mapping rows chosen here.** Every non-ADR row of 5.12, point 2's
   table is [OWN]. **Recommendation:** the FUSE codec's review (issue #92)
   re-checks the Linux column against each operation's documented errors;

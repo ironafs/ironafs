@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# An opaque x<> with a cap of 16: length word ffffffff and nothing after it.
+
+type blob
+breaks 5.4, point 3.3 before 3.4
+expect CapExceeded test.blob
+offset 0
+extent none
+requests none
+input ffffffff

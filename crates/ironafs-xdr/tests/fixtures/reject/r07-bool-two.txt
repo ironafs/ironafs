@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A bool of 00000002.
+
+type flag
+breaks 5.4, point 9
+expect InvalidBool test.flag
+offset 0
+extent none
+requests none
+input 00000002
