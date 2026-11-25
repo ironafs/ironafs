@@ -184,21 +184,8 @@ fn shade_properties_hold() {
 }
 
 #[test]
-fn shaded_roundtrips_in_twelve_bytes() {
-    encodes_and_decodes_back(
-        "shaded",
-        &SHADED,
-        |source| {
-            let tone = support::shade(source);
-            let value = source.u64();
-            match tone {
-                Shade::Pale => Shaded::Pale(value),
-                Shade::Deep => Shaded::Deep(value),
-                Shade::Vivid => Shaded::Vivid(value),
-            }
-        },
-        |_| 4 + 8,
-    );
+fn shaded_properties_hold() {
+    all_properties::<Shaded>("shaded", &SHADED, support::shaded, size::shaded);
 }
 
 #[test]
