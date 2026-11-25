@@ -886,7 +886,7 @@ The full record, with every finding and its disposition, is
     "Revisit if", the status line and the ADR index row keep both
     texts. C5, point 1's wipe is the volatile wipe point 5 now lists
     (O28, point 2).
-  - Sweep: the repository was searched for each id ("O50", "O12",
+  - Sweep on 2026-11-21: the repository was searched for each id ("O50", "O12",
     "O40", "C34", "C4", "N46", "C5", with and without ", point") and for
     "skew", "both families", "dual-family", "single-family",
     "copy-range", "copy_file_range", "SHA-256", "HMAC", "hand-roll",
@@ -927,8 +927,8 @@ The full record, with every finding and its disposition, is
       and 20: `tests/it/` already holds a crate's integration tests.
       Unchanged.
     - `crates/xtask/src/pure.rs`, `deps.rs`, `ironafs-time` and
-      `.github/workflows/ci.yml`: implement or cite C4, point 1, with
-      the allowlist empty. Unchanged.
+      `.github/workflows/ci.yml` implemented or cited C4, point 1, with
+      the allowlist empty at the 2026-11-21 sweep.
     - `README.md`, `docs/workflow.md` §6 and part 2: name the phases or
       O50 without restating the changed points. Unchanged.
     - Review records and research notes record their own dates and are
@@ -937,9 +937,14 @@ The full record, with every finding and its disposition, is
       maintainer's session, contributors and their agents); no bot acts
       on them. Of the M2a issues that cite the amended text, #81
       (M2a-64), #77 (M2a-67), #93 (M2a-32) and #94 (M2a-33) already
-      cite it; M2a-16, M2a-35, M2a-58 and M2a-75 are planned and cite
-      it when filed. N46, point 3's check is M3's (M3-16), so no M2a
-      issue cites it.
+      cited it at the sweep. M2a-16, M2a-35, M2a-58 and M2a-75
+      were planned and will cite it when filed. N46, point 3's check
+      is M3's (M3-16).
+    - The recheck on 2026-11-25 against `main` at `7873bac` found that
+      ADR 0005 after #152, #153, #146 and #187 still leaves C4, point 3's
+      row and C5, point 5's scope intact. The pure-crate checks and CI
+      still enforce the empty external allowlist with six pure crates
+      present. The issue mappings above still apply.
   - Review rounds: class S on the strongest row, from families that
     wrote neither the amendment nor the decision.
     - Round 1 on `e6f3ece..3ba1a4c`: GLM (`glm-5.3`, high) PASS, 4
@@ -955,20 +960,22 @@ The full record, with every finding and its disposition, is
       in one commit after `main` (with #101) was merged in.
     - Round 2, the fixes in `b3c0c85` (after `db28d59`, a merge of
       `main`): DeepSeek (`deepseek-flash`, max) FAIL, 1 blocker and 4
-      minor. The blocker (the precedence's authority unclear, and rule
-      21 carrying no pointer to C5) is held for the owner: C5, point 1,
-      and this entry now say that the owner's decision of 2026-11-20
-      settles the conflict with rule 21 unedited, and whether to add a
-      dated pointer line to rule 21, its wording unchanged, is the
-      owner's open question (options: keep as is, or the pointer line;
-      recommended: the pointer line). The minors were fixed: the
+      minor. The blocker (the precedence's authority was unclear and
+      rule 21 carried no pointer to C5) was held for the owner. At this
+      round C5, point 1, stated the precedence, and the dated pointer
+      was still open. The minors were fixed: the
       published vectors made a requirement of point 1 (#64, #77); the
       test-only cross-check after the sunset reconciled with rule 21,
       whose text does not exempt test code; this round recorded; the
       planned M2a-46 dropped from the sweep (N46's check is M3-16).
-    - On 2026-11-21 the owner chose option (b), the dated pointer in
-      rule 21, landing with or after this amendment. The scope follows
-      the decision recorded in #53. The integration keeps ADR 0006's
-      partial supersession and the C13, point 2 correction on main.
-      Scoped verification of the round 2 fixes, pointer and merge
-      resolution is pending.
+    - On 2026-11-21 the owner chose option (b), one dated pointer from
+      rule 21 to C5, point 1 (#53). This amendment adds that pointer,
+      keeps ADR 0006's partial supersession and carries forward the
+      C13, point 2 correction on main.
+    - Round 3 at `22291d5` (after merging `main` at `7873bac`).
+      GLM 5.4 Max and DeepSeek Flash Max passed with no findings.
+      Gemini 4 Carbon Medium passed its security review with two
+      editorial findings, addressed in the dated sweep and Round 2
+      history above. C44, point 1, names one definition set. The IPC
+      specification (5.6.1, point 7) gives the exact digest input over
+      that whole set for both endpoints.
