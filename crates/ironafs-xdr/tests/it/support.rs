@@ -11,7 +11,7 @@ use ironafs_xdr::{Decode, Encode, Error, MessageType, Reservation, decode_traced
 use self::heap::{Gather, boxed};
 use crate::types::{
     Blob, Deep, Deep16, Entry, Every, Five, Ints, Label, Names, Note, Pair, Quad, Sealed, Shade,
-    Shaded, Solo, Solos, Tags, Wide,
+    Shaded, ShadedArm, Solo, Solos, Tags, Wide,
 };
 
 /// The bytes a hexadecimal string spells, ignoring whitespace.
@@ -102,11 +102,7 @@ pub(crate) fn shade(source: &mut Source) -> Shade {
 pub(crate) fn shaded(source: &mut Source) -> Shaded {
     let tone = shade(source);
     let value = source.u64();
-    match tone {
-        Shade::Pale => Shaded::Pale(value),
-        Shade::Deep => Shaded::Deep(value),
-        Shade::Vivid => Shaded::Vivid(value),
-    }
+    ShadedArm::select(tone).with_value(value)
 }
 
 pub(crate) fn entry(source: &mut Source) -> Entry {

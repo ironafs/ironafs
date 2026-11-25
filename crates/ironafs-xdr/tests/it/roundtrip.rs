@@ -9,7 +9,7 @@ use std::fmt::Debug;
 use ironafs_test_support::{Property, Source};
 use ironafs_xdr::{
     BorrowedBytes, BorrowedWord, Decode, Encode, ErrorKind, Message, MessageType, Reservation,
-    decode, encode,
+    decode, encode, encode_into, encoded_len,
 };
 
 use crate::support::heap::{Append, Gather, Owned};
@@ -286,6 +286,15 @@ fn encoder_refuses_what_decoder_rejects() {
         ..over_cap.clone()
     };
     let refused = encode(&over_bound).unwrap_err();
+    assert_eq!(refused.limit_value(), Some(32));
+    assert_eq!(refused.offset(), None);
+    assert_eq!(refused.extent(), None);
+    assert_eq!(encoded_len(&over_bound), Err(refused));
+    let mut out = vec![0xaa; 32];
+    let before = (out.as_ptr(), out.capacity());
+    assert_eq!(encode_into(&over_bound, &mut out), Err(refused));
+    assert_eq!(out, []);
+    assert_eq!((out.as_ptr(), out.capacity()), before);
     let mut bytes = hex("00000021");
     bytes.append_all([0; 36]);
     let rejected = decode::<Note>(&bytes).unwrap_err();
