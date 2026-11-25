@@ -11,9 +11,11 @@
 use std::io::Write;
 use std::path::Path;
 
-use super::{CHECK, HARNESS_SOURCE, check_targets, installed_targets};
+use super::{CHECK, HARNESS_SOURCE, Tools, check_targets, installed_targets};
 use crate::Error;
 use crate::metadata::Workspace;
+
+mod binary;
 
 /// One planted regression: the harness source and profile, and what each
 /// target's failure must say.
@@ -86,26 +88,41 @@ pub(super) fn as_planted(violations: &[String], targets: &[&str], says: &str) ->
 /// Returns the first case that did not end as it should, or why the gate
 /// could not run.
 pub(super) fn run(
+    tools: &Tools,
     workspace: &Workspace,
     crate_dir: &Path,
     profile: &str,
     output: &mut impl Write,
 ) -> Result<(), Error> {
-    let targets = installed_targets(workspace)?;
-    if targets.is_empty() {
+    let targets = installed_targets(tools);
+    let Some(target) = targets.first() else {
         return Err(failure(
             "the clean harness",
             &["no Linux target's standard library is installed: nothing ran".to_owned()],
         ));
-    }
+    };
     let dir = crate::fixture::fresh_dir(&workspace.target_dir, CHECK)?;
-    let result = run_in(workspace, crate_dir, profile, &targets, &dir, output);
+    let result = run_in(
+        tools,
+        &workspace.root,
+        crate_dir,
+        profile,
+        &targets,
+        &dir,
+        output,
+    )
+    .and_then(|()| binary::run(tools, &dir.join("binary-fixtures"), target, output))
+    .and_then(|()| say(
+        output,
+        "check-wipe --self-test: the clean harness passed and every planted case failed as planted",
+    ));
     crate::fixture::remove_dir(&dir)?;
     result
 }
 
 fn run_in(
-    workspace: &Workspace,
+    tools: &Tools,
+    root: &Path,
     crate_dir: &Path,
     profile: &str,
     targets: &[&str],
@@ -114,7 +131,8 @@ fn run_in(
 ) -> Result<(), Error> {
     let mut log = Vec::new();
     match check_targets(
-        workspace,
+        tools,
+        root,
         crate_dir,
         profile,
         HARNESS_SOURCE,
@@ -130,7 +148,8 @@ fn run_in(
     for (index, case) in cases(profile).into_iter().enumerate() {
         let mut log = Vec::new();
         let found = check_targets(
-            workspace,
+            tools,
+            root,
             crate_dir,
             &case.profile,
             &case.source,
@@ -149,11 +168,7 @@ fn run_in(
             Err(error) => return Err(error),
         }
     }
-    say(
-        output,
-        "check-wipe --self-test: the clean harness passed and every planted case failed as \
-         planted",
-    )
+    Ok(())
 }
 
 fn say(output: &mut impl Write, line: &str) -> Result<(), Error> {

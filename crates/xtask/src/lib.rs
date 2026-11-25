@@ -205,8 +205,12 @@ pub fn run(
     output: &mut impl Write,
     diagnostics: &mut impl Write,
 ) -> i32 {
-    match run_task(arguments, output) {
-        Ok(()) => 0,
+    let result = match std::env::var_os(wipe::capture::SESSION_ENV) {
+        Some(session) => wipe::capture::forward(Path::new(&session), arguments, diagnostics),
+        None => run_task(arguments, output).map(|()| 0),
+    };
+    match result {
+        Ok(status) => status,
         Err(error) => {
             let _ = writeln!(diagnostics, "xtask: {error}");
             error.exit_code()

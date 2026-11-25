@@ -4,9 +4,7 @@
 //! Tests for the release-assembly reader, on synthetic assembly in the
 //! shape the compiler emits for each architecture.
 
-use super::{
-    Arch, body, codegen, judge, normalized, profile_departures, profile_table, zero_byte_stores,
-};
+use super::{Arch, judge, normalized, profile_table, zero_byte_stores};
 
 /// Assembly with one function per harness case, in the shape of
 /// `x86_64` output: `wiped` cases with `count` zero stores, a `plain_dead`
@@ -34,7 +32,8 @@ fn x86(count: usize, plain: &str, call_wipe: bool) -> String {
 #[test]
 fn body_holds_the_named_function_s_lines_up_to_its_end() {
     let asm = x86(2, "", false);
-    let lines = body(&asm, "wiped_live").unwrap();
+    let symbols = super::Symbols::index([asm.as_str()]).unwrap();
+    let lines = symbols.body("wiped_live").unwrap();
     assert_eq!(
         lines,
         [
@@ -44,7 +43,7 @@ fn body_holds_the_named_function_s_lines_up_to_its_end() {
             "\tretq"
         ]
     );
-    assert!(body(&asm, "nowhere").is_none());
+    assert_eq!(symbols.body("nowhere"), Err("no function in the assembly"));
 }
 
 #[test]
@@ -82,12 +81,12 @@ fn normalized_drops_directives_labels_and_comments_and_numbering() {
 
 #[test]
 fn judge_passes_inlined_volatile_stores_and_a_removed_plain_overwrite() {
-    assert_eq!(judge(&x86(64, "", false), Arch::X86_64), Ok(()));
+    assert_eq!(judge([x86(64, "", false).as_str()], Arch::X86_64), Ok(()));
 }
 
 #[test]
 fn judge_fails_when_wipe_is_called_rather_than_inlined() {
-    let problems = judge(&x86(0, "", true), Arch::X86_64).unwrap_err();
+    let problems = judge([x86(0, "", true).as_str()], Arch::X86_64).unwrap_err();
     assert!(
         problems
             .iter()
@@ -98,7 +97,7 @@ fn judge_fails_when_wipe_is_called_rather_than_inlined() {
 
 #[test]
 fn judge_fails_when_fewer_zero_stores_than_the_buffer_has_bytes() {
-    let problems = judge(&x86(63, "", false), Arch::X86_64).unwrap_err();
+    let problems = judge([x86(63, "", false).as_str()], Arch::X86_64).unwrap_err();
     assert!(
         problems
             .iter()
@@ -110,7 +109,7 @@ fn judge_fails_when_fewer_zero_stores_than_the_buffer_has_bytes() {
 #[test]
 fn judge_counts_the_case_not_run_when_the_control_keeps_its_stores() {
     let kept = "\tpxor\t%xmm0, %xmm0\n\tmovdqu\t%xmm0, (%rax)\n";
-    let problems = judge(&x86(64, kept, false), Arch::X86_64).unwrap_err();
+    let problems = judge([x86(64, kept, false).as_str()], Arch::X86_64).unwrap_err();
     assert!(
         problems.iter().any(|problem| problem.contains("control")),
         "{problems:?}"
@@ -133,52 +132,8 @@ fn body_follows_a_symbol_the_compiler_merged_into_another() {
     // second as an alias of the first.
     let asm = "_RNvCs9_17ironafs_wipe_gate10plain_dead:\n\tretq\n.Lfunc_end0:\n\
                _RNvCs9_17ironafs_wipe_gate14untouched_dead = _RNvCs9_17ironafs_wipe_gate10plain_dead\n";
-    assert_eq!(body(asm, "untouched_dead").unwrap(), ["\tretq"]);
-}
-
-/// A line of cargo's verbose output for one rustc call.
-fn running(name: &str, options: &str) -> String {
-    format!(
-        "     Running `/x/rustc --crate-name {name} --edition=2024 src/lib.rs --crate-type lib \
-         -C opt-level=3 {options} -C metadata=0a1b -C extra-filename=-0a1b --out-dir /x`\n"
-    )
-}
-
-#[test]
-fn codegen_reads_a_crate_s_options_without_those_that_name_the_build() {
-    let log = running("ironafs_os", "-C embed-bitcode=no -Coverflow-checks=on");
-    assert_eq!(
-        codegen(&log, "ironafs_os"),
-        Some(vec![
-            "embed-bitcode=no".to_owned(),
-            "opt-level=3".to_owned(),
-            "overflow-checks=on".to_owned()
-        ])
-    );
-    assert_eq!(codegen(&log, "other"), None);
-}
-
-#[test]
-fn profile_departures_name_an_option_the_copied_table_dropped() {
-    // The shipping build, under a package override the copy did not carry
-    // (such as one written `[profile . release . package . ironafs-os]`).
-    let shipped = running("ironafs_os", "-C overflow-checks=on -C codegen-units=1");
-    let same = format!(
-        "{}{}",
-        running("ironafs_os", "-C overflow-checks=on -C codegen-units=1"),
-        running(
-            "ironafs_wipe_gate",
-            "-C overflow-checks=on -C codegen-units=1"
-        )
-    );
-    assert_eq!(profile_departures(&shipped, &same), Vec::<String>::new());
-    let dropped = format!(
-        "{}{}",
-        running("ironafs_os", "-C overflow-checks=on"),
-        running("ironafs_wipe_gate", "-C overflow-checks=on")
-    );
-    assert_eq!(profile_departures(&shipped, &dropped).len(), 2);
-    assert_eq!(profile_departures("", &same).len(), 1);
+    let symbols = super::Symbols::index([asm]).unwrap();
+    assert_eq!(symbols.body("untouched_dead").unwrap(), ["\tretq"]);
 }
 
 #[test]
