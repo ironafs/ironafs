@@ -131,10 +131,10 @@ Section 9 shows where each is kept and which test fails if it is broken.
    carry offsets, names and the specification's own constants, never a
    value read from the input; an error a decode entry point returns
    from a secret-bearing message carries not even an offset. The
-   encoder builds its errors with no offset, and returns an error from a
-   handwritten encoder as that encoder made it, except a
-   `MessageTooLarge` from its size computation, which the encoder
-   replaces with the message's own (7, point 2).
+   encoder builds its errors with no offset. At an encode entry point,
+   it returns an error from a handwritten encoder as that encoder
+   made it, except a `MessageTooLarge` from sizing, which the entry
+   point replaces with the message's own (7, point 2).
 
 ## 4. Terms
 
@@ -906,20 +906,21 @@ not control").
    variable-length opaque item or string, charge its length word, data
    and padding together after its own checks. For a variable-length
    array, after checking its count, charge the four-byte count word to
-   the message and any enclosing arrays. Then open its own cap at its
-   full byte allowance, visit its elements, and close that cap. Each
-   element's charges count against that cap while it is open. A
+   the message and any enclosing arrays. Then the context opens the
+   array's own cap at its full byte allowance for the element visits.
+   Each element's charges count against that cap while it is open. A
    structure, fixed-length array, union wrapper or void adds no charge
    of its own.
 
-   **Check each array element's width.** Every charge is a whole
-   number of four-byte units. At each element visit in a fixed-length
-   or variable-length array, track whether the element makes a
-   positive charge, independently of the whole-message total. If the
-   visit succeeds with no positive charge, refuse it immediately. An
-   opaque leaf size must be a multiple of four before it is charged.
-   Together these checks enforce 5.1, point 5 even for a handwritten
-   size report. A standalone void and a union's void arm are allowed
+   **Check charge and element widths.** The context refuses any charge
+   whose byte count is not a whole number of four-byte units, at the
+   charge operation before checking active caps or changing counts.
+   At each element visit in a fixed-length or variable-length array,
+   track whether the element makes a positive charge, independently
+   of the whole-message total. If the visit succeeds with no latched
+   refusal and no positive charge, refuse it immediately. Together
+   these checks enforce 5.1, point 5 even for a handwritten leaf size
+   report. A standalone void and a union's void arm are allowed
    their zero width.
 
    **The first item or array failure wins.** At each charge, test the
@@ -930,60 +931,71 @@ not control").
    independent of the whole-message total. A fixed stack with
    `xdr.depth_max` slots (5.2, point 10) holds the counts without an
    allocation.
-   Check the slot when opening a cap, and refuse immediately if the
-   stack is full (section 6, A14). Enclose each cap's visit in a scope
-   whose guard restores the previous stack depth on success, error or
-   unwind. Enclosing caps retain the bytes charged to them on a
-   successful visit.
+   The context checks the slot when opening a cap and refuses
+   immediately if the stack is full (section 6, A14). It keeps the cap
+   guard private in the scoped call for that cap. The guard restores
+   the entry cap depth on success, error or unwind. Enclosing caps
+   retain the bytes charged to them on a successful visit.
 
    **Retain the first refusal.** The context latches the first immediate
-   refusal before it reports the error. Each context-managed visit,
-   including the root and each handwritten component, has a scope
-   guard. If a visit returns an error, latch it unless an earlier
-   refusal is already latched. If an unwind leaves the scope before
-   the visit completes, the guard latches a refusal the same way.
-   A handwritten codec that catches an unwind from a partial visit
-   catches it outside that visit's guard. Later sizing operations
-   return the latched error without charging bytes or entering another
-   visit. Finishing sizing checks the latch even if the value returned
-   success. For a full cap stack, an interrupted visit, an element with
-   zero width or an opaque leaf's non-unit size, the context makes
-   `MessageTooLarge` without a cap name or limit.
-   An encode entry point supplies its message's name and cap as in
-   section 7. These refusals use the latch. The deferred length and
-   overflow checks on the whole-message total do not set it.
+   refusal before it reports the error. It keeps each visit's guard
+   private inside its scoped call, including for the root and each
+   handwritten component. The codec receives no guard and has nothing
+   to close. When a visit returns, a latched refusal takes precedence
+   over a later error, success or the zero-width-element check. With
+   no refusal latched, the context latches and returns an error from
+   the visit, or on success checks for zero width where required.
+   If an unwind crosses an unfinished visit's scope, its guard latches
+   an interruption if no refusal is already latched. An unwind caught
+   wholly inside that visit does not cross its guard. Later sizing
+   operations return the latched error without charging bytes or
+   entering another visit. Sizing completion returns a latched refusal
+   ahead of any later result or check of the whole-message total.
+   For a full cap stack, an interrupted visit, an element with zero
+   width or a charge that is not a whole number of units, the context
+   latches `MessageTooLarge` without a cap name or limit. An encode
+   entry point supplies its message's name and cap as in section 7.
+   The deferred checks on the whole-message total do not set the latch.
 
    **The whole-message size is decided after the visit.** Keep the sum
    of charges in 64 bits while it fits, and record an overflow if a
    checked addition fails (section 6, A10). Once overflowed, the total
    stays marked as such and the visit continues with the same item
-   checks and array charges. Exceeding the message cap or platform width
-   also leaves these checks in force. If none of them refuses the value,
-   return `MessageTooLarge` naming the message for an overflowed total,
-   a total above the message cap or one that does not fit in `usize`.
+   checks and array charges. At the encode entry points, neither the
+   message cap nor the platform's `usize` limit ends the visit early.
+   After a visit with no immediate refusal, those entry points return
+   `MessageTooLarge` naming the message for an overflowed total, a
+   total above the message cap or one that does not fit in `usize`.
 
    **One shared sizing context.** `Encode` requires a context-taking
-   sizing method. Pass the same context throughout the visit. Generated
-   and handwritten codecs use it for each bound, cap, discriminant and
-   component in their XDR layout. A transparent wrapper visits its
-   wrapped value through the context. A structured codec's standalone
-   `encoded_len` uses the same visit starting without an enclosing
-   array or message cap, returning `Result<u64, Error>`. For a total
-   overflow found by the context it returns `MessageTooLarge` without
-   a cap name or limit. Both encode entry points drive the context with
-   the message's cap.
+   sizing method. Generated and handwritten codecs use the same
+   context throughout the visit to check each bound, cap, enumeration
+   and discriminant and to visit each component in their XDR layout.
+   A transparent wrapper visits its wrapped value through the context.
+   Standalone `encoded_len` uses the same root sizing visit for every
+   `Encode` implementation, including handwritten leaves, transparent
+   wrappers, enumerations, types with discriminants, and bounded or
+   capped types. It starts
+   without an enclosing array or message cap and has no platform `usize`
+   admission check. All bounds and item and array caps declared
+   within the visited layout still apply. It returns
+   `Result<u64, Error>`. If the visit has no immediate refusal but the
+   total overflows `u64`, it returns `MessageTooLarge` without a
+   message name or limit. Both encode entry points use the root visit
+   with the message's cap for admission.
 
    A handwritten leaf with no child visits, discriminant, declared
-   length or count bound, or item cap may explicitly bridge its
-   existing `encoded_len` through the context. The context calls it in
-   a guarded visit and treats a successful size as one charge to the
-   enclosing arrays and the message. If the call returns an error,
-   latch that error before charging anything for the leaf. There is no
-   reported width against which to check enclosing caps. This includes
-   a leaf's `MessageTooLarge`. Only the whole-message size failures
-   found by the shared context are deferred. The deterministic order
-   governs the checks and charges the context sees. Section 7
-   specifies how errors returned by sizing and writing reach the caller.
+   length or count bound, item cap or enumeration check may supply
+   a fallible handwritten leaf size report directly to the context's
+   single charge operation during its managed visit. A successful
+   report makes one charge to the total and each active array cap.
+   The context latches a reported error, including `MessageTooLarge`,
+   before charging anything for the leaf. The report is separate from
+   the public `encoded_len` query. The bridge must never call that
+   query, directly or indirectly. The Rust method shape and defaults
+   are implementation details. Only the whole-message size failures
+   found by the shared context are deferred. Section 7 specifies how
+   errors returned by sizing and writing reach the caller.
 3. **The wipe comes first, then sizing, and the allocation
    never moves.** `[OWN]`, from coding standards rules 3 and 8. These
    steps run in this order, and are the same for every message,
@@ -1093,7 +1105,7 @@ and fallible conversions (coding standards rule 2); none of it saturates.
 | A7 | a length to the 32-bit length word, on encode | any `usize` | `try_from`; failure is `LengthNotRepresentable` |
 | A8 | heap ratios and r × message cap, and reservation counts q and q × message cap ÷ 4, in the generator (5.2, points 9.3 and 9.5) | caps < 2³², slot sizes small | `checked_mul`, `checked_add` and a ceiling division in 64 bits; overflow refuses the definition |
 | A9 | n × element slot size, the requested bytes of a reservation | n already checked under A4 | `checked_mul` in 64 bits; overflow is `BudgetExceeded` |
-| A10 | the encoder's sum of encoded sizes and the final conversion to `usize` (5.5, point 2) | each charge fits in 64 bits | `checked_add` in 64 bits; record overflow and continue item and array checks. On reaching the end, overflow, a failed `try_from` or a size above the message cap is `MessageTooLarge`, naming the message at the encode entry points |
+| A10 | the sum of encoded sizes and, for encode admission, the final conversion to `usize` (5.5, point 2) | each charge fits in 64 bits | `checked_add` in 64 bits. Record overflow and continue item and array checks. With no immediate refusal, overflow gives `MessageTooLarge`, without a message name or limit in standalone sizing. At the encode entry points, overflow, a total above the message cap or a failed `try_from` gives `MessageTooLarge` naming the message |
 | A11 | the ledger's running total plus a request (5.2, point 9.2) | total ≤ memory budget, request from A9 | `checked_add` in 64 bits; overflow, or a sum above the budget, is `BudgetExceeded`, before anything is requested |
 | A12 | inline sizes and nesting depth, in the generator and the compile-time assertions (5.2, point 10) | sizes small, depth ≤ 16 | `checked_add` and `checked_mul`; overflow refuses the definition or fails the build |
 | A13 | active array cap's remaining bytes less the charge (5.5, point 2) | remaining ≤ cap < 2³², charge fits in 64 bits | `checked_sub` in 64 bits; underflow is `CapExceeded` naming the first failing cap, innermost to outermost |
@@ -1185,9 +1197,9 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    field, never printed. The encoder builds its own errors with no
    position. The encode entry points pass errors on as the value's
    code made them, including a `MessageTooLarge` returned by its
-   write method `encode`. They replace a `MessageTooLarge` returned
-   during sizing, including from `encoded_len`, with a new error
-   naming the outer message cap and its limit (5.5, point 2). A
+   write method `encode`. They replace a `MessageTooLarge` from
+   sizing or admission with a new error naming the outer message
+   and its cap (5.5, point 2). A
    handwritten encoder that runs a decode and passes on its error
    passes on that decode's position, so a handwritten encoder of a
    secret-bearing message does not return such an error. The codec
@@ -1528,14 +1540,14 @@ over the test types above.
   acquired (5.5, point 6) is not checked. Not exercised directly: the
   other error kinds, an unwind in a secret-bearing message, and the
   freeing of the owned-output entry point's buffer on error.
-- **Sizing error order** (5.5, point 2; section 7). Run these cases
-  under #59 with `cargo nextest run -p ironafs-xdr`, including a 64-bit
-  venue for the synthetic `usize` lengths. Supply those lengths as
-  scalar arguments to the normal sizing operations for fields. Inject
-  the other fault cases through handwritten visits or leaf size
-  reports on small values. The scalar reports require no backing
-  payload. The failed visits test the runtime checks outside the
-  generator's valid layouts.
+- **Sizing error order** (5.5, point 2; section 7), PROPOSED. Run
+  these cases under #59 with `cargo nextest run -p ironafs-xdr`,
+  including a 64-bit venue for the synthetic `usize` lengths. Supply
+  those lengths as scalar arguments to the normal sizing operations
+  for fields. Inject the other fault cases through handwritten visits
+  or handwritten leaf size reports on small values. The scalar
+  reports require no backing payload. The failed visits test the
+  runtime checks outside the generator's valid layouts.
 
   The sizing fixtures declare caps under interface `test.sizing`
   (5.2, point 5). Each `test.sizing` message has the cap shown and a
@@ -1550,17 +1562,22 @@ over the test types above.
   metadata of the injected forwarded error. The cases give the
   purpose of each cap and synthetic report.
 
-  Check the exact error kind, name and limit where present. Use a safe
-  test-only observer in the private path common to both public encode
-  entry points. Observe entry to sizing, the reservation call itself,
-  and entry to the write phase at their respective call sites. Drive
-  each entry point. Sizing refusals reach sizing only. Inspect sizing
-  and the fixture operations for allocator calls outside reservation;
-  the phase checks observe codec operations, without a custom global
-  allocator. For lexical cleanup, observe the private context's active
-  cap depth after a scoped visit returns or unwinds to its catcher.
-  Check that a successful visit, a returned error and a caught unwind
-  each restore the entry depth.
+  Check the exact error kind, name and limit where present. Use the
+  safe test-only observer in the private path common to both public
+  encode entry points. Observe entry to sizing, the reservation call
+  itself, and entry to the write phase at their respective call sites.
+  Drive each public entry point. For owned output, observe the
+  temporary buffer at sizing entry and at sizing refusal before the
+  buffer drops. Check zero capacity at both points. Sizing refusals
+  reach neither reservation nor writing. Inspect both public wrappers,
+  the wipe, the sizing and refusal paths, and the fixture operations
+  for allocator calls outside reservation. Inspect that standalone
+  sizing leaves the final `usize` conversion to admission. The phase
+  checks observe codec operations without a custom global allocator.
+  For lexical cleanup, observe the private context's active cap depth
+  after a scoped visit returns or unwinds to its catcher. Check that
+  a successful visit, a returned error and a caught unwind each
+  restore the entry depth.
 
   Through the caller's-buffer entry point, a populated buffer ends
   empty and zeroed as best the encoder can, retaining its address and
@@ -1580,12 +1597,12 @@ over the test types above.
   | Message cap before a later bound | `test.sizing.bound` has message cap 16. Its array `test.sizing.bound.prefix`, cap 20, holds five unsigned integers and charges 24 bytes including its count word. Its next field `title` has five data bytes, bound 4 and cap 4. Repeat with a handwritten visit that ignores the `title` refusal, tries another operation, and returns success. | `LengthOverBound` on `test.sizing.bound.title`, bound 4, including when the value ignores it. The attempted operation returns the latched error. With an empty `title` and the full prefix, `MessageTooLarge` on `test.sizing.bound`, cap 16. |
   | Declared bound before length word width | `test.sizing.repr_bound.title` is a string with declared bound and cap 4 and synthetic length 2³². Its message cap is 16. | `LengthOverBound` on `test.sizing.repr_bound.title`, bound 4. |
   | Length word width after the message cap is crossed | `test.sizing.repr` has message cap 16. Its array `test.sizing.repr.prefix`, cap 20, holds five unsigned integers and charges 24 bytes including its count word. Its next field `data` is variable-length opaque with no declared bound, cap 4 and synthetic length 2³². | `LengthNotRepresentable` on `test.sizing.repr.data`. |
-  | Overflow before a later array cap | `test.sizing.overflow` has message cap 16. Inject a successful report of 2⁶⁴ − 4 bytes for a handwritten unsigned integer leaf. The next unsigned integer adds four bytes. A following array `items` with cap 4 holds one unsigned hyper. | `CapExceeded` on `test.sizing.overflow.items`, cap 4. With empty `items`, `MessageTooLarge` on `test.sizing.overflow`, cap 16. Also call `encoded_len` with empty `items` and expect `MessageTooLarge` with no cap name or limit. |
-  | Opaque sizing report | `test.sizing.opaque` has message cap 16. Its array `items` has cap 4 and holds one handwritten unsigned hyper leaf. Inject a sizing error named `test.sizing.source`, cap 4, of kind `MessageTooLarge`. A later string `test.sizing.opaque.title` has five data bytes, bound 4 and cap 4. Repeat with the leaf's valid eight-byte size. | For the error report, `MessageTooLarge` on `test.sizing.opaque`, cap 16. For the successful report, `CapExceeded` on `test.sizing.opaque.items`, cap 4. |
-  | Opaque write error | `test.sizing.write` has message cap 16. Its handwritten unsigned integer codec reports a size of four bytes, writes one word, then returns `MessageTooLarge` naming `test.sizing.source`, cap 4. | `MessageTooLarge` on `test.sizing.source`, cap 4, from the write pass in both entry points. |
+  | Overflow before a later array cap | `test.sizing.overflow` has message cap 16. Inject a successful handwritten leaf size report of 2⁶⁴ − 4 bytes for an unsigned integer. The next unsigned integer adds four bytes. A following array `items` with cap 4 holds one unsigned hyper. | `CapExceeded` on `test.sizing.overflow.items`, cap 4, including from standalone `encoded_len`. With empty `items`, the encode entry points return `MessageTooLarge` on `test.sizing.overflow`, cap 16, and standalone `encoded_len` returns `MessageTooLarge` with no message name or limit. |
+  | Handwritten leaf size report | `test.sizing.opaque` has message cap 16. Its array `items` has cap 4 and holds one handwritten unsigned hyper leaf. Inject a sizing error named `test.sizing.source`, cap 4, of kind `MessageTooLarge`. A later string `test.sizing.opaque.title` has five data bytes, bound 4 and cap 4. Repeat with the leaf's valid eight-byte size. | For the error report, `MessageTooLarge` on `test.sizing.opaque`, cap 16, at the encode entry points. Standalone `encoded_len` returns that error with its original name `test.sizing.source` and limit 4. For the successful report, `CapExceeded` on `test.sizing.opaque.items`, cap 4. |
+  | Handwritten leaf sizing and write error | `test.sizing.write` has message cap 16. Its handwritten unsigned integer codec reports four bytes, writes one word, then returns `MessageTooLarge` naming `test.sizing.source`, cap 4. For sizing variants, inject a report of one byte or 2⁶⁴ − 4 bytes and repeat with a transparent wrapper using the same message descriptor. Call standalone `encoded_len` and both encode entry points for each variant. | For the four-byte report, standalone `encoded_len` returns four and both encode entry points return the write error on `test.sizing.source`, cap 4. For one byte, standalone `encoded_len` returns `MessageTooLarge` with no name or limit. For 2⁶⁴ − 4 bytes, it returns that size as a `u64`. Both sizing variants return `MessageTooLarge` on `test.sizing.write`, cap 16, at both encode entry points, before reservation or writing. |
   | Full cap stack | A test-only visit under `test.sizing.stack`, message cap 128, calls the normal array sizing operation with count one and the test cap `test.sizing.stack.injected` of 128 bytes on each of 17 nested calls. This injects one more active array than `xdr.depth_max` with no oversized payload or XDR definition. | `MessageTooLarge` on `test.sizing.stack`, cap 128, at the seventeenth entry. The guard restores the stack as each enclosing visit ends. |
   | Caught sizing unwind | `test.sizing.interrupted` has message cap 16. Its array `test.sizing.interrupted.items`, cap 8, holds one structure of two unsigned integers. Its test visit charges the first word, unwinds across the array visit, and a handwritten parent catches the unwind and returns success. | `MessageTooLarge` on `test.sizing.interrupted`, cap 16. The array cap has closed at the catcher and the latch prevents a reservation. |
-  | Invalid element width | `test.sizing.width` has message cap 16. Its array `test.sizing.width.items`, cap 4 and bound one element, holds one unsigned integer. Inject leaf reports of zero bytes and one byte in separate runs, and a structured element visit that returns success with no charge. Repeat under `test.sizing.fixed_width`, message cap 16, with a fixed-length one-element unsigned integer array. The correct four-byte element and the standalone void G13 are controls. | `MessageTooLarge` on `test.sizing.width` or `test.sizing.fixed_width` for the corresponding message, cap 16. The controls succeed. |
+  | Invalid element width | `test.sizing.width` has message cap 16. Its array `test.sizing.width.items`, cap 4 and bound one element, holds one unsigned integer. Inject handwritten leaf size reports of zero bytes and one byte in separate runs, and a structured element visit that returns success with no charge. Repeat under `test.sizing.fixed_width`, message cap 16, with a fixed-length one-element unsigned integer array. The correct four-byte element and the standalone void G13 are controls. In the variable-length case, also have a handwritten element visit an inner unsigned integer leaf with a synthetic eight-byte report. The array cap refuses the report before any positive charge. The element ignores that error. Have it return success in one run and a replacement `MessageTooLarge` on `test.sizing.source`, limit 4, in another. | For the width faults, `MessageTooLarge` on `test.sizing.width` or `test.sizing.fixed_width` for the corresponding message, cap 16. The controls succeed. For both runs with the inner refusal, the element visit's exit and sizing completion return `CapExceeded` on `test.sizing.width.items`, cap 4, in both encode entry points. |
 - **Secrecy on encode** (5.1, point 8) is checked by doctests that
   must fail to build, each beside a passing doctest with the same
   fixtures that differs from it in one line, so the failure has one
