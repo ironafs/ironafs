@@ -1847,7 +1847,6 @@ fn prove_row(
     let Some(code) = row.code.as_ref() else {
         return failed("no declarations recorded for the implemented row".to_owned());
     };
-    let model = DataModel::of(target);
     let mut found = match row_declarations(crate_dir, &code.module, read, target)? {
         Ok(found) => found,
         Err(error) => return failed(error),
@@ -1857,7 +1856,7 @@ fn prove_row(
         .filter(|tail| tail.row == row.id)
         .copied()
         .collect();
-    if let Some(problem) = fact_problem(&row.id, code, &found, crate_dir, read, model, dir)? {
+    if let Some(problem) = fact_problem(&row.id, code, &found, crate_dir, read, target, dir)? {
         return failed(problem);
     }
     let declared: Vec<&str> = code
@@ -1927,7 +1926,7 @@ fn prove_declarations(
     let source = match c_source(
         &row.id,
         &code.defines,
-        &code.headers,
+        code.headers_for(target),
         &code.expressions,
         &found,
         DataModel::of(target),
@@ -1992,7 +1991,7 @@ fn fact_problem(
     found: &Declarations,
     crate_dir: &Path,
     read: &std::collections::BTreeSet<PathBuf>,
-    model: DataModel,
+    target: &str,
     dir: &Path,
 ) -> Result<Option<String>, Error> {
     // The facts the row must assert come from its compiled code: every C
@@ -2001,8 +2000,8 @@ fn fact_problem(
     let macros = match header_macros(
         row,
         &code.defines,
-        &code.headers,
-        model,
+        code.headers_for(target),
+        DataModel::of(target),
         &dir.join(format!("{row}-macros.c")),
     )? {
         Ok(macros) => macros,
