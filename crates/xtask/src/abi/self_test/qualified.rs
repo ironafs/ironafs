@@ -235,9 +235,14 @@ fn baseline_controls(
         return Err(failure(case, format!("the early define failed: {error}")));
     }
     let define = "#define _GNU_SOURCE 1\n";
-    let include = format!("#include <{}>\n", header.display());
+    let header_include = format!("#include <{}>\n", header.display());
     let late = plant_in(&source, case, define, "")?;
-    let late = plant_in(&late, case, &include, &format!("{include}{define}"))?;
+    let late = plant_in(
+        &late,
+        case,
+        &header_include,
+        &format!("{header_include}{define}"),
+    )?;
     match compile(&late, &dir.join("fdpass-late-gnu.c"))? {
         Err(error)
             if error.contains("the socket baseline requires __USE_GNU after the glibc headers") =>
