@@ -144,6 +144,38 @@ fn std_paths_find_expression_paths_and_ignore_other_crates() {
 }
 
 #[test]
+fn std_paths_find_absolute_roots_after_operators_and_where() {
+    let source = "let _ = n > ::std::mem::size_of::<u8>();\n\
+                  let _ = n >> ::std::mem::size_of::<u16>();\n\
+                  let _ = 0 < n && n > ::std::mem::size_of::<u32>();\n\
+                  fn bounded() where ::std::sync::Arc<u8>: Clone {}\n\
+                  take(0 < n, n > ::std::mem::size_of::<u8>());\n";
+
+    assert_eq!(
+        paths(source),
+        [
+            ("std::mem::size_of".into(), 1),
+            ("std::mem::size_of".into(), 2),
+            ("std::mem::size_of".into(), 3),
+            ("std::sync::Arc".into(), 4),
+            ("std::mem::size_of".into(), 5),
+        ]
+    );
+}
+
+#[test]
+fn std_paths_ignore_names_after_angle_bracket_path_tails() {
+    let source = "let _ = Local::<Option<u8>>::std;\n\
+                  let _ = ConstLocal::<{ 8 >> 1 }>::std;\n\
+                  let _ = <fn() -> u8 as LocalTrait>::std;\n\
+                  let _ = <*const &&u8 as LocalTrait>::std;\n\
+                  let _ = Local::<u8, u16>::std;\n\
+                  let _ = <Local<u8, u16> as LocalTrait>::std;\n";
+
+    assert_eq!(paths(source), []);
+}
+
+#[test]
 fn std_paths_see_through_raw_identifiers_and_list_a_bare_std() {
     let source = "let a = r#std::r#fs::read(p);\n\
                   use r#std::{r#net};\n\

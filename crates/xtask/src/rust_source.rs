@@ -688,8 +688,18 @@ pub(crate) fn matching(
     if punct(tokens.get(open)) != Some(opening) {
         return None;
     }
+    matching_bracket(tokens.iter().enumerate().skip(open), opening, closing)
+}
+
+/// Follows one bracket pair in the order of the iterator, starting at the
+/// first bracket. Reversing the iterator also reverses the pair.
+fn matching_bracket<'a>(
+    tokens: impl Iterator<Item = (usize, &'a Token)>,
+    opening: char,
+    closing: char,
+) -> Option<usize> {
     let mut depth = 0_usize;
-    for (index, token) in tokens.iter().enumerate().skip(open) {
+    for (index, token) in tokens {
         match punct(Some(token)) {
             Some(next) if next == opening => depth += 1,
             Some(next) if next == closing => {
@@ -725,7 +735,10 @@ fn starts_a_path(tokens: &[Token], index: usize) -> bool {
     match &before.kind {
         TokenKind::Punct('.') => false,
         TokenKind::PathSep => {
-            let stem = index.checked_sub(2).and_then(|at| tokens.get(at));
+            let Some(at) = index.checked_sub(2) else {
+                return true;
+            };
+            let stem = tokens.get(at);
             match stem.map(|token| &token.kind) {
                 // These keywords can precede an absolute path, as in
                 // `return ::std::...`. A raw keyword can be a path segment.
@@ -744,20 +757,102 @@ fn starts_a_path(tokens: &[Token], index: usize) -> bool {
                                 | "match"
                                 | "mut"
                                 | "return"
+                                | "where"
                                 | "while"
                                 | "yield"
                         )
                 }
-                // An arrow can be followed by an absolute path too, as
-                // in a return type or a match arm.
-                Some(TokenKind::Punct('>')) => matches!(
-                    index.checked_sub(3).and_then(|at| punct(tokens.get(at))),
-                    Some('-' | '=')
-                ),
+                Some(TokenKind::Punct('>')) => !closes_angle_path(tokens, at),
                 _ => true,
             }
         }
         _ => true,
+    }
+}
+
+/// Looks for the opening angle of a path ending in `>::`. The search skips
+/// bracketed groups and stops at a statement, logical operator or enclosing
+/// bracket. An arrow cannot close the path. A comma at the candidate's
+/// depth can separate expressions, so only an explicit turbofish proves
+/// that such a comma belongs to the candidate's arguments. Commas inside
+/// a qualified type's nested arguments do not require a turbofish.
+fn closes_angle_path(tokens: &[Token], close: usize) -> bool {
+    if ends_arrow(tokens, close) {
+        return false;
+    }
+    let mut depth = 1;
+    let mut crossed_comma = false;
+    let mut cursor = close;
+    while let Some(at) = cursor.checked_sub(1) {
+        cursor = at;
+        match punct(tokens.get(at)) {
+            Some('>') if !ends_arrow(tokens, at) => depth += 1,
+            Some('<') => {
+                depth -= 1;
+                if depth == 0 {
+                    return !crossed_comma
+                        || at
+                            .checked_sub(1)
+                            .is_some_and(|before| is(tokens, before, &TokenKind::PathSep));
+                }
+            }
+            Some(',') if depth == 1 => crossed_comma = true,
+            Some(end @ (')' | ']' | '}')) => {
+                let start = match end {
+                    ')' => '(',
+                    ']' => '[',
+                    _ => '{',
+                };
+                let before = tokens.iter().take(at + 1).enumerate().rev();
+                let Some(open) = matching_bracket(before, end, start) else {
+                    return false;
+                };
+                cursor = open;
+            }
+            Some('(' | '[' | '{' | ';') => return false,
+            Some('|' | '&') if ends_logical_operator(tokens, at) => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether `at` ends an arrow that can precede an absolute path or occur
+/// within an angle-bracketed type.
+fn ends_arrow(tokens: &[Token], at: usize) -> bool {
+    matches!(
+        at.checked_sub(1)
+            .and_then(|before| punct(tokens.get(before))),
+        Some('-' | '=')
+    )
+}
+
+/// Logical operators separate comparisons, as in `a < b && c > ::name`.
+/// Two ampersands can also start a reference type within angle brackets.
+fn ends_logical_operator(tokens: &[Token], at: usize) -> bool {
+    let Some(previous) = at.checked_sub(1) else {
+        return false;
+    };
+    match (punct(tokens.get(previous)), punct(tokens.get(at))) {
+        (Some('|'), Some('|')) => true,
+        (Some('&'), Some('&')) => {
+            let left = previous
+                .checked_sub(1)
+                .and_then(|before| tokens.get(before));
+            match left {
+                Some(Token {
+                    kind: TokenKind::Ident(word),
+                    raw,
+                    ..
+                }) => *raw || !matches!(word.as_str(), "as" | "const" | "mut"),
+                Some(Token {
+                    kind: TokenKind::Punct(')' | ']' | '}' | '>'),
+                    ..
+                }) => true,
+                _ => false,
+            }
+        }
+        _ => false,
     }
 }
 
