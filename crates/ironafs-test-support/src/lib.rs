@@ -37,6 +37,8 @@
 //! that move only when the test moves them, and random bytes from a seed.
 //! Neither is ever a production source (coding standards rule 7).
 //!
+//! [`measure_awake`] times a benchmark operation through an injected clock.
+//!
 //! This crate is a dev-dependency only: no shipped crate depends on it.
 
 mod capture;
@@ -47,6 +49,7 @@ mod shrink;
 mod source;
 mod splitmix64;
 mod sweep;
+mod timing;
 pub mod wire;
 
 pub use clock::{SeededClock, TimeOverflow};
@@ -55,3 +58,4 @@ pub use rng::SeededRng;
 pub use source::Source;
 pub use splitmix64::SplitMix64;
 pub use sweep::{Exhaustive, FailedInput, SweepFailure};
+pub use timing::{TimingError, measure_awake};
