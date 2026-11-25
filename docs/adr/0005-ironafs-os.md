@@ -434,45 +434,83 @@ Revisit point 6 if: C33 is revisited.
 6.7 enforces it. **Working:** each row. Revisit a row if: an operating
 system ships a safe interface that removes it (C5's trigger), a supported
 release changes the item's header or library (point 5.7), or the decision
-it serves is revisited (C23, C27, C33, C34, C37, O8, C43, C45). A row changes only as
-point 7 says.
+it serves is revisited (C23, C27, C33, C34, C37, O8, C43, C45),
+or the ABI proof needs a different direct C header. A row changes only
+as point 7 says.
 
 Every foreign item and every site is in this table. Anything not in it is
 not allowed. Rows 21 to 23 are the M2a sweep's further needs (owner,
 owner, 2026-11-20). Row 24 is the owner's cryptography decision
 (2026-11-20): the wipe that O28, point 2, needs. A *site* is one `unsafe extern` block, one `unsafe` block or
 one `unsafe impl`; its id is the text of its
-`#[expect(unsafe_code, reason = "…")]`. The last column counts the
+`#[expect(unsafe_code, reason = "…")]`. The `unsafe` blocks column counts the
 `unsafe` blocks as written in the source (a private function called from
 two places is one block). Each row's safe interface, obligations and test
 are in its sheet below the table, under the same number.
 
-| # | Site id | Targets | Foreign item, as the OS documents it | Linked from | Declared | `unsafe` blocks |
-|---|---|---|---|---|---|---|
-| 1 | `linux-clock` | Linux, glibc and musl | `int clock_gettime(clockid_t, struct timespec *)`, called with `CLOCK_BOOTTIME` and `CLOCK_MONOTONIC` only | the C library | `unsafe fn` | one, in one private function taking the clock id |
-| 2 | `darwin-clock` | macOS | `uint64_t clock_gettime_nsec_np(clockid_t)`, called with `CLOCK_MONOTONIC_RAW` and `CLOCK_UPTIME_RAW` only | libSystem | `safe fn` | none |
-| 3 | `windows-tick` | Windows | `ULONGLONG GetTickCount64(void)` | Kernel32.dll | `safe fn` | none |
-| 4 | `windows-awake` | Windows | `VOID QueryUnbiasedInterruptTimePrecise(PULONGLONG)` | see point 5.4 | `unsafe fn` | one |
-| 5 | `darwin-oslog` | macOS | two functions of IronAFS's own C shim (point 4): create the log handles once; emit one entry (level, event id, public text, private text) | the shim, linked statically; it calls libSystem | `unsafe fn` | one per function |
-| 6 | `windows-dns` | Windows | `DNS_STATUS DnsQueryEx(PDNS_QUERY_REQUEST, PDNS_QUERY_RESULT, PDNS_QUERY_CANCEL)`, called asynchronously with a completion routine and a cancel handle (point 3.2); `DNS_STATUS DnsCancelQuery(PDNS_QUERY_CANCEL)`; `VOID DnsFree(PVOID, DNS_FREE_TYPE)`, called with `DnsFreeRecordList` only; one Rust `extern "system"` function passed as the completion routine | Dnsapi.dll | `unsafe fn` | one per call (three); one that takes back the context's reference (`Arc::from_raw`); one per read of memory Windows wrote (the result, a record header, SRV data, MX data, a wide string: five); and two `unsafe impl` (`Send` and `Sync` for the query block) |
-| 7 | `darwin-dns` | macOS | `DNSServiceQueryRecord`, `DNSServiceRefSockFD`, `DNSServiceProcessResult`, `DNSServiceRefDeallocate`, and `int poll(struct pollfd *, nfds_t, int)` on that one descriptor; one Rust `extern "C"` function passed as the reply callback (point 3.3) | libSystem | `unsafe fn` | one per call (five), and two in the callback (the context, the rdata) |
-| 8 | `linux-random` | Linux, glibc and musl | `long syscall(long, ...)` called with `SYS_getrandom`, the caller's buffer, a length of at most 256 and flags 0 only, every argument passed at register width | the C library | `unsafe fn` | one |
-| 9 | `darwin-random` | macOS | `int SecRandomCopyBytes(SecRandomRef, size_t, void *)` with a NULL `rnd` (`kSecRandomDefault`) only | Security.framework | `unsafe fn` | one |
-| 10 | `windows-random` | Windows | `NTSTATUS BCryptGenRandom(BCRYPT_ALG_HANDLE, PUCHAR, ULONG, ULONG)` with a NULL handle and `BCRYPT_USE_SYSTEM_PREFERRED_RNG` only | Bcrypt.dll | `unsafe fn` | one |
-| 11 | `unix-nodump` | Linux, macOS | `int setrlimit(int, const struct rlimit *)` with `RLIMIT_CORE` and `{0, 0}` only; on Linux also `int prctl(int, ...)` with `PR_SET_DUMPABLE` and 0 only, and `PR_GET_DUMPABLE` for the read-back | the C library; libSystem | `unsafe fn` | one per call: one on macOS (`setrlimit`), three on Linux (`setrlimit`, and `prctl` to set and to read back) |
-| 12 | `linux-dontdump` | Linux | `int madvise(void *, size_t, int)` with `MADV_DONTDUMP` only, on the crate's own secret buffers, allocated in safe Rust with 64 KiB alignment and size (sheet 12) | the C library | `unsafe fn` | one |
-| 13 | `linux-peercred` | Linux | `int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_SOCKET` and `SO_TYPE` (into an `int`, which must be `SOCK_STREAM`), then `SOL_SOCKET` and `SO_PEERCRED` (into a `struct ucred`), only, on a borrowed `UnixStream` | the C library | `unsafe fn` | two (one per option) |
-| 14 | `linux-fdpass` | Linux, glibc (withheld on musl, sheet 14) | `ssize_t sendmsg(int, const struct msghdr *, int)` and `ssize_t recvmsg(int, struct msghdr *, int)` carrying exactly one `SCM_RIGHTS` descriptor and one data byte, with `MSG_NOSIGNAL` on send and `MSG_CMSG_CLOEXEC` on receive; each received descriptor becomes an `OwnedFd` at once (L7, point 1), a pidfd the kernel installed with `SCM_PIDFD` included, which is then closed (sheet 14) | the C library | `unsafe fn` | one per call (two), and one that adopts a received descriptor (`OwnedFd::from_raw_fd`) |
-| 15 | `linux-mount` | Linux | `int mount(const char *, const char *, const char *, unsigned long, const void *)` for type `fuse` with `MS_NOSUID` and `MS_NODEV`, and the options `fd=`, `rootmode=`, `user_id=`, `group_id=` and `allow_other` (L7, point 1) | the C library | `unsafe fn` | one |
-| 16 | `darwin-peercred` | macOS | `int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_LOCAL` and `LOCAL_PEERCRED` only, on a borrowed `UnixStream`, into a `struct xucred` (C43, point 4; control endpoint) | libSystem | `unsafe fn` | one |
-| 17 | `windows-pipe-create` | Windows | `CreateNamedPipeW` for the one control pipe, with a `SECURITY_ATTRIBUTES` naming a self-relative security descriptor built in safe Rust; the returned handle adopted as an `OwnedHandle` (C43, point 4) | see point 5.4 | `unsafe fn` | one for the call; one that adopts the handle (`OwnedHandle::from_raw_handle`) |
-| 18 | `windows-pipe-io` | Windows | overlapped `ConnectNamedPipe`, `ReadFile`, `WriteFile` and `CancelIoEx` on a pipe instance the driver owns (sheet 18); `DisconnectNamedPipe`; and the completion calls of the fixed driver, whose family the driver's own design chooses (sheet 18; an open owner decision, the pipe completion method). No completion routine (`ReadFileEx`, an APC) is used | see point 5.4 | `unsafe fn` | one per call; the count is fixed with the completion family, before code (point 7) |
-| 19 | `windows-pipe-caller` | Windows | `ImpersonateNamedPipeClient`, `OpenThreadToken` (with `TOKEN_QUERY` and `OpenAsSelf` true only), `RevertToSelf`, `GetTokenInformation` (classes `TokenUser`, `TokenStatistics`, `TokenImpersonationLevel`, `TokenElevationType`, `TokenLinkedToken` only), `CheckTokenMembership` (an explicit token handle and the built-in Administrators SID only), and `GetCurrentThread` (`safe fn`); optionally `GetNamedPipeClientProcessId`, for diagnostics only (C41, point 1) | see point 5.4 | `unsafe fn` (`GetCurrentThread`: `safe fn`) | one per call; one per adopted token handle (two); one per bounded read of a returned token structure or SID |
-| 20 | `windows-pipe-server` | Windows (in `afs`, the session agents and any token sender) | `GetNamedPipeServerProcessId` (twice), `OpenProcess` with `PROCESS_QUERY_LIMITED_INFORMATION` only, `OpenProcessToken` with `TOKEN_QUERY` only, `GetTokenInformation` (`TokenUser` only) (C43, points 1, 2 and 4) | see point 5.4 | `unsafe fn` | one per call; one per adopted handle (two); one bounded SID read |
-| 21 | `linux-udp6` | Linux, glibc and musl | `int socket(int, int, int)` with `AF_INET6`, `SOCK_DGRAM \| SOCK_CLOEXEC` and 0 only; `int setsockopt(int, int, int, const void *, socklen_t)` with `IPPROTO_IPV6`, `IPV6_V6ONLY` and the value 1 only; `int bind(int, const struct sockaddr *, socklen_t)` with a wrapper-built `struct sockaddr_in6`; the descriptor adopted as an `OwnedFd` and returned as a `std::net::UdpSocket` (C30, point 1; C34, point 2) | the C library | `unsafe fn` | one per call (three); one that adopts the descriptor (`OwnedFd::from_raw_fd`) |
-| 22 | `linux-statvfs` | Linux, glibc and musl | `int fstatvfs(int, struct statvfs *)` on a borrowed descriptor of the chunk store's directory (C27, point 3) | the C library | `unsafe fn` | one |
-| 23 | `linux-rtnetlink` | Linux, glibc and musl | `socket` with `AF_NETLINK`, `SOCK_RAW \| SOCK_CLOEXEC` and `NETLINK_ROUTE` only; `bind` with a wrapper-built `struct sockaddr_nl` (the fixed group set on the notify socket, none on the request socket); `ssize_t sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t)` to the kernel's address only, with `MSG_DONTWAIT` only; `ssize_t recvmsg(int, struct msghdr *, int)` with `MSG_DONTWAIT` only, a `struct sockaddr_nl` for the sender and `MSG_TRUNC` checked; `int eventfd(unsigned int, int)` with 0 and `EFD_CLOEXEC \| EFD_NONBLOCK` only, for the wake descriptor; `int poll(struct pollfd *, nfds_t, int)` on exactly two entries, one route socket and its wake descriptor, `POLLIN` requested on each, with a timeout of 0 or more only; each descriptor adopted as an `OwnedFd` (C23, point 2; amended 2026-11-22) | the C library | `unsafe fn` | one per call (six); one that adopts a descriptor, a route socket's or the wake descriptor's (one private function) |
-| 24 | `mem-wipe` | every target | none: no foreign call. `core::ptr::write_volatile` of a zero byte through each `&mut u8` of the caller's slice, then `core::sync::atomic::compiler_fence(SeqCst)` (O28, point 2) | none | none | one (the volatile write, in a loop of safe code) |
+The **Linux ABI headers** cell gives the ordered list of direct,
+row-specific C includes for point 5.6's Linux proof. It also governs
+a qualified absence probe, even for a row whose Linux implementation
+is withheld. The shared preamble's common includes are separate.
+A row with no approved Linux ABI headers says `none`. Otherwise the
+cell uses one code span per header, separated by exactly a comma and
+space. A name is one or more `/`-separated path components and ends in
+`.h`. Each component starts with an ASCII letter, digit or underscore
+followed by zero or more ASCII letters, digits, underscores, periods or
+hyphens. Empty spans, trailing delimiters and duplicate names fail.
+
+The inventory compares the parsed list byte for byte, in order and
+case-sensitively, with its sole mirror, `code.headers`. The five
+existing text columns do not carry a second copy of the header cell.
+Validate both lists independently before comparing them, rejecting
+malformed and duplicate names even if both lists match. A row without
+a code record has an empty effective mirror list. The approved cell
+retains its own list, so a nonempty cell with no code record fails.
+
+On Linux targets, the macro scan, C assertions and any qualified
+absence probe include the row-specific headers in order from that
+checked list. A mismatch fails inventory validation before any of those
+C inputs is generated. The list does not supply includes for macOS or
+Windows, which use their own approved proof inputs under point 5.
+A row covering Linux and another operating system uses this list only
+for its Linux C inputs. A row whose approved target scope excludes
+Linux, or that declares no foreign items, must say `none`. The
+inventory rejects headers on either kind of row even when the mirror
+matches the cell.
+
+Adding, removing, replacing or reordering a header changes the row
+under point 7 and requires owner acceptance before the code is written.
+The cell alone does not determine implementation status. An approved
+row may have no proof inputs yet, as for row 23. Before that row's
+Linux implementation is written, its amendment must name each needed
+header here. The cell does not replace any platform proof.
+
+| # | Site id | Targets | Foreign item, as the OS documents it | Linked from | Declared | `unsafe` blocks | Linux ABI headers |
+|---|---|---|---|---|---|---|---|
+| 1 | `linux-clock` | Linux, glibc and musl | `int clock_gettime(clockid_t, struct timespec *)`, called with `CLOCK_BOOTTIME` and `CLOCK_MONOTONIC` only | the C library | `unsafe fn` | one, in one private function taking the clock id | `time.h` |
+| 2 | `darwin-clock` | macOS | `uint64_t clock_gettime_nsec_np(clockid_t)`, called with `CLOCK_MONOTONIC_RAW` and `CLOCK_UPTIME_RAW` only | libSystem | `safe fn` | none | `none` |
+| 3 | `windows-tick` | Windows | `ULONGLONG GetTickCount64(void)` | Kernel32.dll | `safe fn` | none | `none` |
+| 4 | `windows-awake` | Windows | `VOID QueryUnbiasedInterruptTimePrecise(PULONGLONG)` | see point 5.4 | `unsafe fn` | one | `none` |
+| 5 | `darwin-oslog` | macOS | two functions of IronAFS's own C shim (point 4): create the log handles once; emit one entry (level, event id, public text, private text) | the shim, linked statically; it calls libSystem | `unsafe fn` | one per function | `none` |
+| 6 | `windows-dns` | Windows | `DNS_STATUS DnsQueryEx(PDNS_QUERY_REQUEST, PDNS_QUERY_RESULT, PDNS_QUERY_CANCEL)`, called asynchronously with a completion routine and a cancel handle (point 3.2); `DNS_STATUS DnsCancelQuery(PDNS_QUERY_CANCEL)`; `VOID DnsFree(PVOID, DNS_FREE_TYPE)`, called with `DnsFreeRecordList` only; one Rust `extern "system"` function passed as the completion routine | Dnsapi.dll | `unsafe fn` | one per call (three); one that takes back the context's reference (`Arc::from_raw`); one per read of memory Windows wrote (the result, a record header, SRV data, MX data, a wide string: five); and two `unsafe impl` (`Send` and `Sync` for the query block) | `none` |
+| 7 | `darwin-dns` | macOS | `DNSServiceQueryRecord`, `DNSServiceRefSockFD`, `DNSServiceProcessResult`, `DNSServiceRefDeallocate`, and `int poll(struct pollfd *, nfds_t, int)` on that one descriptor; one Rust `extern "C"` function passed as the reply callback (point 3.3) | libSystem | `unsafe fn` | one per call (five), and two in the callback (the context, the rdata) | `none` |
+| 8 | `linux-random` | Linux, glibc and musl | `long syscall(long, ...)` called with `SYS_getrandom`, the caller's buffer, a length of at most 256 and flags 0 only, every argument passed at register width | the C library | `unsafe fn` | one | `errno.h`, `unistd.h`, `sys/syscall.h` |
+| 9 | `darwin-random` | macOS | `int SecRandomCopyBytes(SecRandomRef, size_t, void *)` with a NULL `rnd` (`kSecRandomDefault`) only | Security.framework | `unsafe fn` | one | `none` |
+| 10 | `windows-random` | Windows | `NTSTATUS BCryptGenRandom(BCRYPT_ALG_HANDLE, PUCHAR, ULONG, ULONG)` with a NULL handle and `BCRYPT_USE_SYSTEM_PREFERRED_RNG` only | Bcrypt.dll | `unsafe fn` | one | `none` |
+| 11 | `unix-nodump` | Linux, macOS | `int setrlimit(int, const struct rlimit *)` with `RLIMIT_CORE` and `{0, 0}` only; on Linux also `int prctl(int, ...)` with `PR_SET_DUMPABLE` and 0 only, and `PR_GET_DUMPABLE` for the read-back | the C library; libSystem | `unsafe fn` | one per call: one on macOS (`setrlimit`), three on Linux (`setrlimit`, and `prctl` to set and to read back) | `sys/resource.h`, `sys/prctl.h` |
+| 12 | `linux-dontdump` | Linux | `int madvise(void *, size_t, int)` with `MADV_DONTDUMP` only, on the crate's own secret buffers, allocated in safe Rust with 64 KiB alignment and size (sheet 12) | the C library | `unsafe fn` | one | `sys/mman.h` |
+| 13 | `linux-peercred` | Linux | `int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_SOCKET` and `SO_TYPE` (into an `int`, which must be `SOCK_STREAM`), then `SOL_SOCKET` and `SO_PEERCRED` (into a `struct ucred`), only, on a borrowed `UnixStream` | the C library | `unsafe fn` | two (one per option) | `sys/socket.h` |
+| 14 | `linux-fdpass` | Linux, glibc (withheld on musl, sheet 14) | `ssize_t sendmsg(int, const struct msghdr *, int)` and `ssize_t recvmsg(int, struct msghdr *, int)` carrying exactly one `SCM_RIGHTS` descriptor and one data byte, with `MSG_NOSIGNAL` on send and `MSG_CMSG_CLOEXEC` on receive; each received descriptor becomes an `OwnedFd` at once (L7, point 1), a pidfd the kernel installed with `SCM_PIDFD` included, which is then closed (sheet 14) | the C library | `unsafe fn` | one per call (two), and one that adopts a received descriptor (`OwnedFd::from_raw_fd`) | `sys/socket.h`, `sys/uio.h` |
+| 15 | `linux-mount` | Linux | `int mount(const char *, const char *, const char *, unsigned long, const void *)` for type `fuse` with `MS_NOSUID` and `MS_NODEV`, and the options `fd=`, `rootmode=`, `user_id=`, `group_id=` and `allow_other` (L7, point 1) | the C library | `unsafe fn` | one | `none` |
+| 16 | `darwin-peercred` | macOS | `int getsockopt(int, int, int, void *, socklen_t *)` with `SOL_LOCAL` and `LOCAL_PEERCRED` only, on a borrowed `UnixStream`, into a `struct xucred` (C43, point 4; control endpoint) | libSystem | `unsafe fn` | one | `none` |
+| 17 | `windows-pipe-create` | Windows | `CreateNamedPipeW` for the one control pipe, with a `SECURITY_ATTRIBUTES` naming a self-relative security descriptor built in safe Rust; the returned handle adopted as an `OwnedHandle` (C43, point 4) | see point 5.4 | `unsafe fn` | one for the call; one that adopts the handle (`OwnedHandle::from_raw_handle`) | `none` |
+| 18 | `windows-pipe-io` | Windows | overlapped `ConnectNamedPipe`, `ReadFile`, `WriteFile` and `CancelIoEx` on a pipe instance the driver owns (sheet 18); `DisconnectNamedPipe`; and the completion calls of the fixed driver, whose family the driver's own design chooses (sheet 18; an open owner decision, the pipe completion method). No completion routine (`ReadFileEx`, an APC) is used | see point 5.4 | `unsafe fn` | one per call; the count is fixed with the completion family, before code (point 7) | `none` |
+| 19 | `windows-pipe-caller` | Windows | `ImpersonateNamedPipeClient`, `OpenThreadToken` (with `TOKEN_QUERY` and `OpenAsSelf` true only), `RevertToSelf`, `GetTokenInformation` (classes `TokenUser`, `TokenStatistics`, `TokenImpersonationLevel`, `TokenElevationType`, `TokenLinkedToken` only), `CheckTokenMembership` (an explicit token handle and the built-in Administrators SID only), and `GetCurrentThread` (`safe fn`); optionally `GetNamedPipeClientProcessId`, for diagnostics only (C41, point 1) | see point 5.4 | `unsafe fn` (`GetCurrentThread`: `safe fn`) | one per call; one per adopted token handle (two); one per bounded read of a returned token structure or SID | `none` |
+| 20 | `windows-pipe-server` | Windows (in `afs`, the session agents and any token sender) | `GetNamedPipeServerProcessId` (twice), `OpenProcess` with `PROCESS_QUERY_LIMITED_INFORMATION` only, `OpenProcessToken` with `TOKEN_QUERY` only, `GetTokenInformation` (`TokenUser` only) (C43, points 1, 2 and 4) | see point 5.4 | `unsafe fn` | one per call; one per adopted handle (two); one bounded SID read | `none` |
+| 21 | `linux-udp6` | Linux, glibc and musl | `int socket(int, int, int)` with `AF_INET6`, `SOCK_DGRAM \| SOCK_CLOEXEC` and 0 only; `int setsockopt(int, int, int, const void *, socklen_t)` with `IPPROTO_IPV6`, `IPV6_V6ONLY` and the value 1 only; `int bind(int, const struct sockaddr *, socklen_t)` with a wrapper-built `struct sockaddr_in6`; the descriptor adopted as an `OwnedFd` and returned as a `std::net::UdpSocket` (C30, point 1; C34, point 2) | the C library | `unsafe fn` | one per call (three); one that adopts the descriptor (`OwnedFd::from_raw_fd`) | `errno.h`, `sys/socket.h`, `netinet/in.h` |
+| 22 | `linux-statvfs` | Linux, glibc and musl | `int fstatvfs(int, struct statvfs *)` on a borrowed descriptor of the chunk store's directory (C27, point 3) | the C library | `unsafe fn` | one | `sys/statvfs.h` |
+| 23 | `linux-rtnetlink` | Linux, glibc and musl | `socket` with `AF_NETLINK`, `SOCK_RAW \| SOCK_CLOEXEC` and `NETLINK_ROUTE` only; `bind` with a wrapper-built `struct sockaddr_nl` (the fixed group set on the notify socket, none on the request socket); `ssize_t sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t)` to the kernel's address only, with `MSG_DONTWAIT` only; `ssize_t recvmsg(int, struct msghdr *, int)` with `MSG_DONTWAIT` only, a `struct sockaddr_nl` for the sender and `MSG_TRUNC` checked; `int eventfd(unsigned int, int)` with 0 and `EFD_CLOEXEC \| EFD_NONBLOCK` only, for the wake descriptor; `int poll(struct pollfd *, nfds_t, int)` on exactly two entries, one route socket and its wake descriptor, `POLLIN` requested on each, with a timeout of 0 or more only; each descriptor adopted as an `OwnedFd` (C23, point 2; amended 2026-11-22) | the C library | `unsafe fn` | one per call (six); one that adopts a descriptor, a route socket's or the wake descriptor's (one private function) | `none` |
+| 24 | `mem-wipe` | every target | none: no foreign call. `core::ptr::write_volatile` of a zero byte through each `&mut u8` of the caller's slice, then `core::sync::atomic::compiler_fence(SeqCst)` (O28, point 2) | none | none | one (the volatile write, in a loop of safe code) | `none` |
 
 - **The boot clock** is `CLOCK_BOOTTIME`, `CLOCK_MONOTONIC_RAW` and
   `GetTickCount64`. **The awake clock** is `CLOCK_MONOTONIC`,

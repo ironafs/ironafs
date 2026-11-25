@@ -8,12 +8,12 @@
 //! compared with the table in the ADR itself, cell for cell, so the copy
 //! cannot drift from the decision unseen. Each row has a status per
 //! target, *approved* or *implemented*; an implemented row also records the
-//! code it holds: its module, the C headers its declarations come from,
+//! code it holds: its module, the Linux ABI headers checked against its ADR row,
 //! its extern blocks with their functions and `#[link]`, its `unsafe`
 //! blocks, each with its kind and one operation, and its count of `unsafe
 //! impl`s. `check-os` holds the code to exactly that.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::ALLOWLIST;
 use super::scan::ExternItem;
@@ -99,8 +99,7 @@ pub(crate) struct Code {
     /// The module under `src/` that holds every site of the row: the file
     /// `<module>.rs` and the files under `<module>/`.
     pub(crate) module: String,
-    /// The C headers the row's declarations are written from, for the ABI
-    /// check (ADR 0005, point 5.6).
+    /// The mirror of the row's ordered Linux ABI headers cell.
     pub(crate) headers: Vec<String>,
     /// The feature macros the ABI check defines before the headers.
     pub(crate) defines: Vec<String>,
@@ -127,6 +126,17 @@ pub(crate) struct Code {
     /// many `unsafe fn`s it defines and its `unsafe` blocks, each a call as
     /// written with its arguments. `check-os` holds `stand_in.rs` to it.
     pub(crate) stand_in: Option<StandIn>,
+}
+
+impl Code {
+    /// The checked row-specific Linux includes for this proof target.
+    pub(crate) fn headers_for(&self, target: &str) -> &[String] {
+        if target.split('-').nth(2) == Some("linux") {
+            &self.headers
+        } else {
+            &[]
+        }
+    }
 }
 
 /// What a row's Miri stand-in holds.
@@ -171,6 +181,7 @@ pub(crate) struct AdrRow {
     pub(crate) number: String,
     pub(crate) id: String,
     pub(crate) columns: [String; 5],
+    headers: Result<Vec<String>, String>,
 }
 
 /// Reads the copy.
@@ -522,7 +533,7 @@ pub(crate) fn adr_rows(text: &str) -> Vec<AdrRow> {
         ) else {
             continue;
         };
-        if let [targets, foreign, linked, declared, blocks] = rest {
+        if let [targets, foreign, linked, declared, blocks, headers] = rest {
             rows.push(AdrRow {
                 number: number.clone(),
                 id: id.to_owned(),
@@ -533,10 +544,53 @@ pub(crate) fn adr_rows(text: &str) -> Vec<AdrRow> {
                     declared.clone(),
                     blocks.clone(),
                 ],
+                headers: parse_headers_cell(headers),
             });
         }
     }
     rows
+}
+
+fn parse_headers_cell(cell: &str) -> Result<Vec<String>, String> {
+    if cell == "`none`" {
+        return Ok(Vec::new());
+    }
+    let headers = cell
+        .split(", ")
+        .map(|span| {
+            span.strip_prefix('`')
+                .and_then(|name| name.strip_suffix('`'))
+                .map(str::to_owned)
+                .ok_or_else(|| format!("expected a code span, found {span:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_headers(&headers)?;
+    Ok(headers)
+}
+
+fn validate_headers(headers: &[String]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for header in headers {
+        let valid = std::path::Path::new(header)
+            .extension()
+            .is_some_and(|ext| ext == "h")
+            && header.split('/').all(|component| {
+                let mut bytes = component.bytes();
+                bytes
+                    .next()
+                    .is_some_and(|first| first.is_ascii_alphanumeric() || first == b'_')
+                    && bytes.all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')
+                    })
+            });
+        if !valid {
+            return Err(format!("invalid header name {header:?}"));
+        }
+        if !seen.insert(header) {
+            return Err(format!("duplicate header {header:?}"));
+        }
+    }
+    Ok(())
 }
 
 /// The trimmed cells of a Markdown table line, or nothing if it is not one.
@@ -585,9 +639,45 @@ pub(crate) fn problems(inventory: &Inventory, adr: &str) -> Vec<String> {
                 row.number, row.id, adr_row.number, adr_row.id
             ));
         }
+        found.extend(header_problems(row, adr_row));
     }
     for row in &inventory.rows {
         found.extend(row_problems(row));
+    }
+    found
+}
+
+fn header_problems(row: &Row, adr_row: &AdrRow) -> Vec<String> {
+    let mut found = Vec::new();
+    let site = format!("row {} ({})", adr_row.number, adr_row.id);
+    let mirror = row
+        .code
+        .as_ref()
+        .map_or(&[][..], |code| code.headers.as_slice());
+    let mirror_problem = validate_headers(mirror);
+    if let Err(problem) = &mirror_problem {
+        found.push(format!("sites.json {site} code.headers: {problem}"));
+    }
+    let approved = match &adr_row.headers {
+        Ok(approved) => approved,
+        Err(problem) => {
+            found.push(format!("ADR {site} Linux ABI headers: {problem}"));
+            return found;
+        }
+    };
+    let [targets, _, _, declared, _] = &adr_row.columns;
+    let covers_linux =
+        targets == "every target" || targets.split(", ").any(|scope| scope == "Linux");
+    if !approved.is_empty() && (!covers_linux || declared == "none") {
+        found.push(format!(
+            "ADR {site} Linux ABI headers: expected `none` for a row without a Linux foreign item"
+        ));
+    }
+    if mirror_problem.is_ok() && approved != mirror {
+        found.push(format!(
+            "sites.json {site} code.headers differs from the ADR's Linux ABI headers: \
+             expected {approved:?}, found {mirror:?}"
+        ));
     }
     found
 }

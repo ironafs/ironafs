@@ -391,3 +391,189 @@ fn a_row_that_adopts_one_descriptor_holds_exactly_one_adoption() {
         }
     }
 }
+
+#[test]
+fn linux_abi_headers_match_the_adr_in_order_and_case() {
+    let mut inventory = parse(&inventory_text()).unwrap();
+    let index = inventory
+        .rows
+        .iter()
+        .position(|row| row.id == "linux-random")
+        .unwrap();
+    let headers = inventory.rows[index].code.as_ref().unwrap().headers.clone();
+    assert!(headers.iter().any(|header| header == "sys/syscall.h"));
+    let adr = adr_text();
+    assert_eq!(problems(&inventory, &adr), [] as [String; 0]);
+
+    let mut missing = headers.clone();
+    missing.retain(|header| header != "sys/syscall.h");
+    let mut extra = headers.clone();
+    extra.push("extra.h".to_owned());
+    let mut reordered = headers.clone();
+    reordered.reverse();
+    let case_changed = headers
+        .iter()
+        .map(|header| header.replace("syscall.h", "Syscall.h"))
+        .collect();
+    for changed in [missing, extra, reordered, case_changed] {
+        inventory.rows[index].code.as_mut().unwrap().headers = changed.clone();
+        let found = problems(&inventory, &adr);
+        assert!(
+            found.iter().any(|problem| {
+                problem.contains("row 8 (linux-random)")
+                    && problem.contains("Linux ABI headers")
+                    && problem.contains("sys/syscall.h")
+            }),
+            "{changed:?}: {found:?}"
+        );
+    }
+}
+
+fn with_adr_headers(adr: &str, site: &str, cell: &str) -> String {
+    let row = adr
+        .lines()
+        .find(|line| line.starts_with("| ") && line.contains(&format!(" | `{site}` | ")))
+        .unwrap();
+    let (rest, _) = row.strip_suffix(" |").unwrap().rsplit_once(" | ").unwrap();
+    adr.replacen(row, &format!("{rest} | {cell} |"), 1)
+}
+
+#[test]
+fn adr_header_cells_require_the_exact_code_span_list_syntax() {
+    let inventory = parse(&inventory_text()).unwrap();
+    let adr = adr_text();
+    for cell in [
+        "",
+        "none",
+        "time.h",
+        "``",
+        "`time.h`,",
+        "`time.h`, ",
+        "`time.h`,`sys/types.h`",
+        "`time.h`,  `sys/types.h`",
+        "`/time.h`",
+        "`sys//time.h`",
+        "`../time.h`",
+        "`sys/.time.h`",
+        "`sys/time.h/`",
+        "`sys/time.H`",
+        "`tíme.h`",
+        "`sys\\time.h`",
+    ] {
+        let changed = with_adr_headers(&adr, "linux-clock", cell);
+        let found = problems(&inventory, &changed);
+        assert!(
+            found
+                .iter()
+                .any(|problem| problem.starts_with("ADR row 1 (linux-clock) Linux ABI headers:")),
+            "{cell:?}: {found:?}"
+        );
+    }
+    let valid = ["_linux-v2.1/abi-types.h".to_owned()];
+    assert_eq!(
+        super::parse_headers_cell("`_linux-v2.1/abi-types.h`"),
+        Ok(valid.to_vec())
+    );
+}
+
+#[test]
+fn both_header_lists_are_validated_independently() {
+    let adr = adr_text();
+    for (headers, diagnostic) in [
+        (vec!["time.h", "time.h"], "duplicate header"),
+        (vec!["../time.h"], "invalid header name"),
+    ] {
+        let cell = headers
+            .iter()
+            .map(|header| format!("`{header}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let changed_adr = with_adr_headers(&adr, "linux-clock", &cell);
+        let mut inventory = parse(&inventory_text()).unwrap();
+        let mut changed_inventory = inventory.clone();
+        changed_inventory.rows[0].code.as_mut().unwrap().headers =
+            headers.into_iter().map(str::to_owned).collect();
+
+        let originals = problems(&inventory, &adr);
+        let only_adr = problems(&inventory, &changed_adr);
+        let only_mirror = problems(&changed_inventory, &adr);
+        let both = problems(&changed_inventory, &changed_adr);
+        assert_eq!(originals, [] as [String; 0]);
+        assert_eq!(only_adr.len(), 1);
+        assert_eq!(only_mirror.len(), 1);
+        assert!(only_adr[0].starts_with("ADR row 1 (linux-clock) Linux ABI headers:"));
+        assert!(only_mirror[0].starts_with("sites.json row 1 (linux-clock) code.headers:"));
+        assert!(only_adr[0].contains(diagnostic));
+        assert!(only_mirror[0].contains(diagnostic));
+        assert_eq!(both, [only_mirror[0].clone(), only_adr[0].clone()]);
+
+        inventory.rows[0].columns[2] = "a different library".to_owned();
+        assert!(problems(&inventory, &adr)[0].contains("the copy keeps the table's text"));
+    }
+}
+
+#[test]
+fn none_means_an_empty_mirror_even_for_a_row_without_code() {
+    let mut inventory = parse(&inventory_text()).unwrap();
+    let adr = adr_text();
+    let route = inventory
+        .rows
+        .iter()
+        .find(|row| row.id == "linux-rtnetlink")
+        .unwrap();
+    assert!(route.code.is_none());
+    let wipe = inventory
+        .rows
+        .iter_mut()
+        .find(|row| row.id == "mem-wipe")
+        .unwrap();
+    let headers = &mut wipe.code.as_mut().unwrap().headers;
+    assert_eq!(*headers, [] as [String; 0]);
+    assert_eq!(problems(&inventory, &adr), [] as [String; 0]);
+
+    let changed_adr = with_adr_headers(&adr, "linux-rtnetlink", "`linux/rtnetlink.h`");
+    let found = problems(&inventory, &changed_adr);
+    assert_eq!(found.len(), 1);
+    assert!(found[0].contains("row 23 (linux-rtnetlink)"));
+    assert!(found[0].contains("expected [\"linux/rtnetlink.h\"], found []"));
+
+    let wipe = inventory
+        .rows
+        .iter_mut()
+        .find(|row| row.id == "mem-wipe")
+        .unwrap();
+    wipe.code
+        .as_mut()
+        .unwrap()
+        .headers
+        .push("string.h".to_owned());
+    let found = problems(&inventory, &adr);
+    assert_eq!(found.len(), 1);
+    assert!(found[0].contains("row 24 (mem-wipe)"));
+    assert!(found[0].contains("expected [], found [\"string.h\"]"));
+
+    let changed_adr = with_adr_headers(&adr, "mem-wipe", "`string.h`");
+    let found = problems(&inventory, &changed_adr);
+    assert_eq!(found.len(), 1);
+    assert!(found[0].contains("row 24 (mem-wipe) Linux ABI headers: expected `none`"));
+}
+
+#[test]
+fn matching_headers_cannot_extend_a_non_linux_adr_target_scope() {
+    let mut inventory = parse(&inventory_text()).unwrap();
+    let row = inventory
+        .rows
+        .iter_mut()
+        .find(|row| row.id == "unix-nodump")
+        .unwrap();
+    assert_eq!(row.columns[0], "Linux, macOS");
+    assert_eq!(
+        row.code.as_ref().unwrap().headers,
+        ["sys/resource.h", "sys/prctl.h"]
+    );
+    row.columns[0] = "macOS".to_owned();
+    let adr = adr_text().replace(" | Linux, macOS | ", " | macOS | ");
+    let found = problems(&inventory, &adr);
+    assert_eq!(found.len(), 1);
+    assert!(found[0].contains("row 11 (unix-nodump) Linux ABI headers: expected `none`"));
+}
