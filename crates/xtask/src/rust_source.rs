@@ -63,9 +63,9 @@ impl fmt::Display for LexError {
     }
 }
 
-/// A path that starts at the standard library, as written in the source.
+/// A path named in the source.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct StdPath {
+pub(crate) struct SourcePath {
     pub(crate) path: String,
     pub(crate) line: usize,
 }
@@ -473,18 +473,24 @@ impl Lexer {
 /// expanded: `use std::{fs, net::*}` gives `std::fs` and `std::net::*`, and
 /// `self` gives the path it ends. A `std` that no `::` follows is listed as
 /// `std`.
-pub(crate) fn std_paths(tokens: &[Token]) -> Vec<StdPath> {
-    paths(tokens)
+pub(crate) fn std_paths(tokens: &[Token]) -> Vec<SourcePath> {
+    named_paths(tokens, "std")
+}
+
+/// Lists imports and qualified paths starting at `root`. A bare root
+/// is included because a macro can use it to build a path.
+pub(crate) fn named_paths(tokens: &[Token], root: &str) -> Vec<SourcePath> {
+    paths(tokens, Some(root))
         .into_iter()
-        .filter(|(found, _)| found.path == "std" || found.path.starts_with("std::"))
+        .filter(|(found, _)| found.path.split("::").next() == Some(root))
         .map(|(found, _)| found)
         .collect()
 }
 
 /// Lists every path a `use` or `extern crate` item names, whatever crate it
 /// starts at, with use trees expanded as in `std_paths`.
-pub(crate) fn use_paths(tokens: &[Token]) -> Vec<StdPath> {
-    paths(tokens)
+pub(crate) fn use_paths(tokens: &[Token]) -> Vec<SourcePath> {
+    paths(tokens, None)
         .into_iter()
         .filter_map(|(found, imported)| imported.then_some(found))
         .collect()
@@ -612,8 +618,9 @@ fn attributes_before(tokens: &[Token], at: usize) -> Vec<String> {
 }
 
 /// Every path of `use` and `extern crate` items, and every expression path
-/// that starts at `std`, each marked with whether an item imported it.
-fn paths(tokens: &[Token]) -> Vec<(StdPath, bool)> {
+/// that starts at the requested root, each marked with whether an item
+/// imported it.
+fn paths(tokens: &[Token], root: Option<&str>) -> Vec<(SourcePath, bool)> {
     let mut paths = Vec::new();
     let mut index = 0;
     while let Some(token) = tokens.get(index) {
@@ -621,7 +628,7 @@ fn paths(tokens: &[Token]) -> Vec<(StdPath, bool)> {
         let mut found = Vec::new();
         let mut imported = true;
         index = match &token.kind {
-            TokenKind::Ident(word) if word == "use" => {
+            TokenKind::Ident(word) if word == "use" && !token.raw => {
                 let start = index + 1;
                 let start = if is(tokens, start, &TokenKind::PathSep) {
                     start + 1
@@ -632,18 +639,21 @@ fn paths(tokens: &[Token]) -> Vec<(StdPath, bool)> {
             }
             TokenKind::Ident(word)
                 if word == "extern"
+                    && !token.raw
                     && matches!(tokens.get(index + 1), Some(Token { kind: TokenKind::Ident(next), .. }) if next == "crate") =>
             {
                 use_tree(tokens, index + 2, String::new(), &mut found)
             }
-            TokenKind::Ident(word) if word == "std" && starts_a_path(tokens, index) => {
+            TokenKind::Ident(word)
+                if root == Some(word.as_str()) && starts_a_path(tokens, index) =>
+            {
                 imported = false;
                 if is(tokens, index + 1, &TokenKind::PathSep) {
                     expression_path(tokens, index, &mut found)
                 } else {
-                    // A bare `std`, as a macro argument or before a macro
+                    // A bare root, as a macro argument or before a macro
                     // fragment, can build any path out of sight.
-                    found.push("std".to_owned());
+                    found.push(word.clone());
                     index + 1
                 }
             }
@@ -652,7 +662,7 @@ fn paths(tokens: &[Token]) -> Vec<(StdPath, bool)> {
         paths.extend(
             found
                 .into_iter()
-                .map(|path| (StdPath { path, line }, imported)),
+                .map(|path| (SourcePath { path, line }, imported)),
         );
     }
     paths
@@ -714,10 +724,39 @@ fn starts_a_path(tokens: &[Token], index: usize) -> bool {
     };
     match &before.kind {
         TokenKind::Punct('.') => false,
-        TokenKind::PathSep => !index
-            .checked_sub(2)
-            .and_then(|before| tokens.get(before))
-            .is_some_and(|token| matches!(token.kind, TokenKind::Ident(_) | TokenKind::Punct('>'))),
+        TokenKind::PathSep => {
+            let stem = index.checked_sub(2).and_then(|at| tokens.get(at));
+            match stem.map(|token| &token.kind) {
+                // These keywords can precede an absolute path, as in
+                // `return ::std::...`. A raw keyword can be a path segment.
+                Some(TokenKind::Ident(word)) => {
+                    stem.is_some_and(|token| !token.raw)
+                        && matches!(
+                            word.as_str(),
+                            "as" | "break"
+                                | "const"
+                                | "dyn"
+                                | "for"
+                                | "if"
+                                | "impl"
+                                | "in"
+                                | "let"
+                                | "match"
+                                | "mut"
+                                | "return"
+                                | "while"
+                                | "yield"
+                        )
+                }
+                // An arrow can be followed by an absolute path too, as
+                // in a return type or a match arm.
+                Some(TokenKind::Punct('>')) => matches!(
+                    index.checked_sub(3).and_then(|at| punct(tokens.get(at))),
+                    Some('-' | '=')
+                ),
+                _ => true,
+            }
+        }
         _ => true,
     }
 }
@@ -790,6 +829,11 @@ fn use_tree(
                         None => return index,
                     }
                 }
+            }
+            Some(TokenKind::Punct('$')) if !prefix.is_empty() => {
+                // A macro fragment can select any item under the prefix.
+                found.push(prefix);
+                return index + 1;
             }
             _ => {
                 if named {

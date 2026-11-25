@@ -240,6 +240,58 @@ fn library_names_hold_for_every_cfg() {
 }
 
 #[test]
+fn library_names_refuse_other_test_support_exports() {
+    let source = "use ironafs_test_support::SeededClock;\n\
+                  use {core::mem, ironafs_test_support::{Property, SeededClock as Clock}};\n\
+                  use ::ironafs_test_support::{Source, self as support};\n\
+                  use {::ironafs_test_support::SeededRng as Rng};\n\
+                  use ironafs_test_support::*;\n\
+                  use ironafs_test_support as support;\n\
+                  type Clock = ::ironafs_test_support::SeededClock;\n\
+                  let clock = r#ironafs_test_support::SeededClock::from_seed(1);\n\
+                  return ::ironafs_test_support::SeededClock::from_seed(1);\n\
+                  macro_rules! helper { ($name:ident) => { ironafs_test_support::$name }; }\n\
+                  helper!(ironafs_test_support);\n\
+                  macro_rules! import { ($Property:ident) => { use ironafs_test_support::{$Property}; }; }\n\
+                  fn clock() -> ::ironafs_test_support::SeededClock { loop {} }\n\
+                  match seed { 1 => ::ironafs_test_support::SeededClock::from_seed(1), _ => clock() };\n";
+    let expected = [
+        (1, "ironafs_test_support::SeededClock"),
+        (2, "ironafs_test_support::SeededClock"),
+        (3, "ironafs_test_support"),
+        (4, "ironafs_test_support::SeededRng"),
+        (5, "ironafs_test_support::*"),
+        (6, "ironafs_test_support"),
+        (7, "ironafs_test_support::SeededClock"),
+        (8, "ironafs_test_support::SeededClock::from_seed"),
+        (9, "ironafs_test_support::SeededClock::from_seed"),
+        (10, "ironafs_test_support"),
+        (11, "ironafs_test_support"),
+        (12, "ironafs_test_support"),
+        (13, "ironafs_test_support::SeededClock"),
+        (14, "ironafs_test_support::SeededClock::from_seed"),
+    ];
+    assert_eq!(
+        names(source, None),
+        expected.map(|(line, name)| (line, name.into()))
+    );
+}
+
+#[test]
+fn library_names_allow_property_source_and_unrelated_names() {
+    let source = "use ironafs_test_support::{Property, Source as Draws};\n\
+                  use {::ironafs_test_support::Source as OtherDraws};\n\
+                  let _ = Property::new(\"example\");\n\
+                  let _ = Draws::from_seed(1);\n\
+                  let _ = ::ironafs_test_support::Source::from_seed(1);\n\
+                  use crate::ironafs_test_support::{SeededClock, Source};\n\
+                  type Clock = other::ironafs_test_support::SeededClock;\n\
+                  let _ = fixture.ironafs_test_support;\n\
+                  let _ = SeededClock::from_seed(1);\n";
+    assert_eq!(names(source, None), []);
+}
+
+#[test]
 fn library_names_refuse_macro_names_anywhere() {
     let source = "#![no_std]\n\
                   macro_rules! pull { ($bang:tt $name:ident) => { $name $bang(\"x\"); }; }\n\
