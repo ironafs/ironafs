@@ -7,6 +7,8 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
 
+use crate::abi::{Mode, legacy_target};
+
 #[cfg(test)]
 mod tests;
 
@@ -37,6 +39,7 @@ pub(super) enum Task {
     CheckAbi {
         self_test: bool,
         target: Option<String>,
+        mode: Mode,
     },
     CheckWipe {
         self_test: bool,
@@ -108,7 +111,7 @@ impl fmt::Display for UsageError {
         }?;
         write!(
             formatter,
-            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-fuzz-deny [--self-test] | check-grants [--self-test] | check-pure [--self-test] | check-seams [--self-test] | check-os [--self-test] | check-abi [--self-test | --target <triple>] | check-wipe [--self-test] | fuzz [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file] | cell pin"
+            "\nusage: cargo xtask check | check-bans [--self-test] | check-deps [--self-test] | check-fuzz-deny [--self-test] | check-grants [--self-test] | check-pure [--self-test] | check-seams [--self-test] | check-os [--self-test] | check-abi [--self-test | --target <triple> [--legacy-glibc-2-28]] | check-wipe [--self-test] | fuzz [--self-test] | hooks install [--force] | hooks uninstall | trailers pr | trailers commit <file> | trailers main [file] | cell pin"
         )
     }
 }
@@ -170,24 +173,52 @@ fn parse_self_test(arguments: &mut impl Iterator<Item = OsString>) -> Result<boo
 }
 
 fn parse_check_abi(arguments: &mut impl Iterator<Item = OsString>) -> Result<Task, UsageError> {
+    let legacy = OsStr::new("--legacy-glibc-2-28");
     match arguments.next() {
         None => Ok(Task::CheckAbi {
             self_test: false,
             target: None,
+            mode: Mode::Complete,
         }),
         Some(argument) if argument == OsStr::new("--self-test") => Ok(Task::CheckAbi {
             self_test: true,
             target: None,
+            mode: Mode::Complete,
         }),
-        Some(argument) if argument == OsStr::new("--target") => {
+        Some(argument) if argument == OsStr::new("--target") || argument == legacy => {
+            let legacy_first = argument == legacy;
+            if legacy_first {
+                let option = arguments.next().ok_or(UsageError::MissingTarget)?;
+                if option != OsStr::new("--target") {
+                    return Err(UsageError::UnexpectedArgument(option));
+                }
+            }
             let target = arguments
                 .next()
                 .ok_or(UsageError::MissingTarget)?
                 .into_string()
                 .map_err(UsageError::UnexpectedArgument)?;
+            let legacy_selected = if legacy_first {
+                true
+            } else {
+                match arguments.next() {
+                    Some(option) if option == legacy => true,
+                    Some(option) => return Err(UsageError::UnexpectedArgument(option)),
+                    None => false,
+                }
+            };
+            let mode = if legacy_selected {
+                if !legacy_target(&target) {
+                    return Err(UsageError::UnexpectedArgument(target.into()));
+                }
+                Mode::LegacyGlibc228
+            } else {
+                Mode::Complete
+            };
             Ok(Task::CheckAbi {
                 self_test: false,
                 target: Some(target),
+                mode,
             })
         }
         Some(argument) => Err(UsageError::UnexpectedArgument(argument)),

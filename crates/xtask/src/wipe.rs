@@ -28,14 +28,10 @@
 //! nothing on that target and it fails. A target whose standard library is
 //! not installed is reported MISSING: `mem-wipe` does not ship there.
 //!
-//! **The profile, as compiled.** Copying the table is not trusted on its
-//! own: TOML can set release settings elsewhere (a `[profile.release.*]`
-//! table, spaced or dotted keys) that a copy of one table would drop. So
-//! on each target the check also builds `ironafs-os` in the workspace
-//! itself under `--release`, reads the codegen options (`-C`) cargo passes
-//! to rustc there, and requires the harness's build to pass exactly those,
-//! both to `ironafs-os` and to the harness crate that `wipe` is inlined
-//! into. Any setting the copy dropped or changed fails the target.
+//! Workspace library, harness and binary builds are compared using the
+//! pinned compiler's actual arguments. The binary probe stops before linking
+//! and refuses LTO modes that require a linked harness. Fresh assembly shards
+//! are read only after the emitting invocation matches the release settings.
 //!
 //! `--self-test` runs the same builds on the clean harness, which must
 //! pass, and on planted regressions (`wipe` not inlined, too few zero
@@ -45,14 +41,19 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::metadata::{self, Workspace};
+use crate::Error;
+use crate::metadata;
 use crate::os::{self, ALLOWLIST};
-use crate::pure::{CLEARED_ENVIRONMENT, first_error};
-use crate::{Command, Error};
 
+use capture::{Stage, Tools, check_externs, is_extern_of, refusal};
+use shards::Symbols;
+
+pub(crate) mod capture;
+mod options;
 mod self_test;
+mod shards;
 
 #[cfg(test)]
 mod tests;
@@ -126,7 +127,7 @@ impl Arch {
 
 /// The `[profile.release]` table of a manifest, up to the next table.
 /// What it misses is caught by comparing the compiled options
-/// ([`profile_departures`]).
+/// in `release_assembly`.
 pub(crate) fn profile_table(manifest: &str) -> Option<String> {
     let mut lines = manifest.lines();
     lines
@@ -158,48 +159,30 @@ fn label(line: &str) -> Option<&str> {
 /// crate holding `name` with its length before it, as both Rust manglings
 /// write it, and no further name character after it.
 fn names(symbol: &str, name: &str) -> bool {
-    if !symbol.contains(HARNESS) {
-        return false;
+    let prefix = format!("{}{HARNESS}{}{name}", HARNESS.len(), name.len());
+    if let Some(path) = symbol.strip_prefix("_RNvC") {
+        let path = if let Some(disambiguator) = path.strip_prefix('s') {
+            let Some((_, path)) = disambiguator.split_once('_') else {
+                return false;
+            };
+            path
+        } else {
+            path
+        };
+        return path
+            .strip_prefix(&prefix)
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'));
     }
-    let segment = format!("{}{name}", name.len());
-    symbol.match_indices(segment.as_str()).any(|(at, _)| {
-        !symbol
-            .get(at + segment.len()..)
-            .and_then(|after| after.chars().next())
-            .is_some_and(|next| next.is_ascii_alphabetic() || next == '_')
-    })
-}
-
-/// The lines of the function whose symbol carries `name` (length-prefixed,
-/// as both Rust manglings write it), from after its label to its end. A
-/// function the compiler emitted as an alias of another (`a = b`, when
-/// both compile to the same code) has the other's lines.
-pub(crate) fn body<'a>(asm: &'a str, name: &str) -> Option<Vec<&'a str>> {
-    let mut lines = asm.lines();
-    if lines
-        .by_ref()
-        .find(|line| label(line).is_some_and(|symbol| names(symbol, name)))
-        .is_none()
-    {
-        let target = asm.lines().find_map(|line| {
-            let (alias, target) = line.split_once(" = ")?;
-            (!alias.starts_with(char::is_whitespace) && names(alias, name)).then_some(target.trim())
-        })?;
-        lines = asm.lines();
-        lines.by_ref().find(|line| label(line) == Some(target))?;
-    }
-    Some(
-        lines
-            .take_while(|line| {
-                let ends_function = line.starts_with(".Lfunc_end")
-                    || line.trim_start().starts_with(".size")
-                    || (!line.starts_with(char::is_whitespace)
-                        && !line.starts_with(".L")
-                        && line.ends_with(':'));
-                !ends_function
-            })
-            .collect(),
-    )
+    symbol
+        .strip_prefix("_ZN")
+        .and_then(|path| path.strip_prefix(&prefix))
+        .and_then(|suffix| suffix.strip_prefix("17h"))
+        .and_then(|suffix| suffix.split_once('E'))
+        .is_some_and(|(hash, suffix)| {
+            hash.len() == 16
+                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && (suffix.is_empty() || suffix.starts_with('.'))
+        })
 }
 
 /// How many lines of `lines` store a zero byte to memory.
@@ -253,12 +236,16 @@ pub(crate) fn normalized(lines: &[&str]) -> Vec<String> {
 }
 
 /// Judges one target's assembly; returns every problem found.
-pub(crate) fn judge(asm: &str, arch: Arch) -> Result<(), Vec<String>> {
+fn judge<'a>(shards: impl IntoIterator<Item = &'a str>, arch: Arch) -> Result<(), Vec<String>> {
+    let symbols = Symbols::index(shards).map_err(|problem| vec![problem.to_owned()])?;
     let mut problems = Vec::new();
     for case in ["wiped_live", "wiped_dead"] {
-        let Some(lines) = body(asm, case) else {
-            problems.push(format!("no function `{case}` in the assembly"));
-            continue;
+        let lines = match symbols.body(case) {
+            Ok(lines) => lines,
+            Err(problem) => {
+                problems.push(format!("`{case}`: {problem}"));
+                continue;
+            }
         };
         // `10ironafs_os` is the crate's name as both manglings write it.
         if lines.iter().any(|line| line.contains("10ironafs_os")) {
@@ -274,9 +261,13 @@ pub(crate) fn judge(asm: &str, arch: Arch) -> Result<(), Vec<String>> {
             ));
         }
     }
-    match (body(asm, "plain_dead"), body(asm, "untouched_dead")) {
-        (Some(plain), Some(untouched)) => {
-            if normalized(&plain) != normalized(&untouched) {
+    match (symbols.body("plain_dead"), symbols.body("untouched_dead")) {
+        (Ok(plain), Ok(untouched)) => {
+            let plain = normalized(&plain);
+            let untouched = normalized(&untouched);
+            if plain.is_empty() || untouched.is_empty() {
+                problems.push("assembly control has no instructions".to_owned());
+            } else if plain != untouched {
                 problems.push(
                     "the control `plain_dead` (a plain overwrite, the fence kept) compiles to \
                      more than `untouched_dead`: its stores survive, so the dead-buffer case \
@@ -285,7 +276,9 @@ pub(crate) fn judge(asm: &str, arch: Arch) -> Result<(), Vec<String>> {
                 );
             }
         }
-        _ => problems.push("no control functions in the assembly".to_owned()),
+        (Err(problem), _) | (_, Err(problem)) => {
+            problems.push(format!("assembly control: {problem}"));
+        }
     }
     if problems.is_empty() {
         Ok(())
@@ -294,175 +287,65 @@ pub(crate) fn judge(asm: &str, arch: Arch) -> Result<(), Vec<String>> {
     }
 }
 
-/// The codegen options (`-C`) of the rustc call cargo's verbose output
-/// shows for the crate `name`, sorted, without those that only name the
-/// build (`metadata`, `extra-filename`, `incremental`); `None` if no call
-/// for it is shown.
-pub(crate) fn codegen(log: &str, name: &str) -> Option<Vec<String>> {
-    let marker = format!("--crate-name {name} ");
-    let line = log
-        .lines()
-        .find(|line| line.contains("Running `") && line.contains(&marker))?;
-    let mut words = line.split_whitespace();
-    let mut options = Vec::new();
-    while let Some(word) = words.next() {
-        let value = if word == "-C" {
-            words.next()
-        } else {
-            word.strip_prefix("-C")
-        };
-        if let Some(value) = value.filter(|value| !value.is_empty()) {
-            let value = value.trim_end_matches('`');
-            if !["metadata=", "extra-filename=", "incremental="]
-                .iter()
-                .any(|prefix| value.starts_with(prefix))
-            {
-                options.push(value.to_owned());
-            }
-        }
-    }
-    options.sort();
-    Some(options)
+struct Assembly {
+    shards: Vec<String>,
+    codegen_units: u32,
+    local_thin_lto: bool,
 }
 
-/// How the harness build departs from the shipping profile: the options
-/// cargo passed to `ironafs-os` in the workspace's own release build
-/// (`shipped`) against those it passed, in the harness build (`harness`),
-/// to `ironafs-os` and to the harness crate.
-pub(crate) fn profile_departures(shipped: &str, harness: &str) -> Vec<String> {
-    let Some(expected) = codegen(shipped, "ironafs_os") else {
-        return vec!["the workspace's release build of ironafs-os showed no rustc call".to_owned()];
-    };
-    let mut problems = Vec::new();
-    for name in ["ironafs_os", HARNESS] {
-        match codegen(harness, name) {
-            Some(found) if found == expected => {}
-            Some(found) => problems.push(format!(
-                "the harness build passes {name} the codegen options {found:?}, where the \
-                 workspace's release build passes ironafs-os {expected:?}: the harness is not \
-                 built under the shipping profile"
-            )),
-            None => problems.push(format!("the harness build showed no rustc call for {name}")),
-        }
-    }
-    problems
-}
-
-/// Builds `ironafs-os` in the workspace itself, under its release profile,
-/// for `target` in a fresh `build_dir`; returns cargo's verbose output, or
-/// why it did not build. `--locked`, as the other checks build workspace
-/// crates: a stale lock file fails the build instead of being rewritten.
-fn shipped_build(
-    workspace: &Workspace,
-    build_dir: &Path,
-    target: &str,
-) -> Result<Result<String, String>, Error> {
-    let mut command = Command::new("cargo");
-    command
-        .current_dir(&workspace.root)
-        .args([
-            "build",
-            "--release",
-            "--lib",
-            "--locked",
-            "--offline",
-            "--verbose",
-            "-p",
-            os::CRATE,
-        ])
-        .args(["--target", target])
-        .arg("--target-dir")
-        .arg(build_dir);
-    for name in CLEARED_ENVIRONMENT {
-        command.env_remove(name);
-    }
-    let output = command.output().map_err(Error::io("cargo build"))?;
-    if !output.status.success() {
-        return Ok(Err(format!(
-            "ironafs-os did not build under the workspace's release profile: {}",
-            first_error(&output.stderr)
-        )));
-    }
-    Ok(Ok(String::from_utf8_lossy(&output.stderr).into_owned()))
-}
-
-/// Builds the harness for `target` and returns its assembly and cargo's
-/// verbose output, or why it could not be built. Not `--locked`: the
-/// harness is its own workspace in a fresh directory, with no lock file to
-/// keep, and its one dependency is `ironafs-os` by path, which has none; the
-/// lock file cargo writes there is removed with the directory.
-fn assembly(
-    workspace: &Workspace,
+/// Builds a target's release library, probes the shipped binary, then emits
+/// assembly from the harness with the library's effective release CGU count.
+fn release_assembly(
+    tools: &Tools,
+    root: &Path,
     harness: &Path,
-    build_dir: &Path,
+    dir: &Path,
     target: &str,
-) -> Result<Result<(String, String), String>, Error> {
-    let mut command = Command::new("cargo");
-    command
-        .current_dir(&workspace.root)
-        .args(["rustc", "--release", "--lib", "--offline", "--verbose"])
-        .arg("--manifest-path")
-        .arg(harness.join("Cargo.toml"))
-        .args(["--target", target])
-        .arg("--target-dir")
-        .arg(build_dir)
-        .args(["--", "--emit", "asm"]);
-    for name in CLEARED_ENVIRONMENT {
-        command.env_remove(name);
-    }
-    let output = command.output().map_err(Error::io("cargo rustc"))?;
-    if !output.status.success() {
-        return Ok(Err(format!(
-            "the harness did not build: {}",
-            first_error(&output.stderr)
-        )));
-    }
-    let log = String::from_utf8_lossy(&output.stderr).into_owned();
-    let mut found = Vec::new();
-    find_assembly(&build_dir.join(target), &mut found)?;
-    match found.as_slice() {
-        [file] => fs::read_to_string(file)
-            .map(|asm| Ok((asm, log)))
-            .map_err(Error::path_io("read assembly", file)),
-        _ => Ok(Err(format!(
-            "expected one assembly file of the harness, found {}",
-            found.len()
-        ))),
-    }
-}
+) -> Result<Assembly, Error> {
+    let shipped = tools.build(root, dir, target, Stage::Library, |command| {
+        command.args(["--locked", "--lib", "-p", os::CRATE]);
+    })?;
+    let library = shipped
+        .get("ironafs_os")
+        .ok_or_else(|| refusal("no workspace ironafs-os release invocation"))?;
+    check_externs(&shipped)?;
 
-/// Every `.s` file of the harness under `dir`.
-fn find_assembly(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), Error> {
-    let entries = fs::read_dir(dir).map_err(Error::path_io("list build directory", dir))?;
-    for entry in entries {
-        let path = entry
-            .map_err(Error::path_io("list build directory", dir))?
-            .path();
-        if path.is_dir() {
-            find_assembly(&path, found)?;
-        } else if path.extension().is_some_and(|extension| extension == "s")
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(HARNESS))
-        {
-            found.push(path);
-        }
+    let binary = tools.build(root, dir, target, Stage::Binary, |command| {
+        command.args(["--locked", "-p", "ironafs-cli", "--bin", "afs"]);
+    })?;
+    for caller in binary.values() {
+        caller.compare(library).map_err(refusal)?;
     }
-    Ok(())
-}
+    check_externs(&binary)?;
 
-/// The toolchain's sysroot, from `rustc --print sysroot` run in the
-/// workspace, so the workspace's pinned toolchain answers.
-fn sysroot(workspace: &Workspace) -> Result<PathBuf, Error> {
-    let output = Command::new("rustc")
-        .current_dir(&workspace.root)
-        .args(["--print", "sysroot"])
-        .output()
-        .map_err(Error::io("run rustc --print sysroot"))?;
-    Error::check_status("rustc --print sysroot", output.status)?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    Ok(PathBuf::from(text.trim()))
+    let harness = tools.build(root, dir, target, Stage::Assembly, |command| {
+        command
+            .arg("--lib")
+            .arg("--manifest-path")
+            .arg(harness.join("Cargo.toml"))
+            .args(["--", "--emit", "asm", "-C"])
+            .arg(format!("codegen-units={}", library.units()));
+    })?;
+    let dependency = harness
+        .get("ironafs_os")
+        .ok_or_else(|| refusal("no harness ironafs-os dependency invocation"))?;
+    let emitter = harness
+        .get(HARNESS)
+        .ok_or_else(|| refusal("no harness assembly invocation"))?;
+    for caller in [dependency, emitter] {
+        caller.compare(library).map_err(refusal)?;
+    }
+    check_externs(&harness)?;
+    if !matches!(emitter.externs.as_slice(), [path] if is_extern_of(path, dependency)) {
+        return Err(refusal(
+            "the harness did not use the captured ironafs-os dependency",
+        ));
+    }
+    Ok(Assembly {
+        shards: shards::collect(emitter)?,
+        codegen_units: emitter.units(),
+        local_thin_lto: emitter.local_thin_lto(),
+    })
 }
 
 /// Writes the harness crate, with `source` as its library, into `dir`.
@@ -489,8 +372,12 @@ fn write_harness(dir: &Path, crate_dir: &Path, profile: &str, source: &str) -> R
 ///
 /// Returns the targets on which it failed, or why it could not run.
 pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error> {
-    let workspace = metadata::load(None, &[])?;
+    let workspace = metadata::load_in(None, &[], |command| {
+        os::pin::without_wrappers(command);
+        command.arg("--offline");
+    })?;
     let crate_dir = os::crate_dir(&workspace)?;
+    let tools = Tools::resolve(&workspace.root)?;
     let manifest_path = workspace.root.join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path)
         .map_err(Error::path_io("read manifest", &manifest_path))?;
@@ -498,11 +385,12 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         "Cargo.toml: no [profile.release] table",
     ))?;
     if self_test {
-        return self_test::run(&workspace, &crate_dir, &profile, output);
+        return self_test::run(&tools, &workspace, &crate_dir, &profile, output);
     }
     let dir = crate::fixture::fresh_dir(&workspace.target_dir, CHECK)?;
     let result = check_targets(
-        &workspace,
+        &tools,
+        &workspace.root,
         &crate_dir,
         &profile,
         HARNESS_SOURCE,
@@ -513,30 +401,18 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     result
 }
 
-/// Whether the standard library of `target` is installed under `sysroot`:
-/// the gate runs on the allowlisted Linux targets that have it.
-fn installed(sysroot: &Path, target: &str) -> bool {
-    sysroot
-        .join("lib")
-        .join("rustlib")
-        .join(target)
-        .join("lib")
-        .is_dir()
-}
-
-/// The allowlisted Linux targets the gate runs on here.
-fn installed_targets(workspace: &Workspace) -> Result<Vec<&'static str>, Error> {
-    let sysroot = sysroot(workspace)?;
-    Ok(ALLOWLIST
-        .iter()
-        .copied()
-        .filter(|target| target.contains("-linux-") && installed(&sysroot, target))
-        .collect())
+/// The allowlisted Linux targets the pinned toolchain has here.
+fn installed_targets(tools: &Tools) -> Vec<&'static str> {
+    options::TARGETS
+        .into_iter()
+        .filter(|target| tools.pinned.has_target(target))
+        .collect()
 }
 
 /// Runs the gate in `dir`, with a harness of `source` under `profile`.
 fn check_targets(
-    workspace: &Workspace,
+    tools: &Tools,
+    root: &Path,
     crate_dir: &Path,
     profile: &str,
     source: &str,
@@ -545,12 +421,15 @@ fn check_targets(
 ) -> Result<(), Error> {
     let harness = dir.join("harness");
     write_harness(&harness, crate_dir, profile, source)?;
-    let sysroot = sysroot(workspace)?;
     let mut violations = Vec::new();
     let mut passed = 0_usize;
     let mut report =
         |line: String| writeln!(output, "{line}").map_err(Error::io("report check-wipe"));
-    for target in ALLOWLIST.iter().filter(|target| target.contains("-linux-")) {
+    for target in ALLOWLIST
+        .iter()
+        .copied()
+        .filter(|target| target.contains("-linux-"))
+    {
         let Some(arch) = Arch::of(target) else {
             violations.push(format!(
                 "{target}: an architecture whose zero byte store this check cannot read, so \
@@ -558,43 +437,38 @@ fn check_targets(
             ));
             continue;
         };
-        if !installed(&sysroot, target) {
+        if !tools.pinned.has_target(target) {
             report(format!(
                 "{target}: MISSING: the toolchain has no standard library for it, so the gate \
                  has not run and mem-wipe does not ship there"
             ))?;
             continue;
         }
-        let (asm, log) = match assembly(workspace, &harness, &dir.join("target"), target)? {
-            Ok(built) => built,
-            Err(error) => {
-                violations.push(format!("{target}: {error}"));
+        let assembly = match release_assembly(tools, root, &harness, &dir.join(target), target) {
+            Ok(assembly) => assembly,
+            Err(Error::Rules {
+                violations: failed, ..
+            }) => {
+                violations.extend(
+                    failed
+                        .into_iter()
+                        .map(|problem| format!("{target}: {problem}")),
+                );
                 continue;
             }
+            Err(error) => return Err(error),
         };
-        let shipped = match shipped_build(workspace, &dir.join("shipped"), target)? {
-            Ok(shipped) => shipped,
-            Err(error) => {
-                violations.push(format!("{target}: {error}"));
-                continue;
-            }
-        };
-        let departures = profile_departures(&shipped, &log);
-        if !departures.is_empty() {
-            violations.extend(
-                departures
-                    .into_iter()
-                    .map(|problem| format!("{target}: {problem}")),
-            );
-            continue;
-        }
-        match judge(&asm, arch) {
+        match judge(assembly.shards.iter().map(String::as_str), arch) {
             Ok(()) => {
                 passed += 1;
+                let lto = if assembly.local_thin_lto { "on" } else { "off" };
                 report(format!(
                     "{target}: passed: wipe inlined in both cases, at least {LENGTH} zero byte \
                      stores in each, the control's plain overwrite (the fence kept) removed, \
-                     and the harness built with the workspace's release options"
+                     and the harness built with the workspace's release options ({} codegen \
+                     units, local ThinLTO {lto}, assembly shard count {})",
+                    assembly.codegen_units,
+                    assembly.shards.len(),
                 ))?;
             }
             Err(problems) => violations.extend(

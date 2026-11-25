@@ -79,13 +79,35 @@ pub(crate) fn mismatch(tool: &str, found: Option<&str>, pin: &str) -> Option<Str
 
 /// Runs `program -vV` from `root` and returns its release line.
 fn release_of(root: &Path, program: &Path) -> Result<Option<String>, Error> {
+    Ok(release(&verbose_version(root, program)?).map(str::to_owned))
+}
+
+/// Reads a tool's verbose version from the workspace invocation directory.
+pub(crate) fn verbose_version(root: &Path, program: &Path) -> Result<String, Error> {
     let output = Command::new(program)
         .current_dir(root)
         .arg("-vV")
         .output()
         .map_err(Error::io("run a tool's -vV"))?;
     Error::check_status("-vV", output.status)?;
-    Ok(release(&String::from_utf8_lossy(&output.stdout)).map(str::to_owned))
+    String::from_utf8(output.stdout).map_err(|_| Error::UnexpectedOutput("tool version"))
+}
+
+/// Gets the executable selected by rustup for an explicit toolchain.
+pub(crate) fn rustup_path(root: &Path, pin: &str, tool: &str) -> Result<PathBuf, Error> {
+    const COMMAND: &str = "rustup which --toolchain";
+    let output = Command::new("rustup")
+        .current_dir(root)
+        .args(["which", "--toolchain", pin, tool])
+        .output()
+        .map_err(Error::io(COMMAND))?;
+    Error::check_status(COMMAND, output.status)?;
+    let text = std::str::from_utf8(&output.stdout).map_err(|_| Error::UnexpectedOutput(COMMAND))?;
+    let path = Path::new(text.trim());
+    if !path.is_absolute() {
+        return Err(Error::UnexpectedOutput(COMMAND));
+    }
+    Ok(path.to_path_buf())
 }
 
 /// Resolves the pinned compiler from `root`, or says why the selected
@@ -127,11 +149,16 @@ pub(crate) fn resolve(root: &Path) -> Result<Result<Pinned, String>, Error> {
 /// wrapper. The other variables that change what the compiler is given
 /// are removed.
 pub(crate) fn pin_cargo(command: &mut Command, pinned: &Pinned) {
+    without_wrappers(command);
+    command.env("RUSTC", &pinned.rustc);
+}
+
+/// Prevents configured wrappers from running before the compiler is resolved.
+pub(crate) fn without_wrappers(command: &mut Command) {
     for name in CLEARED_ENVIRONMENT {
         command.env_remove(name);
     }
     command
-        .env("RUSTC", &pinned.rustc)
         .env("RUSTC_WRAPPER", "")
         .env("RUSTC_WORKSPACE_WRAPPER", "");
 }

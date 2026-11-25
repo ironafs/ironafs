@@ -75,14 +75,17 @@
 //! scalar, or a union or enum item (no shipped file holds any of these);
 //! TODO(#179): establish it for those shapes too.
 
+mod qualified;
 mod self_test;
 
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Output;
 
 use crate::metadata::{self, Workspace};
+use crate::os::inventory::{Code, Row, withheld_on_musl};
 use crate::os::{self, Built};
 use crate::rust_source::{self, Token, TokenKind, ident, matching, punct};
 use crate::{Command, Error};
@@ -91,6 +94,18 @@ use crate::{Command, Error};
 mod tests;
 
 const CHECK: &str = "check-abi";
+
+/// Whether this check is the full proof or the glibc 2.28 compatibility run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Mode {
+    Complete,
+    LegacyGlibc228,
+}
+
+/// Whether an explicit target can select the glibc 2.28 compatibility run.
+pub(super) fn legacy_target(target: &str) -> bool {
+    os::ALLOWLIST.contains(&target) && target.ends_with("-linux-gnu")
+}
 
 /// The target-directory subdirectory `check-abi` builds the crate in, with
 /// the compiler Cargo selects; `check-os`'s pinned runs use their own.
@@ -1038,51 +1053,6 @@ fn tail_array(found: &CType, tail: &OpaqueTail, declarations: &Declarations) -> 
     *count == tail.count && resolved == tail.element
 }
 
-/// Which of `names` the row's headers, with its feature macros, do not
-/// declare on the target the compiler is for. First the headers alone,
-/// with `identity`'s checks that the compiler is the target's, must
-/// compile; then one probe each uses the name as a C expression, so a
-/// macro and an enumeration constant both count, and a probe that fails
-/// only because the name is undeclared marks it unnamed. `Err` for a
-/// failure of the headers or the identity checks, or a probe that failed
-/// for any other reason.
-///
-/// # Errors
-///
-/// Returns an error if a probe cannot be written or compiled.
-pub(crate) fn unnamed(
-    row: &str,
-    defines: &[String],
-    headers: &[String],
-    names: &[String],
-    model: DataModel,
-    identity: &str,
-    dir: &Path,
-) -> Result<Result<Vec<String>, String>, Error> {
-    let base = format!("{}{identity}", preamble(row, defines, headers, model));
-    if names.is_empty() {
-        return Ok(Ok(Vec::new()));
-    }
-    if let Err(error) = compile(&base, &dir.join(format!("{row}-headers.c")))? {
-        return Ok(Err(error));
-    }
-    let mut absent = Vec::new();
-    for name in names {
-        let source =
-            format!("{base}_Static_assert(sizeof({name}) > 0, \"{row}: {name} is declared\");\n");
-        match compile(&source, &dir.join(format!("{row}-{name}.c")))? {
-            Ok(()) => {}
-            // GCC: "'NAME' undeclared"; Clang: "use of undeclared
-            // identifier 'NAME'".
-            Err(error) if error.contains("undeclared") && error.contains(name.as_str()) => {
-                absent.push(name.clone());
-            }
-            Err(error) => return Ok(Err(error)),
-        }
-    }
-    Ok(Ok(absent))
-}
-
 /// The C11 file of assertions for one row.
 ///
 /// # Errors
@@ -1278,13 +1248,7 @@ pub(crate) fn header_macros(
 /// Returns an error if the file cannot be written or the compiler cannot
 /// be started.
 pub(crate) fn compile(source: &str, file: &Path) -> Result<Result<(), String>, Error> {
-    crate::fixture::write_file(file, source)?;
-    let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
-    let output = Command::new(compiler)
-        .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
-        .arg(file)
-        .output()
-        .map_err(Error::io("run the C compiler"))?;
+    let output = compile_output(source, file, false)?;
     if output.status.success() {
         return Ok(Ok(()));
     }
@@ -1294,6 +1258,22 @@ pub(crate) fn compile(source: &str, file: &Path) -> Result<Result<(), String>, E
         .find(|line| line.contains("error"))
         .unwrap_or("the C compiler failed with no error line")
         .to_owned()))
+}
+
+/// Run the syntax check, fixing diagnostic formatting when the result is
+/// to be parsed by the qualified-name probe.
+fn compile_output(source: &str, file: &Path, pin_diagnostics: bool) -> Result<Output, Error> {
+    crate::fixture::write_file(file, source)?;
+    let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+    let mut command = Command::new(compiler);
+    command.args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"]);
+    if pin_diagnostics {
+        command.arg("-fdiagnostics-color=never").env("LC_ALL", "C");
+    }
+    command
+        .arg(file)
+        .output()
+        .map_err(Error::io("run the C compiler"))
 }
 
 /// The host's target triple, from `rustc -vV`.
@@ -1726,8 +1706,15 @@ pub(crate) fn applies_here() -> Result<(bool, String), Error> {
 pub(super) fn run(
     self_test: bool,
     target: Option<&str>,
+    mode: Mode,
     output: &mut impl Write,
 ) -> Result<(), Error> {
+    if mode == Mode::LegacyGlibc228 && (self_test || !target.is_some_and(legacy_target)) {
+        return Err(Error::Rules {
+            check: CHECK,
+            violations: vec!["--legacy-glibc-2-28 requires an explicit GNU target".to_owned()],
+        });
+    }
     let workspace = metadata::load(None, &[])?;
     let dir = crate::fixture::fresh_dir(&workspace.target_dir, CHECK)?;
     let result = if self_test {
@@ -1737,7 +1724,7 @@ pub(super) fn run(
             Some(target) => target.to_owned(),
             None => host_target()?,
         };
-        check_target(&workspace, &target, &dir, output)
+        check_target(&workspace, &target, mode, &dir, output)
     };
     crate::fixture::remove_dir(&dir)?;
     result
@@ -1746,6 +1733,7 @@ pub(super) fn run(
 fn check_target(
     workspace: &Workspace,
     target: &str,
+    mode: Mode,
     dir: &Path,
     output: &mut impl Write,
 ) -> Result<(), Error> {
@@ -1775,8 +1763,9 @@ fn check_target(
         Built::Refused(error) => return Err(fail(vec![format!("{target}: {error}")])),
     };
     let mut checked = Vec::new();
-    let mut withheld = Vec::new();
+    let mut incomplete = Vec::new();
     let mut violations = Vec::new();
+    let musl = target.ends_with("-linux-musl");
     // `core::ffi` names C's types only where no file of the crate shadows
     // `core`, a glob import from another file included.
     for file in &read {
@@ -1795,28 +1784,36 @@ fn check_target(
             Err(error) => violations.push(format!("{}: {error}", file.display())),
         }
     }
-    for row in inventory
-        .rows
-        .iter()
-        .filter(|row| to_prove.contains(&row.id))
-    {
-        match prove_row(row, &crate_dir, &read, target, dir)? {
-            Some(Proof::Proved(proved)) => checked.push(proved),
-            Some(Proof::Withheld(why)) => withheld.push(why),
-            Some(Proof::Failed(problem)) => violations.push(problem),
-            None => {}
+    for row in &inventory.rows {
+        let proof = if musl && withheld_on_musl(row) {
+            prove_withheld(row, target, dir)?
+        } else if to_prove.contains(&row.id) {
+            prove_row(row, &crate_dir, &read, target, mode, dir)?
+        } else {
+            continue;
+        };
+        match proof {
+            Proof::Proved(proved) => checked.push(proved),
+            Proof::Partial(why) => incomplete.push(format!("partial {why}")),
+            Proof::Withheld(why) => incomplete.push(format!("withheld {why}")),
+            Proof::Failed(problem) => violations.push(problem),
         }
+    }
+    if (musl || mode == Mode::LegacyGlibc228) && incomplete.len() != 1 {
+        violations.push(format!(
+            "{target}: expected one {} result for {}, found {} incomplete results",
+            if musl { "withheld" } else { "partial" },
+            qualified::FDPASS_ROW,
+            incomplete.len()
+        ));
     }
     if !violations.is_empty() {
         return Err(fail(violations));
     }
     let mut report =
         |line: String| writeln!(output, "{line}").map_err(Error::io("report check-abi"));
-    for why in withheld {
-        report(format!(
-            "check-abi: {target}: withheld {why}: MISSING evidence, so the row does not ship on \
-             this target"
-        ))?;
+    for evidence in incomplete {
+        report(format!("check-abi: {target}: {evidence}"))?;
     }
     report(format!(
         "check-abi: {target}: the system's C compiler accepted {}",
@@ -1825,30 +1822,32 @@ fn check_target(
 }
 
 /// What the check found for one row.
+#[derive(Debug, PartialEq, Eq)]
 enum Proof {
     /// What the C compiler accepted.
     Proved(String),
-    /// The row and the qualified constants the target's headers do not
-    /// name.
+    /// The legacy lane's omitted assertion, after all others passed.
+    Partial(String),
+    /// The approved musl row whose qualified constant is absent.
     Withheld(String),
     /// Why the row failed.
     Failed(String),
 }
 
-/// Proves one row's declarations on `target`; `None` for a row with no
-/// code.
+/// Proves an implemented row from its compiled declaration files.
 fn prove_row(
-    row: &os::inventory::Row,
+    row: &Row,
     crate_dir: &Path,
     read: &std::collections::BTreeSet<PathBuf>,
     target: &str,
+    mode: Mode,
     dir: &Path,
-) -> Result<Option<Proof>, Error> {
+) -> Result<Proof, Error> {
+    let failed = |problem: String| Ok(Proof::Failed(format!("{}: {problem}", row.id)));
     let Some(code) = row.code.as_ref() else {
-        return Ok(None);
+        return failed("no declarations recorded for the implemented row".to_owned());
     };
     let model = DataModel::of(target);
-    let failed = |problem: String| Ok(Some(Proof::Failed(format!("{}: {problem}", row.id))));
     let mut found = match row_declarations(crate_dir, &code.module, read, target)? {
         Ok(found) => found,
         Err(error) => return failed(error),
@@ -1881,24 +1880,49 @@ fn prove_row(
             read_names.join(", ")
         ));
     }
-    match unnamed(
-        &row.id,
-        &code.defines,
-        &code.headers,
-        &code.qualified,
-        model,
-        &identity(target),
-        dir,
-    )? {
-        Ok(absent) if absent.is_empty() => {}
-        Ok(absent) => {
-            return Ok(Some(Proof::Withheld(format!(
-                "{}: its headers do not name {}",
-                row.id,
-                absent.join(", ")
-            ))));
-        }
+    prove_declarations(row, code, found, target, mode, dir)
+}
+
+/// Proves the validated declaration list. Only the legacy socket row may
+/// remove an assertion, and only after its name has been proved absent.
+fn prove_declarations(
+    row: &Row,
+    code: &Code,
+    mut found: Declarations,
+    target: &str,
+    mode: Mode,
+    dir: &Path,
+) -> Result<Proof, Error> {
+    let failed = |problem: String| Ok(Proof::Failed(format!("{}: {problem}", row.id)));
+    if let Err(error) = qualified::named_assertions(code, &found) {
+        return failed(error);
+    }
+    let base = match qualified::baseline(row, code, target, mode) {
+        Ok(base) => base,
         Err(error) => return failed(error),
+    };
+    let absent = match qualified::unnamed(&row.id, &base, &code.qualified, dir)? {
+        Ok(absent) => absent,
+        Err(error) => return failed(error),
+    };
+    let legacy_socket = mode == Mode::LegacyGlibc228 && row.id == qualified::FDPASS_ROW;
+    if legacy_socket {
+        if absent != [qualified::PIDFD] {
+            return failed(format!(
+                "the headers name {}; revisit the glibc 2.28 exception",
+                qualified::PIDFD
+            ));
+        }
+        found.constants.retain(|(name, _)| name != qualified::PIDFD);
+        if found.constants.is_empty()
+            && found.structs.is_empty()
+            && found.functions.is_empty()
+            && found.aliases.is_empty()
+        {
+            return failed("no independent ABI assertion remains".to_owned());
+        }
+    } else if !absent.is_empty() {
+        return failed(format!("MISSING {}", absent.join(", ")));
     }
     let source = match c_source(
         &row.id,
@@ -1906,23 +1930,56 @@ fn prove_row(
         &code.headers,
         &code.expressions,
         &found,
-        model,
+        DataModel::of(target),
     ) {
         Ok(source) => format!("{source}{}", identity(target)),
         Err(error) => return failed(error),
     };
-    Ok(Some(
-        match compile(&source, &dir.join(format!("{}.c", row.id)))? {
-            Ok(()) => Proof::Proved(format!(
-                "{} ({} structs, {} constants, {} functions)",
-                row.id,
-                found.structs.len(),
-                found.constants.len(),
-                found.functions.len()
-            )),
-            Err(error) => Proof::Failed(format!("{}: {error}", row.id)),
-        },
-    ))
+    if let Err(error) = compile(&source, &dir.join(format!("{}.c", row.id)))? {
+        return failed(error);
+    }
+    if legacy_socket {
+        Ok(Proof::Partial(format!(
+            "{}: MISSING {}",
+            row.id,
+            qualified::PIDFD
+        )))
+    } else {
+        Ok(Proof::Proved(format!(
+            "{} ({} structs, {} constants, {} functions)",
+            row.id,
+            found.structs.len(),
+            found.constants.len(),
+            found.functions.len()
+        )))
+    }
+}
+
+/// Probes the approved musl row's headers without reading Rust
+/// declarations from a module that the target does not compile.
+fn prove_withheld(row: &Row, target: &str, dir: &Path) -> Result<Proof, Error> {
+    let failed = |problem: String| Ok(Proof::Failed(format!("{}: {problem}", row.id)));
+    let Some(code) = row.code.as_ref() else {
+        return failed("no C headers recorded for the withheld row".to_owned());
+    };
+    let base = match qualified::socket_row(row, code)
+        .and_then(|()| qualified::baseline(row, code, target, Mode::Complete))
+    {
+        Ok(base) => base,
+        Err(error) => return failed(error),
+    };
+    match qualified::unnamed(&row.id, &base, &code.qualified, dir)? {
+        Ok(absent) if absent == [qualified::PIDFD] => Ok(Proof::Withheld(format!(
+            "{}: MISSING {}",
+            row.id,
+            qualified::PIDFD
+        ))),
+        Ok(_) => failed(format!(
+            "the headers name {}; revisit withholding",
+            qualified::PIDFD
+        )),
+        Err(error) => failed(error),
+    }
 }
 
 /// Why the row's C facts are not the ones its compiled code needs, if they

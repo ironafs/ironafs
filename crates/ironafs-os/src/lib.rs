@@ -93,8 +93,8 @@ mod udp6;
 mod linux_clock;
 #[cfg(target_os = "linux")]
 mod linux_dontdump;
-// Withheld on musl: its headers do not name `SCM_PIDFD`, so `check-abi`
-// has no evidence there and the site is not compiled (ADR 0005, sheet 14).
+// Approved-only on musl. The gate keeps the row out of musl builds and
+// check-abi requires proof that its headers lack `SCM_PIDFD` (ADR 0005, sheet 14).
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod linux_fdpass;
 #[cfg(target_os = "linux")]

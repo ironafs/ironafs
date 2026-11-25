@@ -68,6 +68,7 @@ the evidence that refutes it.
 | [2026-11-23-gpt-api-route](2026-11-23-gpt-api-route.md) | The owner's decision: GPT read-only seats may also run on the OpenAI API, the same models by another route |
 | [2026-11-24-glm54-pin](2026-11-24-glm54-pin.md) | Issue #48: calibrating GLM 5.4 for the high-effort seats |
 | [2026-11-24-glm54-max-pin](2026-11-24-glm54-max-pin.md) | Issue #48: calibrating GLM 5.4 for the strongest seats at max |
+| [2026-11-24-146-os-guards](2026-11-24-146-os-guards.md) | Issue #146: strengthen the operating-system ABI and wipe checks |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).

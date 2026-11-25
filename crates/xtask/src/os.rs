@@ -42,7 +42,7 @@
 mod allowlist;
 mod gate;
 pub(crate) mod inventory;
-mod pin;
+pub(crate) mod pin;
 pub(crate) mod scan;
 mod self_test;
 

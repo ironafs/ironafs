@@ -10,6 +10,101 @@ use super::{
 };
 use crate::rust_source::tokens_with_strings;
 
+#[test]
+fn only_one_primary_diagnostic_on_the_expression_can_prove_absence() {
+    use super::qualified::absent_diagnostic;
+    use std::path::Path;
+
+    let file = Path::new("probe-SCM_PIDFD.c");
+    let clang = "probe-SCM_PIDFD.c:12:29: error: use of undeclared identifier 'SCM_PIDFD'";
+    let gcc = "probe-SCM_PIDFD.c:12:29: error: 'SCM_PIDFD' undeclared here (not in a function)";
+    for (case, diagnostic, absent) in [
+        ("clang", clang.to_owned(), true),
+        ("gcc", gcc.to_owned(), true),
+        (
+            "the qualified name appears only in the GCC suggestion",
+            format!(
+                "{}; did you mean 'SCM_PIDFD'?",
+                gcc.replace("'SCM_PIDFD'", "'OTHER'")
+            ),
+            false,
+        ),
+        (
+            "the exact GCC error with a suggested identifier",
+            format!("{gcc}; did you mean 'SCM_RIGHTS'?"),
+            true,
+        ),
+        (
+            "a GCC suggestion containing more than an identifier",
+            format!("{gcc}; did you mean 'SCM_RIGHTS or OTHER'?"),
+            false,
+        ),
+        (
+            "an unknown suffix following a GCC suggestion",
+            format!("{gcc}; did you mean 'SCM_RIGHTS'? expected expression"),
+            false,
+        ),
+        (
+            "another token with the name in the filename",
+            clang.replace("'SCM_PIDFD'", "'OTHER'"),
+            false,
+        ),
+        (
+            "a note and source echo",
+            clang.replace(": error: ", ": note: ") + "\n   12 | " + clang,
+            false,
+        ),
+        (
+            "echo following an unrelated primary error",
+            "probe-SCM_PIDFD.c:12:29: error: expected expression\n   12 | ".to_owned() + clang,
+            false,
+        ),
+        (
+            "an unexpected form",
+            clang.replace("use of undeclared identifier", "unknown identifier"),
+            false,
+        ),
+        (
+            "a case-mismatched identifier",
+            clang.replace("'SCM_PIDFD'", "'scm_pidfd'"),
+            false,
+        ),
+        ("a wrong line", clang.replace(":12:29:", ":11:29:"), false),
+        (
+            "a wrong file",
+            clang.replace("probe-SCM_PIDFD.c", "header.h"),
+            false,
+        ),
+        ("a warning", clang.replace(": error:", ": warning:"), false),
+        (
+            "an additional primary error",
+            format!("{clang}\nheader.h:2:5: error: expected expression"),
+            false,
+        ),
+        (
+            "an additional fatal error",
+            format!("{clang}\ncc1: fatal error: header missing"),
+            false,
+        ),
+        (
+            "an unlocated driver error",
+            format!("error: cannot open input\n{clang}"),
+            false,
+        ),
+        (
+            "a diagnostic note and source echo after the error",
+            format!("{clang}\n   12 | NAME\nheader.h:1:1: note: expanded from here"),
+            true,
+        ),
+    ] {
+        assert_eq!(
+            absent_diagnostic(&diagnostic, file, 12, "SCM_PIDFD"),
+            absent,
+            "{case}"
+        );
+    }
+}
+
 const CLOCK: &str = "use core::ffi::{c_char, c_int, c_long};\n\
                      #[repr(C)]\n#[derive(Debug)]\n\
                      pub(super) struct timespec {\n pub(super) tv_sec: c_long,\n tv_nsec: c_long,\n}\n\
