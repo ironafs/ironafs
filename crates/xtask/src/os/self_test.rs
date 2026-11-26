@@ -205,12 +205,18 @@ const CASES: &[Case] = &[
     Case {
         name: "code for a row that is only approved",
         edits: &[add(
-            "src/linux_mount.rs",
-            "#[expect(unsafe_code, reason = \"linux-mount\")]\n\
-             unsafe extern \"C\" { fn mount(source: c_int) -> c_int; }\n",
+            "src/linux_rtnetlink.rs",
+            "#[expect(unsafe_code, reason = \"linux-rtnetlink\")]\n\
+             unsafe extern \"C\" { fn eventfd(initval: c_uint, flags: c_int) -> c_int; }\n",
             LINUX,
         )],
-        expect: &[|found| mismatch(found, "linux-mount")],
+        expect: &[|violation| {
+            matches!(
+                violation,
+                Violation::Mismatch { id, expected, found, .. }
+                    if id == "linux-rtnetlink" && expected.is_empty() && found.len() == 1
+            )
+        }],
     },
     Case {
         name: "an item of an implemented row removed",

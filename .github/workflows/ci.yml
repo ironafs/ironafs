@@ -273,7 +273,7 @@ jobs:
       contents: read
     env:
       TARGET: ${{ matrix.target }}
-      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs
+      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs linux-mount
       WITHHELD: ${{ matrix.withheld }}
       NATIVE_TESTS: >-
         linux_clock::tests::read_clock_boot_advances_and_never_goes_back
@@ -391,7 +391,7 @@ jobs:
           cargo --locked xtask check-os --self-test > check-os-self-test.log
           cat check-os-self-test.log
           grep -qx "caught: a site planted for a musl target alone (synthetic input: added to its build's file list): $TARGET" check-os-self-test.log
-      - name: Run linux-udp6's sandbox test under a filter that denies AF_INET6
+      - name: Run the isolated IPv6 and FUSE kernel tests
         # systemd's RestrictAddressFamilies answers a denied family's
         # socket() with EAFNOSUPPORT (systemd.exec(5)), as the daemon's own
         # unit would; the test binary runs as this user under it.
@@ -408,6 +408,29 @@ jobs:
             > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
           cat sandbox.log
           grep -q '^test result: ok\. 1 passed;' sandbox.log
+
+          # Each FUSE case gets its own mount and PID namespace. This
+          # shell owns the mountpoint and removes it after they exit.
+          outside=$(readlink /proc/self/ns/mnt)
+          test_dir=$(mktemp -d)
+          trap 'rmdir -- "$test_dir"' EXIT
+          run_mount_test() {
+            test_name="linux_mount::tests::kernel::$1"
+            shift
+            if ! output=$(sudo -n timeout --signal=KILL 20s unshare --mount --propagation private --pid --fork --kill-child -- \
+              "$@" env "IRONAFS_OS_TEST_OUTSIDE_MNT_NS=$outside" "IRONAFS_OS_TEST_MOUNT_DIR=$test_dir" \
+              "$binary" --ignored --exact "$test_name" 2>&1); then
+              printf '%s\n' "$output"
+              exit 1
+            fi
+            printf '%s\n' "$output"
+            grep -Fx "test $test_name ... ok" <<< "$output"
+            grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored;' <<< "$output"
+          }
+          run_mount_test the_mount_serves_a_getattr_request
+          run_mount_test the_mount_without_cap_sys_admin_returns_eperm \
+            setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs \
+            --bounding-set=-all --inh-caps=-all --ambient-caps=-all
       - name: Run the filesystem tests of linux-statvfs on filesystems made for them
         # A tmpfs of one mebibyte, and an ext4 that reserves 5% for its
         # superuser (so a query of the wrong field is caught).
@@ -477,7 +500,7 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       ARCH: ${{ matrix.arch }}
-      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs
+      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs linux-mount
       NATIVE_TESTS: >-
         linux_clock::tests::read_clock_boot_advances_and_never_goes_back
         linux_clock::tests::read_clock_awake_advances_and_never_goes_back
@@ -552,7 +575,8 @@ jobs:
       - name: Prove the declarations against glibc 2.28's headers
         # The lane requires partial evidence for linux-fdpass with only
         # SCM_PIDFD missing and complete evidence for every other row
-        # (ADR 0005, sheet 14).
+        # (ADR 0005, sheet 14). A glibc 2.28 FUSE mount needs a separate
+        # Linux venue with /dev/fuse and a private mount namespace.
         run: |
           "$HOME/.cargo/bin/cargo" --locked xtask check-abi --target "$TARGET" --legacy-glibc-2-28 > check-abi.log
           cat check-abi.log
@@ -623,6 +647,9 @@ jobs:
               linux_dontdump::tests::stand_in::a_failed_exclusion_hands_out_no_buffer \
               linux_dontdump::tests::stand_in::a_dropped_buffer_is_all_zero_when_its_memory_is_released \
               linux_fdpass::tests::stand_in::an_interrupted_send_and_receive_are_each_made_again \
+              linux_mount::tests::stand_in::mount_passes_fixed_flags_and_exact_c_strings \
+              linux_mount::tests::stand_in::a_target_with_nul_is_refused_before_the_call \
+              linux_mount::tests::stand_in::every_nonzero_result_returns_the_calls_errno \
               mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257; do
               grep -q "^test $test \.\.\. ok$" "miri-$target.log"
             done
