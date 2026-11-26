@@ -10,7 +10,8 @@
 use std::fmt::Debug;
 
 use ironafs_xdr::{
-    Classified, Decode, Decoder, Encode, Encoder, Error, Message, MessageType, decode,
+    Classified, Decode, Decoder, Encode, Encoder, Error, ErrorKind, Message, MessageType, Sizer,
+    decode, encode, encode_into, encoded_len,
 };
 
 use crate::support::heap::Owned;
@@ -39,8 +40,8 @@ impl<T: Encode> Classified for Primitive<T> {
 }
 
 impl<T: Encode> Encode for Primitive<T> {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        self.0.encoded_len()
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.put(&self.0)
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -205,12 +206,23 @@ fn golden_g13_void() {
     both_ways(&PRIMITIVE, &Primitive(()), "");
 }
 
+/// Checks the shared width and the value and byte round trips through
+/// both public encode entry points.
+#[track_caller]
+fn shaded_both_ways(value: Shaded, expected: &str) {
+    both_ways(&SHADED, &value, expected);
+    let bytes = hex(expected);
+    assert_eq!(bytes.len(), 12);
+    assert_eq!(encoded_len(&value), Ok(12));
+    assert_eq!(encode(&decode::<Shaded>(&bytes).unwrap()).unwrap(), bytes);
+    assert_eq!(decode::<Shaded>(&encode(&value).unwrap()).unwrap(), value);
+}
+
 /// G14, §§4.3, 4.5 and 4.15: PALE (1), then its explicit unsigned hyper.
 #[test]
 fn golden_g14_shaded_explicit_arm() {
-    both_ways(
-        &SHADED,
-        &Shaded::Pale(0x0102_0304_0506_0708),
+    shaded_both_ways(
+        Shaded::Pale(0x0102_0304_0506_0708),
         "00000001 01020304 05060708",
     );
 }
@@ -218,9 +230,38 @@ fn golden_g14_shaded_explicit_arm() {
 /// G15, §§4.3, 4.5 and 4.15: VIVID (9), then the default unsigned hyper.
 #[test]
 fn golden_g15_shaded_default_arm() {
-    both_ways(
-        &SHADED,
-        &Shaded::Vivid(0xfedc_ba98_7654_3210),
+    shaded_both_ways(
+        Shaded::Default(Shade::Vivid, 0xfedc_ba98_7654_3210),
         "00000009 fedcba98 76543210",
     );
+}
+
+/// A default arm with G14's discriminant and payload must be refused.
+#[test]
+fn shaded_refuses_default_with_an_explicit_discriminant() {
+    let value = Shaded::Default(Shade::Pale, 0x0102_0304_0506_0708);
+    let check = |error: Error| {
+        assert_eq!(error.kind(), ErrorKind::DefaultArmMismatch);
+        assert_eq!(error.name(), Some("test.shaded.tone"));
+        assert_eq!(error.limit_value(), None);
+        assert_eq!(error.offset(), None);
+        assert_eq!(error.extent(), None);
+        assert_eq!(
+            format!("{error}"),
+            "default arm discriminant selects an explicit arm: test.shaded.tone"
+        );
+    };
+    check(encode(&value).unwrap_err());
+    check(encoded_len(&value).unwrap_err());
+
+    let short = vec![0xaa; 4];
+    let roomy = vec![0xaa; 12];
+    assert!((1..12).contains(&short.capacity()));
+    assert!(roomy.capacity() >= 12);
+    for mut out in [Vec::new(), short, roomy] {
+        let before = (out.as_ptr(), out.capacity());
+        check(encode_into(&value, &mut out).unwrap_err());
+        assert_eq!(out, []);
+        assert_eq!((out.as_ptr(), out.capacity()), before);
+    }
 }

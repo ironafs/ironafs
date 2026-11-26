@@ -98,7 +98,7 @@ fn decode_fits_small_stack() {
     fits(&LABEL, &label(8), 12);
     fits(&ENTRY, &Entry::Linked(bytes(16)), 24);
     fits(&SHADE, &Shade::Deep, 4);
-    fits(&SHADED, &Shaded::Vivid(u64::MAX), 12);
+    fits(&SHADED, &Shaded::Default(Shade::Vivid, u64::MAX), 12);
     fits(&FLAG, &Flag(true), 4);
 }
 

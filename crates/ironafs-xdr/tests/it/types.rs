@@ -50,11 +50,12 @@
 
 use core::mem::size_of;
 
+use ironafs_xdr as xdr;
 use ironafs_xdr::limits::INLINE_MAX;
 use ironafs_xdr::{
     BorrowedBytes, BorrowedWord, Cap, Classified, Decode, Decoder, Encode, Encoder, Error, Message,
-    MessageType, array_heap_ratio, array_len, array_reservations, fixed_array_heap_ratio,
-    fixed_array_len, fixed_array_reservations, fixed_opaque_len, max, opaque_len, proven, sum,
+    MessageType, Sizer, array_heap_ratio, array_reservations, fixed_array_heap_ratio,
+    fixed_array_reservations, max, proven,
 };
 
 /// The message row of a test type decoded on its own.
@@ -73,63 +74,12 @@ macro_rules! inline_fits {
     };
 }
 
-// ---- shade, kind, solo: enumerations ----
+#[path = "../../src/encode/tests/shaded.rs"]
+mod shaded;
 
-/// `shade`: a closed enumeration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Shade {
-    Pale,
-    Deep,
-    Vivid,
-}
-
-pub(crate) const SHADE: Message = alone("test.shade");
-
-impl Shade {
-    pub(crate) const ALL: [Self; 3] = [Self::Pale, Self::Deep, Self::Vivid];
-
-    pub(crate) fn declared(value: i32) -> Option<Self> {
-        match value {
-            1 => Some(Self::Pale),
-            4 => Some(Self::Deep),
-            9 => Some(Self::Vivid),
-            _ => None,
-        }
-    }
-
-    pub(crate) const fn value(self) -> i32 {
-        match self {
-            Self::Pale => 1,
-            Self::Deep => 4,
-            Self::Vivid => 9,
-        }
-    }
-}
-
-impl<'a> Decode<'a> for Shade {
-    const S_MIN: u64 = 4;
-    const DEPTH: u32 = 0;
-    const HEAP_RATIO: Option<u64> = Some(0);
-    const RESERVATIONS: Option<u64> = Some(0);
-
-    fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
-        decoder.read_enum("test.shade", Self::declared)
-    }
-}
-
-impl Classified for Shade {
-    const SECRET: bool = false;
-}
-
-impl Encode for Shade {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        Ok(4)
-    }
-
-    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
-        encoder.put_i32(self.value())
-    }
-}
+#[cfg(test)]
+pub(crate) use shaded::{SHADE, SHADED, ShadedArm};
+pub(crate) use shaded::{Shade, Shaded};
 
 /// `bool` on its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,8 +103,8 @@ impl Classified for Flag {
 }
 
 impl Encode for Flag {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        Ok(4)
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.charge(Ok(4))
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -206,63 +156,12 @@ impl Classified for Solo {
 }
 
 impl Encode for Solo {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        Ok(4)
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.charge(Ok(4))
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_i32(5)
-    }
-}
-
-// ---- shaded: a closed discriminant with a default arm ----
-
-/// `shaded`: only VIVID selects the default arm.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Shaded {
-    Pale(u64),
-    Deep(u64),
-    Vivid(u64),
-}
-
-pub(crate) const SHADED: Message = Message {
-    name: "test.shaded",
-    cap: 12,
-    budget: 1024,
-};
-
-impl<'a> Decode<'a> for Shaded {
-    const S_MIN: u64 = 12;
-    const DEPTH: u32 = 1;
-    const HEAP_RATIO: Option<u64> = Some(0);
-    const RESERVATIONS: Option<u64> = Some(0);
-
-    fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
-        match decoder.read_enum("test.shaded.tone", Shade::declared)? {
-            Shade::Pale => decoder.read_u64().map(Self::Pale),
-            Shade::Deep => decoder.read_u64().map(Self::Deep),
-            Shade::Vivid => decoder.read_u64().map(Self::Vivid),
-        }
-    }
-}
-
-impl Classified for Shaded {
-    const SECRET: bool = false;
-}
-
-impl Encode for Shaded {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        Ok(12)
-    }
-
-    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
-        let (tone, value) = match *self {
-            Self::Pale(value) => (Shade::Pale, value),
-            Self::Deep(value) => (Shade::Deep, value),
-            Self::Vivid(value) => (Shade::Vivid, value),
-        };
-        encoder.put(&tone)?;
-        encoder.put_u64(value)
     }
 }
 
@@ -306,11 +205,17 @@ impl Classified for Entry {
 }
 
 impl Encode for Entry {
-    fn encoded_len(&self) -> Result<u64, Error> {
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
         match self {
-            Self::Plain => Ok(4),
-            Self::Linked(target) => sum(4, opaque_len(&TARGET, target.len())?),
-            Self::Stamped(_) => Ok(12),
+            Self::Plain => sizer.put(&0_i32),
+            Self::Linked(target) => {
+                sizer.put(&1_i32)?;
+                sizer.opaque(&TARGET, target.len())
+            }
+            Self::Stamped(stamp) => {
+                sizer.put(&2_i32)?;
+                sizer.put(stamp)
+            }
         }
     }
 
@@ -359,8 +264,8 @@ impl Classified for Label {
 }
 
 impl Encode for Label {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        opaque_len(&LABEL_CAP, self.0.len())
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.opaque(&LABEL_CAP, self.0.len())
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -423,11 +328,11 @@ impl Classified for Note {
 }
 
 impl Encode for Note {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        let mut total = opaque_len(&TITLE, self.title.len())?;
-        total = sum(total, self.what.encoded_len()?)?;
-        total = sum(total, opaque_len(&OWNER, self.owner.len())?)?;
-        sum(total, opaque_len(&BODY, self.body.len())?)
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.opaque(&TITLE, self.title.len())?;
+        sizer.put(&self.what)?;
+        sizer.opaque(&OWNER, self.owner.len())?;
+        sizer.opaque(&BODY, self.body.len())
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -462,8 +367,8 @@ impl Classified for Pair {
 }
 
 impl Encode for Pair {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        fixed_array_len(&self.0)
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.fixed_array(&self.0)
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -505,8 +410,8 @@ macro_rules! array_type {
         }
 
         impl Encode for $name {
-            fn encoded_len(&self) -> Result<u64, Error> {
-                array_len(&$cap, &self.0)
+            fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+                sizer.array(&$cap, &self.0)
             }
 
             fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -545,8 +450,8 @@ impl Classified for Five {
 }
 
 impl Encode for Five {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        fixed_opaque_len(5)
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.fixed_opaque(self.0.len())
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -582,8 +487,8 @@ impl Classified for Blob {
 }
 
 impl Encode for Blob {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        opaque_len(&BLOB_CAP, self.0.len())
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.opaque(&BLOB_CAP, self.0.len())
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -623,8 +528,11 @@ impl Classified for Quad {
 }
 
 impl Encode for Quad {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        Ok(240)
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.fixed_opaque(self.a.len())?;
+        sizer.fixed_opaque(self.b.len())?;
+        sizer.fixed_opaque(self.c.len())?;
+        sizer.fixed_opaque(self.d.len())
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -672,10 +580,13 @@ impl Classified for Wide {
 }
 
 impl Encode for Wide {
-    fn encoded_len(&self) -> Result<u64, Error> {
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
         match self {
-            Self::Small => Ok(4),
-            Self::Big(block) => sum(4, block.encoded_len()?),
+            Self::Small => sizer.charge(Ok(4)),
+            Self::Big(block) => {
+                sizer.charge(Ok(4))?;
+                sizer.put(block)
+            }
         }
     }
 
@@ -718,8 +629,9 @@ impl Classified for Deep16 {
 }
 
 impl Encode for Deep16 {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        Ok(72)
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.put(&self.value)?;
+        sizer.fixed_opaque(self.pad.len())
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -756,8 +668,9 @@ macro_rules! deep_link {
         }
 
         impl Encode for $name {
-            fn encoded_len(&self) -> Result<u64, Error> {
-                sum(8, self.next.encoded_len()?)
+            fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+                sizer.put(&self.value)?;
+                sizer.put(&self.next)
             }
 
             fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -834,9 +747,10 @@ impl Classified for Sealed<'_> {
 }
 
 impl Encode for Sealed<'_> {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        let total = sum(opaque_len(&KEY, self.key.reveal().len())?, 4)?;
-        sum(total, opaque_len(&TAG, self.tag.reveal().len())?)
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.opaque(&KEY, self.key.reveal().len())?;
+        sizer.charge(Ok(4))?;
+        sizer.opaque(&TAG, self.tag.reveal().len())
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -929,14 +843,19 @@ impl Classified for Every {
 }
 
 impl Encode for Every {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        let mut total = 32;
-        total = sum(total, fixed_opaque_len(BIG_LEN)?)?;
-        total = sum(total, opaque_len(&VAR, self.var.len())?)?;
-        total = sum(total, self.name.encoded_len()?)?;
-        total = sum(total, fixed_array_len(&self.fixed)?)?;
-        total = sum(total, array_len(&LIST, &self.list)?)?;
-        sum(total, self.what.encoded_len()?)
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.put(&self.int)?;
+        sizer.put(&self.unsigned)?;
+        sizer.put(&self.hyper)?;
+        sizer.put(&self.unsigned_hyper)?;
+        sizer.charge(Ok(4))?;
+        sizer.put(&self.shade)?;
+        sizer.fixed_opaque(self.big.len())?;
+        sizer.opaque(&VAR, self.var.len())?;
+        sizer.put(&self.name)?;
+        sizer.fixed_array(&self.fixed)?;
+        sizer.array(&LIST, &self.list)?;
+        sizer.put(&self.what)
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -1007,6 +926,6 @@ macro_rules! message_types {
 }
 
 message_types!(
-    Shade => SHADE, Shaded => SHADED, Flag => FLAG, Entry => ENTRY, Label => LABEL, Note => NOTE, Pair => PAIR,
+    Flag => FLAG, Entry => ENTRY, Label => LABEL, Note => NOTE, Pair => PAIR,
     Five => FIVE, Blob => BLOB, Wide => WIDE, Deep => DEEP, Sealed<'_> => SEALED, Every => EVERY,
 );
