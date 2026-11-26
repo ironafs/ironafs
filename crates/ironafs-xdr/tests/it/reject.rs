@@ -26,7 +26,9 @@ use ironafs_xdr::{
 
 use crate::support::heap::{Append, Gather, Owned, Text};
 use crate::support::{hex, traced_with_budget};
-use crate::types::{Blob, Entry, Every, Flag, Ints, Label, Names, Note, Pair, Sealed, Shade, Tags};
+use crate::types::{
+    Blob, Entry, Every, Flag, Ints, Label, Names, Note, Pair, Sealed, Shade, Shaded, Tags,
+};
 
 /// The message an `int` decoded on its own belongs to.
 const INT: Message = Message {
@@ -126,27 +128,25 @@ impl<'a> Decode<'a> for Int {
     }
 }
 
-/// Decodes `input` as `T` and returns the error, or panics on success.
+/// Decodes `input` as `T`, keeping the outcome and the ledger's requests.
 fn reject<'a, T: Decode<'a> + MessageType>(
     input: &'a [u8],
     budget: Option<u64>,
-) -> (Error, Vec<Reservation>) {
+) -> (Result<(), Error>, Vec<Reservation>) {
     let (result, seen) = traced_with_budget::<T>(input, budget.unwrap_or(T::MESSAGE.budget));
-    match result {
-        Ok(_) => panic!("accepted"),
-        Err(error) => (error, seen),
-    }
+    (result.map(|_| ()), seen)
 }
 
-/// The error and reservations of decoding the case's input, and the size
+/// The outcome and reservations of decoding the case's input, and the size
 /// of its type's array element, if it has one.
-fn run(case: &Case) -> (Error, Vec<Reservation>, Option<usize>) {
+fn run(case: &Case) -> (Result<(), Error>, Vec<Reservation>, Option<usize>) {
     let input = &case.input;
     let budget = case.budget;
-    let ((error, seen), element) = match case.type_name.as_str() {
+    let ((result, seen), element) = match case.type_name.as_str() {
         "int" => (reject::<Int>(input, budget), None),
         "flag" => (reject::<Flag>(input, budget), None),
         "shade" => (reject::<Shade>(input, budget), None),
+        "shaded" => (reject::<Shaded>(input, budget), None),
         "entry" => (reject::<Entry>(input, budget), None),
         "label" => (reject::<Label>(input, budget), None),
         "blob" => (reject::<Blob>(input, budget), None),
@@ -159,7 +159,7 @@ fn run(case: &Case) -> (Error, Vec<Reservation>, Option<usize>) {
         "every" => (reject::<Every>(input, budget), None),
         other => panic!("unknown type {other}"),
     };
-    (error, seen, element)
+    (result, seen, element)
 }
 
 fn kind_name(kind: ErrorKind) -> String {
@@ -182,16 +182,24 @@ fn reject_corpus_fails_with_exact_kind_offset_and_reservations() {
     let files = fixtures();
     assert_eq!(
         files.len(),
-        29,
+        30,
         "the corpus of section 10.3, R6 as one file per padding byte"
     );
     for file in files {
         let case = parse(&file);
         let label = case.file.display();
-        let (error, seen, element) = run(&case);
-        assert_eq!(kind_name(error.kind()), case.kind, "{label}: {error}");
+        let (result, seen, element) = run(&case);
+        let kind_and_offset = result
+            .as_ref()
+            .err()
+            .map(|error| (kind_name(error.kind()), error.offset()));
+        assert_eq!(
+            kind_and_offset,
+            Some((case.kind, case.offset)),
+            "{label}: {result:?}"
+        );
+        let error = result.unwrap_err();
         assert_eq!(error.name(), case.name.as_deref(), "{label}: {error}");
-        assert_eq!(error.offset(), case.offset, "{label}: {error}");
         assert_eq!(error.extent(), case.extent, "{label}: {error}");
         let expected: Vec<Reservation> = case
             .requests
@@ -224,7 +232,7 @@ fn sealed_errors_name_kind_and_field_only() {
     let mut over = hex("00000011");
     over.append_all([0x5a; 20]);
     over.append_all(hex("00000001 00000000"));
-    let (error, _) = reject::<Sealed<'_>>(&over, None);
+    let error = reject::<Sealed<'_>>(&over, None).0.unwrap_err();
     assert_eq!(
         error.text(),
         "length over declared bound: test.sealed.key, limit 16"
@@ -234,7 +242,7 @@ fn sealed_errors_name_kind_and_field_only() {
         "Error { kind: LengthOverBound, name: Some(\"test.sealed.key\"), limit: Some(16), position: None }"
     );
     let cut = hex("00000000 0000");
-    let (error, _) = reject::<Sealed<'_>>(&cut, None);
+    let error = reject::<Sealed<'_>>(&cut, None).0.unwrap_err();
     assert_eq!(error.text(), "input truncated");
     assert_eq!(
         format!("{error:?}"),

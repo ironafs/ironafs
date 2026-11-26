@@ -15,8 +15,8 @@ use crate::support::heap::{Gather, Owned, boxed};
 use crate::support::{deep_from, encoded, sealed_bytes};
 use crate::types::{
     BLOB, Blob, DEEP, Deep16, ENTRY, EVERY, Entry, Every, FIVE, FLAG, Five, Flag, INTS, Ints,
-    LABEL, Label, NAMES, NOTE, Names, Note, PAIR, Pair, Quad, SHADE, SOLOS, Sealed, Shade, Solo,
-    Solos, TAGS, Tags, WIDE, Wide,
+    LABEL, Label, NAMES, NOTE, Names, Note, PAIR, Pair, Quad, SHADE, SHADED, SOLOS, Sealed, Shade,
+    Shaded, Solo, Solos, TAGS, Tags, WIDE, Wide,
 };
 
 /// Encodes `value`, checks the encoding is as long as `size`, and decodes
@@ -98,6 +98,7 @@ fn decode_fits_small_stack() {
     fits(&LABEL, &label(8), 12);
     fits(&ENTRY, &Entry::Linked(bytes(16)), 24);
     fits(&SHADE, &Shade::Deep, 4);
+    fits(&SHADED, &Shaded::Default(Shade::Vivid, u64::MAX), 12);
     fits(&FLAG, &Flag(true), 4);
 }
 

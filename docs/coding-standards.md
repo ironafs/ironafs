@@ -354,6 +354,7 @@ number and is marked retired; new rules are appended.
       - mainstream cryptography (AES, SHA-2, HMAC and the like), never
         hand-rolled: well-reviewed crates or the operating system's own
         cryptography;
+        (2026-11-21: see [ADR 0004, C5, point 1](adr/0004-architecture-1-core.md#c5-the-cryptography-boundary-and-the-operating-system-bindings) for the dated exception.)
       - the operating system's own interfaces (Kerberos and GSS-API, Cloud
         Files, FSKit). These include libraries the platform's vendor or
         distribution ships as part of the supported system, even when

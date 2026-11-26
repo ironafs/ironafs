@@ -27,6 +27,8 @@
 //! Like `extern`, the names of the macros that read files are refused in
 //! the raw text of every file of the package too, so a token the reader
 //! misreads cannot hide one.
+//! The library source, including unit tests, may use only `Property`
+//! and `Source` from `ironafs-test-support` (testing.md §5.1).
 //!
 //! The build's result is checked by identity too (`matrix`): the triples
 //! of crate, target and profile the compiler's own outputs show it
@@ -77,6 +79,8 @@ const EXTERN_ALLOWED: &str = "extern crate alloc;";
 /// Why a pure library's source may not name what it names.
 const STD: &str = "the standard library is out of a pure crate's reach under every cfg, \
                    including those the build does not compile";
+const TEST_SUPPORT: &str = "a pure crate's library source may use only Property and Source from \
+                            ironafs-test-support";
 const NO_STD: &str = "a pure crate says no_std once, unconditionally, at the start of its \
                       library root";
 const UNSAFE: &str = "unsafe code, assembly and foreign functions are out of a pure crate's \
@@ -265,11 +269,18 @@ impl fmt::Display for Violation {
                 line,
                 name,
                 reason,
-            } => write!(
-                formatter,
-                "{}:{line}: names {name}: {reason} (ADR 0004, C4, point 1)",
-                file.display()
-            ),
+            } => {
+                let rule = if *reason == TEST_SUPPORT {
+                    "testing.md §5.1"
+                } else {
+                    "ADR 0004, C4, point 1"
+                };
+                write!(
+                    formatter,
+                    "{}:{line}: names {name}: {reason} ({rule})",
+                    file.display()
+                )
+            }
             Self::NamedInText { file, line, word } => {
                 write!(
                     formatter,
@@ -610,9 +621,11 @@ pub(crate) fn root_cfg_lines(tokens: &[Token]) -> Vec<usize> {
 /// assembly and of the macros that read files, anywhere; a macro
 /// called through a fragment; `#[path]` or a fragment in an attribute; a
 /// `#` not directly followed by `[` or `![`; and `extern` other than an
-/// `extern crate alloc;` with no outer attribute. A raw identifier such as
-/// `r#unsafe` is a name, not the keyword, but `r#include` still names the
-/// macro.
+/// `extern crate alloc;` with no outer attribute. Only `Property` and
+/// `Source` may be selected from `ironafs_test_support`; a root import,
+/// glob or fragment selecting an unknown export makes more names reachable.
+/// A raw identifier such as `r#unsafe` is a name, not the keyword, but
+/// `r#include` still names the macro.
 pub(crate) fn library_names(
     tokens: &[Token],
     allowed_no_std: Option<usize>,
@@ -697,6 +710,12 @@ pub(crate) fn library_names(
             _ => {}
         }
     }
+    found.extend(
+        rust_source::named_paths(tokens, "ironafs_test_support")
+            .into_iter()
+            .filter(|used| !matches!(used.path.split("::").nth(1), Some("Property" | "Source")))
+            .map(|used| (used.line, used.path, TEST_SUPPORT)),
+    );
     found.sort_by_key(|(line, _, _)| *line);
     found
 }

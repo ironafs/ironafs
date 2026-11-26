@@ -24,8 +24,8 @@ use libfuzzer_sys::fuzz_target;
 mod types;
 
 use types::{
-    Blob, Deep, Entry, Every, Five, Flag, Ints, Label, Names, Note, Pair, Sealed, Shade, Solos,
-    Tags, Wide,
+    Blob, Deep, Entry, Every, Five, Flag, Ints, Label, Names, Note, Pair, Sealed, Shade, Shaded,
+    Solos, Tags, Wide,
 };
 
 /// One traced decode: the result and every request the ledger let
@@ -106,6 +106,7 @@ fn check<'a, T: Decode<'a> + Encode + MessageType>(input: &'a [u8]) {
 
 fuzz_target!(|input: &[u8]| {
     check::<Shade>(input);
+    check::<Shaded>(input);
     check::<Flag>(input);
     check::<Entry>(input);
     check::<Label>(input);
