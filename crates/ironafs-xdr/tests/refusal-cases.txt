@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+reject::reject_corpus_fails_with_exact_kind_offset_and_reservations docs/specs/xdr.md R9b

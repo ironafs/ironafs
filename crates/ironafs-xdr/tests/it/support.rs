@@ -11,7 +11,7 @@ use ironafs_xdr::{Decode, Encode, Error, MessageType, Reservation, decode_traced
 use self::heap::{Gather, boxed};
 use crate::types::{
     Blob, Deep, Deep16, Entry, Every, Five, Ints, Label, Names, Note, Pair, Quad, Sealed, Shade,
-    Solo, Solos, Tags, Wide,
+    Shaded, Solo, Solos, Tags, Wide,
 };
 
 /// The bytes a hexadecimal string spells, ignoring whitespace.
@@ -97,6 +97,16 @@ fn labels(source: &mut Source, most: usize, cap: usize) -> Vec<Label> {
 
 pub(crate) fn shade(source: &mut Source) -> Shade {
     *source.pick(&Shade::ALL)
+}
+
+pub(crate) fn shaded(source: &mut Source) -> Shaded {
+    let tone = shade(source);
+    let value = source.u64();
+    match tone {
+        Shade::Pale => Shaded::Pale(value),
+        Shade::Deep => Shaded::Deep(value),
+        Shade::Vivid => Shaded::Vivid(value),
+    }
 }
 
 pub(crate) fn entry(source: &mut Source) -> Entry {
@@ -263,7 +273,8 @@ pub(crate) fn every(source: &mut Source) -> Every {
 /// 5.1, computed apart from the codec's own `encoded_len`.
 pub(crate) mod size {
     use crate::types::{
-        Blob, Deep, Entry, Every, Five, Ints, Label, Names, Note, Pair, Shade, Solos, Tags, Wide,
+        Blob, Deep, Entry, Every, Five, Ints, Label, Names, Note, Pair, Shade, Shaded, Solos, Tags,
+        Wide,
     };
 
     /// A string or variable-length opaque of `n` bytes: 4 + n + pad(n).
@@ -277,6 +288,10 @@ pub(crate) mod size {
     )]
     pub(crate) fn shade(_: &Shade) -> usize {
         4
+    }
+
+    pub(crate) fn shaded(_: &Shaded) -> usize {
+        4 + 8
     }
 
     pub(crate) fn entry(entry: &Entry) -> usize {

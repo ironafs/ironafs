@@ -16,8 +16,8 @@ use crate::support::heap::{Append, Gather, Owned};
 use crate::support::{self, hex, sealed_bytes, size, traced};
 use crate::types::{
     BLOB, Blob, DEEP, Deep, ENTRY, EVERY, Entry, Every, FIVE, Five, INTS, Ints, LABEL, Label,
-    NAMES, NOTE, Names, Note, PAIR, Pair, SHADE, SOLOS, Sealed, Shade, Solos, TAGS, Tags, WIDE,
-    Wide,
+    NAMES, NOTE, Names, Note, PAIR, Pair, SHADE, SHADED, SOLOS, Sealed, Shade, Shaded, Solos, TAGS,
+    Tags, WIDE, Wide,
 };
 
 /// A type the properties run over.
@@ -181,6 +181,11 @@ fn all_properties<T: Tested>(
 #[test]
 fn shade_properties_hold() {
     all_properties::<Shade>("shade", &SHADE, support::shade, size::shade);
+}
+
+#[test]
+fn shaded_properties_hold() {
+    all_properties::<Shaded>("shaded", &SHADED, support::shaded, size::shaded);
 }
 
 #[test]
