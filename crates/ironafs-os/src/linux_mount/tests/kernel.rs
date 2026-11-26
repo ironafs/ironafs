@@ -7,6 +7,7 @@
 
 mod fuse;
 
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -15,7 +16,7 @@ use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
 use std::path::{Path, PathBuf};
 use std::thread;
 
-use crate::dump::harness::{Command, NOBODY, own_status, status_ids};
+use crate::dump::harness::{Command, NOBODY, PrivateDir, own_status, status_ids};
 use crate::mount_fuse;
 
 /// `CAP_SYS_ADMIN` in `/proc/self/status`'s effective capability mask.
@@ -38,6 +39,14 @@ fn a_target_with_nul_is_refused_by_the_wrapper() {
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     // A kernel EINVAL would also have kind InvalidInput.
     assert_eq!(error.raw_os_error(), None);
+}
+
+fn has_mount_capability(status: &str) -> bool {
+    let effective = status
+        .lines()
+        .find_map(|line| line.strip_prefix("CapEff:"))
+        .unwrap();
+    u64::from_str_radix(effective.trim(), 16).unwrap() & CAP_SYS_ADMIN != 0
 }
 
 /// Requires a new PID and mount namespace with private propagation, checks
@@ -65,12 +74,11 @@ fn mount_environment(privileged: bool) -> (PathBuf, u32, u32) {
         );
     }
     let status = own_status();
-    let effective = status
-        .lines()
-        .find_map(|line| line.strip_prefix("CapEff:"))
-        .unwrap();
-    let capable = u64::from_str_radix(effective.trim(), 16).unwrap() & CAP_SYS_ADMIN != 0;
-    assert_eq!(capable, privileged, "effective CAP_SYS_ADMIN");
+    assert_eq!(
+        has_mount_capability(&status),
+        privileged,
+        "effective CAP_SYS_ADMIN"
+    );
     let uid = status_ids(&status, "Uid:")[1];
     let gid = status_ids(&status, "Gid:")[1];
     if !privileged {
@@ -112,36 +120,40 @@ fn assert_fuse_mount(mountinfo: &str, target: &Path, uid: u32, gid: u32) {
             (fields.next() == Some(target.as_str())).then(|| (fields.next().unwrap(), filesystem))
         })
         .unwrap_or_else(|| panic!("missing mountinfo entry for {target}"));
-    for option in ["nosuid", "nodev"] {
-        assert!(
-            mount_options.split(',').any(|found| found == option),
-            "{mount_options}"
-        );
-    }
+    // Linux can report its default atime policy and the LSM's security
+    // labeling marker. Compare the rest as unordered sets so additional
+    // caller-controlled options such as noexec or default_permissions fail.
+    let per_mount: BTreeSet<_> = mount_options
+        .split(',')
+        .filter(|&option| option != "relatime")
+        .collect();
+    assert_eq!(per_mount, BTreeSet::from(["rw", "nosuid", "nodev"]));
     let mut fields = filesystem.split_ascii_whitespace();
     assert_eq!(fields.next(), Some("fuse"));
     assert_eq!(fields.next(), Some("ironafs"));
-    let super_options = fields.next().unwrap();
-    for option in [
-        "allow_other".to_owned(),
-        format!("user_id={uid}"),
-        format!("group_id={gid}"),
-    ] {
-        assert!(
-            super_options.split(',').any(|found| found == option),
-            "{super_options}"
-        );
-    }
+    let super_options: BTreeSet<_> = fields
+        .next()
+        .unwrap()
+        .split(',')
+        .filter(|&option| option != "seclabel")
+        .collect();
+    assert_eq!(
+        super_options,
+        BTreeSet::from([
+            "rw",
+            "allow_other",
+            &format!("user_id={uid}"),
+            &format!("group_id={gid}")
+        ])
+    );
 }
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN in a private mount and PID namespace under a hard timeout"]
 fn the_mount_serves_a_getattr_request() {
-    let (path, uid, gid) = mount_environment(true);
-    assert_ne!(
-        uid, NOBODY,
-        "the requester must differ from the mount owner"
-    );
+    let (path, _, _) = mount_environment(true);
+    // Different IDs also expose a swap or a non-decimal mount option.
+    let (uid, gid) = (12_345, 23_456);
     let mountpoint = path.canonicalize().unwrap();
     let device = fuse_device();
     mount_fuse(&path, device.as_fd(), ROOT_MODE, uid, gid).unwrap();
@@ -158,9 +170,8 @@ fn the_mount_serves_a_getattr_request() {
         fuse::serve_getattr(&device, uid, gid);
         device
     });
-    // GNU stat requests the fields in its format. Mode and link count
-    // need only GETATTR, even on kernels that can query a birth time via
-    // FUSE_STATX.
+    // GNU stat requests the fields in its format. These basic attributes
+    // need only GETATTR, even on kernels that can query birth time via FUSE_STATX.
     let nobody = NOBODY.to_string();
     let attributes = Command::new("setpriv")
         .args([
@@ -176,7 +187,7 @@ fn the_mount_serves_a_getattr_request() {
             "--",
             "stat",
         ])
-        .args(["--format=%f %h", "--"])
+        .args(["--format=%f %h %u %g", "--"])
         .arg(&mountpoint)
         .output()
         .unwrap();
@@ -184,7 +195,7 @@ fn the_mount_serves_a_getattr_request() {
     // underlying empty directory. Check stat before joining so an early
     // child failure cannot leave the assertion waiting for a request.
     assert!(attributes.status.success(), "{attributes:?}");
-    assert_eq!(attributes.stdout, b"41e9 2\n");
+    assert_eq!(attributes.stdout, b"41e9 2 12345 23456\n");
     server.join().unwrap();
 }
 
@@ -233,7 +244,25 @@ fn the_kernel_refuses_invalid_mount_arguments() {
 #[ignore = "needs /dev/fuse as a non-root user in a private mount and PID namespace under a hard timeout"]
 fn the_mount_without_cap_sys_admin_returns_eperm() {
     let (path, uid, gid) = mount_environment(false);
-    let device = fuse_device();
-    let error = mount_fuse(&path, device.as_fd(), ROOT_MODE, uid, gid).unwrap_err();
+    assert_mount_eperm(&path, &fuse_device(), uid, gid);
+}
+
+#[test]
+#[ignore = "run in a disposable Linux container without CAP_SYS_ADMIN"]
+fn the_mount_call_returns_eperm_in_a_restricted_container() {
+    assert!(
+        !has_mount_capability(&own_status()),
+        "effective CAP_SYS_ADMIN"
+    );
+    let target = PrivateDir::create("ironafs-denied-mount").unwrap();
+    // The container need not expose /dev/fuse. The denial of mount is
+    // checked before the kernel can use the open device descriptor.
+    let device = File::open("/dev/null").unwrap();
+    assert_mount_eperm(target.path(), &device, 0, 0);
+}
+
+#[track_caller]
+fn assert_mount_eperm(target: &Path, device: &File, uid: u32, gid: u32) {
+    let error = mount_fuse(target, device.as_fd(), ROOT_MODE, uid, gid).unwrap_err();
     assert_eq!(error.raw_os_error(), Some(EPERM));
 }

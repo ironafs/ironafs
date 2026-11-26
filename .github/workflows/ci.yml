@@ -578,6 +578,14 @@ jobs:
           for test in $NATIVE_TESTS; do
             grep -Eq "PASS .* ironafs-os $test\$" nextest.log
           done
+          # Exercise libc mount even when the container has no FUSE device.
+          test=linux_mount::tests::kernel::the_mount_call_returns_eperm_in_a_restricted_container
+          status=0
+          "$HOME/.cargo/bin/cargo" nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 \
+            --no-tests fail --locked --run-ignored only -E "test(=$test)" > mount-denied.log 2>&1 || status=$?
+          cat mount-denied.log
+          test "$status" -eq 0
+          grep -Eq "PASS .* ironafs-os $test\$" mount-denied.log
       - name: Run ironafs-os's doctests on glibc 2.28
         run: |
           "$HOME/.cargo/bin/cargo" test -p ironafs-os --doc --target "$TARGET" --locked > doc.log 2>&1 || { cat doc.log; exit 1; }
