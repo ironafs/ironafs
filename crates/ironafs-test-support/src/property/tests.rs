@@ -88,7 +88,7 @@ fn cases_zero_panics_with_message() {
 }
 
 #[test]
-fn generator_labels_below_minimum_fail_the_run() {
+fn property_label_below_minimum_fails() {
     let property = Property::new("generator reach")
         .cases(1)
         .require_label("repeated", 2)
