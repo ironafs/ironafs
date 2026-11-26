@@ -22,7 +22,7 @@ fn mount_passes_fixed_flags_and_exact_c_strings() {
     plan(Plan {
         target: target.to_owned(),
         options: CString::new(format!(
-            "fd={},rootmode=40751,user_id=12345,group_id=4294967295,allow_other",
+            "fd={},rootmode=40751,user_id=12345,group_id=1234567890,allow_other",
             device.as_raw_fd()
         ))
         .unwrap(),
@@ -31,7 +31,7 @@ fn mount_passes_fixed_flags_and_exact_c_strings() {
     });
     let before = calls();
     let path = Path::new(OsStr::from_bytes(target.to_bytes()));
-    mount_fuse(path, device.as_fd(), 0o40751, 12_345, u32::MAX).unwrap();
+    mount_fuse(path, device.as_fd(), 0o40751, 12_345, 1_234_567_890).unwrap();
     assert_eq!(calls() - before, 1);
 }
 

@@ -292,6 +292,7 @@ jobs:
         linux_udp6::tests::kernel::a_port_held_by_another_ipv6_socket_is_in_use_and_nothing_stays_open
         linux_statvfs::tests::kernel::the_answer_for_proc_is_what_stat_says
         linux_statvfs::tests::kernel::the_answer_for_the_root_and_temporary_directories_is_what_stat_says
+        linux_mount::tests::kernel::a_target_with_nul_is_refused_by_the_wrapper
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -411,8 +412,9 @@ jobs:
 
           # Each FUSE case gets its own mount and PID namespace. This
           # shell owns the mountpoint and removes it after they exit.
+          # Its parent must be searchable by the non-root requester.
           outside=$(readlink /proc/self/ns/mnt)
-          test_dir=$(mktemp -d)
+          test_dir=$(mktemp -d /tmp/ironafs-fuse.XXXXXXXXXX)
           trap 'rmdir -- "$test_dir"' EXIT
           run_mount_test() {
             test_name="linux_mount::tests::kernel::$1"
@@ -427,7 +429,15 @@ jobs:
             grep -Fx "test $test_name ... ok" <<< "$output"
             grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored;' <<< "$output"
           }
-          run_mount_test the_mount_serves_a_getattr_request
+          # DAC override lets the mount process use the runner's private
+          # directory. The GETATTR case also switches the stat child to
+          # its own uid and gid and drops that child's capability bounds.
+          run_mount_test the_mount_serves_a_getattr_request \
+            setpriv --bounding-set=-all,+sys_admin,+dac_override,+setuid,+setgid,+setpcap \
+            --no-new-privs --inh-caps=-all --ambient-caps=-all --
+          run_mount_test the_kernel_refuses_invalid_mount_arguments \
+            setpriv --bounding-set=-all,+sys_admin,+dac_override \
+            --no-new-privs --inh-caps=-all --ambient-caps=-all --
           run_mount_test the_mount_without_cap_sys_admin_returns_eperm \
             setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs \
             --bounding-set=-all --inh-caps=-all --ambient-caps=-all
@@ -515,6 +525,7 @@ jobs:
         linux_udp6::tests::kernel::a_port_held_by_another_ipv6_socket_is_in_use_and_nothing_stays_open
         linux_statvfs::tests::kernel::the_answer_for_proc_is_what_stat_says
         linux_statvfs::tests::kernel::a_descriptor_that_is_not_a_directory_s_is_refused_and_nothing_stays_open
+        linux_mount::tests::kernel::a_target_with_nul_is_refused_by_the_wrapper
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -9,6 +9,8 @@
 use std::fs::File;
 use std::io::{Read, Write};
 
+use crate::dump::harness::NOBODY;
+
 const IN_HEADER: usize = 40;
 const OUT_HEADER: usize = 16;
 const INIT: u32 = 26;
@@ -31,6 +33,11 @@ pub(super) fn serve_getattr(mut device: &File, uid: u32, gid: u32) {
 
     let unique = read_request(&mut device, &mut request, GETATTR, 16);
     assert_eq!(u64::from_ne_bytes(request[16..24].try_into().unwrap()), 1);
+    let requester = (
+        u32::from_ne_bytes(request[24..28].try_into().unwrap()),
+        u32::from_ne_bytes(request[28..32].try_into().unwrap()),
+    );
+    assert_eq!(requester, (NOBODY, NOBODY));
     // Zero cache lifetime followed by the root directory's fuse_attr.
     let mut attr_out = [0_u8; 104];
     let attr = &mut attr_out[16..];
