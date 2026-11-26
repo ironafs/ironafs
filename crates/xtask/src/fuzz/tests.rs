@@ -242,7 +242,9 @@ fn replay_preserves_arguments_for_targets_without_a_declared_cap() {
 fn replay_refuses_a_seed_that_the_engine_would_truncate() {
     use std::fs;
 
-    let dir = crate::fixture::fresh_dir(&std::env::temp_dir(), "fuzz-seed-length").unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let build_dir = executable.parent().unwrap();
+    let dir = crate::fixture::fresh_dir(build_dir, "fuzz-seed-length").unwrap();
     fs::create_dir_all(&dir).unwrap();
     let seed = PathBuf::from("synthetic-seed");
     let seed_path = dir.join(&seed);
