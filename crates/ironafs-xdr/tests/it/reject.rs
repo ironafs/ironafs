@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The reject corpus of `docs/specs/xdr.md`, 10.3: one file per case under
+//! The reject corpus and fuzz boundary witnesses of `docs/specs/xdr.md`,
+//! 10.3. The text corpus has one file per case under
 //! `tests/fixtures/reject/`, each naming its type, the error it expects,
 //! the section it breaks and the exact reservations made before the error.
 //!
@@ -25,7 +26,7 @@ use ironafs_xdr::{
 };
 
 use crate::support::heap::{Append, Gather, Owned, Text};
-use crate::support::{hex, traced_with_budget};
+use crate::support::{encoded, hex, traced, traced_with_budget};
 use crate::types::{
     Blob, Entry, Every, Flag, Ints, Label, Names, Note, Pair, Sealed, Shade, Shaded, Tags,
 };
@@ -222,6 +223,59 @@ fn reject_corpus_fails_with_exact_kind_offset_and_reservations() {
             .gather();
         assert_eq!(seen, expected, "{label}");
     }
+}
+
+/// Reads the tracked fuzz seed and checks its canonical prefix and zero suffix.
+#[track_caller]
+fn every_boundary_seed(name: &str, length: usize) -> Vec<u8> {
+    let directory =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/seeds/ironafs-xdr_decode");
+    let seed = fs::read(directory.join(name)).unwrap();
+    let prefix = hex(
+        "80000000ffffffff8000000000000000ffffffffffffffff0000000100000009 \
+         000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
+         202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f \
+         404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f \
+         6061626300000008010203040506070800000008010203040506070800000007 \
+         0000000800000004000000000000000000000000000000000000000100000010 \
+         0102030405060708090a0b0c0d0e0f10",
+    );
+    assert_eq!(prefix.len(), 208);
+    assert_eq!(seed.len(), length, "{name}");
+    assert_eq!(&seed[..208], prefix, "{name}");
+    assert!(seed[208..].iter().all(|&byte| byte == 0), "{name}");
+    seed
+}
+
+#[test]
+fn every_at_message_cap_rejects_trailing_bytes_after_decoding() {
+    let seed = every_boundary_seed("every-message-cap", 256);
+    let prefix = &seed[..208];
+    let (valid, expected_requests) = traced::<Every>(prefix);
+    assert_eq!(encoded(&valid.unwrap()).unwrap(), prefix);
+    assert_ne!(expected_requests, []);
+
+    let (result, requests) = reject::<Every>(&seed, None);
+    let error = result.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::TrailingBytes);
+    assert_eq!(error.name(), None);
+    assert_eq!(error.limit_value(), None);
+    assert_eq!(error.offset(), Some(208));
+    assert_eq!(error.extent(), Some(48));
+    assert_eq!(requests, expected_requests);
+}
+
+#[test]
+fn every_over_message_cap_rejects_before_reserving() {
+    let seed = every_boundary_seed("every-message-cap-plus-one", 257);
+    let (result, requests) = reject::<Every>(&seed, None);
+    let error = result.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::MessageTooLarge);
+    assert_eq!(error.name(), Some("test.every"));
+    assert_eq!(error.limit_value(), Some(256));
+    assert_eq!(error.offset(), Some(0));
+    assert_eq!(error.extent(), Some(257));
+    assert_eq!(requests, []);
 }
 
 /// R15: errors from the secret-bearing message carry no offset or length,

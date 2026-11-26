@@ -2,3 +2,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 reject::reject_corpus_fails_with_exact_kind_offset_and_reservations docs/specs/xdr.md R9b
+reject::every_at_message_cap_rejects_trailing_bytes_after_decoding docs/specs/xdr.md R10a
+reject::every_over_message_cap_rejects_before_reserving docs/specs/xdr.md R12a
