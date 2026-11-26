@@ -32,6 +32,34 @@ fn replay_of_record_reproduces_values() {
 }
 
 #[test]
+fn marks_preserve_draws_and_choice_bytes_when_tracking() {
+    let mut plain = Source::from_seed(7);
+    let mut marked = Source::from_seed(7);
+    marked.track_labels();
+
+    let first = plain.u16();
+    let second = plain.u8();
+    assert_eq!(marked.u16(), first);
+    marked.mark_label("between draws");
+    assert_eq!(marked.u8(), second);
+    assert!(marked.reached_label("between draws"));
+    assert_eq!(marked.choices(), plain.choices());
+    assert_eq!(marked.choice_bytes(), plain.choice_bytes());
+
+    let mut replay = Source::from_choices(plain.choices().to_vec());
+    let mut bytes = Source::from_bytes(&plain.choice_bytes());
+    let mut exhaustive = Source::enumerating(plain.choices().to_vec());
+    for source in [&mut replay, &mut bytes, &mut exhaustive] {
+        assert_eq!(source.u16(), first);
+        source.mark_label("between draws");
+        assert!(!source.reached_label("between draws"));
+        assert_eq!(source.u8(), second);
+        assert_eq!(source.choices(), plain.choices());
+        assert_eq!(source.choice_bytes(), plain.choice_bytes());
+    }
+}
+
+#[test]
 fn replay_past_end_draws_zero_choices() {
     let mut source = Source::from_choices(vec![3]);
     assert_eq!(source.u64_in(0..=9), 3);

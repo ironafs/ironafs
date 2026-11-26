@@ -22,7 +22,7 @@
 //! the variable set. An empty variable counts as unset.
 
 use std::env::{self, VarError};
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::panic::{self, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
@@ -54,6 +54,7 @@ pub struct Property {
     seed: Option<u64>,
     shrink_budget: u32,
     shrink_time_limit: Duration,
+    required_labels: Vec<(&'static str, u32)>,
 }
 
 impl Property {
@@ -68,6 +69,7 @@ impl Property {
             seed: None,
             shrink_budget: 10_000,
             shrink_time_limit: Duration::from_secs(20),
+            required_labels: Vec::new(),
         }
     }
 
@@ -81,6 +83,23 @@ impl Property {
     pub fn cases(self, cases: u32) -> Self {
         assert!(cases > 0, "a property needs at least one case");
         Self { cases, ..self }
+    }
+
+    /// Requires at least `minimum` generated cases to reach `label`.
+    /// Generators mark a label with [`Source::mark_label`]. A minimum of
+    /// zero reports the count with no threshold.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this property already requires `label`.
+    #[must_use]
+    pub fn require_label(mut self, label: &'static str, minimum: u32) -> Self {
+        assert!(
+            !self.required_labels.iter().any(|&(name, _)| name == label),
+            "duplicate required generator label {label:?}"
+        );
+        self.required_labels.push((label, minimum));
+        self
     }
 
     /// Fixes the seed in code. `IRONAFS_TEST_SEED` still overrides it, so a
@@ -131,6 +150,10 @@ impl Property {
     /// that `test` spawns is printed as usual, and fails the case only if
     /// `test` joins that thread and propagates the panic.
     ///
+    /// A completed run with required labels reports every count. If a
+    /// generated input fails first, its counterexample reports the counts
+    /// through that case.
+    ///
     /// # Errors
     ///
     /// Returns the [`Counterexample`] if any case fails.
@@ -139,7 +162,8 @@ impl Property {
     ///
     /// Panics if `IRONAFS_TEST_SEED` is set but is not valid Unicode or not
     /// a decimal or `0x`-prefixed hexadecimal `u64`, or if `generate`
-    /// panics.
+    /// panics. Panics with the seed and label counts if all cases pass but
+    /// a required generator label is below its minimum.
     pub fn run<T, V: Verdict>(
         &self,
         mut generate: impl FnMut(&mut Source) -> T,
@@ -296,9 +320,9 @@ impl Property {
         }
     }
 
-    /// Runs the property from `seed`, without reading the environment,
-    /// writing the first failure's notice to standard error and timing
-    /// the shrink on the wall clock.
+    /// Runs the property from `seed` without reading the environment.
+    /// Writes notices to standard error and times shrinking on the wall
+    /// clock.
     #[expect(
         clippy::disallowed_methods,
         reason = "rule 7 covers the code under test; the shrink time limit guards the test \
@@ -324,8 +348,9 @@ impl Property {
     }
 
     /// Runs the property from `seed`. `notice` receives the line that
-    /// announces the first failure, before shrinking starts; `now` reads a
-    /// monotonic clock, against which the shrink time limit is measured.
+    /// announces the first failing input before shrinking starts, or the
+    /// label report on success. `now` reads a monotonic clock, against
+    /// which the shrink time limit is measured.
     pub(crate) fn run_with<T, V: Verdict>(
         &self,
         seed: u64,
@@ -334,9 +359,23 @@ impl Property {
         notice: &mut impl FnMut(&str),
         now: &mut impl FnMut() -> Duration,
     ) -> Result<(), Counterexample<T>> {
+        let mut labels = LabelCounts {
+            counts: self
+                .required_labels
+                .iter()
+                .map(|&(name, minimum)| LabelCount {
+                    name,
+                    minimum,
+                    count: 0,
+                })
+                .collect(),
+        };
         let mut case_seeds = SplitMix64::new(seed);
         for case in 0..self.cases {
             let mut source = Source::from_seed(case_seeds.next_u64());
+            if !labels.counts.is_empty() {
+                source.track_labels();
+            }
             let value = match panic::catch_unwind(AssertUnwindSafe(|| generate(&mut source))) {
                 Ok(value) => value,
                 Err(payload) => {
@@ -349,6 +388,9 @@ impl Property {
                     panic::resume_unwind(payload);
                 }
             };
+            for label in &mut labels.counts {
+                label.count += u32::from(source.reached_label(label.name));
+            }
             let Some(failure) = test_failure(test, &value) else {
                 continue;
             };
@@ -388,9 +430,62 @@ impl Property {
                 shrink_runs: shrunk.runs,
                 shrink_budget_exhausted: shrunk.budget_exhausted,
                 shrink_timed_out: shrunk.timed_out,
+                labels: (!labels.counts.is_empty()).then(|| Box::new(labels)),
             });
         }
+        if !labels.counts.is_empty() {
+            let report = labels.report("generator labels");
+            assert!(
+                labels
+                    .counts
+                    .iter()
+                    .all(|label| label.count >= label.minimum),
+                "property `{}` failed generator label minimums (seed {})\n\
+                 replay with {SEED_VARIABLE}={}\n{report}",
+                self.name,
+                SeedText(seed),
+                SeedText(seed),
+            );
+            notice(&format!(
+                "property `{}` met generator label minimums (seed {})\n{report}",
+                self.name,
+                SeedText(seed),
+            ));
+        }
         Ok(())
+    }
+}
+
+/// The number of generated cases that reached a required label.
+#[derive(Debug)]
+struct LabelCount {
+    name: &'static str,
+    minimum: u32,
+    count: u32,
+}
+
+#[derive(Debug)]
+struct LabelCounts {
+    counts: Vec<LabelCount>,
+}
+
+impl LabelCounts {
+    fn report(&self, heading: &str) -> String {
+        let mut report = format!("{heading}:");
+        for label in &self.counts {
+            let shortfall = if label.count < label.minimum {
+                ", below minimum"
+            } else {
+                ""
+            };
+            // Formatting to a String cannot fail.
+            let _ = write!(
+                report,
+                "\n  {:?}: {} (minimum {}{shortfall})",
+                label.name, label.count, label.minimum,
+            );
+        }
+        report
     }
 }
 
@@ -486,6 +581,8 @@ pub struct Counterexample<T> {
     shrink_runs: u32,
     shrink_budget_exhausted: bool,
     shrink_timed_out: bool,
+    // Keep the optional counts out of line so the result stays small.
+    labels: Option<Box<LabelCounts>>,
 }
 
 impl<T> Counterexample<T> {
@@ -564,6 +661,12 @@ impl<T> Counterexample<T> {
         } else {
             ""
         };
+        let labels = self.labels.as_ref().map_or_else(String::new, |labels| {
+            format!(
+                "{}\n",
+                labels.report("generator labels through the first failing case")
+            )
+        });
         format!(
             "property `{}` failed on case {} of {} (seed {})\n\
              minimal input: {}\n\
@@ -571,6 +674,7 @@ impl<T> Counterexample<T> {
              {location}\
              minimal choices: {:?}\n\
              shrunk in {} runs{budget}\n\
+             {labels}\
              replay with {SEED_VARIABLE}={}\n\
              {}",
             self.name,
