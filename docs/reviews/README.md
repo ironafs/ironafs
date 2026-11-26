@@ -71,6 +71,7 @@ the evidence that refutes it.
 | [2026-11-24-146-os-guards](2026-11-24-146-os-guards.md) | Issue #146: strengthen the operating-system ABI and wipe checks |
 | [2026-11-24-166-wait-order](2026-11-24-166-wait-order.md) | Issue #166: take the wait signal snapshot before the deadline clock reading |
 | [2026-11-25-167-xdr-default](2026-11-25-167-xdr-default.md) | Issue #167: specify a closed-enum fixture with a default arm |
+| [2026-11-25-53-m2a-working-amendments](2026-11-25-53-m2a-working-amendments.md) | Issue #53: the M2a Working amendments to ADR 0004 |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
