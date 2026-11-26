@@ -24,7 +24,8 @@ mod tests;
 /// What went wrong.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
-    /// The message is longer than its cap.
+    /// The message exceeds its cap, or encoding encountered an invalid
+    /// size or sizing visit.
     MessageTooLarge,
     /// The input ends inside an item.
     Truncated,
@@ -41,6 +42,8 @@ pub enum ErrorKind {
     UnknownEnumValue,
     /// A union's discriminant has no arm and there is no default arm.
     UnknownDiscriminant,
+    /// A stored default-arm discriminant selects an explicit arm.
+    DefaultArmMismatch,
     /// Bytes remain after the message.
     TrailingBytes,
     /// A reservation would carry the requested bytes past the message's
@@ -54,7 +57,7 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// Every kind, in the order of the specification's table.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::MessageTooLarge,
         Self::Truncated,
         Self::LengthOverBound,
@@ -63,6 +66,7 @@ impl ErrorKind {
         Self::InvalidBool,
         Self::UnknownEnumValue,
         Self::UnknownDiscriminant,
+        Self::DefaultArmMismatch,
         Self::TrailingBytes,
         Self::BudgetExceeded,
         Self::AllocationFailed,
@@ -81,6 +85,7 @@ impl ErrorKind {
             Self::InvalidBool => "invalid boolean",
             Self::UnknownEnumValue => "unknown enumeration value",
             Self::UnknownDiscriminant => "unknown union discriminant",
+            Self::DefaultArmMismatch => "default arm discriminant selects an explicit arm",
             Self::TrailingBytes => "trailing bytes",
             Self::BudgetExceeded => "memory budget exceeded",
             Self::AllocationFailed => "allocation failed",
@@ -131,6 +136,13 @@ impl Error {
             limit: Some(limit),
             ..self
         }
+    }
+
+    /// An encode error naming the discriminant field of a default arm
+    /// whose stored discriminant selects an explicit arm.
+    #[must_use]
+    pub const fn default_arm_mismatch(field: &'static str) -> Self {
+        Self::new(ErrorKind::DefaultArmMismatch).named(field)
     }
 
     /// Adds where the error happened. The decoder never calls this for a

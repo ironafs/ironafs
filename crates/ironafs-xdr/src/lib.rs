@@ -22,8 +22,8 @@
 //!
 //! ```
 //! use ironafs_xdr::{
-//!     Cap, Classified, Decode, Decoder, Encode, Encoder, Error, Message, MessageType, decode,
-//!     encode, opaque_len, sum,
+//!     Cap, Classified, Decode, Decoder, Encode, Encoder, Error, Message, MessageType, Sizer,
+//!     decode, encode,
 //! };
 //!
 //! const NAME: Cap = Cap { name: "demo.greeting.name", bound: Some(16), bytes: 16 };
@@ -55,8 +55,9 @@
 //! }
 //!
 //! impl Encode for Greeting {
-//!     fn encoded_len(&self) -> Result<u64, Error> {
-//!         sum(4, opaque_len(&NAME, self.name.len())?)
+//!     fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+//!         sizer.put(&self.count)?;
+//!         sizer.opaque(&NAME, self.name.len())
 //!     }
 //!
 //!     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -139,9 +140,6 @@ pub use decode::{
     decode_traced, fixed_array_heap_ratio, fixed_array_reservations, max, out_of_line_heap_ratio,
     out_of_line_reservations, proven,
 };
-pub use encode::{
-    Encode, Encoder, array_len, encode, encode_into, fixed_array_len, fixed_opaque_len, opaque_len,
-    sum,
-};
+pub use encode::{Encode, Encoder, Sizer, encode, encode_into, encoded_len};
 pub use error::{Error, ErrorKind};
 pub use spec::{Cap, Classified, Message, MessageType};

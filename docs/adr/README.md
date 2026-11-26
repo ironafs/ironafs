@@ -13,7 +13,7 @@ decides anything that is hard to change later.
 | [0001](0001-licence-and-dont-copy.md) | Licence and the don't-copy rule: GPL-3.0-or-later, no code from other AFS implementations | accepted |
 | [0002](0002-ai-use-and-attribution.md) | AI use, commit attribution and working in the open | accepted; partly superseded by 0003 |
 | [0003](0003-branch-work-and-ai-disclosure.md) | Branch work and AI disclosure | accepted 2026-11-19 (#10) |
-| [0004](0004-architecture.md) | The architecture: core, OS layers, operations, negotiation and formats | accepted 2026-11-20; amended 2026-11-20 (#32) and 2026-11-21 (#101); partly superseded by 0006 (2026-11-21) |
+| [0004](0004-architecture.md) | The architecture: core, OS layers, operations, negotiation and formats | accepted 2026-11-20; amended 2026-11-20 (#32) and 2026-11-21 (#101, #53); partly superseded by 0006 (2026-11-21) |
 | [0005](0005-ironafs-os.md) | `ironafs-os`, the crate for the operating-system calls that need `unsafe` | accepted 2026-11-21 (#101); amended 2026-11-22 (#152; #153); amended 2026-11-24 (#146) and 2026-11-25 (#187) |
 | [0006](0006-rx-unprotected-packets.md) | Rx: what an unprotected packet may change | accepted 2026-11-21 (#102) |
 
