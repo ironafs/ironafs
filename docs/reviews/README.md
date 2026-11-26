@@ -75,6 +75,7 @@ the evidence that refutes it.
 | [2026-11-25-53-m2a-working-amendments](2026-11-25-53-m2a-working-amendments.md) | Issue #53: the M2a Working amendments to ADR 0004 |
 | [2026-11-26-59-d9-boundary-seeds](2026-11-26-59-d9-boundary-seeds.md) | Issue #59: the shared XDR fuzz target at its message cap and one byte over |
 | [2026-11-26-48-historical-lane-calibration](2026-11-26-48-historical-lane-calibration.md) | Issue #48: integration review for the first lane-calibration record |
+| [2026-11-26-45-fuzz-input-bounds](2026-11-26-45-fuzz-input-bounds.md) | Issue #45: engine input bounds for tracked XDR and configuration seed replay |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
