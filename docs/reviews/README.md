@@ -74,6 +74,7 @@ the evidence that refutes it.
 | [2026-11-25-167-xdr-default](2026-11-25-167-xdr-default.md) | Issue #167: specify a closed-enum fixture with a default arm |
 | [2026-11-25-53-m2a-working-amendments](2026-11-25-53-m2a-working-amendments.md) | Issue #53: the M2a Working amendments to ADR 0004 |
 | [2026-11-26-59-d9-boundary-seeds](2026-11-26-59-d9-boundary-seeds.md) | Issue #59: the shared XDR fuzz target at its message cap and one byte over |
+| [2026-11-26-48-historical-lane-calibration](2026-11-26-48-historical-lane-calibration.md) | Issue #48: integration review for the first lane-calibration record |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
