@@ -18,11 +18,17 @@ pointer to C5, point 1.
 | 3 on `7873bac..22291d5` | deepseek:deepseek-flash (uncalibrated on IronAFS) | max | PASS, zero findings, same-session continuation |
 | 3 on `7873bac..22291d5` | gemini:gemini-4-carbon-medium | medium | PASS, two editorial findings |
 | Editorial verification on `22291d5..d18aedd` | gemini:gemini-4-carbon-medium | medium | PASS, zero findings |
+| C34 citation edit on `b1c7556`, patch `da0a4782` | gemini:gemini-4-carbon-medium | medium | PASS, zero findings, same-session continuation |
 
 Quota headroom was unreported for the final dispatches. The Round 3 and
 editorial receipts matched the requested scope, served models and check
 codes. DeepSeek's first turn reached its turn cap. The continuation
 retained the original session and check code.
+
+The C34 citation in `config-schema.md` now cites the owner’s dated
+decision without describing the amendment’s merge status. The reviewer
+verified the citation edit. The controller checked the date in ADR
+0004’s review entry and the rule in issue #53, point 4.
 
 ## Findings and convergence
 
@@ -53,4 +59,3 @@ requires both endpoints to carry the same digest.
 - EXECUTED. On arm64 macOS, format, Clippy and `cargo xtask check`
   passed at `22291d5`, with 1,006 workspace tests. After the review
   history correction, `reuse lint` and `git diff --check` passed.
-  The later changes are limited to the review record.
