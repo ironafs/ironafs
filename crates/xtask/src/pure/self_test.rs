@@ -3,13 +3,13 @@
 
 //! `check-pure --self-test`: builds a clean fixture whose pure crates pass
 //! and prints its exact matrix, then plants each way a pure crate could
-//! reach the standard library, a foreign function or changed compiler
-//! flags, or break the crate root's form, and proves the check fails on
-//! each with what was planted. Negative controls build the clean fixture
-//! with a crate, a target or a profile skipped, and with an extra crate,
-//! and each must fail the matrix. A fixture that adds `ironafs-rxkad` is
-//! checked with no change to the check, and a workspace with no pure crate
-//! passes.
+//! reach the standard library, another test helper or a foreign function,
+//! change compiler flags, or break the crate root's form, and proves the
+//! check fails on each with what was planted. Negative controls build the
+//! clean fixture with a crate, a target or a profile skipped, and with an
+//! extra crate, and each must fail the matrix. A fixture that adds
+//! `ironafs-rxkad` is checked with no change to the check, and a workspace
+//! with no pure crate passes.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -29,6 +29,7 @@ const CHECK: &str = "check-pure";
 /// so a broken build is reported for it alone.
 const TOP: &str = "ironafs-xdr";
 const TOP_LIB: &str = "crates/ironafs-xdr/src/lib.rs";
+const TOP_TESTS: &str = "crates/ironafs-xdr/src/tests.rs";
 
 /// The rest of the planted crate's library root, after its first lines.
 const TOP_BODY: &str = "extern crate alloc;\n\
@@ -67,8 +68,8 @@ fn plant_unsafe(fixture: &mut Fixture, code: &str) {
 }
 
 /// Two pure crates that use `core` and `alloc` (atomics, `Arc`, ordered
-/// maps, formatting, unit tests with no `std`), a development dependency on
-/// a crate that uses `std`, an integration test that uses `std`, an
+/// maps, formatting, unit tests with `Property` and `Source`), an
+/// integration test that uses `std` and another test helper, an
 /// `ironafs-client` that uses threads, a root cargo configuration with only
 /// an alias, and a nested checkout whose configuration cargo never reads
 /// from the root.
@@ -94,13 +95,25 @@ fn clean() -> Fixture {
         TOP,
         "src/tests.rs",
         Some(
-            "use super::encode;\n\n#[test]\nfn encodes() { assert_eq!(encode(1), alloc::vec![0, 0, 0, 1]); }\n",
+            "use ironafs_test_support::{Property, Source};\n\n\
+             use super::encode;\n\n\
+             #[test]\nfn encodes() {\n\
+                 let _ = Property::new(\"encodes a seeded value\");\n\
+                 let value = Source::from_seed(1).u32();\n\
+                 assert_eq!(encode(value), value.to_be_bytes());\n\
+             }\n",
         ),
     );
     fixture.file(
         TOP,
         "tests/it/main.rs",
-        Some("#[test]\nfn uses_std() { let _ = std::collections::HashMap::<u8, u8>::new(); }\n"),
+        Some(
+            "use ironafs_test_support::SeededClock;\n\n\
+             #[test]\nfn uses_integration_helpers() {\n\
+                 let _ = std::collections::HashMap::<u8, u8>::new();\n\
+                 let _ = SeededClock::from_seed(1);\n\
+             }\n",
+        ),
     );
     fixture.manifest_tail(
         TOP,
@@ -109,7 +122,19 @@ fn clean() -> Fixture {
     fixture.file(
         "ironafs-test-support",
         "src/lib.rs",
-        Some("pub fn say() { std::println!(\"x\"); }\n"),
+        Some(
+            "pub struct Property;\n\
+             impl Property { pub fn new(_: &str) -> Self { Self } }\n\
+             pub struct Source(u64);\n\
+             impl Source {\n\
+                 pub fn from_seed(seed: u64) -> Self { Self(seed) }\n\
+                 pub fn u32(&mut self) -> u32 { self.0 as u32 }\n\
+             }\n\
+             pub struct SeededClock;\n\
+             impl SeededClock {\n\
+                 pub fn from_seed(seed: u64) -> Self { std::println!(\"{seed}\"); Self }\n\
+             }\n",
+        ),
     );
     fixture.file(
         "ironafs-client",
@@ -140,8 +165,12 @@ fn is_extern(violation: &Violation, line: usize) -> bool {
 }
 
 fn is_source(violation: &Violation, line: usize, name: &str) -> bool {
-    matches!(violation, Violation::Source { file, line: found, name: named, .. }
-        if file == Path::new(TOP_LIB) && *found == line && named == name)
+    is_source_in(violation, TOP_LIB, line, name)
+}
+
+fn is_source_in(violation: &Violation, file: &str, line: usize, name: &str) -> bool {
+    matches!(violation, Violation::Source { file: found, line: at, name: named, .. }
+        if found == Path::new(file) && *at == line && named == name)
 }
 
 /// A file of the planted crate outside its library's directory.
@@ -203,6 +232,28 @@ struct Case {
 }
 
 const CASES: &[Case] = &[
+    Case {
+        name: "std in a pure unit-test module",
+        plant: |fixture| {
+            fixture.file(
+                TOP,
+                "src/tests.rs",
+                Some("use std::collections::HashMap;\n"),
+            );
+        },
+        expect: &[|found| is_source_in(found, TOP_TESTS, 1, "std")],
+    },
+    Case {
+        name: "SeededClock in a pure unit-test module",
+        plant: |fixture| {
+            fixture.file(
+                TOP,
+                "src/tests.rs",
+                Some("use ironafs_test_support::SeededClock;\n"),
+            );
+        },
+        expect: &[|found| is_source_in(found, TOP_TESTS, 1, "ironafs_test_support::SeededClock")],
+    },
     Case {
         name: "extern crate std in a pure crate",
         plant: |fixture| plant_head(fixture, "#![no_std]\nextern crate std;"),
