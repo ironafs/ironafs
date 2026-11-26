@@ -48,6 +48,8 @@ pub(crate) enum Violation {
     /// seed as git's index holds it: untracked, changed, deleted, or not a
     /// regular file. What would be replayed is not what is tracked.
     UntrackedSeed { target: String, entry: PathBuf },
+    /// A tracked seed would be truncated by the engine.
+    SeedOverLimit { target: String, limit: u64 },
     /// The engine exited successfully but did not report running a seed.
     NotExecuted { target: String, seed: PathBuf },
     /// The engine reported a failure: only the target and the reproducer's
@@ -85,6 +87,10 @@ impl fmt::Display for Violation {
             Self::NoSeeds { target } => write!(
                 formatter,
                 "{target}: no tracked seed under {FUZZ_DIR}/{SEEDS}/{target}/, so nothing was replayed"
+            ),
+            Self::SeedOverLimit { target, limit } => write!(
+                formatter,
+                "{target}: a tracked seed exceeds the engine limit of {limit} bytes"
             ),
             Self::NotExecuted { target, seed } => write!(
                 formatter,
@@ -390,6 +396,35 @@ pub(crate) fn in_fuzz_crate(fuzz_dir: &Path) -> Command {
     command
 }
 
+/// The whole-file cap in config-syntax.md §5.2 or the largest message cap
+/// in xdr.md §10.4, with one extra byte for the boundary (testing.md D9).
+fn engine_limit(target: &str) -> Option<u64> {
+    let cap = match target {
+        "ironafs-config_syntax" => 262_144,
+        "ironafs-xdr_decode" => 256,
+        _ => return None,
+    };
+    Some(cap + 1)
+}
+
+/// Assembles a replay invocation with the tracked seed paths and engine options.
+fn replay_command(fuzz_dir: &Path, target: &str, seeds: &[PathBuf], artefacts: &Path) -> Command {
+    let mut prefix = artefacts.as_os_str().to_owned();
+    prefix.push("/");
+    let mut artefact_prefix = std::ffi::OsString::from("-artifact_prefix=");
+    artefact_prefix.push(&prefix);
+    let mut command = in_fuzz_crate(fuzz_dir);
+    command
+        .args(["fuzz", "run", target])
+        .args(seeds)
+        .arg("--")
+        .arg(artefact_prefix);
+    if let Some(limit) = engine_limit(target) {
+        command.arg(format!("-max_len={limit}"));
+    }
+    command
+}
+
 /// Replays one target's seeds, the engine's output captured, never shown.
 fn replay(
     fuzz_dir: &Path,
@@ -397,17 +432,24 @@ fn replay(
     seeds: &[PathBuf],
     artefacts: &Path,
 ) -> Result<Result<(), Violation>, Error> {
+    // The engine applies its limit to each explicit file too. Check the
+    // original lengths so a truncated replay cannot count as executing it.
+    if let Some(limit) = engine_limit(target) {
+        for seed in seeds {
+            let size = fs::metadata(fuzz_dir.join(seed))
+                .map_err(Error::io("read tracked seed size"))?
+                .len();
+            if size > limit {
+                return Ok(Err(Violation::SeedOverLimit {
+                    target: target.to_owned(),
+                    limit,
+                }));
+            }
+        }
+    }
     fs::create_dir_all(artefacts)
         .map_err(Error::path_io("create artefact directory", artefacts))?;
-    let mut prefix = artefacts.as_os_str().to_owned();
-    prefix.push("/");
-    let mut artefact_prefix = std::ffi::OsString::from("-artifact_prefix=");
-    artefact_prefix.push(&prefix);
-    let output = in_fuzz_crate(fuzz_dir)
-        .args(["fuzz", "run", target])
-        .args(seeds)
-        .arg("--")
-        .arg(artefact_prefix)
+    let output = replay_command(fuzz_dir, target, seeds, artefacts)
         .output()
         .map_err(Error::io("run cargo fuzz run"))?;
     let mut log = String::from_utf8_lossy(&output.stdout).into_owned();

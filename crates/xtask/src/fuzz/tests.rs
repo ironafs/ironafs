@@ -200,6 +200,91 @@ fn fuzz_crate_commands_run_on_the_crate_s_own_toolchain() {
     );
 }
 
+fn assert_replay_args(target: &str, limit: Option<&str>) {
+    use std::ffi::OsStr;
+
+    let command =
+        super::replay_command(Path::new("fuzz"), target, &seeds(), Path::new("artefacts"));
+    let mut expected = vec![
+        "fuzz",
+        "run",
+        target,
+        "seeds/t/a",
+        "seeds/t/b",
+        "--",
+        "-artifact_prefix=artefacts/",
+    ];
+    expected.extend(limit);
+    assert_eq!(
+        command.get_args().collect::<Vec<_>>(),
+        expected.into_iter().map(OsStr::new).collect::<Vec<_>>(),
+        "{target}"
+    );
+}
+
+#[test]
+fn replay_passes_the_xdr_message_cap_plus_one() {
+    assert_replay_args("ironafs-xdr_decode", Some("-max_len=257"));
+}
+
+#[test]
+fn replay_passes_the_configuration_file_cap_plus_one() {
+    assert_replay_args("ironafs-config_syntax", Some("-max_len=262145"));
+}
+
+#[test]
+fn replay_preserves_arguments_for_targets_without_a_declared_cap() {
+    assert_replay_args("ironafs-os_fdpass", None);
+    assert_replay_args("other-target", None);
+}
+
+#[test]
+fn replay_refuses_a_seed_that_the_engine_would_truncate() {
+    use std::fs;
+
+    let dir = crate::fixture::fresh_dir(&std::env::temp_dir(), "fuzz-seed-length").unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    let seed = PathBuf::from("synthetic-seed");
+    let seed_path = dir.join(&seed);
+    let file = fs::File::create(&seed_path).unwrap();
+    // An artefact directory under a file cannot be created. A seed that fits
+    // reaches that step, and neither fixture can start the engine.
+    let artefacts = seed_path.join("artefacts");
+    let mut results = Vec::new();
+    for (target, limit) in [
+        ("ironafs-xdr_decode", 257),
+        ("ironafs-config_syntax", 262_145),
+    ] {
+        file.set_len(limit).unwrap();
+        let at = super::replay(&dir, target, std::slice::from_ref(&seed), &artefacts);
+        file.set_len(limit + 1).unwrap();
+        let above = super::replay(&dir, target, std::slice::from_ref(&seed), &artefacts);
+        results.push((target, limit, at, above));
+    }
+    drop(file);
+    crate::fixture::remove_dir(&dir).unwrap();
+
+    for (target, limit, at, above) in results {
+        assert!(matches!(
+            at,
+            Err(crate::Error::PathIo {
+                operation: "create artefact directory",
+                ..
+            })
+        ));
+        let message = above
+            .ok()
+            .and_then(Result::err)
+            .map(|error| error.to_string());
+        assert_eq!(
+            message,
+            Some(format!(
+                "{target}: a tracked seed exceeds the engine limit of {limit} bytes"
+            ))
+        );
+    }
+}
+
 #[test]
 fn targets_refuses_a_multi_line_string() {
     for opening in ["\"\"\"", "'''"] {
