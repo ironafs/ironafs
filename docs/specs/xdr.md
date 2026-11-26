@@ -1667,13 +1667,16 @@ over the test types above.
 
 ### 10.3 Reject corpus
 
-Files under `crates/ironafs-xdr/tests/fixtures/reject/`, one per case, each
-with its expected error kind and the section it breaks; checked by
-`crates/ironafs-xdr/tests/it/reject.rs`, which asserts the exact kind and
-offset, and, through the ledger's test hook (5.2, point 9.2), the exact
-reservation requests made before the error. A request made and dropped
-before an error is returned is recorded, so "no request" is checked, not
-inferred from a value that does not exist.
+Each text fixture under `crates/ironafs-xdr/tests/fixtures/reject/` names
+its expected error kind and the section it breaks.
+`crates/ironafs-xdr/tests/it/reject.rs` asserts the exact kind and offset,
+and, through the ledger's test hook (5.2, point 9.2), the exact reservation
+requests made before the error. The hook records even a request made and
+dropped before an error is returned, so an empty trace proves no requests
+were made.
+
+The same integration module reads the two binary boundary witnesses
+directly from the fuzz seed corpus (10.4).
 
 | Id | Input | Expected | Breaks |
 |---|---|---|---|
@@ -1693,8 +1696,10 @@ inferred from a value that does not exist.
 | R9a | `entry` with discriminant `00000007` (not a declared `kind`) | `UnknownEnumValue`, before any arm is chosen | 5.4, point 7.1 |
 | R9b | standalone `shaded` with undeclared discriminant `00000002` and a complete eight-byte payload: `00000002 fedcba98 76543210` | `UnknownEnumValue` at offset 0, before any arm is chosen | 5.4, point 7.1 |
 | R10 | a valid `note` followed by `00000000` | `TrailingBytes`, count 4 | 5.4, point 10 |
+| R10a | `every-message-cap`: the 208-byte canonical `every` prefix followed by 48 zero bytes, for exactly 256 bytes | `TrailingBytes` at 208, extent 48, with no name or limit; the ledger requests are identical to the successful decode of the prefix alone | 5.4, point 10 |
 | R11 | a valid `note` followed by one byte `00` | `TrailingBytes`, count 1 | 5.4, point 10 |
 | R12 | a `note` input of 129 bytes, one over its message cap | `MessageTooLarge` | 5.4, point 1 |
+| R12a | `every-message-cap-plus-one`: R10a followed by one more zero byte, for 257 bytes | `MessageTooLarge` naming `test.every` at 0, limit 256, extent 257; the ledger records no requests | 5.4, point 1 |
 | R13 | empty input for an `int` | `Truncated` | 5.4, point 2 |
 | R14 | a string's length word, then fewer data bytes than it claims | `Truncated` | 5.4, point 3.4 |
 | R15 | `sealed` with a key length of 17; and `sealed` cut off inside `serial` | `LengthOverBound` naming `test.sealed.key`, and `Truncated`; neither error holds an offset or a byte count, and the `Display` and `Debug` text of each names only the kind and the field | 7, point 2 |
@@ -1732,6 +1737,18 @@ adds fixtures for the existing discriminant rule (5.4, point 7). Run
 `cargo --locked xtask fuzz`. As a control for the reject case, a planted
 decoder that chooses the default arm before validating `shade` would
 accept R9b and must fail that case's exact kind and offset assertion.
+
+The shared target's largest declared message cap is `test.every` at
+256 bytes. Its boundary seeds under `fuzz/seeds/ironafs-xdr_decode/`
+are `every-message-cap` (R10a) and `every-message-cap-plus-one` (R12a).
+The prefix is a synthetic value of IronAFS's `every` test type. It uses the
+minimum signed and maximum unsigned integer and hyper values, TRUE,
+VIVID, bytes 0 through 99 for the fixed opaque, bytes 1 through 8 for
+the variable opaque and the label, the integers 7 and 8, four empty
+labels, and the LINKED arm with target bytes 1 through 16. The suffix
+is zero-filled. The stable integration tests pin the exact file bytes
+and re-encode the accepted prefix to check its canonical form. The
+pinned-nightly seed replay runs both files through the same target.
 
 ### 10.5 Acceptance cases
 
