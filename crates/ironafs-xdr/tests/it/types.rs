@@ -9,6 +9,11 @@
 //!
 //! ```text
 //! enum shade { PALE = 1, DEEP = 4, VIVID = 9 };     /* closed */
+//! union shaded switch (shade tone) {
+//! case PALE: unsigned hyper pale_value;
+//! case DEEP: unsigned hyper deep_value;
+//! default:   unsigned hyper vivid_value;
+//! };
 //! enum kind { PLAIN = 0, LINKED = 1, STAMPED = 2, RETIRED = 3 };
 //! union entry switch (kind k) {                     /* no arm for RETIRED, */
 //! case PLAIN:   void;                               /* and no default      */
@@ -207,6 +212,57 @@ impl Encode for Solo {
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
         encoder.put_i32(5)
+    }
+}
+
+// ---- shaded: a closed discriminant with a default arm ----
+
+/// `shaded`: only VIVID selects the default arm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shaded {
+    Pale(u64),
+    Deep(u64),
+    Vivid(u64),
+}
+
+pub(crate) const SHADED: Message = Message {
+    name: "test.shaded",
+    cap: 12,
+    budget: 1024,
+};
+
+impl<'a> Decode<'a> for Shaded {
+    const S_MIN: u64 = 12;
+    const DEPTH: u32 = 1;
+    const HEAP_RATIO: Option<u64> = Some(0);
+    const RESERVATIONS: Option<u64> = Some(0);
+
+    fn decode(decoder: &mut Decoder<'a, '_>) -> Result<Self, Error> {
+        match decoder.read_enum("test.shaded.tone", Shade::declared)? {
+            Shade::Pale => decoder.read_u64().map(Self::Pale),
+            Shade::Deep => decoder.read_u64().map(Self::Deep),
+            Shade::Vivid => decoder.read_u64().map(Self::Vivid),
+        }
+    }
+}
+
+impl Classified for Shaded {
+    const SECRET: bool = false;
+}
+
+impl Encode for Shaded {
+    fn encoded_len(&self) -> Result<u64, Error> {
+        Ok(12)
+    }
+
+    fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+        let (tone, value) = match *self {
+            Self::Pale(value) => (Shade::Pale, value),
+            Self::Deep(value) => (Shade::Deep, value),
+            Self::Vivid(value) => (Shade::Vivid, value),
+        };
+        encoder.put(&tone)?;
+        encoder.put_u64(value)
     }
 }
 
@@ -901,6 +957,7 @@ impl Encode for Every {
 
 inline_fits!(
     Shade,
+    Shaded,
     Flag,
     Solo,
     Entry,
@@ -923,6 +980,7 @@ inline_fits!(
 // What the generator proves for every message (docs/specs/xdr.md, 5.2,
 // points 9.3 and 10).
 const _: () = assert!(proven::<Shade>());
+const _: () = assert!(proven::<Shaded>());
 const _: () = assert!(proven::<Flag>());
 const _: () = assert!(proven::<Entry>());
 const _: () = assert!(proven::<Label>());
@@ -949,6 +1007,6 @@ macro_rules! message_types {
 }
 
 message_types!(
-    Shade => SHADE, Flag => FLAG, Entry => ENTRY, Label => LABEL, Note => NOTE, Pair => PAIR,
+    Shade => SHADE, Shaded => SHADED, Flag => FLAG, Entry => ENTRY, Label => LABEL, Note => NOTE, Pair => PAIR,
     Five => FIVE, Blob => BLOB, Wide => WIDE, Deep => DEEP, Sealed<'_> => SEALED, Every => EVERY,
 );
