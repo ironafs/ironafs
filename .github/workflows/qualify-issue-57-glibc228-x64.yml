@@ -1,0 +1,224 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: Legacy x86-64 FUSE venue preflight
+
+on:
+  push:
+    branches: [qualify/issue-57-glibc228-x64]
+    paths: [.github/workflows/qualify-issue-57-glibc228-x64.yml]
+
+permissions: {}
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Check the pinned legacy FUSE venue
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export LC_ALL=C
+          stage=host
+          trap 'printf "stage=%s status=failed exit=%s\n" "$stage" "$?" >&2' ERR
+          printf 'source-pin=a310a1c64104f37d11e681b8b710b126231d0917\n'
+          uname -srmo
+          test "$(uname -m)" = x86_64
+          grep -Eq '^ID="?ubuntu"?$' /etc/os-release
+          grep -Eq '^VERSION_ID="?24\.04"?$' /etc/os-release
+          test -c /dev/fuse
+          device_id=$(stat -c '%t:%T' /dev/fuse)
+          printf 'stage=host status=pass fuse-device=%s\n' "$device_id"
+
+          stage=docker
+          test -S /var/run/docker.sock
+          docker_bin=$(command -v docker)
+          scratch=$(mktemp -d)
+          trap 'rm -rf -- "$scratch"' EXIT
+          unset DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_API_VERSION
+          # Empty config and helper search path keep this public pull anonymous.
+          docker_local() {
+            local deadline=$1
+            shift
+            PATH="$scratch" /usr/bin/timeout -k 5s "$deadline" "$docker_bin" \
+              --config "$scratch" --host unix:///var/run/docker.sock "$@"
+          }
+          docker_local 15s version --format 'docker-server={{.Server.Version}}'
+          docker_local 15s info --format 'docker-security-options={{json .SecurityOptions}}'
+
+          stage=image
+          digest=sha256:974135fa35c47f8406ae9f81e8479fe0c372bdd64244a48770848466ceb694ce
+          image=docker.io/library/almalinux:8@"$digest"
+          docker_local 120s pull --platform linux/amd64 "$image"
+          test "$(docker_local 15s image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = linux/amd64
+          image_id=$(docker_local 15s image inspect --format '{{.Id}}' "$image")
+          digests=$(docker_local 15s image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image")
+          grep -Fxq "almalinux@$digest" <<<"$digests" || grep -Fxq "docker.io/library/almalinux@$digest" <<<"$digests"
+          printf 'stage=image status=pass image-id=%s digest=%s\n' "$image_id" "$digest"
+
+          cat >"$scratch/probe.sh" <<'PROBE'
+          set -Eeuo pipefail
+          export LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin
+          mode=$1
+          device_id=$2
+          stage=runtime-identity
+          trap 'printf "case=%s stage=%s status=failed exit=%s\n" "$mode" "$stage" "$?" >&2' ERR
+          printf 'case=%s stage=container status=started\n' "$mode"
+          test "$(uname -m)" = x86_64
+          glibc=$(getconf GNU_LIBC_VERSION)
+          printf 'case=%s glibc=%s\n' "$mode" "$glibc"
+          test "$glibc" = 'glibc 2.28'
+          if profile=$(cat /proc/self/attr/current 2>/dev/null); then
+            printf 'case=%s lsm-profile=%s\n' "$mode" "$profile"
+          fi
+          printf 'case=%s stage=runtime-identity status=pass\n' "$mode"
+
+          drop=(--no-new-privs --inh-caps=-all --ambient-caps=-all)
+          uid_drop=(--reuid=10001 --regid=10001 --clear-groups)
+          stage=device
+          case "$mode" in
+            getattr|invalid|unpriv)
+              test -c /dev/fuse
+              test "$(stat -c '%t:%T' /dev/fuse)" = "$device_id"
+              exec 3<>/dev/fuse
+              exec 3>&-
+              ;;
+            restricted) test ! -e /dev/fuse ;;
+            *) exit 2 ;;
+          esac
+          printf 'case=%s stage=device status=pass\n' "$mode"
+          if [[ "$mode" == getattr ]]; then
+            stage=non-root-device
+            setpriv "${uid_drop[@]}" --bounding-set=-all "${drop[@]}" -- \
+              /bin/bash --noprofile --norc -euc 'exec 3<>/dev/fuse; exec 3>&-'
+            printf 'case=%s stage=non-root-device status=pass\n' "$mode"
+          fi
+
+          stage=launch-setup
+          ids=()
+          workdir=
+          case "$mode" in
+            getattr) bound=-all,+sys_admin,+dac_override,+setuid,+setgid,+setpcap; mask=2001c2; uid=0 ;;
+            invalid) bound=-all,+sys_admin,+dac_override; mask=200002; uid=0 ;;
+            unpriv) bound=-all; mask=0; uid=10001; ids=("${uid_drop[@]}") ;;
+            restricted) mask=0; uid=10001 ;;
+          esac
+          if [[ "$mode" == unpriv ]]; then
+            workdir=$(setpriv "${uid_drop[@]}" --bounding-set=-all "${drop[@]}" -- mktemp -d /tmp/ironafs-fuse.XXXXXXXXXX)
+          elif [[ "$mode" != restricted ]]; then
+            workdir=$(mktemp -d /tmp/ironafs-fuse.XXXXXXXXXX)
+          fi
+          trap 'if [[ -n "$workdir" ]]; then rmdir -- "$workdir"; fi' EXIT
+
+          outside_mnt=$(readlink /proc/self/ns/mnt)
+          outside_pid=$(readlink /proc/self/ns/pid)
+          child=$(cat <<'CHILD'
+          set -Eeuo pipefail
+          mode=$1
+          expected=$2
+          uid=$3
+          workdir=$4
+          outside_mnt=$5
+          outside_pid=$6
+          stage=namespace
+          trap 'printf "case=%s stage=%s status=failed exit=%s\n" "$mode" "$stage" "$?" >&2' ERR
+          if [[ "$mode" != restricted ]]; then
+            test "$$" = 1
+            inside_mnt=$(readlink /proc/self/ns/mnt)
+            inside_pid=$(readlink /proc/self/ns/pid)
+            test "$inside_mnt" != "$outside_mnt"
+            test "$inside_pid" != "$outside_pid"
+            awk '{ for (i = 7; i <= NF && $i != "-"; i++) if ($i ~ /^(shared|master|propagate_from):/) exit 1 }' /proc/self/mountinfo
+            printf 'case=%s stage=namespace status=pass\n' "$mode"
+          fi
+
+          stage=capabilities
+          test "$(id -u):$(id -g)" = "$uid:$uid"
+          grep -E '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs|Seccomp):' /proc/self/status
+          awk -v expected="$expected" '
+            /^Cap(Inh|Prm|Eff|Bnd|Amb):/ {
+              value = tolower($2)
+              sub(/^0+/, "", value)
+              if (value == "") value = "0"
+              want = $1 ~ /^Cap(Inh|Amb):$/ ? "0" : expected
+              if (("x" value) != ("x" want) || seen[$1]++) failed = 1
+              count++
+            }
+            /^NoNewPrivs:/ { if ($2 != 1 || nnp++) failed = 1 }
+            /^Seccomp:/ { if ($2 != 2 || seccomp++) failed = 1 }
+            END { exit (failed || count != 5 || nnp != 1 || seccomp != 1) }
+          ' /proc/self/status
+          printf 'case=%s stage=capabilities status=pass\n' "$mode"
+
+          if [[ "$mode" != restricted ]]; then
+            stage=child-device
+            exec 3<>/dev/fuse
+            exec 3>&-
+            test "$(stat -c '%u:%g:%a' "$workdir")" = "$uid:$uid:700"
+            test -w "$workdir"
+            test -x "$workdir"
+            entry=$(find "$workdir" -mindepth 1 -print -quit)
+            test -z "$entry"
+            printf 'case=%s stage=child-device status=pass\n' "$mode"
+          fi
+          CHILD
+          )
+
+          argv=(/bin/bash --noprofile --norc -euc "$child" probe "$mode" "$mask" "$uid" "$workdir" "$outside_mnt" "$outside_pid")
+          if [[ "$mode" == restricted ]]; then
+            "${argv[@]}"
+          else
+            stage=namespace-launch
+            timeout --signal=KILL 20s unshare --mount --propagation private --pid --fork --kill-child -- \
+              setpriv "${ids[@]}" --bounding-set="$bound" "${drop[@]}" -- "${argv[@]}"
+          fi
+          printf 'case=%s stage=container status=pass\n' "$mode"
+          PROBE
+
+          run_case() (
+            mode=$1
+            shift
+            name="ironafs57-preflight-$mode-$BASHPID"
+            log="$scratch/$mode.log"
+            stage="$mode/dispatch"
+            # Cleanup acts on this launch's name and verifies it is gone.
+            cleanup() {
+              stage="$mode/cleanup"
+              docker_local 8s rm -f "$name" >/dev/null 2>&1 || :
+              left=$(docker_local 8s ps --all --filter "name=^/$name$" --format '{{.Names}}')
+              test -z "$left"
+              printf 'case=%s stage=cleanup status=pass\n' "$mode"
+            }
+            trap cleanup EXIT
+            printf 'case=%s stage=dispatch status=started\n' "$mode"
+            result=0
+            docker_local 60s run --name "$name" --rm -i --pull=never \
+              --platform linux/amd64 --network none --ipc private --read-only \
+              --cap-drop ALL --security-opt no-new-privileges=true \
+              --pids-limit 64 --memory 512m --ulimit core=0:0 \
+              --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777,size=128m \
+              "$@" --entrypoint /bin/bash "$image" --noprofile --norc -s -- "$mode" "$device_id" \
+              <"$scratch/probe.sh" >"$log" 2>&1 || result=$?
+            cat "$log"
+            if ! grep -Fxq "case=$mode stage=container status=started" "$log"; then
+              stage="$mode/container-start"
+            else
+              stage="$mode/container-exit"
+            fi
+            if (( result != 0 )); then
+              printf 'stage=%s status=failed exit=%s\n' "$stage" "$result" >&2
+              exit "$result"
+            fi
+            grep -Fxq "case=$mode stage=container status=pass" "$log"
+            trap - EXIT
+            cleanup
+          )
+
+          device=(--user 0:0 --device /dev/fuse:/dev/fuse:rw --cap-add SYS_ADMIN)
+          switch_ids=(--cap-add SETUID --cap-add SETGID --cap-add SETPCAP)
+          run_case restricted --user 10001:10001
+          run_case getattr "${device[@]}" --cap-add DAC_OVERRIDE "${switch_ids[@]}"
+          run_case invalid "${device[@]}" --cap-add DAC_OVERRIDE --cap-add SETPCAP
+          run_case unpriv "${device[@]}" "${switch_ids[@]}"
+          printf 'stage=venue-preflight status=pass\n'
