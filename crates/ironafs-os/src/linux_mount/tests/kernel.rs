@@ -170,8 +170,8 @@ fn the_mount_serves_a_getattr_request() {
         fuse::serve_getattr(&device, uid, gid);
         device
     });
-    // GNU stat requests the fields in its format. These basic attributes
-    // need only GETATTR, even on kernels that can query birth time via FUSE_STATX.
+    // Request the basic attributes. The fixture declines an optional STATX
+    // before answering the GETATTR that supplies them.
     let nobody = NOBODY.to_string();
     let attributes = Command::new("setpriv")
         .args([
