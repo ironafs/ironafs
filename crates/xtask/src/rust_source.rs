@@ -772,10 +772,11 @@ fn starts_a_path(tokens: &[Token], index: usize) -> bool {
 
 /// Looks for the opening angle of a path ending in `>::`. The search skips
 /// bracketed groups and stops at a statement, logical operator or enclosing
-/// bracket. An arrow cannot close the path. A comma at the candidate's
-/// depth can separate expressions, so only an explicit turbofish proves
-/// that such a comma belongs to the candidate's arguments. Commas inside
-/// a qualified type's nested arguments do not require a turbofish.
+/// bracket. An arrow or a `for<...>` binder can precede an absolute path.
+/// A comma at the candidate's depth can separate expressions, so only an
+/// explicit turbofish proves that such a comma belongs to the candidate's
+/// arguments. Commas inside a qualified type's nested arguments do not
+/// require a turbofish.
 fn closes_angle_path(tokens: &[Token], close: usize) -> bool {
     if ends_arrow(tokens, close) {
         return false;
@@ -790,10 +791,19 @@ fn closes_angle_path(tokens: &[Token], close: usize) -> bool {
             Some('<') => {
                 depth -= 1;
                 if depth == 0 {
-                    return !crossed_comma
-                        || at
-                            .checked_sub(1)
-                            .is_some_and(|before| is(tokens, before, &TokenKind::PathSep));
+                    let before = at.checked_sub(1).and_then(|before| tokens.get(before));
+                    return match before {
+                        Some(Token {
+                            kind: TokenKind::Ident(word),
+                            raw: false,
+                            ..
+                        }) if word == "for" => false,
+                        Some(Token {
+                            kind: TokenKind::PathSep,
+                            ..
+                        }) => true,
+                        _ => !crossed_comma,
+                    };
                 }
             }
             Some(',') if depth == 1 => crossed_comma = true,
@@ -836,17 +846,21 @@ fn ends_logical_operator(tokens: &[Token], at: usize) -> bool {
     match (punct(tokens.get(previous)), punct(tokens.get(at))) {
         (Some('|'), Some('|')) => true,
         (Some('&'), Some('&')) => {
-            let left = previous
-                .checked_sub(1)
-                .and_then(|before| tokens.get(before));
-            match left {
+            let Some(left) = previous.checked_sub(1) else {
+                return false;
+            };
+            match tokens.get(left) {
                 Some(Token {
                     kind: TokenKind::Ident(word),
                     raw,
                     ..
                 }) => *raw || !matches!(word.as_str(), "as" | "const" | "mut"),
                 Some(Token {
-                    kind: TokenKind::Punct(')' | ']' | '}' | '>'),
+                    kind: TokenKind::Punct('>'),
+                    ..
+                }) => !ends_arrow(tokens, left),
+                Some(Token {
+                    kind: TokenKind::Punct(')' | ']' | '}'),
                     ..
                 }) => true,
                 _ => false,
