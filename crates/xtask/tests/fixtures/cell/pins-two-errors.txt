@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Planted: a short krb5-kdc hash and a floating fileserver version.
+image docker.io/library/debian:trixie@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
+image-platform amd64 sha256:bfc36aecdece0387418759dba474aa856c026ca8087da3606b41b90ab0509c99
+image-platform arm64 sha256:e529717ccc8118a0b9d38525f2b4e78cf150dbe470ad60d733c7c0023cabc3b0
+snapshot https://snapshot.debian.org/archive/debian 20261120T023438Z trixie main
+cell test.ironafs.invalid TEST.IRONAFS.INVALID
+package amd64 krb5-admin-server 1.21.3-5+deb13u1 40a6668be1d7de8b45305ac0f3568ae9f1ed9520ce457ff00b0a5fac77ffd1d6 pool/main/k/krb5/krb5-admin-server_1.21.3-5+deb13u1_amd64.deb
+package amd64 krb5-kdc 1.21.3-5+deb13u1 5533f05f8d20cee3e5441b5934f131a3b5b0487c7c1818680f175cbe8c7ea7c pool/main/k/krb5/krb5-kdc_1.21.3-5+deb13u1_amd64.deb
+package amd64 krb5-user 1.21.3-5+deb13u1 dedac19418718f9db1a951be2967e77410f17898c0300b5c341bb37b841de72b pool/main/k/krb5/krb5-user_1.21.3-5+deb13u1_amd64.deb
+package amd64 openafs-client 1.8.13.2-1 214b7849ff7a9b595fb46856dc08070211a43c4845799e42b5b74cd64246e0bc pool/main/o/openafs/openafs-client_1.8.13.2-1_amd64.deb
+package amd64 openafs-dbserver 1.8.13.2-1 71e52905f42c44b6b62ae1f5b1120cfea19280a8369c267fcf9e52d23a061abc pool/main/o/openafs/openafs-dbserver_1.8.13.2-1_amd64.deb
+package amd64 openafs-fileserver 1.8.13.2-* 990c2ac0d1657bfc5e0e8f182bae5b78dae295222d7a20a5b4b12315097cceaa pool/main/o/openafs/openafs-fileserver_1.8.13.2-1_amd64.deb
+package amd64 openafs-krb5 1.8.13.2-1 d50f8305a011b301d5cd2c24ae4823eb2d4747e9f405c748264598f7c478e972 pool/main/o/openafs/openafs-krb5_1.8.13.2-1_amd64.deb
+package arm64 krb5-admin-server 1.21.3-5+deb13u1 81e11cd514637bf6e47da8f2e6c03f1844f7a88f5ad7f6460b16948eea8dad39 pool/main/k/krb5/krb5-admin-server_1.21.3-5+deb13u1_arm64.deb
+package arm64 krb5-kdc 1.21.3-5+deb13u1 43329914d5743bb4a9ebb7e427a05e813c4515a59d18feaa7299e14aa10f2b2c pool/main/k/krb5/krb5-kdc_1.21.3-5+deb13u1_arm64.deb
+package arm64 krb5-user 1.21.3-5+deb13u1 7b8eec1e190e16d3e2383369991b282ab926d98cb95792da889435f8f8c66dae pool/main/k/krb5/krb5-user_1.21.3-5+deb13u1_arm64.deb
+package arm64 openafs-client 1.8.13.2-1 a6a0df4020df511d6891ea97b59d842a9ae2048ec1c30718c4ea2de162c2c570 pool/main/o/openafs/openafs-client_1.8.13.2-1_arm64.deb
+package arm64 openafs-dbserver 1.8.13.2-1 181f8241bd566cd53f150cfb4113a093b5f61ef9dc47fbd6f2a080516def8066 pool/main/o/openafs/openafs-dbserver_1.8.13.2-1_arm64.deb
+package arm64 openafs-fileserver 1.8.13.2-1 9f018f74a63bbf27b803e7915d652e7f737c144fe5c2cdc2903a72dfbc4a0799 pool/main/o/openafs/openafs-fileserver_1.8.13.2-1_arm64.deb
+package arm64 openafs-krb5 1.8.13.2-1 33b51575db439d58fdf4f63c3bf7bc79ea4b15b75d85ce7cafa77aa560133211 pool/main/o/openafs/openafs-krb5_1.8.13.2-1_arm64.deb

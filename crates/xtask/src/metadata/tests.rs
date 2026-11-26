@@ -12,19 +12,22 @@ const METADATA: &str = r#"{
   "packages": [
     {"name": "ironafs-a", "id": "path+file:///w/crates/ironafs-a#0.0.0", "source": null,
      "features": {}, "links": null, "manifest_path": "/w/crates/ironafs-a/Cargo.toml",
+     "dependencies": [{"name": "ironafs-b", "kind": null}, {"name": "ironafs-c", "kind": "dev"},
+                      {"name": "outside", "kind": "build"}, {"name": "ironafs-d", "kind": "dev"},
+                      {"name": "ironafs-d", "kind": null}],
      "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-a/src/lib.rs", "edition": "2024"}]},
     {"name": "ironafs-b", "id": "path+file:///w/crates/ironafs-b#0.0.0",
-     "features": {"std": [], "default": ["std"]}, "links": null, "manifest_path": "/w/crates/ironafs-b/Cargo.toml",
+     "features": {"std": [], "default": ["std"]}, "links": null, "manifest_path": "/w/crates/ironafs-b/Cargo.toml", "dependencies": [],
      "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-b/src/lib.rs", "edition": "2024"}]},
     {"name": "ironafs-c", "id": "path+file:///w/crates/ironafs-c#0.0.0",
-     "features": {}, "links": null, "manifest_path": "/w/crates/ironafs-c/Cargo.toml",
+     "features": {}, "links": null, "manifest_path": "/w/crates/ironafs-c/Cargo.toml", "dependencies": [],
      "targets": [{"kind": ["bin"], "src_path": "/w/crates/ironafs-c/src/main.rs", "edition": "2024"}]},
     {"name": "ironafs-d", "id": "path+file:///w/crates/ironafs-d#0.0.0",
-     "features": {}, "links": "native", "manifest_path": "/w/crates/ironafs-d/Cargo.toml",
+     "features": {}, "links": "native", "manifest_path": "/w/crates/ironafs-d/Cargo.toml", "dependencies": [],
      "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-d/src/lib.rs", "edition": "2024"},
                  {"kind": ["custom-build"], "src_path": "/w/crates/ironafs-d/build.rs", "edition": "2018"}]},
     {"name": "outside", "id": "registry+https://example.invalid#outside@1.0.0",
-     "source": "registry+https://example.invalid", "manifest_path": "/r/outside/Cargo.toml",
+     "source": "registry+https://example.invalid", "manifest_path": "/r/outside/Cargo.toml", "dependencies": [],
      "features": {}, "links": null,
      "targets": [{"kind": ["proc-macro"], "src_path": "/r/outside/src/lib.rs"}]}
   ],
@@ -64,6 +67,7 @@ fn package(name: &str, path: bool, member: bool, dependencies: &[&str]) -> Packa
         path: path.then(|| PathBuf::from(format!("/w/crates/{name}"))),
         member,
         dependencies: dependencies.iter().map(|name| id(name)).collect(),
+        dev_dependencies: Vec::new(),
         target_kinds: vec!["lib".into()],
         links: None,
         features: Vec::new(),
@@ -86,11 +90,14 @@ fn member(name: &str, lib: Option<&str>, target_kinds: &[&str]) -> Member {
         lib_root: lib.map(|file| PathBuf::from(format!("/w/crates/{name}/{file}"))),
         target_kinds: target_kinds.iter().map(|kind| (*kind).into()).collect(),
         editions: target_kinds.iter().map(|_| "2024".into()).collect(),
+        build_script: None,
+        declared_dependencies: Vec::new(),
+        renamed: Vec::new(),
     }
 }
 
 #[test]
-fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
+fn parse_workspace_follows_package_ids_and_keeps_development_edges_apart() {
     let workspace = parse_workspace(METADATA).unwrap();
 
     assert_eq!(
@@ -99,21 +106,37 @@ fn parse_workspace_follows_package_ids_and_keeps_only_shipped_edges() {
             root: PathBuf::from("/w"),
             target_dir: PathBuf::from("/w/target"),
             members: vec![
-                member("ironafs-a", Some("src/lib.rs"), &["lib"]),
+                // `bee` is ironafs-b under another name.
+                Member {
+                    renamed: vec!["bee".into()],
+                    declared_dependencies: vec![
+                        "normal ironafs-b".into(),
+                        "dev ironafs-c".into(),
+                        "build outside".into(),
+                        "dev ironafs-d".into(),
+                        "normal ironafs-d".into(),
+                    ],
+                    ..member("ironafs-a", Some("src/lib.rs"), &["lib"])
+                },
                 member("ironafs-b", Some("src/lib.rs"), &["lib"]),
                 member("ironafs-c", None, &["bin"]),
                 Member {
                     editions: vec!["2024".into(), "2018".into()],
+                    build_script: Some(PathBuf::from("/w/crates/ironafs-d/build.rs")),
+                    declared_dependencies: Vec::new(),
                     ..member("ironafs-d", Some("src/lib.rs"), &["lib", "custom-build"])
                 },
             ],
             packages: vec![
-                package(
-                    "ironafs-a",
-                    true,
-                    true,
-                    &["ironafs-b", "outside", "ironafs-d"]
-                ),
+                Package {
+                    dev_dependencies: vec![id("ironafs-c")],
+                    ..package(
+                        "ironafs-a",
+                        true,
+                        true,
+                        &["ironafs-b", "outside", "ironafs-d"],
+                    )
+                },
                 Package {
                     features: vec!["std".into(), "default".into()],
                     ..package("ironafs-b", true, true, &["outside"])

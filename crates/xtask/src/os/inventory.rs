@@ -1,0 +1,926 @@
+// SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! `crates/ironafs-os/sites.json`, the machine-readable copy of ADR 0005's
+//! closed list (point 6.7), and its own rules.
+//!
+//! The copy holds every row of the ADR's table. Its text columns are
+//! compared with the table in the ADR itself, cell for cell, so the copy
+//! cannot drift from the decision unseen. Each row has a status per
+//! target, *approved* or *implemented*; an implemented row also records the
+//! code it holds: its module, the Linux ABI headers checked against its ADR row,
+//! its extern blocks with their functions and `#[link]`, its `unsafe`
+//! blocks, each with its kind and one operation, and its count of `unsafe
+//! impl`s. `check-os` holds the code to exactly that.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::ALLOWLIST;
+use super::scan::ExternItem;
+use crate::json::{self, Value};
+
+#[cfg(test)]
+mod tests;
+
+/// The ADR whose table the copy holds.
+pub(crate) const ADR: &str = "docs/adr/0005-ironafs-os.md";
+
+/// The heading of the section that holds the table.
+const TABLE_SECTION: &str = "### 2. The closed list";
+
+/// A row's state on one target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Status {
+    /// In the ADR's table; no code may exist for it on this target.
+    Approved,
+    /// Its code exists on this target and must match the row exactly.
+    Implemented,
+}
+
+/// The four things an `unsafe` block may hold (ADR 0005, point 6.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BlockKind {
+    /// One foreign call, of a function the row declares.
+    Call,
+    /// One bounded read of memory a foreign call wrote.
+    Read,
+    /// One adoption of ownership from a raw value.
+    Adopt,
+    /// One volatile write of a zero byte.
+    Write,
+}
+
+/// Operations each kind other than a call may name.
+const READS: &[&str] = &["read_unaligned"];
+const ADOPTIONS: &[&str] = &["from_raw_fd", "from_raw_handle", "from_raw"];
+/// The one write: `core`'s own volatile write, by its whole path, never a
+/// same-named item elsewhere. That `core` here is the real crate is
+/// `check-os`'s rule that no file of the crate names an item `core`.
+const WRITES: &[&str] = &["core::ptr::write_volatile", "::core::ptr::write_volatile"];
+
+/// One `unsafe` block of an implemented row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Block {
+    pub(crate) kind: BlockKind,
+    /// The path the block calls, as written: `abi::syscall`.
+    pub(crate) operation: String,
+    /// Its arguments, as `check-os` reads them: each argument's tokens
+    /// joined by spaces. Recording them binds the call's shape, so a
+    /// different argument count, or a different operand, is a mismatch.
+    pub(crate) arguments: Vec<String>,
+}
+
+impl Block {
+    /// The function or method the block calls: its path's last segment.
+    pub(crate) fn callee(&self) -> &str {
+        self.operation.rsplit("::").next().unwrap_or_default()
+    }
+
+    /// Whether the block is the one approved write: `core`'s volatile
+    /// write, by its whole path, of zero (sheet 24).
+    fn zero_write(&self) -> bool {
+        self.kind == BlockKind::Write
+            && WRITES.contains(&self.operation.as_str())
+            && self.arguments.last().map(String::as_str) == Some("0")
+    }
+}
+
+/// One extern block of an implemented row: its `#[link]` arguments as
+/// `check-os` reads them, and its functions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExternBlock {
+    pub(crate) link: Option<String>,
+    pub(crate) items: Vec<ExternItem>,
+}
+
+/// The code of an implemented row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Code {
+    /// The module under `src/` that holds every site of the row: the file
+    /// `<module>.rs` and the files under `<module>/`.
+    pub(crate) module: String,
+    /// The mirror of the row's ordered Linux ABI headers cell.
+    pub(crate) headers: Vec<String>,
+    /// The feature macros the ABI check defines before the headers.
+    pub(crate) defines: Vec<String>,
+    /// Constants the ABI check compares with a C expression rather than
+    /// with a C name: (constant, expression), for macros such as
+    /// `CMSG_LEN(sizeof(int))`.
+    pub(crate) expressions: Vec<(String, String)>,
+    /// Constants that must be asserted by their C names. For `SCM_PIDFD`,
+    /// proved absence gives partial evidence on glibc 2.28 and withholds
+    /// the approved-only musl row (ADR 0005, sheet 14).
+    pub(crate) qualified: Vec<String>,
+    pub(crate) extern_blocks: Vec<ExternBlock>,
+    pub(crate) blocks: Vec<Block>,
+    pub(crate) impls: usize,
+    /// The C facts the row's declaration files must state, by name, beside
+    /// its functions: its structs, its constants and its type aliases (C
+    /// typedefs). `check-abi` requires each among the declarations the
+    /// target compiles, and each of those among these, so a fact moved out
+    /// of the module, or added to it, cannot escape the record unseen.
+    pub(crate) structs: Vec<String>,
+    pub(crate) constants: Vec<String>,
+    pub(crate) aliases: Vec<String>,
+    /// The row's Miri stand-in (ADR 0005, point 6.5), if it has one: how
+    /// many `unsafe fn`s it defines and its `unsafe` blocks, each a call as
+    /// written with its arguments. `check-os` holds `stand_in.rs` to it.
+    pub(crate) stand_in: Option<StandIn>,
+}
+
+impl Code {
+    /// The checked row-specific Linux includes for this proof target.
+    pub(crate) fn headers_for(&self, target: &str) -> &[String] {
+        if target.split('-').nth(2) == Some("linux") {
+            &self.headers
+        } else {
+            &[]
+        }
+    }
+}
+
+/// What a row's Miri stand-in holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StandIn {
+    pub(crate) functions: usize,
+    /// Each block's call and arguments, as `(operation, arguments)`.
+    pub(crate) blocks: Vec<(String, Vec<String>)>,
+}
+
+/// One row of the copy.
+#[derive(Clone, Debug)]
+pub(crate) struct Row {
+    pub(crate) number: String,
+    pub(crate) id: String,
+    /// Targets, foreign item, linked from, declared, `unsafe` blocks: the
+    /// ADR table's text, as written there.
+    pub(crate) columns: [String; 5],
+    /// The ADR leaves the row's items or block count open, so it cannot be
+    /// implemented until a change fixes them (point 6.7).
+    pub(crate) open: bool,
+    pub(crate) status: BTreeMap<String, Status>,
+    pub(crate) code: Option<Code>,
+}
+
+impl Row {
+    /// Whether the row is implemented on `target`.
+    pub(crate) fn implemented_on(&self, target: &str) -> bool {
+        self.status.get(target) == Some(&Status::Implemented)
+    }
+}
+
+/// The whole copy.
+#[derive(Clone, Debug)]
+pub(crate) struct Inventory {
+    pub(crate) rows: Vec<Row>,
+}
+
+/// One row of the ADR's table.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AdrRow {
+    pub(crate) number: String,
+    pub(crate) id: String,
+    pub(crate) columns: [String; 5],
+    headers: Result<Vec<String>, String>,
+}
+
+/// Reads the copy.
+///
+/// # Errors
+///
+/// Returns what is missing or malformed, naming the row.
+pub(crate) fn parse(text: &str) -> Result<Inventory, String> {
+    let document = json::parse(text).map_err(|error| format!("sites.json is not JSON: {error}"))?;
+    let rows = document
+        .get("rows")
+        .and_then(Value::as_array)
+        .ok_or("sites.json has no `rows` array")?;
+    let rows = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            parse_row(row).map_err(|error| format!("sites.json row {}: {error}", index + 1))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Inventory { rows })
+}
+
+fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("`{key}` is missing or not a string"))
+}
+
+fn flag(value: &Value, key: &str) -> Result<bool, String> {
+    match value.get(key) {
+        Some(Value::Bool(flag)) => Ok(*flag),
+        _ => Err(format!("`{key}` is missing or not true or false")),
+    }
+}
+
+fn array<'a>(value: &'a Value, key: &str) -> Result<&'a [Value], String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("`{key}` is missing or not an array"))
+}
+
+fn parse_row(row: &Value) -> Result<Row, String> {
+    let number = match row.get("row") {
+        Some(Value::Number(number)) => number.clone(),
+        _ => return Err("`row` is missing or not a number".to_owned()),
+    };
+    let columns = [
+        text(row, "targets")?.to_owned(),
+        text(row, "foreign_item")?.to_owned(),
+        text(row, "linked_from")?.to_owned(),
+        text(row, "declared")?.to_owned(),
+        text(row, "blocks")?.to_owned(),
+    ];
+    let mut status = BTreeMap::new();
+    match row.get("status") {
+        Some(Value::Object(members)) => {
+            for (target, value) in members {
+                let found = match value.as_str() {
+                    Some("approved") => Status::Approved,
+                    Some("implemented") => Status::Implemented,
+                    _ => return Err(format!("status of {target} is not approved or implemented")),
+                };
+                if status.insert(target.clone(), found).is_some() {
+                    return Err(format!("status of {target} is given twice"));
+                }
+            }
+        }
+        _ => return Err("`status` is missing or not an object".to_owned()),
+    }
+    let code = row.get("code").map(parse_code).transpose()?;
+    Ok(Row {
+        number,
+        id: text(row, "id")?.to_owned(),
+        columns,
+        open: flag(row, "open")?,
+        status,
+        code,
+    })
+}
+
+fn parse_code(code: &Value) -> Result<Code, String> {
+    let strings = |key: &str| -> Result<Vec<String>, String> {
+        array(code, key)?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or(format!("`{key}` holds a non-string"))
+            })
+            .collect()
+    };
+    let extern_blocks = array(code, "extern_blocks")?
+        .iter()
+        .map(|block| {
+            let link = match block.get("link") {
+                Some(Value::Null) => None,
+                Some(Value::String(link)) => Some(link.clone()),
+                _ => return Err("an extern block's `link` is missing".to_owned()),
+            };
+            let items = array(block, "items")?
+                .iter()
+                .map(|item| {
+                    Ok(ExternItem {
+                        name: text(item, "name")?.to_owned(),
+                        safe: flag(item, "safe")?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(ExternBlock { link, items })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let blocks = array(code, "blocks")?
+        .iter()
+        .map(|block| {
+            let kind = match text(block, "kind")? {
+                "call" => BlockKind::Call,
+                "read" => BlockKind::Read,
+                "adopt" => BlockKind::Adopt,
+                "write" => BlockKind::Write,
+                other => {
+                    return Err(format!(
+                        "block kind `{other}` is not call, read, adopt or write"
+                    ));
+                }
+            };
+            let arguments = array(block, "arguments")?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or("`arguments` holds a non-string".to_owned())
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(Block {
+                kind,
+                operation: text(block, "operation")?.to_owned(),
+                arguments,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let impls = match code.get("impls") {
+        Some(Value::Number(number)) => number
+            .parse()
+            .map_err(|_| "`impls` is not a count".to_owned())?,
+        _ => return Err("`impls` is missing or not a number".to_owned()),
+    };
+    let facts = code.get("c_facts").ok_or("`c_facts` is missing")?;
+    let names = |key: &str| -> Result<Vec<String>, String> {
+        array(facts, key)?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or(format!("`c_facts.{key}` holds a non-string"))
+            })
+            .collect()
+    };
+    let stand_in = parse_stand_in(code)?;
+    let constants = names("constants")?;
+    let expressions = expressions(code)?;
+    Ok(Code {
+        module: text(code, "module")?.to_owned(),
+        headers: strings("headers")?,
+        defines: defines(code)?,
+        qualified: qualified(code, &constants, &expressions)?,
+        expressions,
+        extern_blocks,
+        blocks,
+        impls,
+        structs: names("structs")?,
+        constants,
+        aliases: names("aliases")?,
+        stand_in,
+    })
+}
+
+/// The feature macros a row's ABI check defines (`defines`, optional):
+/// only those of `FEATURE_MACROS`, since each is written into the C file.
+fn defines(code: &Value) -> Result<Vec<String>, String> {
+    let Some(defines) = code.get("defines") else {
+        return Ok(Vec::new());
+    };
+    defines
+        .as_array()
+        .ok_or("`defines` is not an array")?
+        .iter()
+        .map(|value| match value.as_str() {
+            Some(name) if FEATURE_MACROS.contains(&name) => Ok(name.to_owned()),
+            _ => Err(format!(
+                "`defines` holds {value:?}, which is not a feature macro the ABI check accepts \
+                 ({})",
+                FEATURE_MACROS.join(", ")
+            )),
+        })
+        .collect()
+}
+
+/// The constants a target's headers may not name (`qualified`, optional):
+/// each one of the row's recorded constants, and none mapped to an
+/// expression, so `check-abi` compares each with its C name, the name the
+/// probe found.
+fn qualified(
+    code: &Value,
+    constants: &[String],
+    expressions: &[(String, String)],
+) -> Result<Vec<String>, String> {
+    let Some(qualified) = code.get("qualified") else {
+        return Ok(Vec::new());
+    };
+    qualified
+        .as_array()
+        .ok_or("`qualified` is not an array")?
+        .iter()
+        .map(|value| match value.as_str() {
+            Some(name) if expressions.iter().any(|(mapped, _)| mapped == name) => Err(format!(
+                "`qualified` holds {name:?}, which `expressions` maps to a C expression: a \
+                 qualified constant is compared with its own C name"
+            )),
+            Some(name) if constants.iter().any(|constant| constant == name) => Ok(name.to_owned()),
+            _ => Err(format!(
+                "`qualified` holds {value:?}, which is not one of the row's constants"
+            )),
+        })
+        .collect()
+}
+
+/// The C expressions a row's ABI check compares constants with
+/// (`expressions`, optional): an object from a constant's name to an
+/// expression `well_formed` accepts, since each is written into the C
+/// file, naming at least one C name: a literal alone (`4`) would compare
+/// the constant with itself and prove nothing.
+fn expressions(code: &Value) -> Result<Vec<(String, String)>, String> {
+    let Some(expressions) = code.get("expressions") else {
+        return Ok(Vec::new());
+    };
+    let Value::Object(members) = expressions else {
+        return Err("`expressions` is not an object".to_owned());
+    };
+    members
+        .iter()
+        .map(|(name, value)| {
+            let name_ok = !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+            let expression = value.as_str().unwrap_or_default();
+            let names_c = expression
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|word| word.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'));
+            let expression_ok = names_c && well_formed(expression);
+            if name_ok && expression_ok {
+                Ok((name.clone(), expression.to_owned()))
+            } else {
+                Err(format!(
+                    "`expressions` maps {name:?} to {value:?}: a constant's name must map to an \
+                     expression of names, numbers, spaces, `*`, `+` and balanced parentheses \
+                     that names at least one C name"
+                ))
+            }
+        })
+        .collect()
+}
+
+/// Whether `expression` may stand in the ABI check's `(<expression>) ==
+/// <value>`: names, numbers, spaces, `*` and `+`, and parentheses that
+/// balance and never close more than they opened, so the expression cannot
+/// leave its own parentheses. No quote, `#`, `;`, `/`, comma, comparison
+/// or line break can appear, so nothing can end the assertion it stands in.
+fn well_formed(expression: &str) -> bool {
+    if expression.trim().is_empty() {
+        return false;
+    }
+    let mut depth = 0_usize;
+    for byte in expression.bytes() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => match depth.checked_sub(1) {
+                Some(less) => depth = less,
+                None => return false,
+            },
+            b'*' | b'+' | b' ' | b'_' => {}
+            other if other.is_ascii_alphanumeric() => {}
+            _ => return false,
+        }
+    }
+    depth == 0
+}
+
+/// The feature macros a row may ask the ABI check to define.
+const FEATURE_MACROS: &[&str] = &["_GNU_SOURCE"];
+
+/// A row's recorded Miri stand-in, if any.
+fn parse_stand_in(code: &Value) -> Result<Option<StandIn>, String> {
+    let stand_in = match code.get("stand_in") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(stand_in) => stand_in,
+    };
+    let functions = match stand_in.get("functions") {
+        Some(Value::Number(number)) => number
+            .parse()
+            .map_err(|_| "`stand_in.functions` is not a count".to_owned())?,
+        _ => return Err("`stand_in.functions` is missing".to_owned()),
+    };
+    let blocks = array(stand_in, "blocks")?
+        .iter()
+        .map(|block| {
+            let arguments = array(block, "arguments")?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or("a non-string argument".to_owned())
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok((text(block, "operation")?.to_owned(), arguments))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Some(StandIn { functions, blocks }))
+}
+
+/// The rows of the ADR's table: the lines starting `| <number> |` in the
+/// section that holds it, split at each `|` not escaped as `\|`, with the
+/// escapes kept as written.
+pub(crate) fn adr_rows(text: &str) -> Vec<AdrRow> {
+    let mut rows = Vec::new();
+    let mut inside = false;
+    for line in text.lines() {
+        if line.starts_with("### ") {
+            inside = line == TABLE_SECTION;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        let cells = split_cells(line);
+        let [number, id, rest @ ..] = cells.as_slice() else {
+            continue;
+        };
+        let (true, Some(id)) = (
+            !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()),
+            id.strip_prefix('`').and_then(|id| id.strip_suffix('`')),
+        ) else {
+            continue;
+        };
+        if let [targets, foreign, linked, declared, blocks, headers] = rest {
+            rows.push(AdrRow {
+                number: number.clone(),
+                id: id.to_owned(),
+                columns: [
+                    targets.clone(),
+                    foreign.clone(),
+                    linked.clone(),
+                    declared.clone(),
+                    blocks.clone(),
+                ],
+                headers: parse_headers_cell(headers),
+            });
+        }
+    }
+    rows
+}
+
+fn parse_headers_cell(cell: &str) -> Result<Vec<String>, String> {
+    if cell == "`none`" {
+        return Ok(Vec::new());
+    }
+    let headers = cell
+        .split(", ")
+        .map(|span| {
+            span.strip_prefix('`')
+                .and_then(|name| name.strip_suffix('`'))
+                .map(str::to_owned)
+                .ok_or_else(|| format!("expected a code span, found {span:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_headers(&headers)?;
+    Ok(headers)
+}
+
+fn validate_headers(headers: &[String]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for header in headers {
+        let valid = std::path::Path::new(header)
+            .extension()
+            .is_some_and(|ext| ext == "h")
+            && header.split('/').all(|component| {
+                let mut bytes = component.bytes();
+                bytes
+                    .next()
+                    .is_some_and(|first| first.is_ascii_alphanumeric() || first == b'_')
+                    && bytes.all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')
+                    })
+            });
+        if !valid {
+            return Err(format!("invalid header name {header:?}"));
+        }
+        if !seen.insert(header) {
+            return Err(format!("duplicate header {header:?}"));
+        }
+    }
+    Ok(())
+}
+
+/// The trimmed cells of a Markdown table line, or nothing if it is not one.
+fn split_cells(line: &str) -> Vec<String> {
+    let Some(inner) = line
+        .strip_prefix('|')
+        .and_then(|rest| rest.strip_suffix('|'))
+    else {
+        return Vec::new();
+    };
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut escaped = false;
+    for character in inner.chars() {
+        if character == '|' && !escaped {
+            cells.push(cell.trim().to_owned());
+            cell.clear();
+        } else {
+            cell.push(character);
+        }
+        escaped = character == '\\' && !escaped;
+    }
+    cells.push(cell.trim().to_owned());
+    cells
+}
+
+/// The copy's departures from the ADR's table and from its own rules.
+pub(crate) fn problems(inventory: &Inventory, adr: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let table = adr_rows(adr);
+    if table.is_empty() {
+        found.push(format!("{ADR} has no table under \"{TABLE_SECTION}\""));
+    }
+    if table.len() != inventory.rows.len() {
+        found.push(format!(
+            "sites.json has {} rows and the ADR's table {}: the copy holds every row",
+            inventory.rows.len(),
+            table.len()
+        ));
+    }
+    for (row, adr_row) in inventory.rows.iter().zip(&table) {
+        let same_row = row.number == adr_row.number && row.id == adr_row.id;
+        if !same_row || row.columns != adr_row.columns {
+            found.push(format!(
+                "sites.json row {} ({}) differs from the ADR's row {} ({}): the copy keeps the \
+                 table's text as written",
+                row.number, row.id, adr_row.number, adr_row.id
+            ));
+        }
+        if same_row {
+            found.extend(header_problems(row, adr_row));
+        }
+    }
+    for row in &inventory.rows {
+        found.extend(row_problems(row));
+    }
+    found
+}
+
+fn header_problems(row: &Row, adr_row: &AdrRow) -> Vec<String> {
+    let mut found = Vec::new();
+    let site = format!("row {} ({})", adr_row.number, adr_row.id);
+    let mirror = row
+        .code
+        .as_ref()
+        .map_or(&[][..], |code| code.headers.as_slice());
+    let mirror_problem = validate_headers(mirror);
+    if let Err(problem) = &mirror_problem {
+        found.push(format!("sites.json {site} code.headers: {problem}"));
+    }
+    let approved = match &adr_row.headers {
+        Ok(approved) => approved,
+        Err(problem) => {
+            found.push(format!("ADR {site} Linux ABI headers: {problem}"));
+            return found;
+        }
+    };
+    let [targets, _, _, declared, _] = &adr_row.columns;
+    if !approved.is_empty() && (declared == "none" || !covers_linux(targets)) {
+        found.push(format!(
+            "ADR {site} Linux ABI headers: expected `none` for a row without a Linux foreign item"
+        ));
+    }
+    if mirror_problem.is_ok() && approved != mirror {
+        found.push(format!(
+            "sites.json {site} code.headers differs from the ADR's Linux ABI headers: \
+             expected {approved:?}, found {mirror:?}"
+        ));
+    }
+    found
+}
+
+/// Reads the target names outside the ADR's parenthesized qualifiers.
+fn covers_linux(targets: &str) -> bool {
+    let mut scopes = String::new();
+    let mut depth = 0_usize;
+    for character in targets.chars() {
+        match character {
+            '(' => {
+                scopes.push(' ');
+                depth += 1;
+            }
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => scopes.push(character),
+            _ => {}
+        }
+    }
+    scopes.trim() == "every target" || scopes.split(',').any(|scope| scope.trim() == "Linux")
+}
+
+/// Each musl target and the glibc target of its architecture.
+const MUSL_GNU: [(&str, &str); 2] = [
+    ("x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"),
+    ("aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"),
+];
+
+/// Whether a row is withheld on musl (ADR 0005, sheet 14): it has
+/// qualified constants, and is implemented on each glibc target and only
+/// approved on each musl one. The crate root's glibc-only gate then leaves
+/// its module out of a musl build (`check-os` holds the two equal).
+pub(crate) fn withheld_on_musl(row: &Row) -> bool {
+    row.code
+        .as_ref()
+        .is_some_and(|code| !code.qualified.is_empty())
+        && MUSL_GNU.iter().all(|(musl, gnu)| {
+            row.status.get(*gnu) == Some(&Status::Implemented)
+                && row.status.get(*musl) == Some(&Status::Approved)
+        })
+}
+
+/// One row's departures from the copy's rules.
+fn row_problems(row: &Row) -> Vec<String> {
+    let mut found = Vec::new();
+    let id = &row.id;
+    for target in row.status.keys() {
+        if !ALLOWLIST.contains(&target.as_str()) {
+            found.push(format!(
+                "{id}: {target} is not a target of ADR 0005, point 5.3"
+            ));
+        }
+    }
+    for (musl, gnu) in MUSL_GNU {
+        if row.status.get(musl) != row.status.get(gnu) && !withheld_on_musl(row) {
+            found.push(format!(
+                "{id}: {musl} and {gnu} differ; a musl build compiles the glibc build's code, \
+                 unless the row is implemented on glibc and only approved on musl because its \
+                 qualified constants withhold it there"
+            ));
+        }
+    }
+    let implemented = row
+        .status
+        .values()
+        .any(|status| *status == Status::Implemented);
+    match (&row.code, implemented) {
+        (None, true) => found.push(format!("{id}: implemented, but its code is not recorded")),
+        (Some(_), false) => found.push(format!(
+            "{id}: code is recorded, but it is implemented nowhere"
+        )),
+        _ => {}
+    }
+    let [_, foreign, ..] = &row.columns;
+    if row.open != foreign.contains("open owner decision") {
+        found.push(format!(
+            "{id}: `open` is {}, but the ADR's row {} an open owner decision",
+            row.open,
+            if row.open { "names no" } else { "names" }
+        ));
+    }
+    if row.open && implemented {
+        found.push(format!(
+            "{id}: the ADR leaves this row open, so it cannot be implemented until a change \
+             fixes it (point 6.7)"
+        ));
+    }
+    if let Some(code) = &row.code {
+        let declared = |name: &str| {
+            code.extern_blocks
+                .iter()
+                .flat_map(|block| &block.items)
+                .any(|item| item.name == name)
+        };
+        for block in &code.blocks {
+            let callee = block.callee();
+            let fits = match block.kind {
+                BlockKind::Call => declared(callee),
+                BlockKind::Read => READS.contains(&callee),
+                BlockKind::Adopt => ADOPTIONS.contains(&callee),
+                BlockKind::Write => block.zero_write(),
+            };
+            if !fits {
+                found.push(format!(
+                    "{id}: a {:?} block cannot hold `{}({})`",
+                    block.kind,
+                    block.operation,
+                    block.arguments.join(", ")
+                ));
+            }
+        }
+        found.extend(adr_binding_problems(row, code));
+    }
+    found
+}
+
+/// A row whose block column says it adopts one descriptor ("one that
+/// adopts the descriptor", "one that adopts a received descriptor") holds
+/// exactly one adoption.
+fn adoption_problems(id: &str, blocks: &str, code: &Code) -> Option<String> {
+    if !blocks.contains("one that adopts") {
+        return None;
+    }
+    let held = code
+        .blocks
+        .iter()
+        .filter(|block| block.kind == BlockKind::Adopt)
+        .count();
+    (held != 1)
+        .then(|| format!("{id}: holds {held} adoptions; the ADR's row adopts one descriptor"))
+}
+
+/// How an implemented row's code departs from what the ADR's own row
+/// approves: every declared function and every block's callee is named in
+/// the row's foreign-item or block column; a block with no `#[link]` is
+/// linked from the C library or libSystem, and a `#[link]` names the
+/// library the row does; the `safe fn` declarations are those the declared
+/// column allows; a row whose block column says "one" holds one site in
+/// `unsafe`, and one that says "one that adopts" exactly one adoption;
+/// and the copy's open flag is the ADR's (an open owner
+/// decision). The prose of other block counts is bound by review.
+fn adr_binding_problems(row: &Row, code: &Code) -> Vec<String> {
+    let mut found = Vec::new();
+    let id = &row.id;
+    let [_, foreign, linked, declared, blocks] = &row.columns;
+    let approved = |name: &str| {
+        foreign.contains(&format!("{name}("))
+            || foreign.contains(&format!("`{name}`"))
+            || foreign.contains(&format!("::{name}`"))
+            || blocks.contains(&format!("::{name}`"))
+    };
+    for item in code.extern_blocks.iter().flat_map(|block| &block.items) {
+        if !approved(&item.name) {
+            found.push(format!(
+                "{id}: declares `{}`, which the ADR's row does not name (point 7.1)",
+                item.name
+            ));
+        }
+        let allowed = match declared.as_str() {
+            "`safe fn`" => item.safe,
+            "`unsafe fn`" => !item.safe,
+            _ => true,
+        };
+        if !allowed {
+            found.push(format!(
+                "{id}: `{}` is declared {}, which the ADR's row does not allow ({declared})",
+                item.name,
+                if item.safe { "safe" } else { "unsafe" }
+            ));
+        }
+    }
+    for block in &code.blocks {
+        if !approved(block.callee()) {
+            found.push(format!(
+                "{id}: a block calls `{}`, which the ADR's row does not name (point 7.1)",
+                block.operation
+            ));
+        }
+    }
+    for block in &code.extern_blocks {
+        let fits = match &block.link {
+            None => linked.contains("C library") || linked.contains("libSystem"),
+            Some(link) => link
+                .split(';')
+                .filter_map(|pair| pair.strip_prefix("name="))
+                .all(|name| linked.contains(name) || linked == "see point 5.4"),
+        };
+        if !fits {
+            found.push(format!(
+                "{id}: an extern block linked as {:?}, where the ADR's row says \"{linked}\"",
+                block.link
+            ));
+        }
+    }
+    // Blocks and impls are bound apart. Only the row whose block column
+    // names `unsafe impl`s may hold any (ADR 0005, point 6.3: the two of
+    // windows-dns); a row whose column says "one" holds one block.
+    if code.impls > 0 && !blocks.contains("`unsafe impl`") {
+        found.push(format!(
+            "{id}: records {} unsafe impls; the ADR's row names none (point 6.3)",
+            code.impls
+        ));
+    }
+    found.extend(adoption_problems(id, blocks, code));
+    let says_one = blocks == "one" || blocks.starts_with("one,") || blocks.starts_with("one (");
+    if says_one && code.blocks.len() != 1 {
+        found.push(format!(
+            "{id}: holds {} unsafe blocks; the ADR's row says \"{blocks}\"",
+            code.blocks.len()
+        ));
+    }
+    // A row whose foreign item is the volatile write holds that write, of
+    // zero, as a write block (sheet 24).
+    let volatile = foreign.contains("write_volatile");
+    let writes = code.blocks.iter().any(Block::zero_write);
+    if volatile && !writes {
+        found.push(format!(
+            "{id}: the ADR's row is the volatile zero write, but no write block of zero is recorded"
+        ));
+    }
+    // `syscall` reads up to six `long`s after the number, so a call passes
+    // all six (the declaration's argument, in `linux_random::abi`); the
+    // count is held here, not in the editable copy. What this establishes
+    // is the operand count only. That each operand is a `c_long` is the
+    // production code's own typing (the number a `c_long`, the six others
+    // the elements of a `[c_long; 6]`), which the compiler checks and
+    // review reads; this check does not prove operand types.
+    for block in code
+        .blocks
+        .iter()
+        .filter(|block| block.callee() == "syscall")
+    {
+        if block.arguments.len() != SYSCALL_ARGUMENTS {
+            found.push(format!(
+                "{id}: calls syscall with {} arguments; a syscall call passes the number and six \
+                 longs ({SYSCALL_ARGUMENTS})",
+                block.arguments.len()
+            ));
+        }
+    }
+    found
+}
+
+/// The arguments of every `syscall` call: the number and six `long`s.
+const SYSCALL_ARGUMENTS: usize = 7;

@@ -88,6 +88,101 @@ fn cases_zero_panics_with_message() {
 }
 
 #[test]
+fn property_label_below_minimum_fails() {
+    let property = Property::new("generator reach")
+        .cases(1)
+        .require_label("repeated", 2)
+        .require_label("unreached", 1);
+    let result = panic::catch_unwind(|| {
+        property
+            .run_with(
+                0x42,
+                &mut |source: &mut Source| {
+                    source.mark_label("repeated");
+                    source.mark_label("repeated");
+                    source.u8()
+                },
+                &mut |_: &u8| (),
+                &mut |_: &str| (),
+                &mut || panic!("a label shortfall must not start shrinking"),
+            )
+            .unwrap();
+    });
+    let payload = result.expect_err("the run passed with required labels below their minimums");
+    assert_eq!(
+        payload.downcast_ref::<String>().unwrap(),
+        "property `generator reach` failed generator label minimums (seed 0x0000000000000042)\n\
+         replay with IRONAFS_TEST_SEED=0x0000000000000042\n\
+         generator labels:\n  \"repeated\": 1 (minimum 2, below minimum)\n  \
+         \"unreached\": 0 (minimum 1, below minimum)"
+    );
+}
+
+#[test]
+fn generator_labels_at_minimum_pass_and_report_every_count() {
+    let property = Property::new("generator reach")
+        .cases(2)
+        .require_label("repeated", 2)
+        .require_label("unreached", 0);
+    let mut notices = Vec::new();
+    property
+        .run_with(
+            0x42,
+            &mut |source: &mut Source| {
+                source.mark_label("repeated");
+                source.mark_label("repeated");
+                source.mark_label("undeclared");
+                source.u8()
+            },
+            &mut |_: &u8| (),
+            &mut |notice: &str| notices.push(notice.to_owned()),
+            &mut || panic!("passing cases must not start shrinking"),
+        )
+        .unwrap();
+    assert_eq!(
+        notices,
+        [
+            "property `generator reach` met generator label minimums (seed 0x0000000000000042)\n\
+          generator labels:\n  \"repeated\": 2 (minimum 2)\n  \"unreached\": 0 (minimum 0)"
+        ]
+    );
+}
+
+#[test]
+fn generator_labels_count_fresh_cases_through_the_first_failure() {
+    let mut generate = |source: &mut Source| {
+        source.mark_label("drawn");
+        source.u16()
+    };
+    let mut test = |value: &u16| {
+        if *value < 10 { Ok(()) } else { Err("too big") }
+    };
+    Property::new("replay")
+        .require_label("unreached", 1)
+        .regression(&[0], generate, test);
+
+    let failure = Property::new("generator reach")
+        .cases(1)
+        .require_label("drawn", 2)
+        .require_label("unreached", 1)
+        .run_with(0x42, &mut generate, &mut test, &mut |_| (), &mut || {
+            Duration::ZERO
+        })
+        .unwrap_err();
+    assert_eq!(failure.case(), 0);
+    assert_eq!((*failure.value(), failure.choices()), (10, &[10][..]));
+    assert!(failure.shrink_runs() > 0);
+    let report = failure.to_string();
+    assert!(
+        report.contains(
+            "generator labels through the first failing case:\n  \"drawn\": 1 \
+             (minimum 2, below minimum)\n  \"unreached\": 0 (minimum 1, below minimum)\n"
+        ),
+        "{report}"
+    );
+}
+
+#[test]
 fn run_seeded_reports_its_seed_and_repeats_its_counterexample() {
     let run = || {
         run_seeded(
@@ -195,6 +290,7 @@ fn sample(shrink_budget_exhausted: bool) -> Counterexample<Vec<u8>> {
         shrink_runs: 57,
         shrink_budget_exhausted,
         shrink_timed_out: false,
+        labels: None,
     }
 }
 
