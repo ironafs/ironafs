@@ -80,6 +80,7 @@ the evidence that refutes it.
 | [2026-11-26-71-q12-issue-brief](2026-11-26-71-q12-issue-brief.md) | Issue #71 Q12 issue brief review and filing decision |
 | [2026-11-26-45-stable-seed-replay](2026-11-26-45-stable-seed-replay.md) | Issue #45: ordinary stable replay of the existing fuzz seed corpus |
 | [2026-11-26-200-blocking-standards](2026-11-26-200-blocking-standards.md) | Issue #200: align coding standards rules 14 and 18 with the blocking model |
+| [2026-11-26-xdr-fixture-coverage-split](2026-11-26-xdr-fixture-coverage-split.md) | Class I: split XDR unit and golden test coverage around one shared Shaded fixture |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
