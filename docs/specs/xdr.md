@@ -131,10 +131,10 @@ Section 9 shows where each is kept and which test fails if it is broken.
    carry offsets, names and the specification's own constants, never a
    value read from the input; an error a decode entry point returns
    from a secret-bearing message carries not even an offset. The
-   encoder builds its errors with no offset, and returns an error from a
-   handwritten encoder as that encoder made it, except a
-   `MessageTooLarge` from its size computation, which the encoder
-   replaces with the message's own (7, point 2).
+   encoder builds its errors with no offset. At an encode entry point,
+   it returns an error from a handwritten encoder as that encoder
+   made it, except a `MessageTooLarge` from sizing, which the entry
+   point replaces with the message's own (7, point 2).
 
 ## 4. Terms
 
@@ -225,11 +225,12 @@ the message, because every item is a whole number of units
    `[X1 §3: CONFIRMED]`.
 
 2. **A union's discriminant** is a signed integer, an unsigned integer or
-   an enumeration, booleans included `[X1 §4.15, §6.4 (5): CONFIRMED]`. A
-   union without a default arm has no valid encoding for a discriminant
-   value it does not list `[X1 §4.15: CONFIRMED]`. A discriminant is a
-   value of its own type first: a default arm admits only values that type
-   admits (5.4, point 7) `[OWN]`.
+   an enumeration, booleans included `[X1 §4.15, §6.4 (5): CONFIRMED]`.
+   A discriminant is a value of its own type first (5.4, points 7 and 9)
+   `[OWN]`. A valid discriminant selects the explicit arm whose case
+   lists it. If no case lists it, it selects the default arm, if present.
+   With neither, the union has no valid encoding for that discriminant
+   `[X1 §4.15: CONFIRMED]`.
 3. **Not in the profile:** single, double and quadruple precision floating
    point `[X1 §4.6 to §4.8]`, and optional data (`T *x`) `[X1 §4.19]`.
    `[OWN]` No IronAFS specification needs them today. Optional data is
@@ -371,7 +372,7 @@ the message, because every item is a whole number of units
      which may copy them, and nothing stops it; and a handwritten
      encoder that runs a decode and passes on its positioned error,
      which the encode entry points return as it is, a `MessageTooLarge`
-     from `encoded_len` excepted (section 7, point 2).
+     from sizing excepted (section 7, point 2).
      Review sees all five.
 
 ### 5.2 Caps
@@ -781,10 +782,8 @@ not control").
       undeclared value of a closed enumeration is `UnknownEnumValue`
       (point 9), unless a tolerance for this union's discriminant
       (point 11) normalises it first;
-   2. the valid, normalised value selects its arm, or else the default
-      arm; with neither, the decode returns `UnknownDiscriminant`
-      `[X1 §4.15: CONFIRMED]`. A default arm never admits a value that
-      step 1 rejects;
+   2. the valid, normalised value selects the arm by 5.1, point 2. If it
+      selects no arm, the decode returns `UnknownDiscriminant`;
    3. the arm is decoded.
 
    An arm the decoder does not know cannot be skipped: XDR gives an arm
@@ -857,24 +856,147 @@ not control").
 
 1. **Canonical form.** The encoder writes every item as 5.1 sets out:
    most significant byte first, zero padding, lengths and counts equal to
-   the data's, booleans as 0 or 1, enumerations only as declared values
-   (or the raw value of an open field), and unions only with a
-   discriminant that has an arm or a default arm `[X1 §3 to §4.16:
-   CONFIRMED]`.
+   the data's, booleans as 0 or 1, and enumerations only as declared
+   values `[X1 §3 to §4.16: CONFIRMED]`. An open field keeps its raw
+   value (5.4, point 9) `[OWN]`. A union is written as its discriminant
+   followed by the arm that value selects under 5.1, point 2
+   `[X1 §4.15: CONFIRMED]`.
 2. **The encoder refuses what the decoder rejects** (the `wire-format`
-   skill). `[OWN]`, except where marked:
-   - for opaque data and strings, n is checked against the declared bound
-     (bytes) and then against the cap in the "out" direction (bytes);
-   - for a variable-length array, the element count n is checked against
-     the declared bound (elements), and the encoded bytes of its elements
-     against the array's cap (bytes); a count is never compared with a
-     byte cap, nor a byte total with a bound in elements;
-   - the failures are `LengthOverBound` and `CapExceeded`; XDR itself
-     makes encoding a length above the declared maximum an error
-     `[X1 §4.10, §4.11, §4.13: CONFIRMED]`;
-   - a length or count that does not fit in 32 bits is
-     `LengthNotRepresentable`.
-3. **The wipe comes first, then the output cap, and the allocation
+   skill), using the caps for the output direction. The sizing pass also
+   checks that lengths and counts fit in 32 bits and applies the
+   encode-only `DefaultArmMismatch` refusal to preserve the value round
+   trip (P1). The checks below are `[OWN]` except where marked.
+
+   **Visit the value in wire order.** Visit a structure's components in
+   declaration order, an array's elements by increasing index, and a
+   union's discriminant before its arm. At a length or count, check any
+   declared bound in its own units (bytes or elements), comparing the
+   original length or count before converting to 32 bits. Above the
+   bound is `LengthOverBound`, naming the field. XDR makes encoding a
+   length or count above the declared maximum an error
+   `[X1 §4.10, §4.11, §4.13: CONFIRMED]`. Next, if the length or count
+   does not fit in 32 bits, return `LengthNotRepresentable`, naming the
+   field (section 6, A7). This conversion enforces the word's limit when
+   the declaration omits a bound. For an opaque field or string with a
+   length word, then check its own data bytes against its cap and return
+   `CapExceeded` naming that cap if it fails.
+
+   **Check the union at its discriminant.** A union's explicit arm
+   supplies its case discriminant. Its default arm keeps a discriminant
+   of the declared type, including any raw value the type admits for an
+   open field. Apply 5.1, point 2 to a default-arm value's discriminant
+   before charging its word or sizing the arm. If it selects an
+   explicit arm, return `DefaultArmMismatch` naming the discriminant
+   field (section 7). If it selects the default arm, size the arm and
+   encode it with the stored discriminant. A mismatch violates P1
+   because a decoder can accept the resulting bytes as the explicit
+   arm when the payload fits both layouts.
+
+   For every discriminant kind, keeping the declared type lets the
+   default arm use the existing value representation and sizing pass.
+   Decoding, sizing and writing share the union's arm selection. Sizing
+   checks the stored discriminant before sizing the arm, even if every
+   arm has the same encoded size. The check is part of sizing the union
+   wherever it occurs, including inside a structure, array or another
+   union.
+
+   **Charge each encoded byte once to the message and once to each
+   active array cap.** The charge for a scalar, discriminant or
+   fixed-length opaque item is its full encoded width from 5.1. For a
+   variable-length opaque item or string, charge its length word, data
+   and padding together after its own checks. For a variable-length
+   array, after checking its count, charge the four-byte count word to
+   the message and any enclosing arrays. Then the context opens the
+   array's own cap at its full byte allowance for the element visits.
+   Each element's charges count against that cap while it is open. A
+   structure, fixed-length array, union wrapper or void adds no charge
+   of its own.
+
+   **Check charge and element widths.** The context refuses any charge
+   whose byte count is not a whole number of four-byte units, at the
+   charge operation before checking active caps or changing counts.
+   At each element visit in a fixed-length or variable-length array,
+   track whether the element makes a positive charge, independently
+   of the whole-message total. If the visit succeeds with no latched
+   refusal and no positive charge, refuse it immediately. Together
+   these checks enforce 5.1, point 5 even for a handwritten leaf size
+   report. A standalone void and a union's void arm are allowed
+   their zero width.
+
+   **The first item or array failure wins.** At each charge, test the
+   active caps from innermost to outermost. The first cap with fewer
+   remaining bytes than the charge gives `CapExceeded` naming that cap,
+   even when an outer cap has less room. A charge that fits is deducted
+   from each active cap (section 6, A13). These remaining byte counts are
+   independent of the whole-message total. A fixed stack with
+   `xdr.depth_max` slots (5.2, point 10) holds the counts without an
+   allocation.
+   The context checks the slot when opening a cap and refuses
+   immediately if the stack is full (section 6, A14). It keeps the cap
+   guard private in the scoped call for that cap. The guard restores
+   the entry cap depth on success, error or unwind. Enclosing caps
+   retain the bytes charged to them on a successful visit.
+
+   **Retain the first refusal.** The context latches the first immediate
+   refusal before it reports the error. It keeps each visit's guard
+   private inside its scoped call, including for the root and each
+   handwritten component. The codec receives no guard and has nothing
+   to close. When a visit returns, a latched refusal takes precedence
+   over a later error, success or the zero-width-element check. With
+   no refusal latched, the context latches and returns an error from
+   the visit, or on success checks for zero width where required.
+   If an unwind crosses an unfinished visit's scope, its guard latches
+   an interruption if no refusal is already latched. An unwind caught
+   wholly inside that visit does not cross its guard. Later sizing
+   operations return the latched error without charging bytes or
+   entering another visit. Sizing completion returns a latched refusal
+   ahead of any later result or check of the whole-message total.
+   For a full cap stack, an interrupted visit, an element with zero
+   width or a charge that is not a whole number of units, the context
+   latches `MessageTooLarge` without a cap name or limit. An encode
+   entry point supplies its message's name and cap as in section 7.
+   The deferred checks on the whole-message total do not set the latch.
+
+   **The whole-message size is decided after the visit.** Keep the sum
+   of charges in 64 bits while it fits, and record an overflow if a
+   checked addition fails (section 6, A10). Once overflowed, the total
+   stays marked as such and the visit continues with the same item
+   checks and array charges. At the encode entry points, neither the
+   message cap nor the platform's `usize` limit ends the visit early.
+   After a visit with no immediate refusal, those entry points return
+   `MessageTooLarge` naming the message for an overflowed total, a
+   total above the message cap or one that does not fit in `usize`.
+
+   **One shared sizing context.** `Encode` requires a context-taking
+   sizing method. Generated and handwritten codecs use the same
+   context throughout the visit to check each bound, cap, enumeration
+   and discriminant and to visit each component in their XDR layout.
+   A transparent wrapper visits its wrapped value through the context.
+   Standalone `encoded_len` uses the same root sizing visit for every
+   `Encode` implementation, including handwritten leaves, transparent
+   wrappers, enumerations, types with discriminants, and bounded or
+   capped types. It starts
+   without an enclosing array or message cap and has no platform `usize`
+   admission check. All bounds and item and array caps declared
+   within the visited layout still apply. It returns
+   `Result<u64, Error>`. If the visit has no immediate refusal but the
+   total overflows `u64`, it returns `MessageTooLarge` without a
+   message name or limit. Both encode entry points use the root visit
+   with the message's cap for admission.
+
+   A handwritten leaf with no child visits, discriminant, declared
+   length or count bound, item cap or enumeration check may supply
+   a fallible handwritten leaf size report directly to the context's
+   single charge operation during its managed visit. A successful
+   report makes one charge to the total and each active array cap.
+   The context latches a reported error, including `MessageTooLarge`,
+   before charging anything for the leaf. The report is separate from
+   the public `encoded_len` query. The bridge must never call that
+   query, directly or indirectly. The Rust method shape and defaults
+   are implementation details. Only the whole-message size failures
+   found by the shared context are deferred. Section 7 specifies how
+   errors returned by sizing and writing reach the caller.
+3. **The wipe comes first, then sizing, and the allocation
    never moves.** `[OWN]`, from coding standards rules 3 and 8. These
    steps run in this order, and are the same for every message,
    secret-bearing or not. They describe the entry point that writes
@@ -889,11 +1011,10 @@ not control").
       any later step, the cap check included, still leaves a buffer that
       held earlier bytes empty and zeroed, as best it can (step 6).
    2. Then it computes the message's encoded size, with checked
-      arithmetic, and returns `MessageTooLarge` if the size exceeds the
-      message cap, or does not fit in 64 bits or in the platform's
-      `usize` (section 6, A10). This check comes after the wipe
-      and before any allocator request and any byte of the message is
-      written.
+      arithmetic and the checks and order in point 2 in the same pass.
+      Sizing follows the wipe. It finishes before any allocator request,
+      before the reservation call in step 3, and before any message byte
+      is written.
    3. A buffer with an allocation too small for that size is refused
       with `AllocationFailed`: no byte of the message is written, and
       the buffer stays as step 1 left it, empty and zeroed, with its
@@ -984,9 +1105,11 @@ and fallible conversions (coding standards rule 2); none of it saturates.
 | A7 | a length to the 32-bit length word, on encode | any `usize` | `try_from`; failure is `LengthNotRepresentable` |
 | A8 | heap ratios and r × message cap, and reservation counts q and q × message cap ÷ 4, in the generator (5.2, points 9.3 and 9.5) | caps < 2³², slot sizes small | `checked_mul`, `checked_add` and a ceiling division in 64 bits; overflow refuses the definition |
 | A9 | n × element slot size, the requested bytes of a reservation | n already checked under A4 | `checked_mul` in 64 bits; overflow is `BudgetExceeded` |
-| A10 | the encoder's sum of encoded sizes, and that size as the platform's `usize` (5.5, point 3) | any value | `checked_add` in 64 bits and `try_from`; overflow or a failed conversion is `MessageTooLarge`, naming the message |
+| A10 | the sum of encoded sizes and, for encode admission, the final conversion to `usize` (5.5, point 2) | each charge fits in 64 bits | `checked_add` in 64 bits. Record overflow and continue item and array checks. With no immediate refusal, overflow gives `MessageTooLarge`, without a message name or limit in standalone sizing. At the encode entry points, overflow, a total above the message cap or a failed `try_from` gives `MessageTooLarge` naming the message |
 | A11 | the ledger's running total plus a request (5.2, point 9.2) | total ≤ memory budget, request from A9 | `checked_add` in 64 bits; overflow, or a sum above the budget, is `BudgetExceeded`, before anything is requested |
 | A12 | inline sizes and nesting depth, in the generator and the compile-time assertions (5.2, point 10) | sizes small, depth ≤ 16 | `checked_add` and `checked_mul`; overflow refuses the definition or fails the build |
+| A13 | active array cap's remaining bytes less the charge (5.5, point 2) | remaining ≤ cap < 2³², charge fits in 64 bits | `checked_sub` in 64 bits; underflow is `CapExceeded` naming the first failing cap, innermost to outermost |
+| A14 | push an active array cap (5.5, point 2) | stack depth ≤ `xdr.depth_max` | checked slot access and depth increment; a full stack refuses with `MessageTooLarge` |
 
 `[OWN]` for every row; the operations follow from 5.1, 5.2, 5.4 and 5.5.
 
@@ -1008,12 +1131,12 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    errors the codec builds itself. Any error kind can reach an encode
    caller: an encode entry point returns an error a handwritten encoder
    passes on, of any kind, as that encoder made it, except a
-   `MessageTooLarge` from `encoded_len`, which it replaces with the
-   message's own (point 2).
+   `MessageTooLarge` from sizing, which it replaces with the message's
+   own (point 2).
 
    | Kind | When | Also carries | Decode | Encode |
    |---|---|---|---|---|
-   | `MessageTooLarge` | the message is longer than its cap; on encode, also a computed size that overflows 64 bits or does not fit in the platform's `usize` (section 6, A10), a value that writes more or fewer bytes than its computed size, or a write past the buffer's capacity (5.5, point 3) | cap name, cap; the input's length (decode, not from a secret-bearing message) | yes | yes |
+   | `MessageTooLarge` | the message is longer than its cap; on encode, also a computed size that overflows 64 bits or does not fit in the platform's `usize` (section 6, A10), an invalid sizing visit (5.5, point 2), a value that writes more or fewer bytes than its computed size, or a write past the buffer's capacity (5.5, point 3) | cap name and cap at message entry points; the input's length (decode, not from a secret-bearing message) | yes | yes |
    | `Truncated` | the input ends inside an item | bytes available (not from a secret-bearing message) | yes | no |
    | `LengthOverBound` | a length or count is above the declared bound | field, bound | yes | yes |
    | `CapExceeded` | a length, count or running total is above its cap, or a read or an item passes an enclosing array's limit | cap name, cap | yes | yes |
@@ -1021,6 +1144,7 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    | `InvalidBool` | a boolean is neither 0 nor 1 | field | yes | no |
    | `UnknownEnumValue` | a closed enumeration's value is not declared | field | yes | no |
    | `UnknownDiscriminant` | a union's discriminant has no arm and there is no default | field | yes | no |
+   | `DefaultArmMismatch` | a value holds the default arm but its discriminant selects an explicit arm (5.5, point 2) | discriminant field | no | yes |
    | `TrailingBytes` | bytes remain after the message | count (not from a secret-bearing message) | yes | no |
    | `BudgetExceeded` | a reservation would carry the requested bytes past the decode's effective memory budget, or its size overflows (5.2, point 9.2; section 6, A9 and A11) | message cap name; the effective memory budget: the type's, or the lower budget the test entry point was given (5.2, point 9.2) | yes | no |
    | `AllocationFailed` | a fallible reservation failed (5.2, point 9.4; 5.5, point 3); on decode, a buffer to be boxed, of an element type of nonzero size, has a capacity other than its count, checked when the item is complete and reported at its start (a buffer of a zero-sized element type is boxed whatever capacity it reports, 5.2, point 9.4); on encode, the caller's output buffer has an allocation too small for the message (5.5, point 3) | none | yes | yes |
@@ -1071,14 +1195,15 @@ and fallible conversions (coding standards rule 2); none of it saturates.
    needs a redaction rule of its own. The encoder's errors carry no
    value from its input either: a length it refuses is named by its
    field, never printed. The encoder builds its own errors with no
-   position. The encode entry points return an error from a value's
-   `encode` or `encoded_len` as that code made it, except that a
-   `MessageTooLarge` from `encoded_len` is replaced by the message's
-   own; they remove no position. A handwritten encoder that runs a
-   decode and passes on its error passes on that decode's position, so
-   a handwritten encoder of a secret-bearing message does not return
-   such an error. The codec cannot check that; it rests on review
-   (5.1, point 8, limits).
+   position. The encode entry points pass errors on as the value's
+   code made them, including a `MessageTooLarge` returned by its
+   write method `encode`. They replace a `MessageTooLarge` from
+   sizing or admission with a new error naming the outer message
+   and its cap (5.5, point 2). A
+   handwritten encoder that runs a decode and passes on its error
+   passes on that decode's position, so a handwritten encoder of a
+   secret-bearing message does not return such an error. The codec
+   cannot check that; it rests on review (5.1, point 8, limits).
 3. **No panic is reachable** from any input (coding standards rule 1). The
    codec uses no indexing, `unwrap` or `expect` on input-derived values.
 4. **Fail closed.** A decode error means the message is not used. What the
@@ -1103,7 +1228,7 @@ integrity, anyone on the network path (ADR 0004, A13). They can try:
 | Exhausting the stack with deep nesting, a long array or a large inline value | no optional data and no recursive types (5.1, points 3 and 4) `[X1 §8: CONFIRMED]`; array elements decoded by a loop (5.1, point 4); limits on inline size and nesting depth, large values held out of line, and `decode_fits_small_stack` (5.2, point 10) |
 | Crashing the daemon | no panics, checked arithmetic (section 6; 7, point 3); the fuzz target (10.4) |
 | Two encodings of one value, used to slip a change past a check or a cache key | strict padding, booleans and enumerations (5.4, points 8 and 9); integrity over the bytes received (5.4, point 12); round-trip property P2 |
-| Leaking a secret through an error, a log or a stray copy | no value read from the input in errors; no offset or length in an error that a decode entry point returns from a secret-bearing message: the decoder builds its own errors without one, and the decode entry points remove one from any error a handwritten decoder passes on from a separate decode, which holds its position only inside that decoder, where it must not be reported (7, point 2); the encoder builds its own errors without one, and review keeps a handwritten encoder of a secret-bearing message from passing on a positioned error, which the encode entry points return as it is, except a `MessageTooLarge` from `encoded_len`, replaced by the message's own (7, point 2); in a secret-bearing message no input byte copied into the decoded value through the decoder it is given, whatever field misframing puts it in, and no value, length or count of any field of a secret-bearing message shown by `Debug` or `Display`; a secret-bearing message encoded only into the caller's buffer, whose allocation, whether it came with the buffer or the encoder's one reservation call acquired it, the encoder never grows, moves or frees, even when a value's encoding unwinds, so the caller's wipe reaches every byte written into it; and secrecy carried by one flag per type, set from the rows its cap table marks, fields capped or not and named types, and combined with the flags of its components, elements and arms, which the encoder and the decoder both read, so a type that can hold a secret does not build into a buffer the encoder returns, and each decode is made under its own type's caps, budget and secrecy (5.1, point 8, with its stated limits, among them a separate decode started inside a decoder, a handwritten encoder's forwarded error and the encoder's temporaries; 5.2, points 5 and 9.2; 5.5, points 3 and 6) |
+| Leaking a secret through an error, a log or a stray copy | no value read from the input in errors; no offset or length in an error that a decode entry point returns from a secret-bearing message: the decoder builds its own errors without one, and the decode entry points remove one from any error a handwritten decoder passes on from a separate decode, which holds its position only inside that decoder, where it must not be reported (7, point 2); the encoder builds its own errors without one, and review keeps a handwritten encoder of a secret-bearing message from passing on a positioned error, which the encode entry points return as it is, except a `MessageTooLarge` from sizing, replaced by the message's own (7, point 2); in a secret-bearing message no input byte copied into the decoded value through the decoder it is given, whatever field misframing puts it in, and no value, length or count of any field of a secret-bearing message shown by `Debug` or `Display`; a secret-bearing message encoded only into the caller's buffer, whose allocation, whether it came with the buffer or the encoder's one reservation call acquired it, the encoder never grows, moves or frees, even when a value's encoding unwinds, so the caller's wipe reaches every byte written into it; and secrecy carried by one flag per type, set from the rows its cap table marks, fields capped or not and named types, and combined with the flags of its components, elements and arms, which the encoder and the decoder both read, so a type that can hold a secret does not build into a buffer the encoder returns, and each decode is made under its own type's caps, budget and secrecy (5.1, point 8, with its stated limits, among them a separate decode started inside a decoder, a handwritten encoder's forwarded error and the encoder's temporaries; 5.2, points 5 and 9.2; 5.5, points 3 and 6) |
 | Slipping an invalid discriminant past a default arm | the discriminant is validated as its own type before dispatch (5.4, point 7) |
 | A name with NUL or `/` reaching the operating system | out of this codec's scope by design (5.1, point 6); the consumer checks it `[X1 §8: CONFIRMED]` |
 | An integer used as a size without a check | integers are not converted here (5.1, point 7); the consumer applies rule 2 |
@@ -1135,6 +1260,11 @@ the generator, and nothing runs them before then (10.6):
 
 ```
 enum shade { PALE = 1, DEEP = 4, VIVID = 9 };     /* closed */
+union shaded switch (shade tone) {
+case PALE: unsigned hyper pale_value;
+case DEEP: unsigned hyper deep_value;
+default:   unsigned hyper vivid_value;
+};
 enum kind { PLAIN = 0, LINKED = 1, STAMPED = 2, RETIRED = 3 };
 union entry switch (kind k) {                     /* no arm for RETIRED, */
 case PLAIN:   void;                               /* and no default      */
@@ -1180,6 +1310,7 @@ struct sealed {                                   /* secret-bearing */
 | `test.solos` | the array | array | none | 16 | both | | | small like `test.names`, so a short count crosses it; a zero-sized element type, so the ledger, not a capacity, is what the budget reads (5.2, point 9) |
 | `test.deep` | message | message | none | 192 | both | 1024 | | exactly one value of the 16-level chain; the budget is the test types' default |
 | `test.wide` | message | message | none | 244 | both | 1024 | | exactly the TRUE arm and its discriminant; the budget is the test types' default |
+| `test.shaded` | message | message | none | 12 | both | 1024 | | a four-byte discriminant and one eight-byte arm, the same size for each arm |
 | `test.every` | message | message | none | 256 | both | 4096 | | room for one value of each profile type; the budget covers its out-of-line field and arrays |
 | `test.sealed` | message | message | none | 64 | both | 64 | | room for a full `sealed` value; the decoded value holds no copy of the secret field beyond what 5.1, point 8 allows |
 | `test.sealed.key` | `key` | opaque | 16 bytes | 16 | both | | yes | equal to its bound; the secret field of 5.1, point 8 |
@@ -1250,6 +1381,8 @@ value. Bytes are in hexadecimal, grouped by unit.
 | G11 | `entry` PLAIN (void arm); LINKED with target "x"; STAMPED with stamp 0x0102030405060708 | `00000000`; `00000001 00000001 78000000`; `00000002 01020304 05060708` | §4.15, §4.16 |
 | G12 | `note` with title "readme", what LINKED with target "docs", owner "root", body bytes `01` to `05` | `00000006 72656164 6d650000 00000001 00000004 646f6373 00000004 726f6f74 00000005 01020304 05000000` (44 bytes: 12, 12, 8 and 12 per field) | §4.14, with §4.10, §4.11 and §4.15 nested in one value. X1 §7 works a similar example; it is a cross-check of the method only, and none of its schema, values or bytes is used |
 | G13 | `void` | empty | §4.16 |
+| G14 | `shaded` PALE with `pale_value` 0x0102030405060708 | `00000001 01020304 05060708` | §4.3, §4.5, §4.15: declared discriminant selects its explicit arm |
+| G15 | `shaded` VIVID with `vivid_value` 0xfedcba9876543210 | `00000009 fedcba98 76543210` | §4.3, §4.5, §4.15: declared discriminant selects the default arm |
 
 ### 10.2 Round-trip properties
 
@@ -1264,11 +1397,35 @@ over the test types above.
   decoded value, and its canonical re-encoding.
 - **P3** Every encoding is a whole number of units, and its length equals
   the sum 5.1 gives for the value.
-- **P4** The encoder refuses exactly what the decoder rejects, with the
+
+  For `shaded`, exercise both G14 and G15 in P1 to P3. The valid
+  discriminant and the selected arm survive the value round trip. The
+  byte round trip keeps the original discriminant, including VIVID on
+  the default arm. Both messages are exactly 12 bytes.
+
+  Also attempt to encode `shaded` holding the default arm with `PALE`
+  and G14's payload. All arms have the same width and the message fits
+  `test.shaded`. G14 supplies the valid explicit arm for that
+  discriminant and payload. The invalid value's `encoded_len` and both
+  encode entry points return `DefaultArmMismatch` naming
+  `test.shaded.tone`, with no value, offset or other detail. Check that
+  both encode entry points refuse during sizing, before any allocator
+  request, reservation call or message write. For the caller's-buffer
+  entry point, use two buffers that hold earlier bytes, one with
+  `0 < capacity < 12` and one with `capacity >= 12`. Both end empty and
+  zeroed as best the encoder can, at the same address and capacity. A
+  fresh zero-capacity buffer stays empty with capacity zero.
+  The encoder's buffer tests below check the zero writes while the
+  bytes are still initialised. These integration cases use the #167
+  fixture and are delivered under #59. Run them with
+  `cargo nextest run -p ironafs-xdr`.
+- **P4** Compare refusals in the bound and cap cases below with the
   same cap in both directions. For each variable-length item, P4 builds
   the smallest over-size value that one guard alone decides, encodes it
   where the encoder can represent it, builds the same bytes by hand, and
-  expects the same kind and the same cap or field name from both:
+  expects the same kind and the same cap or field name from both. The
+  decoder follows 5.4 for other combinations of failures. P1 covers the
+  encode-only `DefaultArmMismatch` refusal.
   - opaque data or a string whose cap is below its declared bound, or
     with no declared bound: n = cap + 1 gets `CapExceeded` (`note.body`);
   - opaque data or a string whose cap equals its declared bound: n =
@@ -1383,6 +1540,69 @@ over the test types above.
   acquired (5.5, point 6) is not checked. Not exercised directly: the
   other error kinds, an unwind in a secret-bearing message, and the
   freeing of the owned-output entry point's buffer on error.
+- **Sizing error order** (5.5, point 2; section 7), PROPOSED. Run
+  these cases under #59 with `cargo nextest run -p ironafs-xdr`,
+  including a 64-bit venue for the synthetic `usize` lengths. Supply
+  those lengths as scalar arguments to the normal sizing operations
+  for fields. Inject the other fault cases through handwritten visits
+  or handwritten leaf size reports on small values. The scalar
+  reports require no backing payload. The failed visits test the
+  runtime checks outside the generator's valid layouts.
+
+  The sizing fixtures declare caps under interface `test.sizing`
+  (5.2, point 5). Each `test.sizing` message has the cap shown and a
+  memory budget of 1024 bytes. The caps for its declared wire layout
+  apply in both directions, and its fields are plain. The stack fault
+  uses a test-only descriptor. Array count bounds are absent except
+  where stated. The nested arrays' cap names are by field path.
+  The strings in `list.items` are of the named type `item_text`, with
+  cap name `test.sizing.item_text`, bound and cap 8 bytes in both
+  directions. `shaded` keeps its declared discriminant field name
+  `test.shaded.tone`. `test.sizing.source` with limit 4 is the
+  metadata of the injected forwarded error. The cases give the
+  purpose of each cap and synthetic report.
+
+  Check the exact error kind, name and limit where present. Use the
+  safe test-only observer in the private path common to both public
+  encode entry points. Observe entry to sizing, the reservation call
+  itself, and entry to the write phase at their respective call sites.
+  Drive each public entry point. For owned output, observe the
+  temporary buffer at sizing entry and at sizing refusal before the
+  buffer drops. Check zero capacity at both points. Sizing refusals
+  reach neither reservation nor writing. Inspect both public wrappers,
+  the wipe, the sizing and refusal paths, and the fixture operations
+  for allocator calls outside reservation. Inspect that standalone
+  sizing leaves the final `usize` conversion to admission. The phase
+  checks observe codec operations without a custom global allocator.
+  For lexical cleanup, observe the private context's active cap depth
+  after a scoped visit returns or unwinds to its catcher. Check that
+  a successful visit, a returned error and a caught unwind each
+  restore the entry depth.
+
+  Through the caller's-buffer entry point, a populated buffer ends
+  empty and zeroed as best the encoder can, retaining its address and
+  capacity. Reuse the wipe check above while the bytes are initialised.
+  A fresh caller buffer has zero capacity after sizing refuses. Drive
+  the forwarded write error through both entry points and observe
+  sizing, reservation and entry to writing in that order. A fresh
+  caller buffer keeps the allocation acquired in step 3, empty and
+  zeroed as best the encoder can (5.5, point 3, steps 5 and 6).
+
+  | Case | Value and limits | Expected refusal |
+  |---|---|---|
+  | Declared bound and own cap | P4's `note.title` has 33 bytes, with bound and cap both 32. | `LengthOverBound` on `test.note.title`, bound 32. |
+  | Nested cap tie | `test.sizing.nested` has message cap 16. Its `outer` array (`test.sizing.nested.outer`, cap 4) holds one structure whose `inner` array (`test.sizing.nested.outer.inner`, cap 4) holds one unsigned hyper. The inner count word fills the outer cap. The hyper's eight bytes cross both caps on one event. | `CapExceeded` on `test.sizing.nested.outer.inner`, cap 4, even though the outer cap has zero bytes remaining. An empty `inner` array succeeds. |
+  | Enclosing cap before a later element | `test.sizing.list` has message cap 32. Its array `items` has cap 7 and holds two strings with bound and cap 8. The first has one byte of data and charges eight bytes including its length and padding. The second has nine data bytes. | `CapExceeded` on `test.sizing.list.items`, cap 7, at the first element. |
+  | Default-arm check before the discriminant charge | `test.sizing.shades` has message cap 16. Its array `items` has cap 3 and holds one `shaded` default-arm value with `PALE`. | `DefaultArmMismatch` on `test.shaded.tone`, before the four-byte charge could fail the array cap. |
+  | Message cap before a later bound | `test.sizing.bound` has message cap 16. Its array `test.sizing.bound.prefix`, cap 20, holds five unsigned integers and charges 24 bytes including its count word. Its next field `title` has five data bytes, bound 4 and cap 4. Repeat with a handwritten visit that ignores the `title` refusal, tries another operation, and returns success. | `LengthOverBound` on `test.sizing.bound.title`, bound 4, including when the value ignores it. The attempted operation returns the latched error. With an empty `title` and the full prefix, `MessageTooLarge` on `test.sizing.bound`, cap 16. |
+  | Declared bound before length word width | `test.sizing.repr_bound.title` is a string with declared bound and cap 4 and synthetic length 2³². Its message cap is 16. | `LengthOverBound` on `test.sizing.repr_bound.title`, bound 4. |
+  | Length word width after the message cap is crossed | `test.sizing.repr` has message cap 16. Its array `test.sizing.repr.prefix`, cap 20, holds five unsigned integers and charges 24 bytes including its count word. Its next field `data` is variable-length opaque with no declared bound, cap 4 and synthetic length 2³². | `LengthNotRepresentable` on `test.sizing.repr.data`. |
+  | Overflow before a later array cap | `test.sizing.overflow` has message cap 16. Inject a successful handwritten leaf size report of 2⁶⁴ − 4 bytes for an unsigned integer. The next unsigned integer adds four bytes. A following array `items` with cap 4 holds one unsigned hyper. | `CapExceeded` on `test.sizing.overflow.items`, cap 4, including from standalone `encoded_len`. With empty `items`, the encode entry points return `MessageTooLarge` on `test.sizing.overflow`, cap 16, and standalone `encoded_len` returns `MessageTooLarge` with no message name or limit. |
+  | Handwritten leaf size report | `test.sizing.opaque` has message cap 16. Its array `items` has cap 4 and holds one handwritten unsigned hyper leaf. Inject a sizing error named `test.sizing.source`, cap 4, of kind `MessageTooLarge`. A later string `test.sizing.opaque.title` has five data bytes, bound 4 and cap 4. Repeat with the leaf's valid eight-byte size. | For the error report, `MessageTooLarge` on `test.sizing.opaque`, cap 16, at the encode entry points. Standalone `encoded_len` returns that error with its original name `test.sizing.source` and limit 4. For the successful report, `CapExceeded` on `test.sizing.opaque.items`, cap 4. |
+  | Handwritten leaf sizing and write error | `test.sizing.write` has message cap 16. Its handwritten unsigned integer codec reports four bytes, writes one word, then returns `MessageTooLarge` naming `test.sizing.source`, cap 4. For sizing variants, inject a report of one byte or 2⁶⁴ − 4 bytes and repeat with a transparent wrapper using the same message descriptor. Call standalone `encoded_len` and both encode entry points for each variant. | For the four-byte report, standalone `encoded_len` returns four and both encode entry points return the write error on `test.sizing.source`, cap 4. For one byte, standalone `encoded_len` returns `MessageTooLarge` with no name or limit. For 2⁶⁴ − 4 bytes, it returns that size as a `u64`. Both sizing variants return `MessageTooLarge` on `test.sizing.write`, cap 16, at both encode entry points, before reservation or writing. |
+  | Full cap stack | A test-only visit under `test.sizing.stack`, message cap 128, calls the normal array sizing operation with count one and the test cap `test.sizing.stack.injected` of 128 bytes on each of 17 nested calls. This injects one more active array than `xdr.depth_max` with no oversized payload or XDR definition. | `MessageTooLarge` on `test.sizing.stack`, cap 128, at the seventeenth entry. The guard restores the stack as each enclosing visit ends. |
+  | Caught sizing unwind | `test.sizing.interrupted` has message cap 16. Its array `test.sizing.interrupted.items`, cap 8, holds one structure of two unsigned integers. Its test visit charges the first word, unwinds across the array visit, and a handwritten parent catches the unwind and returns success. | `MessageTooLarge` on `test.sizing.interrupted`, cap 16. The array cap has closed at the catcher and the latch prevents a reservation. |
+  | Invalid element width | `test.sizing.width` has message cap 16. Its array `test.sizing.width.items`, cap 4 and bound one element, holds one unsigned integer. Inject handwritten leaf size reports of zero bytes and one byte in separate runs, and a structured element visit that returns success with no charge. Repeat under `test.sizing.fixed_width`, message cap 16, with a fixed-length one-element unsigned integer array. The correct four-byte element and the standalone void G13 are controls. In the variable-length case, also have a handwritten element visit an inner unsigned integer leaf with a synthetic eight-byte report. The array cap refuses the report before any positive charge. The element ignores that error. Have it return success in one run and a replacement `MessageTooLarge` on `test.sizing.source`, limit 4, in another. | For the width faults, `MessageTooLarge` on `test.sizing.width` or `test.sizing.fixed_width` for the corresponding message, cap 16. The controls succeed. For both runs with the inner refusal, the element visit's exit and sizing completion return `CapExceeded` on `test.sizing.width.items`, cap 4, in both encode entry points. |
 - **Secrecy on encode** (5.1, point 8) is checked by doctests that
   must fail to build, each beside a passing doctest with the same
   fixtures that differs from it in one line, so the failure has one
@@ -1447,13 +1667,16 @@ over the test types above.
 
 ### 10.3 Reject corpus
 
-Files under `crates/ironafs-xdr/tests/fixtures/reject/`, one per case, each
-with its expected error kind and the section it breaks; checked by
-`crates/ironafs-xdr/tests/it/reject.rs`, which asserts the exact kind and
-offset, and, through the ledger's test hook (5.2, point 9.2), the exact
-reservation requests made before the error. A request made and dropped
-before an error is returned is recorded, so "no request" is checked, not
-inferred from a value that does not exist.
+Each text fixture under `crates/ironafs-xdr/tests/fixtures/reject/` names
+its expected error kind and the section it breaks.
+`crates/ironafs-xdr/tests/it/reject.rs` asserts the exact kind and offset,
+and, through the ledger's test hook (5.2, point 9.2), the exact reservation
+requests made before the error. The hook records even a request made and
+dropped before an error is returned, so an empty trace proves no requests
+were made.
+
+The same integration module reads the two binary boundary witnesses
+directly from the fuzz seed corpus (10.4).
 
 | Id | Input | Expected | Breaks |
 |---|---|---|---|
@@ -1471,9 +1694,12 @@ inferred from a value that does not exist.
 | R8 | `shade` `00000002` | `UnknownEnumValue` | 5.4, point 9 |
 | R9 | `entry` with discriminant `00000003` (RETIRED: declared, no arm) | `UnknownDiscriminant` | 5.4, point 7.2 |
 | R9a | `entry` with discriminant `00000007` (not a declared `kind`) | `UnknownEnumValue`, before any arm is chosen | 5.4, point 7.1 |
+| R9b | standalone `shaded` with undeclared discriminant `00000002` and a complete eight-byte payload: `00000002 fedcba98 76543210` | `UnknownEnumValue` at offset 0, before any arm is chosen | 5.4, point 7.1 |
 | R10 | a valid `note` followed by `00000000` | `TrailingBytes`, count 4 | 5.4, point 10 |
+| R10a | `every-message-cap`: the 208-byte canonical `every` prefix followed by 48 zero bytes, for exactly 256 bytes | `TrailingBytes` at 208, extent 48, with no name or limit; the ledger requests are identical to the successful decode of the prefix alone | 5.4, point 10 |
 | R11 | a valid `note` followed by one byte `00` | `TrailingBytes`, count 1 | 5.4, point 10 |
 | R12 | a `note` input of 129 bytes, one over its message cap | `MessageTooLarge` | 5.4, point 1 |
+| R12a | `every-message-cap-plus-one`: R10a followed by one more zero byte, for 257 bytes | `MessageTooLarge` naming `test.every` at 0, limit 256, extent 257; the ledger records no requests | 5.4, point 1 |
 | R13 | empty input for an `int` | `Truncated` | 5.4, point 2 |
 | R14 | a string's length word, then fewer data bytes than it claims | `Truncated` | 5.4, point 3.4 |
 | R15 | `sealed` with a key length of 17; and `sealed` cut off inside `serial` | `LengthOverBound` naming `test.sealed.key`, and `Truncated`; neither error holds an offset or a byte count, and the `Display` and `Debug` text of each names only the kind and the field | 7, point 2 |
@@ -1504,6 +1730,26 @@ not here.
 Its seed corpus is the golden vectors and the reject corpus. Fuzzing runs
 on the Linux runner (ADR 0004, O47, point 4).
 
+The runner includes `shaded`. Its tracked seeds include G14, G15 and
+R9b. Their executable delivery under issue #59 is class I because it
+adds fixtures for the existing discriminant rule (5.4, point 7). Run
+`cargo nextest run -p ironafs-xdr` and Linux seed replay with
+`cargo --locked xtask fuzz`. As a control for the reject case, a planted
+decoder that chooses the default arm before validating `shade` would
+accept R9b and must fail that case's exact kind and offset assertion.
+
+The shared target's largest declared message cap is `test.every` at
+256 bytes. Its boundary seeds under `fuzz/seeds/ironafs-xdr_decode/`
+are `every-message-cap` (R10a) and `every-message-cap-plus-one` (R12a).
+The prefix is a synthetic value of IronAFS's `every` test type. It uses the
+minimum signed and maximum unsigned integer and hyper values, TRUE,
+VIVID, bytes 0 through 99 for the fixed opaque, bytes 1 through 8 for
+the variable opaque and the label, the integers 7 and 8, four empty
+labels, and the LINKED arm with target bytes 1 through 16. The suffix
+is zero-filled. The stable integration tests pin the exact file bytes
+and re-encode the accepted prefix to check its canonical form. The
+pinned-nightly seed replay runs both files through the same target.
+
 ### 10.5 Acceptance cases
 
 Not applicable: this is a protocol specification; sections 10.1 to 10.4
@@ -1512,6 +1758,8 @@ are its tests.
 ### 10.6 Gaps
 
 - The dependency-graph check of section 9 (PROPOSED, #46).
+- Executable cases for encoder sizing order (5.5, point 2; 10.2,
+  "Sizing error order") follow under #59.
 - The codec generator and its own tests (section 10's opening; the
   generator's specification, section 13, Q4). Until it lands, the test
   types are written by hand, and what 5.1 and 5.2 require of the generator

@@ -5,13 +5,17 @@
 //! decode, seeded generators for the test types, and the tests' heap
 //! requests.
 
+use std::fs;
+use std::path::Path;
+
 use ironafs_test_support::Source;
-use ironafs_xdr::{Decode, Encode, Error, MessageType, Reservation, decode_traced, encode_into};
+use ironafs_xdr::{Decode, Encode, Error, MessageType, Reservation, encode_into};
 
 use self::heap::{Gather, boxed};
+pub(crate) use crate::decode_invariants::traced_with_budget;
 use crate::types::{
     Blob, Deep, Deep16, Entry, Every, Five, Ints, Label, Names, Note, Pair, Quad, Sealed, Shade,
-    Solo, Solos, Tags, Wide,
+    Shaded, ShadedArm, Solo, Solos, Tags, Wide,
 };
 
 /// The bytes a hexadecimal string spells, ignoring whitespace.
@@ -45,16 +49,16 @@ pub(crate) fn traced<'a, T: Decode<'a> + MessageType>(
     traced_with_budget(input, T::MESSAGE.budget)
 }
 
-/// As [`traced`], with the budget lowered to `budget`.
-pub(crate) fn traced_with_budget<'a, T: Decode<'a> + MessageType>(
-    input: &'a [u8],
-    budget: u64,
-) -> (Result<T, Error>, Vec<Reservation>) {
-    let mut seen = Vec::new();
-    let result = decode_traced(input, budget, &mut |reservation| {
-        seen.push(reservation);
-    });
-    (result, seen)
+/// Reads an XDR seed at its canonical path in the tracked corpus.
+///
+/// # Panics
+///
+/// Panics if the seed cannot be read.
+#[track_caller]
+pub(crate) fn read_decode_seed(name: &str) -> Vec<u8> {
+    let directory =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/seeds/ironafs-xdr_decode");
+    fs::read(directory.join(name)).unwrap_or_else(|error| panic!("{name}: {error}"))
 }
 
 /// Encodes `value`, one message, into a buffer the test owns, by the path
@@ -97,6 +101,12 @@ fn labels(source: &mut Source, most: usize, cap: usize) -> Vec<Label> {
 
 pub(crate) fn shade(source: &mut Source) -> Shade {
     *source.pick(&Shade::ALL)
+}
+
+pub(crate) fn shaded(source: &mut Source) -> Shaded {
+    let tone = shade(source);
+    let value = source.u64();
+    ShadedArm::select(tone).with_value(value)
 }
 
 pub(crate) fn entry(source: &mut Source) -> Entry {
@@ -263,7 +273,8 @@ pub(crate) fn every(source: &mut Source) -> Every {
 /// 5.1, computed apart from the codec's own `encoded_len`.
 pub(crate) mod size {
     use crate::types::{
-        Blob, Deep, Entry, Every, Five, Ints, Label, Names, Note, Pair, Shade, Solos, Tags, Wide,
+        Blob, Deep, Entry, Every, Five, Ints, Label, Names, Note, Pair, Shade, Shaded, Solos, Tags,
+        Wide,
     };
 
     /// A string or variable-length opaque of `n` bytes: 4 + n + pad(n).
@@ -277,6 +288,10 @@ pub(crate) mod size {
     )]
     pub(crate) fn shade(_: &Shade) -> usize {
         4
+    }
+
+    pub(crate) fn shaded(_: &Shaded) -> usize {
+        4 + 8
     }
 
     pub(crate) fn entry(entry: &Entry) -> usize {

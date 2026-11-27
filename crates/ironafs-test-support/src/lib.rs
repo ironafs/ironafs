@@ -16,6 +16,28 @@
 //! owning crate's `tests/it/regressions.rs`, never as data files the
 //! runner writes.
 //!
+//! For generator reach, declare the minimum number of generated cases for
+//! a label with [`Property::require_label`] and mark the branch with
+//! [`Source::mark_label`]. Each generated case contributes at most one
+//! count per label. The run reports every declared count, including zero,
+//! and fails if any count is below its minimum.
+//!
+//! ```
+//! use ironafs_test_support::{Property, Source};
+//!
+//! fn generate(source: &mut Source) -> u8 {
+//!     let value = source.u8();
+//!     if value != 0 {
+//!         source.mark_label("nonzero");
+//!     }
+//!     value
+//! }
+//!
+//! Property::new("bytes round-trip through u16")
+//!     .require_label("nonzero", 1)
+//!     .check(generate, |value| assert_eq!(u8::try_from(u16::from(*value)), Ok(*value)));
+//! ```
+//!
 //! A [`Source`] can also read its choices from a byte string
 //! ([`Source::from_bytes`]), so a fuzz target drives the same generators
 //! from the fuzzer's input. That byte layout is a contract the fuzz
@@ -37,6 +59,8 @@
 //! that move only when the test moves them, and random bytes from a seed.
 //! Neither is ever a production source (coding standards rule 7).
 //!
+//! [`measure_awake`] times a benchmark operation through an injected clock.
+//!
 //! This crate is a dev-dependency only: no shipped crate depends on it.
 
 mod capture;
@@ -47,6 +71,7 @@ mod shrink;
 mod source;
 mod splitmix64;
 mod sweep;
+mod timing;
 pub mod wire;
 
 pub use clock::{SeededClock, TimeOverflow};
@@ -55,3 +80,4 @@ pub use rng::SeededRng;
 pub use source::Source;
 pub use splitmix64::SplitMix64;
 pub use sweep::{Exhaustive, FailedInput, SweepFailure};
+pub use timing::{TimingError, measure_awake};

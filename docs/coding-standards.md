@@ -137,8 +137,9 @@ number and is marked retired; new rules are appended.
     - **Public items** follow the Rust API Guidelines' documentation chapter:
       - a one-line summary;
       - `# Errors`, `# Panics` and `# Safety` sections where they apply (the
-        Rust API Guidelines), and an IronAFS-specific `# Cancellation safety`
-        section for async functions used in `select!` (rule 18);
+        Rust API Guidelines);
+      - cancellation guarantees where they are part of the item's contract,
+        documented directly or by reference;
       - intra-doc links;
       - doc-tests as the usage examples.
 
@@ -251,10 +252,36 @@ number and is marked retired; new rules are appended.
       `elided_lifetimes_in_paths` at `warn`;
     - clippy `mod_module_files` at `warn` (rule 15's module layout).
 
-18. **Structured concurrency.** Prefer a `JoinSet` with a cancellation token
-    over bare `spawn`. A function used in `select!` documents its cancellation
-    safety. No blocking calls in async code. External I/O has a timeout.
-    Cleanup is an explicit `async fn shutdown()`; `Drop` never needs to await.
+18. **Threads, deadlines and cancellation.** Write operation code in ordinary
+    blocking style against the injected seams (ADR 0004, C3). The event loop
+    and concurrency use standard-library threads and no async runtime (rule
+    21). Only `ironafsd` and the thin drivers spawn threads in production
+    (O45, point 5). `ironafsd` starts the threads listed in C39, point 1,
+    as specified in the seams and scheduling specification, section 5.7,
+    point 3. The test-only simulator starts its own task threads (section
+    5.6, point 1). The core never spawns or sleeps.
+
+    The core's blocking points are limited by the seams and scheduling
+    specification, section 3, point 2: `Clock::wait`, `Rpc` and `Disk`.
+    In `Rpc`, `call` and `accept` block only on their own reply slot
+    through `Clock::wait`. `open` and `respond` never block. `close` may wait
+    only for one in-progress hold of the connection's send lock, under the
+    limits of section 5.4, point 5. `Clock::wait`, `Rpc::call` and `Rpc::accept`
+    take a deadline and a cancel token under their seam contracts. `Disk`
+    calls take neither. If a worker is held in a `Disk` call or an `Rpc`
+    wait, the request's ingress-side completion owner handles expiry
+    independently of that worker under the request contract (section 5.7,
+    point 4).
+
+    No lock is held across an RPC wait, a disk write or a kernel
+    notification. Lock order is server, volume, object, chunk (C39,
+    point 4). No core lock is held at any yield point of the seams and
+    scheduling specification (sections 5.3 and 5.6).
+
+    Network and IPC I/O has a timeout. For explicit shutdown, give a
+    `Cancel` to every loop and have its spawner join its thread (section
+    5.7, point 3). Drivers' own internal readiness waits and joins follow
+    their crate's design. Core code never relies on `Drop` for I/O.
 
 19. **Toolchain and platform floors.**
     - A toolchain bump is its own pull request, and reads the platform-support
@@ -354,6 +381,7 @@ number and is marked retired; new rules are appended.
       - mainstream cryptography (AES, SHA-2, HMAC and the like), never
         hand-rolled: well-reviewed crates or the operating system's own
         cryptography;
+        (2026-11-21: see [ADR 0004, C5, point 1](adr/0004-architecture-1-core.md#c5-the-cryptography-boundary-and-the-operating-system-bindings) for the dated exception.)
       - the operating system's own interfaces (Kerberos and GSS-API, Cloud
         Files, FSKit). These include libraries the platform's vendor or
         distribution ships as part of the supported system, even when

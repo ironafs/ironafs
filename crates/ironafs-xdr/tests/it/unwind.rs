@@ -13,7 +13,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 use ironafs_xdr::{
-    Classified, Encode, Encoder, Error, ErrorKind, Message, MessageType, encode_into,
+    Classified, Encode, Encoder, Error, ErrorKind, Message, MessageType, Sizer, encode_into,
 };
 
 use crate::support::heap::{boxed, with_capacity};
@@ -38,8 +38,8 @@ impl Classified for Bomb {
 }
 
 impl Encode for Bomb {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        Ok(4 * u64::try_from(self.0).unwrap())
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.charge(Ok(4 * u64::try_from(self.0).unwrap()))
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -61,8 +61,8 @@ impl Classified for Catcher {
 }
 
 impl Encode for Catcher {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        self.0.encoded_len()
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.put(&self.0)
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
@@ -85,8 +85,8 @@ impl Classified for Lone {
 }
 
 impl Encode for Lone {
-    fn encoded_len(&self) -> Result<u64, Error> {
-        self.0.encoded_len()
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.put(&self.0)
     }
 
     fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {

@@ -61,6 +61,7 @@ pub struct Source {
     /// [`Source::from_bytes`] reads.
     widths: Vec<u8>,
     spans: Vec<Range<usize>>,
+    reached_labels: Option<Vec<&'static str>>,
 }
 
 /// The choices a run drew, and where in them each deletable element of a
@@ -106,6 +107,7 @@ impl Source {
             record: Vec::new(),
             widths: Vec::new(),
             spans: Vec::new(),
+            reached_labels: None,
         }
     }
 
@@ -121,6 +123,7 @@ impl Source {
             record: Vec::new(),
             widths: Vec::new(),
             spans: Vec::new(),
+            reached_labels: None,
         }
     }
 
@@ -154,7 +157,33 @@ impl Source {
             record: Vec::new(),
             widths: Vec::new(),
             spans: Vec::new(),
+            reached_labels: None,
         }
+    }
+
+    /// Marks a generator branch as reached in this case. A property counts
+    /// each declared label at most once per generated case. Marks leave
+    /// draws and their recording intact. A replay, byte-driven run or
+    /// exhaustive sweep ignores marks, as does a source outside a
+    /// property that requires labels.
+    pub fn mark_label(&mut self, label: &'static str) {
+        if let Some(labels) = &mut self.reached_labels
+            && !labels.contains(&label)
+        {
+            labels.push(label);
+        }
+    }
+
+    /// Starts recording label marks for a fresh property case.
+    pub(crate) fn track_labels(&mut self) {
+        self.reached_labels = Some(Vec::new());
+    }
+
+    /// Whether this case marked `label` while tracking was active.
+    pub(crate) fn reached_label(&self, label: &str) -> bool {
+        self.reached_labels
+            .as_ref()
+            .is_some_and(|labels| labels.contains(&label))
     }
 
     /// The choices drawn so far in the byte layout that
@@ -208,6 +237,7 @@ impl Source {
             record: Vec::new(),
             widths: Vec::new(),
             spans: Vec::new(),
+            reached_labels: None,
         }
     }
 

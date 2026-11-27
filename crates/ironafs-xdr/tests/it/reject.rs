@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Adrian Ana <adrian@adrianana.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The reject corpus of `docs/specs/xdr.md`, 10.3: one file per case under
+//! The reject corpus and fuzz boundary witnesses of `docs/specs/xdr.md`,
+//! 10.3. The text corpus has one file per case under
 //! `tests/fixtures/reject/`, each naming its type, the error it expects,
 //! the section it breaks and the exact reservations made before the error.
 //!
@@ -25,8 +26,10 @@ use ironafs_xdr::{
 };
 
 use crate::support::heap::{Append, Gather, Owned, Text};
-use crate::support::{hex, traced_with_budget};
-use crate::types::{Blob, Entry, Every, Flag, Ints, Label, Names, Note, Pair, Sealed, Shade, Tags};
+use crate::support::{encoded, hex, read_decode_seed, traced, traced_with_budget};
+use crate::types::{
+    Blob, Entry, Every, Flag, Ints, Label, Names, Note, Pair, Sealed, Shade, Shaded, Tags,
+};
 
 /// The message an `int` decoded on its own belongs to.
 const INT: Message = Message {
@@ -126,27 +129,25 @@ impl<'a> Decode<'a> for Int {
     }
 }
 
-/// Decodes `input` as `T` and returns the error, or panics on success.
+/// Decodes `input` as `T`, keeping the outcome and the ledger's requests.
 fn reject<'a, T: Decode<'a> + MessageType>(
     input: &'a [u8],
     budget: Option<u64>,
-) -> (Error, Vec<Reservation>) {
+) -> (Result<(), Error>, Vec<Reservation>) {
     let (result, seen) = traced_with_budget::<T>(input, budget.unwrap_or(T::MESSAGE.budget));
-    match result {
-        Ok(_) => panic!("accepted"),
-        Err(error) => (error, seen),
-    }
+    (result.map(|_| ()), seen)
 }
 
-/// The error and reservations of decoding the case's input, and the size
+/// The outcome and reservations of decoding the case's input, and the size
 /// of its type's array element, if it has one.
-fn run(case: &Case) -> (Error, Vec<Reservation>, Option<usize>) {
+fn run(case: &Case) -> (Result<(), Error>, Vec<Reservation>, Option<usize>) {
     let input = &case.input;
     let budget = case.budget;
-    let ((error, seen), element) = match case.type_name.as_str() {
+    let ((result, seen), element) = match case.type_name.as_str() {
         "int" => (reject::<Int>(input, budget), None),
         "flag" => (reject::<Flag>(input, budget), None),
         "shade" => (reject::<Shade>(input, budget), None),
+        "shaded" => (reject::<Shaded>(input, budget), None),
         "entry" => (reject::<Entry>(input, budget), None),
         "label" => (reject::<Label>(input, budget), None),
         "blob" => (reject::<Blob>(input, budget), None),
@@ -159,7 +160,7 @@ fn run(case: &Case) -> (Error, Vec<Reservation>, Option<usize>) {
         "every" => (reject::<Every>(input, budget), None),
         other => panic!("unknown type {other}"),
     };
-    (error, seen, element)
+    (result, seen, element)
 }
 
 fn kind_name(kind: ErrorKind) -> String {
@@ -182,16 +183,24 @@ fn reject_corpus_fails_with_exact_kind_offset_and_reservations() {
     let files = fixtures();
     assert_eq!(
         files.len(),
-        29,
+        30,
         "the corpus of section 10.3, R6 as one file per padding byte"
     );
     for file in files {
         let case = parse(&file);
         let label = case.file.display();
-        let (error, seen, element) = run(&case);
-        assert_eq!(kind_name(error.kind()), case.kind, "{label}: {error}");
+        let (result, seen, element) = run(&case);
+        let kind_and_offset = result
+            .as_ref()
+            .err()
+            .map(|error| (kind_name(error.kind()), error.offset()));
+        assert_eq!(
+            kind_and_offset,
+            Some((case.kind, case.offset)),
+            "{label}: {result:?}"
+        );
+        let error = result.unwrap_err();
         assert_eq!(error.name(), case.name.as_deref(), "{label}: {error}");
-        assert_eq!(error.offset(), case.offset, "{label}: {error}");
         assert_eq!(error.extent(), case.extent, "{label}: {error}");
         let expected: Vec<Reservation> = case
             .requests
@@ -216,6 +225,57 @@ fn reject_corpus_fails_with_exact_kind_offset_and_reservations() {
     }
 }
 
+/// Reads the tracked fuzz seed and checks its canonical prefix and zero suffix.
+#[track_caller]
+fn every_boundary_seed(name: &str, length: usize) -> Vec<u8> {
+    let seed = read_decode_seed(name);
+    let prefix = hex(
+        "80000000ffffffff8000000000000000ffffffffffffffff0000000100000009 \
+         000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
+         202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f \
+         404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f \
+         6061626300000008010203040506070800000008010203040506070800000007 \
+         0000000800000004000000000000000000000000000000000000000100000010 \
+         0102030405060708090a0b0c0d0e0f10",
+    );
+    assert_eq!(prefix.len(), 208);
+    assert_eq!(seed.len(), length, "{name}");
+    assert_eq!(&seed[..208], prefix, "{name}");
+    assert!(seed[208..].iter().all(|&byte| byte == 0), "{name}");
+    seed
+}
+
+#[test]
+fn every_at_message_cap_rejects_trailing_bytes_after_decoding() {
+    let seed = every_boundary_seed("every-message-cap", 256);
+    let prefix = &seed[..208];
+    let (valid, expected_requests) = traced::<Every>(prefix);
+    assert_eq!(encoded(&valid.unwrap()).unwrap(), prefix);
+    assert_ne!(expected_requests, []);
+
+    let (result, requests) = reject::<Every>(&seed, None);
+    let error = result.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::TrailingBytes);
+    assert_eq!(error.name(), None);
+    assert_eq!(error.limit_value(), None);
+    assert_eq!(error.offset(), Some(208));
+    assert_eq!(error.extent(), Some(48));
+    assert_eq!(requests, expected_requests);
+}
+
+#[test]
+fn every_over_message_cap_rejects_before_reserving() {
+    let seed = every_boundary_seed("every-message-cap-plus-one", 257);
+    let (result, requests) = reject::<Every>(&seed, None);
+    let error = result.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::MessageTooLarge);
+    assert_eq!(error.name(), Some("test.every"));
+    assert_eq!(error.limit_value(), Some(256));
+    assert_eq!(error.offset(), Some(0));
+    assert_eq!(error.extent(), Some(257));
+    assert_eq!(requests, []);
+}
+
 /// R15: errors from the secret-bearing message carry no offset or length,
 /// and their text names only the kind, the field and the specification's
 /// constant.
@@ -224,7 +284,7 @@ fn sealed_errors_name_kind_and_field_only() {
     let mut over = hex("00000011");
     over.append_all([0x5a; 20]);
     over.append_all(hex("00000001 00000000"));
-    let (error, _) = reject::<Sealed<'_>>(&over, None);
+    let error = reject::<Sealed<'_>>(&over, None).0.unwrap_err();
     assert_eq!(
         error.text(),
         "length over declared bound: test.sealed.key, limit 16"
@@ -234,7 +294,7 @@ fn sealed_errors_name_kind_and_field_only() {
         "Error { kind: LengthOverBound, name: Some(\"test.sealed.key\"), limit: Some(16), position: None }"
     );
     let cut = hex("00000000 0000");
-    let (error, _) = reject::<Sealed<'_>>(&cut, None);
+    let error = reject::<Sealed<'_>>(&cut, None).0.unwrap_err();
     assert_eq!(error.text(), "input truncated");
     assert_eq!(
         format!("{error:?}"),

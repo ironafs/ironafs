@@ -171,6 +171,26 @@ its own, or no log sink outside Linux still needs a site in `ironafs-os`
    | `ironafs-crypto` | the cryptography interface (C5) |
    | `ironafs-time` | the `Clock` and `Rng` interfaces of C3, the boot, monotonic and wall instant and deadline types (C37), and the 64-bit time types (C38); it has no dependencies |
 
+   Every pure crate is `#![no_std]` with `extern crate alloc`,
+   unconditionally: it has no `std` feature, no Cargo features, no build
+   script, and its normal dependencies are pure crates only, or crates
+   an ADR names on the pure allowlist (empty today), each itself
+   unconditionally `no_std` with no build script, procedural macro,
+   `links` key or features. The allowlist is a decision, not yet a
+   mechanism: `cargo xtask check-pure` and `check-deps` accept only
+   pure workspace crates today, and the ADR that names the first
+   allowlisted crate extends both checks to accept it. An
+   implementation behind `ironafs-crypto`
+   that does not meet this is supplied when the client is composed
+   (C5, point 1), outside the pure closure. `cargo xtask check`
+   compiles each pure library for every supported target against a
+   sysroot that holds only `core` and `alloc`, with `unsafe_code`
+   forbidden on the command line, so the compiler, not a source scan,
+   keeps files, sockets, threads, clocks and system randomness out of
+   them. Tests that need the standard library live in `tests/it/`.
+   Revisit if: a pure crate shows a measured need for a
+   standard-library type that the seams cannot supply.
+
 2. **One composition crate,** `ironafs-client`, is the core: operation
    code over the cache types, the RPC clients, the store queue and
    journal, the callback service, location and failover, the lock service
@@ -187,6 +207,11 @@ its own, or no log sink outside Linux still needs a site in `ironafs-os`
    | `ironafs-gss` | Kerberos and GSS through each system's own library |
    | `ironafs-os` | small operating-system bindings (C5), and the safe transport that carries encoded events to the operating system's log sinks (O8) |
    | `ironafsd`, `ironafs-cli` (the `afs` binary), `xtask` | the binaries and the repository's automation, including the generators for `ironafs-proto`, `ironafs-ipc` and `ironafs-events` |
+
+   The transport that carries encoded events to the operating system's
+   log sinks (O8) is one small safe module in `ironafs-os`, shared by
+   `ironafsd` and `afs` (O4, point 1); neither binary has a second
+   transport. Encoding and redaction stay in `ironafs-events` (O1, O5).
 
 4. **Rules the dependency graph keeps:**
    - no pure crate depends on a driver or on `ironafs-client`;
@@ -217,8 +242,9 @@ Cargo and rustc `[LAY-045]`.
 
 **Working.** Revisit if: a mainstream crate offers rxkad's cipher, a FIPS
 mode is scheduled (O31), an operating system ships a safe interface
-that removes a site from the `ironafs-os` list, or the `ironafs-os`
-ADR's closed list adds a kind of call this point does not name.
+that removes a site from the `ironafs-os` list, the `ironafs-os`
+ADR's closed list adds a kind of call this point does not name, or the
+provider adoption ends point 1's exception.
 
 1. `ironafs-crypto` is an interface in the pure layer. Protocol crates
    call only it. Implementations are supplied when the client is composed:
@@ -227,6 +253,61 @@ ADR's closed list adds a kind of call this point does not name.
    validated module. The cryptographic random source comes through the
    same interface. The production `Rng` (C3, point 3) is this source; the
    simulator seeds its own.
+
+   Exception (owner, 2026-11-20; dated): until a provider is adopted
+   under the dependency rule to back SHA-256 and HMAC-SHA-256, at the
+   provider adoption planned for M5 or M6 (or at M2b's crypto decision,
+   if the provider chosen there backs them), the implementation behind
+   `ironafs-crypto` for SHA-256 and HMAC-SHA-256 is IronAFS's own, in
+   safe Rust, for two callers only:
+   - the control IPC schema digest: SHA-256 over the canonical bytes of
+     the control endpoint's message definitions (C44, point 1),
+     computed by the generator when the codecs are generated and kept
+     as a constant, so that a definition version has one identifier.
+     Its input is public, and it is computed by `xtask`, not on a
+     user's host. Where the digest is shown or compared is the IPC
+     specification's, within C44;
+   - the installation key's opaque references (O6, point 2).
+
+   Before either function ships, it passes published vectors: the NIST
+   CAVP SHA-256 files and RFC 4231's HMAC-SHA-256 test cases, each named
+   in its test, in a conformance layer that enters the tree under the
+   specifications README's rule for published corpora, with its licence
+   entry and provenance row (#64); no vector made by this code or by a
+   crate in the cargo graph is its own oracle (#77). It offers no comparison or verification, and no session, token or
+   packet key passes through it. Its key material is zeroed through the
+   volatile wipe of point 5, which the composition supplies, since a
+   pure crate cannot depend on `ironafs-os` (O28, point 2). It is never
+   treated as approved cryptography: under `fips = "require"` (O31,
+   point 4) the daemon computes no opaque reference with it, and an
+   event that would carry one carries none, with the reason ("FIPS
+   policy: no approved HMAC"), never the raw identifier; that setting
+   refuses every cell anyway. Under `auto` on a host whose FIPS switch
+   is on, it still runs, because O31, point 4, refuses rxkad and NTLM
+   there and these two callers protect no AFS traffic; that residual is
+   the owner's. At the provider's adoption the provider takes its
+   place and it leaves the shipped build; it may stay in the tests as
+   a cross-check. A source adopted earlier for other operations does
+   not end this exception by itself.
+
+   This is the one departure from coding standards rule 21, which says
+   that mainstream cryptography, SHA-2 and HMAC among it, is never
+   hand-rolled. The conflict is settled by the owner's decision of
+   2026-11-20 (#77): for these two functions this point takes precedence
+   over rule 21, for these two callers until the sunset and, after it,
+   only for the test-only cross-check above. Rule
+   21's text does not exempt test code (it lists test helpers among what
+   IronAFS writes, and its test and fuzz manifests follow the same
+   rule), so the cross-check needs this precedence too. Everywhere else
+   rule 21 holds as written. On 2026-11-21 the owner chose to add a
+   dated pointer from rule 21 to this exception, with the wording of
+   rule 21 otherwise unchanged. The exception adds no dependency, so the
+   dependency rule (overview, constraint 3; rule 21's list) is unchanged.
+   Nothing else
+   is written in house under this exception: hashes other than SHA-256,
+   MACs other than HMAC-SHA-256, key-derivation functions, ciphers and
+   AEADs are never hand-rolled. rxkad's cipher remains point 2's own
+   case. A new caller or algorithm needs the owner's decision.
 2. rxkad's cipher (fcrypt) is written by IronAFS from the specification
    that C6 requires. It is never treated as approved cryptography.
 3. The Kerberos encryption-type operations rxgk needs run in the client,
@@ -261,8 +342,12 @@ ADR's closed list adds a kind of call this point does not name.
 
 Why: the constraint on dependencies allows crates for mainstream
 cryptography only, and rxkad's cipher is not mainstream. An interface
-keeps the choice of implementation out of the protocol code. `unsafe` is
-forbidden workspace-wide until an ADR names the sites (`AGENTS.md`).
+keeps the choice of implementation out of the protocol code. Point 1's
+dated exception trades a third-party dependency in a root daemon, before
+its provider is chosen, for two small functions that must pass published
+vectors before they ship (#64, #77), for two callers that protect no AFS
+traffic (owner, 2026-11-20, #77). `unsafe` is forbidden workspace-wide
+until an ADR names the sites (`AGENTS.md`).
 
 ### C6. The protocol code is written from specifications
 
@@ -1506,13 +1591,20 @@ resolution concepts do not map to it `[DES-002]`.
 
 ### C34. Addresses and IPv6
 
-**Working.** Revisit if: assumption A11 fails, or a negotiated extension
-(N22) supplies fileserver addresses other than IPv4.
+**Working.** Revisit if: assumption A11 fails, a negotiated extension
+(N22) supplies fileserver addresses other than IPv4, or support cases
+show that hosts with one family disabled need a start that point 2
+does not allow.
 
 1. Every address inside the core is an address of either family, never an
    IPv4-only type. That covers configuration, the location cache, server
    identity, callback trust, logs and IPC.
-2. The callback service listens on both families.
+2. The callback service listens on both families. Single-family
+   operation, with one family's socket only, is entered only by the
+   administrator's choice in configuration, never automatically, and
+   startup diagnostics and `afs status` show it. In dual-family mode, a
+   failure to create or bind either family's socket refuses to start,
+   with the reason.
 3. Database servers found through configuration or DNS are tried over
    IPv6 when they answer there, with a clean fallback to IPv4 and a record
    per server of what works.

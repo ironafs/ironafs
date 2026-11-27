@@ -1546,7 +1546,7 @@ retry path could choose a different profile.
 
 ### N46. Reserved contract operations, and two baselines
 
-**Working.** Revisit if: the M2a check below finds that the kernel or
+**Working.** Revisit if: the M3 check of point 3 finds that the kernel or
 common tools do not fall back when copy-range is unsupported; or a
 supported cell offers one of the reserved operations.
 
@@ -1562,8 +1562,10 @@ supported cell offers one of the reserved operations.
    layer specification.
 3. **Copy-range without a capability** answers "not supported"; callers
    are expected to fall back to reading and writing. Whether the kernel
-   and common tools do so is checked at M2a. If they do not, the core
-   copies by reading and writing under the caller's own grants, as
+   and common tools do so is checked at M3, with the first writable
+   mount (O50, point 4): a copy-range call with both files in `/afs`,
+   which needs a writable mount. M2a's mount is read-only, so M2a makes
+   no part of this check. If they do not, the core copies by reading and writing under the caller's own grants, as
    ordinary writes.
 4. Reads of a hole return zeros. A hole-extent extension in read results
    is reserved in the adapter contract's extension arm (N41, point 10),

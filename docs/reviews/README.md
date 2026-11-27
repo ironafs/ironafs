@@ -38,6 +38,7 @@ the evidence that refutes it.
 | [2026-11-21-m1-close-sweep](2026-11-21-m1-close-sweep.md) | The documentation sweep against ADR 0004 at M1's exit |
 | [2026-11-21-m2a-90-convergence](2026-11-21-m2a-90-convergence.md) | Issue #54: convergence rules for review rounds |
 | [2026-11-21-m2a-13-remainder](2026-11-21-m2a-13-remainder.md) | Issue #46: `check-pure`'s exact matrix of compiled crates, targets and profiles, and the crate root's form |
+| [2026-11-21-lane-calibration](2026-11-21-lane-calibration.md) | Issue #48: the review lanes calibrated on IronAFS ranges with planted defects (GLM 5.3 high and Gemini Carbon medium, first suite) |
 | [2026-11-21-m2a-01-xdr-spec](2026-11-21-m2a-01-xdr-spec.md) | Issue #42: `docs/specs/`, its template and the XDR profile with caps |
 | [2026-11-21-m2a-11-remainder](2026-11-21-m2a-11-remainder.md) | Issue #44: the exhaustive sweep and wire-message variants |
 | [2026-11-21-commit-message-errata](2026-11-21-commit-message-errata.md) | Errata: squash messages on `main` that lack the disclosure line, and the wrapping style |
@@ -70,6 +71,15 @@ the evidence that refutes it.
 | [2026-11-24-glm54-pin](2026-11-24-glm54-pin.md) | Issue #48: calibrating GLM 5.4 for the high-effort seats |
 | [2026-11-24-glm54-max-pin](2026-11-24-glm54-max-pin.md) | Issue #48: calibrating GLM 5.4 for the strongest seats at max |
 | [2026-11-24-146-os-guards](2026-11-24-146-os-guards.md) | Issue #146: strengthen the operating-system ABI and wipe checks |
+| [2026-11-24-166-wait-order](2026-11-24-166-wait-order.md) | Issue #166: take the wait signal snapshot before the deadline clock reading |
+| [2026-11-25-167-xdr-default](2026-11-25-167-xdr-default.md) | Issue #167: specify a closed-enum fixture with a default arm |
+| [2026-11-25-53-m2a-working-amendments](2026-11-25-53-m2a-working-amendments.md) | Issue #53: the M2a Working amendments to ADR 0004 |
+| [2026-11-26-59-d9-boundary-seeds](2026-11-26-59-d9-boundary-seeds.md) | Issue #59: the shared XDR fuzz target at its message cap and one byte over |
+| [2026-11-26-48-historical-lane-calibration](2026-11-26-48-historical-lane-calibration.md) | Issue #48: integration review for the first lane-calibration record |
+| [2026-11-26-45-fuzz-input-bounds](2026-11-26-45-fuzz-input-bounds.md) | Issue #45: engine input bounds for tracked XDR and configuration seed replay |
+| [2026-11-26-71-q12-issue-brief](2026-11-26-71-q12-issue-brief.md) | Issue #71 Q12 issue brief review and filing decision |
+| [2026-11-26-45-stable-seed-replay](2026-11-26-45-stable-seed-replay.md) | Issue #45: ordinary stable replay of the existing fuzz seed corpus |
+| [2026-11-26-200-blocking-standards](2026-11-26-200-blocking-standards.md) | Issue #200: align coding standards rules 14 and 18 with the blocking model |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).

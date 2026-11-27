@@ -75,9 +75,8 @@ that does not apply stays, with one line saying why.
   then DNS SRV, then AFSDB; the flat-list confirmation; explicit servers;
   "Discovery can be turned off globally and per cell."
 - **ADR 0004, C34** (Working), point 1: "Every address inside the core is
-  an address of either family ... That covers configuration". Point 2 as
-  issue #53, point 4, amends it (owner's decision, 2026-11-20; the
-  amendment is not on `main` yet):
+  an address of either family ... That covers configuration". Point 2,
+  amended by the owner's decision of 2026-11-20 (issue #53, point 4):
   > Single-family operation, with one family's socket only, is entered
   > only by the administrator's choice in configuration, never
   > automatically, and startup diagnostics and `afs status` show it.

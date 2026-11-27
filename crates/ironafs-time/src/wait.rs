@@ -215,10 +215,12 @@ impl Deadline {
     }
 }
 
-/// How a wait ended, decided once per wake in this order (5.3, point 4):
-/// the cancel token fired; the deadline's clock unreadable or its doubt
-/// above the latch; the deadline passed; the signal raised. A value
-/// published after the deadline passed therefore never wins a wait.
+/// How a wait ended (5.3, point 4). Each evaluation checks cancellation
+/// first. If the token has fired, it returns without observing the signal
+/// or clock. Otherwise it snapshots the signal and then reads the deadline's
+/// clock and doubt count together. Clock failure or excess doubt takes
+/// precedence over a passed deadline, which takes precedence over the
+/// signal snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Waited {
     /// The cancel token fired.
@@ -228,7 +230,8 @@ pub enum Waited {
     ClockFailed,
     /// The deadline's clock reads at or past the deadline.
     DeadlinePassed,
-    /// The signal was raised.
+    /// A raised signal snapshot was followed by a valid reading before the
+    /// deadline, with doubt at or below the latch.
     Signalled,
 }
 

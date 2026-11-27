@@ -1234,13 +1234,13 @@ none is written yet: the inventory ratchet (#72); mutation testing and the
 planted-defect probe (#73); coverage (#74); the scheduled workflows, the
 freshness check, the runner and the reporter (#75); the flaky-test rule
 and the retries check (#76); the fuzz crate and its manifest check (#45);
-the simulator (#79, #96); the timed-benchmark harness (#38); and, in
-issues not yet filed, the seam conformance bodies (for the seams of #71
-and #99), the pure-crate source check and the pull-request workflow
-check (additions to closed issues #46 and #1), the refusal-coverage
-check, the differential listing check, the release-build check of the
-fault feature, and the seam and ban census. Each issue not yet filed is
-named here by its number when it is filed.
+the simulator (#79, #96); the timed-benchmark harness (#38); the
+pure-crate test-support source check (#155, an addition to #46); the
+pull-request workflow check (#155, an addition to #1); and, in issues
+not yet filed, the seam conformance bodies (for the seams of #71 and #99),
+the refusal-coverage check, the differential listing check, the release-build
+check of the fault feature, and the seam and ban census. Each issue not
+yet filed is named here by its number when it is filed.
 
 ## 11. Revisit if
 

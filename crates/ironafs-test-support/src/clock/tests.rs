@@ -149,6 +149,27 @@ impl Watch for Flag {
     fn deregister(&self, _registration: Registration) {}
 }
 
+/// Advances the clock and raises the flag the first time it is observed.
+struct AdvanceOnFirstRead<'a> {
+    clock: &'a SeededClock,
+    observed: AtomicBool,
+}
+
+impl Watch for AdvanceOnFirstRead<'_> {
+    fn is_set(&self) -> bool {
+        if !self.observed.swap(true, Ordering::SeqCst) {
+            self.clock.advance(Duration::from_secs(2)).unwrap();
+        }
+        true
+    }
+
+    fn register(&self, _waker: Arc<dyn Waker>) -> Result<Registration, WatchFull> {
+        Ok(Registration::new(0))
+    }
+
+    fn deregister(&self, _registration: Registration) {}
+}
+
 #[track_caller]
 fn sample(clock: &SeededClock) -> Stamp {
     clock.sample().unwrap()
@@ -326,6 +347,41 @@ fn wait_on_a_raised_signal_takes_no_time() {
         Waited::Signalled
     );
     assert_reads(&clock, 10, 5, wall(100, 0));
+}
+
+#[test]
+fn wait_checks_the_deadline_after_observing_the_signal() {
+    let clock = at(10, 5, 100);
+    let deadline = boot_deadline(&clock, Duration::from_secs(1));
+    let signal = AdvanceOnFirstRead {
+        clock: &clock,
+        observed: AtomicBool::new(false),
+    };
+
+    assert_eq!(
+        clock.wait(&signal, &deadline, &Flag::default()),
+        Waited::DeadlinePassed
+    );
+    assert!(signal.observed.load(Ordering::SeqCst));
+}
+
+#[test]
+fn cancelled_wait_observes_neither_signal_nor_clock() {
+    let clock = at(10, 5, 100);
+    let deadline = boot_deadline(&clock, Duration::from_secs(1));
+    let signal = AdvanceOnFirstRead {
+        clock: &clock,
+        observed: AtomicBool::new(false),
+    };
+    clock.set_failing(ClockKind::Boot, true);
+
+    assert_eq!(
+        clock.wait(&signal, &deadline, &Flag::set()),
+        Waited::Cancelled
+    );
+    assert!(!signal.observed.load(Ordering::SeqCst));
+    clock.set_failing(ClockKind::Boot, false);
+    assert_eq!(counts(&clock), (NO_DOUBT, 0));
 }
 
 #[test]

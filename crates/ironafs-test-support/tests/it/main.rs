@@ -10,3 +10,4 @@ mod exhaustive;
 mod property;
 mod regressions;
 mod seams;
+mod timing;
