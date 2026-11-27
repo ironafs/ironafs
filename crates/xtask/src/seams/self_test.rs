@@ -66,36 +66,37 @@ const PURE_ROOT: &str =
 const PURE_SEAM: &str = "pub trait Clock: Send + Sync {\n    fn boot(&self) -> u64;\n    fn sample(&self) -> u64;\n}\npub trait Rng: Send + Sync { fn fill(&self, bytes: &mut [u8]); }\n";
 const PURE_RX: &str = "pub enum Failure { Clock(u8), Rng }\nimpl Failure { pub fn failed() -> Self { Self::Clock(0) } }\npub trait Rpc: Send + Sync { fn call(&self, request: &[u8]); }\npub fn close(endpoint: &mut Endpoint) { endpoint.close(); }\n";
 
-fn core(source: &str) -> Vec<SourceFile> {
+/// Planted sources as the token reader gave them: each a file, or the
+/// reason it could not be read, kept until the case that owns it fails.
+type Fixture = Vec<Result<SourceFile, Violation>>;
+
+fn core(source: &str) -> Fixture {
     core_at("src/time.rs", source)
 }
 
-fn core_at(path: &str, source: &str) -> Vec<SourceFile> {
-    source_file("planted-core", path, false, false, source)
-        .map_or_else(|_| Vec::new(), |file| vec![file])
+fn core_at(path: &str, source: &str) -> Fixture {
+    vec![source_file("planted-core", path, false, false, source)]
 }
 
 /// The library of check-bans' canary: its constructor lines, taken from
 /// the ban list it is written from, in the crate named `krate`.
-fn canary_in(krate: &str) -> Vec<SourceFile> {
+fn canary_in(krate: &str) -> Fixture {
     let lines: String = crate::bans::BANS
         .iter()
         .filter(|ban| ban.path.starts_with("ironafs_time::Deadline::"))
         .flat_map(|ban| [ban.planted, "\n"])
         .collect();
-    source_file(krate, "src/lib.rs", false, true, &lines)
-        .map_or_else(|_| Vec::new(), |file| vec![file])
+    vec![source_file(krate, "src/lib.rs", false, true, &lines)]
 }
 
-fn pure(krate: &str, path: &str, source: &str) -> Vec<SourceFile> {
-    source_file(krate, path, true, path == "src/lib.rs", source)
-        .map_or_else(|_| Vec::new(), |file| vec![file])
+fn pure(krate: &str, path: &str, source: &str) -> Fixture {
+    vec![source_file(krate, path, true, path == "src/lib.rs", source)]
 }
 
 /// The production `Rng`'s shape (5.2, point 3): its import and its impl.
 const PURE_CRYPTO: &str = "use ironafs_time::{Rng, RngError};\npub struct CryptoRng;\nimpl Rng for CryptoRng {\n    fn fill(&self, bytes: &mut [u8]) -> Result<(), RngError> { Ok(()) }\n}\n";
 
-fn pure_control() -> Vec<SourceFile> {
+fn pure_control() -> Fixture {
     let mut files = pure("ironafs-time", "src/lib.rs", PURE_ROOT);
     files.extend(pure("ironafs-time", "src/seam.rs", PURE_SEAM));
     files.extend(pure("ironafs-rx", "src/rpc.rs", PURE_RX));
@@ -103,7 +104,7 @@ fn pure_control() -> Vec<SourceFile> {
     files
 }
 
-fn with_pure(extra: Vec<SourceFile>) -> Vec<SourceFile> {
+fn with_pure(extra: Fixture) -> Fixture {
     let mut files = pure_control();
     files.extend(extra);
     files
@@ -128,13 +129,13 @@ fn with_body(body: &str) -> String {
 /// some other rule fired somewhere else.
 struct Case {
     name: &'static str,
-    files: fn() -> Vec<SourceFile>,
+    files: fn() -> Fixture,
     kind: fn(&Violation) -> bool,
     at: Option<&'static str>,
 }
 
 /// The time crate's error enum, as a pure crate's plants see it.
-fn time_error_enum() -> Vec<SourceFile> {
+fn time_error_enum() -> Fixture {
     pure(
         "ironafs-time",
         "src/wait.rs",
@@ -958,6 +959,24 @@ fn planted(case: &Case, files: &[SourceFile], found: &[Violation]) -> Option<Str
         .map(ToString::to_string)
 }
 
+/// The files of the case `name`, or its failure naming each source the
+/// token reader could not read, so no check runs on what remains.
+fn read(name: &'static str, fixture: Fixture) -> Result<Vec<SourceFile>, Error> {
+    let mut files = Vec::new();
+    let mut unreadable = Vec::new();
+    for source in fixture {
+        match source {
+            Ok(file) => files.push(file),
+            Err(found) => unreadable.push(found),
+        }
+    }
+    if unreadable.is_empty() {
+        Ok(files)
+    } else {
+        Err(failure(name, &unreadable))
+    }
+}
+
 /// Runs the controls, every planted case, the planted manifest and the
 /// recorded limits.
 ///
@@ -977,6 +996,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
             canary_in("ironafs-bans-canary"),
         ),
     ] {
+        let files = read(name, files)?;
         if files.is_empty() {
             return Err(failure(name, &[]));
         }
@@ -988,7 +1008,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     }
 
     for case in CASES {
-        let files = (case.files)();
+        let files = read(case.name, (case.files)())?;
         let found = check(&files, SAMPLING);
         match planted(case, &files, &found) {
             Some(caught) if !files.is_empty() => {
@@ -1010,7 +1030,7 @@ pub(super) fn run(output: &mut impl Write) -> Result<(), Error> {
     report("caught: a pure crate renames a dependency, and only the pure one".to_owned())?;
 
     for (name, source) in LIMITS {
-        let files = core(&format!("{CONTROL}\n{source}"));
+        let files = read(name, core(&format!("{CONTROL}\n{source}")))?;
         let found = check(&files, SAMPLING);
         if files.is_empty() || !found.is_empty() {
             return Err(failure(name, &found));
