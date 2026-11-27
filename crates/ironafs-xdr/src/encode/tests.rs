@@ -16,7 +16,6 @@ use super::{
     Encode, Encoder, Sizer, encode_message, fixed_opaque_len, opaque_len, word_length,
     zero_to_capacity,
 };
-use crate as xdr;
 use crate::{Cap, Classified, Error, ErrorKind, Message, MessageType};
 
 /// One observation at the shared output path's actual phase boundary.
@@ -938,12 +937,6 @@ fn enclosing_cap_precedes_a_later_element_failure() {
     assert_layout_refusal(&list, error);
 }
 
-#[expect(
-    dead_code,
-    reason = "rule 15: the shared integration and fuzz fixtures have additional controls"
-)]
-mod shaded;
-
 const SOURCE: Error = Error::new(ErrorKind::MessageTooLarge)
     .named("test.sizing.source")
     .limit(4);
@@ -1042,28 +1035,42 @@ fn declared_bound_precedes_own_byte_cap() {
     assert_layout_refusal(&Title, error);
 }
 
-#[test]
-fn shaded_default_refuses_in_sizing_for_all_buffer_capacities() {
-    let value = shaded::Shaded::Default(shaded::Shade::Pale, 0x0102_0304_0506_0708);
-    let error = Error::default_arm_mismatch("test.shaded.tone");
-    assert_layout_refusal(&value, error);
-    let mut short = vec![0xaa; 4];
-    assert!((1..12).contains(&short.capacity()));
-    assert_caller_sizing_refusal(&value, error, &mut short);
+const ELEMENT_REFUSAL: Error = Error::default_arm_mismatch("test.sizing.refused");
+
+/// A component that reports a field check failure before charging any bytes.
+struct RefusedElement;
+sizing_message!(RefusedElement, "refused", 12);
+
+impl Encode for RefusedElement {
+    fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+        sizer.check(Err(ELEMENT_REFUSAL))
+    }
+
+    fn encode(&self, _: &mut Encoder<'_, Self>) -> Result<(), Error> {
+        Err(ELEMENT_REFUSAL)
+    }
 }
 
 #[test]
-fn default_arm_check_precedes_an_enclosing_array_charge() {
+fn field_check_refuses_in_sizing_for_all_buffer_capacities() {
+    assert_layout_refusal(&RefusedElement, ELEMENT_REFUSAL);
+    let mut short = vec![0xaa; 4];
+    assert!((1..12).contains(&short.capacity()));
+    assert_caller_sizing_refusal(&RefusedElement, ELEMENT_REFUSAL, &mut short);
+}
+
+#[test]
+fn element_refusal_precedes_an_enclosing_array_charge() {
     const ITEMS: Cap = Cap {
-        name: "test.sizing.shades.items",
+        name: "test.sizing.array.items",
         bound: None,
         bytes: 3,
     };
 
-    struct Shades([shaded::Shaded; 1]);
-    sizing_message!(Shades, "shades", 16);
+    struct Array([RefusedElement; 1]);
+    sizing_message!(Array, "array", 16);
 
-    impl Encode for Shades {
+    impl Encode for Array {
         fn size(&self, sizer: &Sizer) -> Result<(), Error> {
             sizer.array(&ITEMS, &self.0)
         }
@@ -1073,11 +1080,7 @@ fn default_arm_check_precedes_an_enclosing_array_charge() {
         }
     }
 
-    let value = Shades([shaded::Shaded::Default(
-        shaded::Shade::Pale,
-        0x0102_0304_0506_0708,
-    )]);
-    assert_layout_refusal(&value, Error::default_arm_mismatch("test.shaded.tone"));
+    assert_layout_refusal(&Array([RefusedElement]), ELEMENT_REFUSAL);
 }
 
 #[test]

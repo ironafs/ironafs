@@ -10,12 +10,15 @@
 //! Integration tests for `ironafs-xdr`, through its public API
 //! (`docs/specs/xdr.md`, section 10).
 
+use ironafs_xdr as xdr;
+
 mod decode_invariants;
 mod entry;
 mod golden;
 mod reject;
 mod roundtrip;
 mod seed_replay;
+mod shaded;
 mod stack;
 mod support;
 mod types;

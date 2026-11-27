@@ -10,8 +10,8 @@
 use std::fmt::Debug;
 
 use ironafs_xdr::{
-    Classified, Decode, Decoder, Encode, Encoder, Error, ErrorKind, Message, MessageType, Sizer,
-    decode, encode, encode_into, encoded_len,
+    Cap, Classified, Decode, Decoder, Encode, Encoder, Error, ErrorKind, Message, MessageType,
+    Sizer, decode, encode, encode_into, encoded_len,
 };
 
 use crate::support::heap::Owned;
@@ -239,8 +239,38 @@ fn golden_g15_shaded_default_arm() {
 /// A default arm with G14's discriminant and payload must be refused.
 #[test]
 fn shaded_refuses_default_with_an_explicit_discriminant() {
-    let value = Shaded::Default(Shade::Pale, 0x0102_0304_0506_0708);
-    let check = |error: Error| {
+    const ITEMS: Cap = Cap {
+        name: "test.sizing.shades.items",
+        bound: None,
+        bytes: 3,
+    };
+
+    struct Shades([Shaded; 1]);
+
+    impl Classified for Shades {
+        const SECRET: bool = false;
+    }
+
+    impl MessageType for Shades {
+        const MESSAGE: Message = Message {
+            name: "test.sizing.shades",
+            cap: 16,
+            budget: 1024,
+        };
+    }
+
+    impl Encode for Shades {
+        fn size(&self, sizer: &Sizer) -> Result<(), Error> {
+            sizer.array(&ITEMS, &self.0)
+        }
+
+        fn encode(&self, encoder: &mut Encoder<'_, Self>) -> Result<(), Error> {
+            encoder.put_array(&ITEMS, &self.0)
+        }
+    }
+
+    #[track_caller]
+    fn check(error: Error) {
         assert_eq!(error.kind(), ErrorKind::DefaultArmMismatch);
         assert_eq!(error.name(), Some("test.shaded.tone"));
         assert_eq!(error.limit_value(), None);
@@ -250,18 +280,27 @@ fn shaded_refuses_default_with_an_explicit_discriminant() {
             format!("{error}"),
             "default arm discriminant selects an explicit arm: test.shaded.tone"
         );
-    };
-    check(encode(&value).unwrap_err());
-    check(encoded_len(&value).unwrap_err());
+    }
 
+    #[track_caller]
+    fn refuses(value: &(impl Encode + MessageType), buffers: impl IntoIterator<Item = Vec<u8>>) {
+        check(encode(value).unwrap_err());
+        check(encoded_len(value).unwrap_err());
+        for mut out in buffers {
+            let before = (out.as_ptr(), out.capacity());
+            check(encode_into(value, &mut out).unwrap_err());
+            assert_eq!(out, []);
+            assert_eq!((out.as_ptr(), out.capacity()), before);
+        }
+    }
+
+    let value = Shaded::Default(Shade::Pale, 0x0102_0304_0506_0708);
     let short = vec![0xaa; 4];
     let roomy = vec![0xaa; 12];
     assert!((1..12).contains(&short.capacity()));
     assert!(roomy.capacity() >= 12);
-    for mut out in [Vec::new(), short, roomy] {
-        let before = (out.as_ptr(), out.capacity());
-        check(encode_into(&value, &mut out).unwrap_err());
-        assert_eq!(out, []);
-        assert_eq!((out.as_ptr(), out.capacity()), before);
-    }
+    refuses(&value, [Vec::new(), short, roomy, vec![0xaa; 32]]);
+
+    // The element's arm check must win even though its first word would exceed ITEMS.
+    refuses(&Shades([value]), [Vec::new(), vec![0xaa; 32]]);
 }
