@@ -9,4 +9,5 @@
 
 mod cell_name;
 mod invariants;
+mod seed_replay;
 mod syntax;

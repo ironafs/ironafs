@@ -26,7 +26,7 @@ use ironafs_xdr::{
 };
 
 use crate::support::heap::{Append, Gather, Owned, Text};
-use crate::support::{encoded, hex, traced, traced_with_budget};
+use crate::support::{encoded, hex, read_decode_seed, traced, traced_with_budget};
 use crate::types::{
     Blob, Entry, Every, Flag, Ints, Label, Names, Note, Pair, Sealed, Shade, Shaded, Tags,
 };
@@ -228,9 +228,7 @@ fn reject_corpus_fails_with_exact_kind_offset_and_reservations() {
 /// Reads the tracked fuzz seed and checks its canonical prefix and zero suffix.
 #[track_caller]
 fn every_boundary_seed(name: &str, length: usize) -> Vec<u8> {
-    let directory =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/seeds/ironafs-xdr_decode");
-    let seed = fs::read(directory.join(name)).unwrap();
+    let seed = read_decode_seed(name);
     let prefix = hex(
         "80000000ffffffff8000000000000000ffffffffffffffff0000000100000009 \
          000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
