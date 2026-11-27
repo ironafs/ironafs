@@ -74,7 +74,7 @@ The earlier GLM calibrations keep their own scopes: code and source-gathering at
 
 ## Source carry-forward
 
-After #206, every source blob named by the primary fixtures and the wait control still matches the frozen base. This recheck only compared sources against the historical measured base. It is a separate check from running a benchmark on current main, and no calibration was rerun on current main.
+After #206, every source blob named by the five seeded primary fixtures and the clean wait-evaluation control still matches the frozen base. This recheck only compared sources against the historical measured base. It is a separate check from running a benchmark on current main, and no calibration was rerun on current main.
 
 ## References
 
@@ -86,17 +86,18 @@ After #206, every source blob named by the primary fixtures and the wait control
 
 ## Record integration review
 
-Class I. The reviewed change adds this record and one index row. Both seats reviewed `3ccda71e0f0499c9d483826e629a58697beb2128..9950122c213797c83bdb3142a433880860503dd3` at tree `6bf97aba29aa14599ed38a24e721df8a96bb810e`.
+Class I. The reviewed change adds this record and one index row. All three seats reviewed `3ccda71e0f0499c9d483826e629a58697beb2128..9950122c213797c83bdb3142a433880860503dd3` at tree `6bf97aba29aa14599ed38a24e721df8a96bb810e`.
 
 | Seat | Served model | Effort | Route | Result |
 |---|---|---|---|---|
 | First independent source | `gpt-6.2-sol` | High | OpenAI Responses API | PASS, no findings |
 | Second independent source | `deepseek-flash` | Default | Headless Claude Code on DeepSeek Anthropic-compatible API, inline and tool-free | PASS, two editorial minors |
+| Supplemental source | `gemini-4-carbon-medium` | Medium | Google Antigravity | PASS, one editorial minor |
 
-The two seats represent separate families from the Anthropic author. They checked the recorded measurement, its threshold, the source comparison, its scope and the index addition against redacted evidence. The controller verified the exact identities, terminal receipts, numeric totals and relative file links. The protected fixture and held-out contents remain outside this review. Quota headroom was unavailable.
+The three seats represent separate families from the Anthropic author. They checked the recorded measurement, its threshold, the source comparison, its scope and the index addition against redacted evidence. The controller verified the exact identities, terminal receipts, numeric totals and relative file links. The protected fixture and held-out contents remain outside this review. Quota headroom was unavailable.
 
 
-DeepSeek found two inherited labeling omissions. The results table and resources list now identify the measured time as model wall time. The historical section now gives the original registration date of November 26, 2026. Both changes clarify the existing measurement and source identities.
+DeepSeek found two inherited labeling omissions. The results table and resources list now identify the measured time as model wall time. The historical section now gives the original registration date of November 26, 2026. Both changes clarify the existing measurement and source identities. Gemini flagged the undefined phrase “wait control”. The source comparison now names the clean wait-evaluation control, which the frozen registration used as its single primary clean case.
 
 The original record was drafted by `agy:claude-opus-5-5-high` via Antigravity. Opus 5.5 High supplied the final status wording through the Anthropic Messages API.
 
