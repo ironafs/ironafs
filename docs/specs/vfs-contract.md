@@ -364,8 +364,9 @@ named, and nothing else happens.
    `(binding, nonce)` with what the capability stands for: for a caller,
    the context and generation; for a handle, the handle's whole authority
    of C13, point 1 (context, generation, node, open mode, binding, rights at
-   open, the volume's incarnation). The capability itself carries no
-   authority the core trusts.
+   open, the volume's incarnation). For an out-of-process handle, the
+   record also holds the handle identifier bound to the nonce. The
+   capability itself carries no authority the core trusts.
 3. **The check.** On every caller or handle operation, before any other
    work, the core looks up the capability's nonce in its record for the
    request's binding. The operation is refused unless: the record exists;
@@ -377,6 +378,9 @@ named, and nothing else happens.
    recorded for another binding with `Stale`, and the event is counted as a
    layer fault [ADR 0004 C8.2: Firm; OWN: `Stale` tells the layer to
    attest the caller again, and names no other binding].
+   An out-of-process handle operation also checks the supplied handle
+   identifier against that record. A mismatch is counted as a layer fault
+   and refused with `Stale`. S1 specifies the wire codec.
 4. **Accessors are display.** `CallerCap::binding()` and the other
    accessors exist for logging and for the layer's own routing; the core
    never takes a decision from a value a capability reports about itself,
@@ -509,10 +513,10 @@ C13.2, C13.3: Firm].
    kinds, and an event reaches the subscription when its effects meet the
    filter; the SMB front end's mapping of its completion filter is S2's
    [OWN: the core can only report what its invalidations know].
-8. **`unsubscribe`** is an ordinary handle operation, with the checks and
-   the completion of any other (5.3, point 3; 5.8). Removing a
-   subscription the handle does not have succeeds and changes nothing
-   [OWN].
+8. **`unsubscribe`** is an ordinary handle operation. It follows 5.3,
+   point 3 and the authority rules of C13, points 2 and 3, and completes
+   as 5.8 says. Removing a subscription the handle does not have succeeds
+   and changes nothing [OWN].
 
 ### 5.6 Binding operations, and the rules every operation keeps
 
@@ -545,10 +549,12 @@ C13.2, C13.3: Firm].
    binding that is no longer live (revoked, its generation retired, its
    node stale) is ordinary: it ends the record and is never a layer fault,
    since a FUSE kernel sends a release for every open, revoked or not.
-   Only a `HandleCap` with no record for this binding (another binding's,
+   A `HandleCap` with no record for this binding (another binding's,
    another mint's, or one already released) is counted as a layer fault.
-   Either way the release answers success [OWN: release's contract is "the
-   layer holds nothing now", which holds].
+   An out-of-process release whose handle identifier differs from the one
+   recorded for its nonce is also counted as a layer fault. In either
+   case the release leaves the records alone and answers success
+   [OWN: release's contract is "the layer holds nothing now", which holds].
 3. **Binding operations change no data.** `volume_sync` flushes, through
    the commit path, only what the binding's handles already hold dirty,
    and is the one binding operation that waits: it has a request-table
@@ -585,6 +591,10 @@ C13.2, C13.3: Firm].
    refusal never follows an unchecked value. Copy-range, allocate and punch
    are handle operations (two handles for a copy); extended-attribute
    writes and removals are caller operations (C7's rule) [OWN].
+   A successful copy-range requires a reviewed enabling specification.
+   It must apply the capability and authority checks of 5.3, point 3 and
+   C13, points 2 and 3 separately to the source and destination handles,
+   and fence the reply on both files (5.9, point 1).
 9. **A rename with flags, presented.** The contract value of a refused
    rename flag is `NotSupported` (N46, point 1). C10, point 6, says the
    application sees the operating system's "invalid argument" for "do not
@@ -980,11 +990,14 @@ report of point 5 [ADR 0004 C17: Working; N47.3: Firm].
      overflow already acknowledged, and a revision at or below the node's
      latest delivered one that the core delivered to another node.
 
-   So a late `OverflowNode` for a node the binding holds now but did not
-   hold at the overflow's delivery is a repeat once that overflow is
-   acknowledged, and a fault while it is open. An honest layer cannot send
-   the second: while an overflow is open every reply is fenced (5.9,
-   point 2, step 3), so the binding can come to hold no new node [OWN].
+   For an in-process binding, a late `OverflowNode` for a node the binding
+   holds now but did not hold at the overflow's delivery is a repeat once
+   that overflow is acknowledged, and a fault while it is open. While an
+   overflow is open every in-process reply is fenced (5.9, point 2, step
+   3), so that binding can come to hold no new node [OWN]. For
+   out-of-process bindings, S1 must specify the daemon-side checks against
+   current overflow and node state before a reply is sent or such a
+   report can be counted as an overflow fault (13, Q9).
 
    An acknowledgement never clears effects above its revision, and a
    failure report never revokes anything for a delivery it does not name
