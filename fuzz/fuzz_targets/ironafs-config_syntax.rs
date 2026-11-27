@@ -11,7 +11,6 @@
 //! always gives the same result. Exact error kinds and
 //! positions are the reject corpus's.
 
-use ironafs_config::parse;
 use libfuzzer_sys::fuzz_target;
 
 /// The checks, from the property tests' own file: it uses only the
@@ -21,8 +20,5 @@ use libfuzzer_sys::fuzz_target;
 mod invariants;
 
 fuzz_target!(|input: &[u8]| {
-    let first = parse(input);
-    let checked = invariants::check(input, &first);
-    assert!(checked.is_ok(), "{checked:?}");
-    assert!(parse(input) == first, "the same input gave another result");
+    invariants::check_input(input);
 });

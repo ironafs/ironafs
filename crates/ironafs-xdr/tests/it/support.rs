@@ -5,10 +5,14 @@
 //! decode, seeded generators for the test types, and the tests' heap
 //! requests.
 
+use std::fs;
+use std::path::Path;
+
 use ironafs_test_support::Source;
-use ironafs_xdr::{Decode, Encode, Error, MessageType, Reservation, decode_traced, encode_into};
+use ironafs_xdr::{Decode, Encode, Error, MessageType, Reservation, encode_into};
 
 use self::heap::{Gather, boxed};
+pub(crate) use crate::decode_invariants::traced_with_budget;
 use crate::types::{
     Blob, Deep, Deep16, Entry, Every, Five, Ints, Label, Names, Note, Pair, Quad, Sealed, Shade,
     Shaded, ShadedArm, Solo, Solos, Tags, Wide,
@@ -45,16 +49,16 @@ pub(crate) fn traced<'a, T: Decode<'a> + MessageType>(
     traced_with_budget(input, T::MESSAGE.budget)
 }
 
-/// As [`traced`], with the budget lowered to `budget`.
-pub(crate) fn traced_with_budget<'a, T: Decode<'a> + MessageType>(
-    input: &'a [u8],
-    budget: u64,
-) -> (Result<T, Error>, Vec<Reservation>) {
-    let mut seen = Vec::new();
-    let result = decode_traced(input, budget, &mut |reservation| {
-        seen.push(reservation);
-    });
-    (result, seen)
+/// Reads an XDR seed at its canonical path in the tracked corpus.
+///
+/// # Panics
+///
+/// Panics if the seed cannot be read.
+#[track_caller]
+pub(crate) fn read_decode_seed(name: &str) -> Vec<u8> {
+    let directory =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/seeds/ironafs-xdr_decode");
+    fs::read(directory.join(name)).unwrap_or_else(|error| panic!("{name}: {error}"))
 }
 
 /// Encodes `value`, one message, into a buffer the test owns, by the path

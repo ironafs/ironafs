@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 use ironafs_config::{
     Document, MAX_ARRAY_ELEMENTS, MAX_DEFINITIONS, MAX_DEPTH, MAX_FILE_BYTES, MAX_KEY_BYTES,
-    MAX_LINE_BYTES, MAX_STRING_BYTES, Position, Scalar, SyntaxError, SyntaxErrorKind, Value,
+    MAX_LINE_BYTES, MAX_STRING_BYTES, Position, Scalar, SyntaxError, SyntaxErrorKind, Value, parse,
 };
 
 /// Unicode's `Bidi_Control` set, which section 5.1, point 3 refuses: the
@@ -28,6 +28,19 @@ pub(crate) const BIDI_CONTROLS: [char; 12] = [
 /// control character and no bidirectional control.
 pub(crate) fn allowed_in_text(character: char) -> bool {
     !character.is_control() && !BIDI_CONTROLS.contains(&character)
+}
+
+/// Checks one input's parser invariants and repeats the parse.
+///
+/// # Panics
+///
+/// Panics if the parser violates an invariant or the two results differ.
+#[track_caller]
+pub(super) fn check_input(input: &[u8]) {
+    let first = parse(input);
+    let checked = check(input, &first);
+    assert!(checked.is_ok(), "{checked:?}");
+    assert!(parse(input) == first, "the same input gave another result");
 }
 
 /// Checks one call's outcome on `input`: a file over `MAX_FILE_BYTES` is

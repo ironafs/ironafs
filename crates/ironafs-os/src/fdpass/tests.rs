@@ -14,6 +14,12 @@ use std::rc::Rc;
 use super::{FdPassError, LINUX, Received, accept, sent};
 
 mod held;
+#[cfg(not(miri))]
+mod invariants;
+// The replay reads files from the checkout. The model tests below run under
+// Miri isolation with in-memory inputs.
+#[cfg(not(miri))]
+mod seed_replay;
 
 use held::{Log, adopter};
 
