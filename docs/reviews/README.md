@@ -77,6 +77,7 @@ the evidence that refutes it.
 | [2026-11-26-48-historical-lane-calibration](2026-11-26-48-historical-lane-calibration.md) | Issue #48: integration review for the first lane-calibration record |
 | [2026-11-26-45-fuzz-input-bounds](2026-11-26-45-fuzz-input-bounds.md) | Issue #45: engine input bounds for tracked XDR and configuration seed replay |
 | [2026-11-26-71-q12-issue-brief](2026-11-26-71-q12-issue-brief.md) | Issue #71 Q12 issue brief review and filing decision |
+| [2026-11-26-45-stable-seed-replay](2026-11-26-45-stable-seed-replay.md) | Issue #45: ordinary stable replay of the existing fuzz seed corpus |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
