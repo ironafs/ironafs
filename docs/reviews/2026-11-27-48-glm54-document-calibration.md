@@ -28,7 +28,7 @@
 
 ## Results
 
-| Run | Clean control | Complete | Planted hits | Critical hits | False blockers | False majors | False minors | Valid unplanted | Refusals | Input | Cache read | Output | Seconds |
+| Run | Clean control | Complete | Planted hits | Critical hits | False blockers | False majors | False minors | Valid unplanted | Refusals | Input | Cache read | Output | Model wall seconds |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 1 | yes | yes | 0/0 | 0/0 | 0 | 0 | 0 | 0 | 0 | 1923 | 0 | 18340 | 205.323 |
 | 2 | no | yes | 3/3 | 2/2 | 0 | 0 | 0 | 0 | 0 | 1754 | 0 | 11056 | 95.597 |
@@ -52,7 +52,7 @@ Adjudication notes:
 - Output tokens: 101086
 - Cache read tokens: 0
 - Cache creation tokens: 0
-- Wall seconds (sum): 968.066
+- Model wall seconds (sum): 968.066
 - Quota headroom: not reported
 - Billing: the Z.ai Coding Plan billed amount was not reported
 
@@ -62,7 +62,7 @@ The exact launcher arguments and the lane receipts attest High effort. The serve
 
 ## Historical result
 
-An earlier six-packet document screen found 12/12 planted and 6/6 critical. Its intended clean control turned out to contain a genuine defect, which made that run inconclusive. That inconclusive result and its original date stay as recorded. This measurement does not replace or reinterpret it.
+An earlier six-packet document screen found 12/12 planted and 6/6 critical. Its intended clean control turned out to contain a genuine defect, which made that run inconclusive. That inconclusive result retains its original registration date of 2026-11-26. This measurement does not replace or reinterpret it.
 
 ## Sealed hold-out
 
@@ -83,6 +83,22 @@ After #206, every source blob named by the primary fixtures and the wait control
 - [Workflow: model routing](../workflow.md#model-routing)
 - [GLM-5.4 pin record](2026-11-24-glm54-pin.md)
 - [GLM-5.4 Max pin record](2026-11-24-glm54-max-pin.md)
+
+## Record integration review
+
+Class I. The reviewed change adds this record and one index row. Both seats reviewed `3ccda71e0f0499c9d483826e629a58697beb2128..9950122c213797c83bdb3142a433880860503dd3` at tree `6bf97aba29aa14599ed38a24e721df8a96bb810e`.
+
+| Seat | Served model | Effort | Route | Result |
+|---|---|---|---|---|
+| First independent source | `gpt-6.2-sol` | High | OpenAI Responses API | PASS, no findings |
+| Second independent source | `deepseek-flash` | Default | Headless Claude Code on DeepSeek Anthropic-compatible API, inline and tool-free | PASS, two editorial minors |
+
+The two seats represent separate families from the Anthropic author. They checked the recorded measurement, its threshold, the source comparison, its scope and the index addition against redacted evidence. The controller verified the exact identities, terminal receipts, numeric totals and relative file links. The protected fixture and held-out contents remain outside this review. Quota headroom was unavailable.
+
+
+DeepSeek found two inherited labeling omissions. The results table and resources list now identify the measured time as model wall time. The historical section now gives the original registration date of November 26, 2026. Both changes clarify the existing measurement and source identities.
+
+The original record was drafted by `agy:claude-opus-5-5-high` via Antigravity. Opus 5.5 High supplied the final status wording through the Anthropic Messages API.
 
 ## Disclosure
 
