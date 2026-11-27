@@ -86,4 +86,26 @@ passed on arm64 macOS. The workflow check ran 1,040 workspace tests
 and 46 doctests successfully. Dependency checks passed with warnings
 for unused license allowances.
 
+## Second-family cross-check
+
+Anthropic Claude Opus 5.5 High reviewed the exact standards diff at
+`a32d0b526a898d15d373af7362ce5c3389cf6af3..48ae99ec43e140b275ad1cd3657629f29cd07544` via the Antigravity CLI (`agy`). The served pin was
+`claude-opus-5-5-high`. The terminal verdict was PASS with four minor
+observations and zero majors or blockers. Quota headroom was not
+reported. This is independent of the GPT author family and the Gemini
+reviews. Opus on this route and framing is uncalibrated on IronAFS.
+
+| Observation | Origin and kind | Disposition |
+| --- | --- | --- |
+| Thread-authority citation | Pre-existing, editorial | O45.5 states the driver/core boundary. The adjacent sentence cites C39.1 and seams §5.7.3 for the daemon's threads. The combination supports the rule. |
+| Timeout wording and device reads | Pre-existing, scope question | Q12 explicitly preserves driver readiness waits and requires network and IPC timeouts. C44 defines the IPC framework. The device-read case remains governed by seams §5.7.4. |
+| Completion of open requests at shutdown | Pre-existing, scope question | Seams §5.7.4 governs request completion. The standards sentence governs cancellation and joining of loops. Both obligations apply. |
+| Arrivals, ingress handoff and queue bounds | Pre-existing, scope question | C39.2–3 remain the governing clauses for these additional obligations. The standards change supplies no replacement for them. |
+
+The controller checked the four observations against their sources.
+There are no open correctness or contract findings. The standards
+wording and source contracts are unchanged by this review-record entry.
+The existing Q12 proposal and its tracking link have their own scope
+decision under [#200](https://github.com/ironafs/ironafs/issues/200).
+
 Written by codex:gpt-6.2-sol.
