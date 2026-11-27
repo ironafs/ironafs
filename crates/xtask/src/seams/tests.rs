@@ -545,6 +545,25 @@ fn census_resolves_direct_crate_imports() {
 }
 
 #[test]
+fn census_resolves_bare_crate_import_in_a_block() {
+    let output = census_with_library(
+        "seam-census-block-crate-import",
+        "pub fn local() {\n\
+         use ironafs_time;\n\
+         struct Local;\n\
+         impl ironafs_time::Clock for Local {}\n\
+         }\n",
+    );
+    assert!(
+        implementation_rows(&output).contains(
+            &"check-seams: implementation ironafs-time::Clock | outside-role | lib:outside_role | crate::{line 1} | impl ironafs_time::Clock for Local | crates/outside-role/src/lib.rs:4"
+        ),
+        "{output}"
+    );
+    assert!(output.contains("check-seams: written-source census resolved"));
+}
+
+#[test]
 fn census_distinguishes_written_rows_from_unresolved_source() {
     let dir = crate::fixture::fresh_dir(&std::env::temp_dir(), "seam-census-scopes").unwrap();
     let result = (|| -> Result<_, crate::Error> {
