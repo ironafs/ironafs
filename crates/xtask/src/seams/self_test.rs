@@ -878,6 +878,7 @@ fn renamed_members() -> Vec<Member> {
         id: name.into(),
         dir: PathBuf::from(name),
         lib_root: None,
+        targets: Vec::new(),
         target_kinds: vec!["lib".into()],
         editions: vec!["2024".into()],
         build_script: None,

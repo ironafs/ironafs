@@ -24,7 +24,7 @@ use crate::Error;
 #[cfg(test)]
 mod tests;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TokenKind {
     /// An identifier, keyword or number. A raw identifier loses its `r#`:
     /// `r#std` names the same crate as `std`.
@@ -41,10 +41,12 @@ pub(crate) enum TokenKind {
     Str(String),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Token {
     pub(crate) kind: TokenKind,
     pub(crate) line: usize,
+    /// The character offset of the first character in the source.
+    pub(crate) start: usize,
     /// Whether the token is a raw identifier, written with `r#`: then a
     /// keyword's spelling is only a name.
     pub(crate) raw: bool,
@@ -109,8 +111,20 @@ pub(crate) fn files(
 ///
 /// Returns an error if the file cannot be read at all.
 pub(crate) fn read(file: &Path) -> Result<Result<Vec<Token>, String>, Error> {
+    Ok(read_text(file)?.and_then(|source| tokens(&source).map_err(|error| error.to_string())))
+}
+
+/// Reads the text and tokens together for consumers of original spellings.
+pub(crate) fn read_with_source(file: &Path) -> Result<Result<(String, Vec<Token>), String>, Error> {
+    Ok(read_text(file)?.and_then(|source| {
+        let tokens = tokens_with_strings(&source).map_err(|error| error.to_string())?;
+        Ok((source, tokens))
+    }))
+}
+
+fn read_text(file: &Path) -> Result<Result<String, String>, Error> {
     match fs::read_to_string(file) {
-        Ok(source) => Ok(tokens(&source).map_err(|error| error.to_string())),
+        Ok(source) => Ok(Ok(source)),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(Err("not UTF-8".into())),
         Err(error) => Err(Error::path_io("read source file", file)(error)),
     }
@@ -145,6 +159,7 @@ fn lex(source: &str, strings: bool) -> Result<Vec<Token>, LexError> {
         line: 1,
         tokens: Vec::new(),
         strings,
+        token_start: 0,
     };
     // The compiler drops a byte order mark at the start of a file.
     if lexer.at(0) == Some('\u{feff}') {
@@ -167,6 +182,7 @@ struct Lexer {
     chars: Vec<char>,
     position: usize,
     line: usize,
+    token_start: usize,
     tokens: Vec<Token>,
     /// Whether plain and raw string literals are kept as tokens.
     strings: bool,
@@ -191,6 +207,7 @@ impl Lexer {
             kind,
             line,
             raw: false,
+            start: self.token_start,
         });
     }
 
@@ -257,6 +274,7 @@ impl Lexer {
     fn run(&mut self) -> Result<(), LexError> {
         while let Some(next) = self.at(0) {
             let line = self.line;
+            self.token_start = self.position;
             match next {
                 '/' if self.at(1) == Some('/') => {
                     while self.at(0).is_some_and(|next| next != '\n') {
@@ -410,6 +428,7 @@ impl Lexer {
                     kind: TokenKind::Ident(name),
                     line,
                     raw: true,
+                    start: self.token_start,
                 });
                 Ok(())
             }
@@ -566,7 +585,7 @@ pub(crate) fn use_items(tokens: &[Token]) -> Vec<UseItem> {
 /// The attributes of the item whose keyword is at `at`, after any
 /// visibility (`pub`, `pub(...)`), each written out without its `#[` and
 /// `]`, in order.
-fn attributes_before(tokens: &[Token], at: usize) -> Vec<String> {
+pub(crate) fn attributes_before(tokens: &[Token], at: usize) -> Vec<String> {
     let mut start = at;
     // A visibility: `pub`, or `pub(...)`, its parenthesis matched with
     // nesting counted, as `os::scan::allowlist_range` matches its bracket.

@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Member, Package, Workspace, parse_workspace};
+use super::{Member, Package, Target, Workspace, parse_workspace};
 use crate::Error;
 
 const METADATA: &str = r#"{
@@ -15,17 +15,17 @@ const METADATA: &str = r#"{
      "dependencies": [{"name": "ironafs-b", "kind": null}, {"name": "ironafs-c", "kind": "dev"},
                       {"name": "outside", "kind": "build"}, {"name": "ironafs-d", "kind": "dev"},
                       {"name": "ironafs-d", "kind": null}],
-     "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-a/src/lib.rs", "edition": "2024"}]},
+     "targets": [{"kind": ["lib"], "name": "lib", "src_path": "/w/crates/ironafs-a/src/lib.rs", "edition": "2024"}]},
     {"name": "ironafs-b", "id": "path+file:///w/crates/ironafs-b#0.0.0",
      "features": {"std": [], "default": ["std"]}, "links": null, "manifest_path": "/w/crates/ironafs-b/Cargo.toml", "dependencies": [],
-     "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-b/src/lib.rs", "edition": "2024"}]},
+     "targets": [{"kind": ["lib"], "name": "lib", "src_path": "/w/crates/ironafs-b/src/lib.rs", "edition": "2024"}]},
     {"name": "ironafs-c", "id": "path+file:///w/crates/ironafs-c#0.0.0",
      "features": {}, "links": null, "manifest_path": "/w/crates/ironafs-c/Cargo.toml", "dependencies": [],
-     "targets": [{"kind": ["bin"], "src_path": "/w/crates/ironafs-c/src/main.rs", "edition": "2024"}]},
+     "targets": [{"kind": ["bin"], "name": "bin", "src_path": "/w/crates/ironafs-c/src/main.rs", "edition": "2024"}]},
     {"name": "ironafs-d", "id": "path+file:///w/crates/ironafs-d#0.0.0",
      "features": {}, "links": "native", "manifest_path": "/w/crates/ironafs-d/Cargo.toml", "dependencies": [],
-     "targets": [{"kind": ["lib"], "src_path": "/w/crates/ironafs-d/src/lib.rs", "edition": "2024"},
-                 {"kind": ["custom-build"], "src_path": "/w/crates/ironafs-d/build.rs", "edition": "2018"}]},
+     "targets": [{"kind": ["lib"], "name": "lib", "src_path": "/w/crates/ironafs-d/src/lib.rs", "edition": "2024"},
+                 {"kind": ["custom-build"], "name": "custom-build", "src_path": "/w/crates/ironafs-d/build.rs", "edition": "2018"}]},
     {"name": "outside", "id": "registry+https://example.invalid#outside@1.0.0",
      "source": "registry+https://example.invalid", "manifest_path": "/r/outside/Cargo.toml", "dependencies": [],
      "features": {}, "links": null,
@@ -88,6 +88,22 @@ fn member(name: &str, lib: Option<&str>, target_kinds: &[&str]) -> Member {
         id: id(name),
         dir: PathBuf::from(format!("/w/crates/{name}")),
         lib_root: lib.map(|file| PathBuf::from(format!("/w/crates/{name}/{file}"))),
+        targets: target_kinds
+            .iter()
+            .map(|&kind| {
+                let file = match kind {
+                    "lib" => lib.unwrap(),
+                    "bin" => "src/main.rs",
+                    _ => "build.rs",
+                };
+                Target {
+                    name: kind.into(),
+                    kinds: vec![kind.into()],
+                    root: PathBuf::from(format!("/w/crates/{name}/{file}")),
+                    required_features: Vec::new(),
+                }
+            })
+            .collect(),
         target_kinds: target_kinds.iter().map(|kind| (*kind).into()).collect(),
         editions: target_kinds.iter().map(|_| "2024".into()).collect(),
         build_script: None,

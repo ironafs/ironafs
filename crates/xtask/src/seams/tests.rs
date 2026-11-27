@@ -421,6 +421,7 @@ fn member(name: &str, renamed: &[&str]) -> Member {
         id: name.into(),
         dir: PathBuf::from(format!("/w/crates/{name}")),
         lib_root: None,
+        targets: Vec::new(),
         target_kinds: vec!["lib".into()],
         editions: vec!["2024".into()],
         build_script: None,
@@ -506,4 +507,200 @@ fn pure_check_passes_the_real_production_rng() {
         ),
     ];
     assert_eq!(check(&files, SAMPLING), []);
+}
+
+#[test]
+fn workspace_check_reports_exact_written_implementations() {
+    let mut output = Vec::new();
+    super::census::self_test::run(&mut output).unwrap();
+}
+
+use super::census::self_test::{census_fixture, census_output, implementation_rows};
+
+#[test]
+fn census_distinguishes_written_rows_from_unresolved_source() {
+    let dir = crate::fixture::fresh_dir(&std::env::temp_dir(), "seam-census-scopes").unwrap();
+    let result = (|| -> Result<_, crate::Error> {
+        let mut fixture = census_fixture();
+        fixture.file(
+            "outside-role",
+            "src/lib.rs",
+            Some(
+                "#[cfg(test)] mod unit;\n\
+                 mod inline { #![cfg(test)]\n\
+                 struct Wrap<T>(T);\n\
+                 impl<T> ::ironafs_time::Clock for Wrap<T> where T: Copy {}\n\
+                 }\n\
+                 mod local {\n\
+                 trait Clock {}\n\
+                 struct Wrong;\n\
+                 impl Clock for Wrong {}\n\
+                 impl Wrong {}\n\
+                 }\n\
+                 /// impl Clock for Documented {}\n\
+                 const TEXT: &str = \"impl Clock for StringOnly {}\";\n\
+                 macro_rules! make { ($seam:path, $name:ident) => {\n\
+                 struct $name; impl $seam for $name {}\n\
+                 }; }\n\
+                 use ironafs_time::Clock as Timing;\n\
+                 make!(Timing, Made);\n\
+                 struct Renamed; impl Timing for Renamed {}\n\
+                 #[cfg(test)] fn block() { if !(false) {} }\n\
+                 mod helper { macro_rules! custom { ($seam:path, $name:ident) => { struct $name; impl $seam for $name {} }; } pub(crate) use custom as assert; }\n\
+                 fn custom() { helper::assert!(Timing, Generated); }\n",
+            ),
+        );
+        fixture.file(
+            "outside-role",
+            "src/unit.rs",
+            Some("use ironafs_time::Clock;\nstruct Unit;\nimpl Clock for Unit {}\n"),
+        );
+        fixture.file(
+            "outside-role",
+            "src/orphan.rs",
+            Some("use ironafs_time::Clock;\nstruct Orphan;\nimpl Clock for Orphan {}\n"),
+        );
+        fixture.file(
+            "outside-role",
+            "tests/root.rs",
+            Some("#[path = \"support/actual.rs\"] mod redirected;\n"),
+        );
+        fixture.file(
+            "outside-role",
+            "tests/support/actual.rs",
+            Some("struct Redirect;\nimpl ironafs_time::Clock for Redirect {}\n"),
+        );
+        let workspace = fixture.load(&dir, super::CHECK, "written and unresolved source")?;
+        census_output(&workspace)
+    })();
+    crate::fixture::remove_dir(&dir).unwrap();
+    let output = result.unwrap();
+    assert_eq!(
+        implementation_rows(&output),
+        [
+            "check-seams: implementation ironafs-time::Clock | ironafs-time | test:double | crate | impl Clock for Double | crates/ironafs-time/tests/double.rs:3",
+            "check-seams: implementation ironafs-time::Clock | outside-role | lib:outside_role | crate::inline | impl<T> ::ironafs_time::Clock for Wrap<T> where T: Copy | crates/outside-role/src/lib.rs:4 | cfg(test)",
+            "check-seams: implementation ironafs-time::Clock | outside-role | lib:outside_role | crate::unit | impl Clock for Unit | crates/outside-role/src/unit.rs:3 | cfg(test)",
+            "check-seams: implementation ironafs-time::Clock | outside-role | test:root | crate::redirected | impl ironafs_time::Clock for Redirect | crates/outside-role/tests/support/actual.rs:2",
+        ]
+    );
+    assert!(output.contains("check-seams: written-source census incomplete"));
+    assert!(output.contains("crates/outside-role/src/orphan.rs:1 | unlinked"));
+    assert!(output.contains("crates/outside-role/src/lib.rs:18 | unexpanded item macro make!"));
+    assert!(output.contains(
+        "crates/outside-role/src/lib.rs:19 | cannot bind trait in impl Timing for Renamed"
+    ));
+    assert!(!output.contains("if!"));
+    assert!(
+        output.contains("crates/outside-role/src/lib.rs:22 | unexpanded macro in a block assert!")
+    );
+}
+
+#[test]
+fn census_keeps_cfg_on_qualified_functions() {
+    let output = census_with_library(
+        "seam-census-qualified-functions",
+        "#[cfg(all())]\n\
+         pub(crate) const unsafe extern \"C\" fn combined() {\n\
+         struct Combined;\n\
+         impl ironafs_time::Clock for Combined {}\n\
+         }\n\
+         #[cfg_attr(test, allow(dead_code))]\n\
+         pub async fn asynchronous() {\n\
+         struct Async;\n\
+         impl ironafs_time::Clock for Async {}\n\
+         }\n\
+         #[cfg(all())]\n\
+         extern fn implicit_abi() {\n\
+         struct Implicit;\n\
+         impl ironafs_time::Clock for Implicit {}\n\
+         }\n",
+    );
+    assert_eq!(
+        implementation_rows(&output)
+            .into_iter()
+            .filter(|row| row.contains(" | outside-role | "))
+            .collect::<Vec<_>>(),
+        [
+            "check-seams: implementation ironafs-time::Clock | outside-role | lib:outside_role | crate::{line 12} | impl ironafs_time::Clock for Implicit | crates/outside-role/src/lib.rs:14 | cfg(all())",
+            "check-seams: implementation ironafs-time::Clock | outside-role | lib:outside_role | crate::{line 2} | impl ironafs_time::Clock for Combined | crates/outside-role/src/lib.rs:4 | cfg(all())",
+            "check-seams: implementation ironafs-time::Clock | outside-role | lib:outside_role | crate::{line 7} | impl ironafs_time::Clock for Async | crates/outside-role/src/lib.rs:9 | cfg_attr(test,allow(dead_code))",
+        ],
+        "{output}"
+    );
+    assert!(output.contains("crates/outside-role/src/lib.rs:6 | unresolved attribute cfg_attr"));
+}
+
+#[test]
+fn census_resolves_super_from_a_module_in_nested_blocks() {
+    let output = census_with_library(
+        "seam-census-local-module",
+        "mod outer {\n\
+         use ironafs_time::Clock;\n\
+         fn define() {\n\
+         {\n\
+         mod local {\n\
+         struct Local;\n\
+         impl super::Clock for Local {}\n\
+         }\n\
+         }\n\
+         }\n\
+         }\n",
+    );
+    assert!(
+        implementation_rows(&output).contains(
+            &"check-seams: implementation ironafs-time::Clock | outside-role | lib:outside_role | crate::outer::local::{line 3}::{line 4} | impl super::Clock for Local | crates/outside-role/src/lib.rs:7"
+        ),
+        "{output}"
+    );
+}
+
+fn census_with_library(case: &'static str, source: &str) -> String {
+    let dir = crate::fixture::fresh_dir(&std::env::temp_dir(), case).unwrap();
+    let mut fixture = census_fixture();
+    fixture.file("outside-role", "src/lib.rs", Some(source));
+    let result = fixture
+        .load(&dir, super::CHECK, case)
+        .and_then(|workspace| census_output(&workspace));
+    crate::fixture::remove_dir(&dir).unwrap();
+    result.unwrap()
+}
+
+#[test]
+fn census_reports_malformed_needed_source_without_a_partial_inventory() {
+    let dir = crate::fixture::fresh_dir(&std::env::temp_dir(), "seam-census-inputs").unwrap();
+    let result = (|| -> Result<_, crate::Error> {
+        let mut fixture = census_fixture();
+        fixture.file("outside-role", "tests/another.rs", Some("mod sibling;\n"));
+        fixture.file("outside-role", "tests/sibling.rs", Some("struct Good;\n"));
+        let workspace = fixture.load(&dir, super::CHECK, "malformed source")?;
+        let file = workspace.root.join("crates/outside-role/tests/sibling.rs");
+        let original = census_output(&workspace)?;
+        std::fs::write(&file, [0xff]).unwrap();
+        let mut output = Vec::new();
+        let invalid = super::run_workspace(&workspace, &mut output).unwrap_err();
+        assert!(
+            invalid
+                .to_string()
+                .contains("tests/sibling.rs: not readable as Rust: not UTF-8")
+        );
+        assert_eq!(output, [] as [u8; 0]);
+
+        std::fs::write(&file, "fn wrong() { let broken = (1]; }\n").unwrap();
+        let unbalanced = census_output(&workspace).unwrap_err();
+        assert!(
+            unbalanced
+                .to_string()
+                .contains("tests/sibling.rs:1: mismatched delimiter")
+        );
+
+        std::fs::remove_file(&file).unwrap();
+        let absent = census_output(&workspace).unwrap_err();
+        assert!(absent.to_string().contains("tests/sibling.rs"));
+        crate::fixture::write_file(&file, "struct Good;\n")?;
+        assert_eq!(census_output(&workspace)?, original);
+        Ok(())
+    })();
+    crate::fixture::remove_dir(&dir).unwrap();
+    result.unwrap();
 }

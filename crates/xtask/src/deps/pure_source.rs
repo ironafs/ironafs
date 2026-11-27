@@ -289,28 +289,31 @@ fn shown(workspace: &Workspace, path: &Path) -> PathBuf {
 /// Whether `path` is the file or directory of a module `tests` whose parent
 /// declares every `mod tests` it has under `#[cfg(test)]`.
 pub(crate) fn is_gated_test_module(path: &Path, lib_dir: &Path, lib_root: &Path) -> bool {
+    let Some(parent) = test_module_parent(path, lib_dir, lib_root) else {
+        return false;
+    };
+    matches!(rust_source::read(&parent), Ok(Ok(tokens)) if gates_every_test_module(&tokens))
+}
+
+/// The parent source whose declaration determines whether `path` is
+/// a conventional external `tests` module.
+pub(crate) fn test_module_parent(path: &Path, lib_dir: &Path, lib_root: &Path) -> Option<PathBuf> {
     let named_tests = path
         .file_name()
         .is_some_and(|name| name == "tests" || name == "tests.rs");
-    let Some(dir) = path.parent().filter(|_| named_tests) else {
-        return false;
-    };
-    let parent = if dir == lib_dir {
-        lib_root.to_path_buf()
+    let dir = path.parent().filter(|_| named_tests)?;
+    if dir == lib_dir {
+        Some(lib_root.to_path_buf())
     } else if dir.with_extension("rs").is_file() {
-        dir.with_extension("rs")
+        Some(dir.with_extension("rs"))
     } else {
-        dir.join("mod.rs")
-    };
-    match rust_source::read(&parent) {
-        Ok(Ok(tokens)) => gates_every_test_module(&tokens),
-        _ => false,
+        Some(dir.join("mod.rs"))
     }
 }
 
 /// Whether the tokens declare `mod tests` at least once, and only directly
 /// under `#[cfg(test)]`.
-pub(super) fn gates_every_test_module(tokens: &[Token]) -> bool {
+pub(crate) fn gates_every_test_module(tokens: &[Token]) -> bool {
     let gate = [
         TokenKind::Punct('#'),
         TokenKind::Punct('['),

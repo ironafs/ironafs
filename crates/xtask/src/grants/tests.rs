@@ -62,6 +62,7 @@ fn member(root: &Path, name: &str, files: &[(&str, &str)]) -> Member {
         id: name.into(),
         lib_root: Some(dir.join("src/lib.rs")),
         dir,
+        targets: Vec::new(),
         target_kinds: vec!["lib".into()],
         editions: vec!["2024".into()],
         build_script: None,
