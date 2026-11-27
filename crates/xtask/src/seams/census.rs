@@ -659,7 +659,14 @@ impl Census<'_> {
         let tree = tokens.get(at..end).unwrap_or_default();
         let conditional = !cfg_at(&[], tokens, at).is_empty();
         for item in rust_source::use_items(tree) {
-            if !item.plain {
+            let paths = if item.plain {
+                item.paths
+            } else if !conditional
+                && let Some(path) = explicit_import_path(tree)
+                && self.scope(scope)?.cfg.is_empty()
+            {
+                vec![path]
+            } else {
                 if !conditional && let Some(path) = self.direct_crate_alias(scope, tree) {
                     self.bind(scope, tree, 2, Binding::Import(path))?;
                     continue;
@@ -688,16 +695,13 @@ impl Census<'_> {
                     );
                 }
                 continue;
-            }
-            for mut path in item.paths {
+            };
+            for path in paths {
                 let Some(name) = path.last().cloned() else {
                     continue;
                 };
                 if expression_macro(&name) {
                     self.note(file, line(tokens, at), format!("import may shadow {name}!"));
-                }
-                if is_path_sep(tokens, at + 1) {
-                    path.insert(0, String::new());
                 }
                 let binding = if conditional {
                     Binding::Unresolved
@@ -1126,6 +1130,23 @@ fn angles(tokens: &[Token], open: usize) -> Option<usize> {
         at += 1;
     }
     None
+}
+
+fn explicit_import_path(item: &[Token]) -> Option<Vec<String>> {
+    let (terminator, tokens) = item.get(1..)?.split_last()?;
+    let (segments, remainder) = tokens.as_chunks::<2>();
+    if segments.len() < 2 || !remainder.is_empty() || punct(Some(terminator)) != Some(';') {
+        return None;
+    }
+    // An empty first segment makes resolution start at the dependency.
+    let mut path = vec![String::new()];
+    for [separator, name] in segments {
+        if !matches!(separator.kind, TokenKind::PathSep) {
+            return None;
+        }
+        path.push(ident(Some(name))?.to_owned());
+    }
+    Some(path)
 }
 
 fn trait_path(tokens: &[Token], mut at: usize) -> (Vec<String>, usize) {

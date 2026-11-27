@@ -564,6 +564,59 @@ fn census_resolves_bare_crate_import_in_a_block() {
 }
 
 #[test]
+fn census_resolves_direct_explicit_crate_import() {
+    let output = census_with_library(
+        "seam-census-explicit-crate-import",
+        "pub mod direct {\n\
+         mod ironafs_time { pub trait Clock {} }\n\
+         use ::ironafs_time::Clock;\n\
+         pub struct Direct;\n\
+         impl Clock for Direct {}\n\
+         }\n\
+         pub mod grouped {\n\
+         use ::ironafs_time::{Clock};\n\
+         pub struct Grouped;\n\
+         impl Clock for Grouped {}\n\
+         }\n\
+         pub mod renamed {\n\
+         use ::ironafs_time::Clock as Timing;\n\
+         pub struct Renamed;\n\
+         impl Timing for Renamed {}\n\
+         }\n\
+         pub mod conditional {\n\
+         #[cfg(all())] use ::ironafs_time::Clock;\n\
+         pub struct Conditional;\n\
+         impl Clock for Conditional {}\n\
+         }\n\
+         #[cfg(all())] pub mod inherited {\n\
+         use ::ironafs_time::Clock;\n\
+         pub struct Inherited;\n\
+         impl Clock for Inherited {}\n\
+         }\n",
+    );
+    assert_eq!(
+        implementation_rows(&output),
+        [
+            "check-seams: implementation ironafs-time::Clock | ironafs-time | test:double | crate | impl Clock for Double | crates/ironafs-time/tests/double.rs:3",
+            "check-seams: implementation ironafs-time::Clock | outside-role | lib:outside_role | crate::direct | impl Clock for Direct | crates/outside-role/src/lib.rs:5",
+        ],
+        "{output}"
+    );
+    for implementation in [
+        "Clock for Grouped",
+        "Timing for Renamed",
+        "Clock for Conditional",
+        "Clock for Inherited",
+    ] {
+        assert!(
+            output.contains(&format!("cannot bind trait in impl {implementation}")),
+            "{output}"
+        );
+    }
+    assert!(output.contains("check-seams: written-source census incomplete"));
+}
+
+#[test]
 fn census_distinguishes_written_rows_from_unresolved_source() {
     let dir = crate::fixture::fresh_dir(&std::env::temp_dir(), "seam-census-scopes").unwrap();
     let result = (|| -> Result<_, crate::Error> {
