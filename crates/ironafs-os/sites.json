@@ -695,10 +695,60 @@
       "blocks": "one",
       "open": false,
       "status": {
-        "x86_64-unknown-linux-gnu": "approved",
-        "aarch64-unknown-linux-gnu": "approved",
-        "x86_64-unknown-linux-musl": "approved",
-        "aarch64-unknown-linux-musl": "approved"
+        "x86_64-unknown-linux-gnu": "implemented",
+        "aarch64-unknown-linux-gnu": "implemented",
+        "x86_64-unknown-linux-musl": "implemented",
+        "aarch64-unknown-linux-musl": "implemented"
+      },
+      "code": {
+        "module": "linux_mount",
+        "headers": [
+          "sys/mount.h"
+        ],
+        "extern_blocks": [
+          {
+            "link": null,
+            "items": [
+              {
+                "name": "mount",
+                "safe": false
+              }
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "call",
+            "operation": "abi::mount",
+            "arguments": [
+              "source",
+              "target",
+              "filesystem_type",
+              "flags",
+              "data"
+            ]
+          }
+        ],
+        "impls": 0,
+        "c_facts": {
+          "structs": [],
+          "constants": [
+            "MS_NOSUID",
+            "MS_NODEV"
+          ],
+          "aliases": []
+        },
+        "stand_in": {
+          "functions": 1,
+          "blocks": [
+            {
+              "operation": "core::ptr::read",
+              "arguments": [
+                "byte"
+              ]
+            }
+          ]
+        }
       }
     },
     {

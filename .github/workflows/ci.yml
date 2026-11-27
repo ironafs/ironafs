@@ -273,7 +273,7 @@ jobs:
       contents: read
     env:
       TARGET: ${{ matrix.target }}
-      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs
+      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs linux-mount
       WITHHELD: ${{ matrix.withheld }}
       NATIVE_TESTS: >-
         linux_clock::tests::read_clock_boot_advances_and_never_goes_back
@@ -292,6 +292,7 @@ jobs:
         linux_udp6::tests::kernel::a_port_held_by_another_ipv6_socket_is_in_use_and_nothing_stays_open
         linux_statvfs::tests::kernel::the_answer_for_proc_is_what_stat_says
         linux_statvfs::tests::kernel::the_answer_for_the_root_and_temporary_directories_is_what_stat_says
+        linux_mount::tests::kernel::a_target_with_nul_is_refused_by_the_wrapper
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -391,7 +392,7 @@ jobs:
           cargo --locked xtask check-os --self-test > check-os-self-test.log
           cat check-os-self-test.log
           grep -qx "caught: a site planted for a musl target alone (synthetic input: added to its build's file list): $TARGET" check-os-self-test.log
-      - name: Run linux-udp6's sandbox test under a filter that denies AF_INET6
+      - name: Run the isolated IPv6 and FUSE kernel tests
         # systemd's RestrictAddressFamilies answers a denied family's
         # socket() with EAFNOSUPPORT (systemd.exec(5)), as the daemon's own
         # unit would; the test binary runs as this user under it.
@@ -408,6 +409,38 @@ jobs:
             > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
           cat sandbox.log
           grep -q '^test result: ok\. 1 passed;' sandbox.log
+
+          # Each FUSE case gets its own mount and PID namespace. This
+          # shell owns the mountpoint and removes it after they exit.
+          # Its parent must be searchable by the non-root requester.
+          outside=$(readlink /proc/self/ns/mnt)
+          test_dir=$(mktemp -d /tmp/ironafs-fuse.XXXXXXXXXX)
+          trap 'rmdir -- "$test_dir"' EXIT
+          run_mount_test() {
+            test_name="linux_mount::tests::kernel::$1"
+            shift
+            if ! output=$(sudo -n timeout --signal=KILL 20s unshare --mount --propagation private --pid --fork --kill-child -- \
+              "$@" env "IRONAFS_OS_TEST_OUTSIDE_MNT_NS=$outside" "IRONAFS_OS_TEST_MOUNT_DIR=$test_dir" \
+              "$binary" --ignored --exact "$test_name" 2>&1); then
+              printf '%s\n' "$output"
+              exit 1
+            fi
+            printf '%s\n' "$output"
+            grep -Fx "test $test_name ... ok" <<< "$output"
+            grep -q '^test result: ok\. 1 passed; 0 failed; 0 ignored;' <<< "$output"
+          }
+          # DAC override lets the mount process use the runner's private
+          # directory. The GETATTR case also switches the stat child to
+          # its own uid and gid and drops that child's capability bounds.
+          run_mount_test the_mount_serves_a_getattr_request \
+            setpriv --bounding-set=-all,+sys_admin,+dac_override,+setuid,+setgid,+setpcap \
+            --no-new-privs --inh-caps=-all --ambient-caps=-all --
+          run_mount_test the_kernel_refuses_invalid_mount_arguments \
+            setpriv --bounding-set=-all,+sys_admin,+dac_override \
+            --no-new-privs --inh-caps=-all --ambient-caps=-all --
+          run_mount_test the_mount_without_cap_sys_admin_returns_eperm \
+            setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups --no-new-privs \
+            --bounding-set=-all --inh-caps=-all --ambient-caps=-all
       - name: Run the filesystem tests of linux-statvfs on filesystems made for them
         # A tmpfs of one mebibyte, and an ext4 that reserves 5% for its
         # superuser (so a query of the wrong field is caught).
@@ -477,7 +510,7 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       ARCH: ${{ matrix.arch }}
-      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs
+      SITES: linux-clock linux-random unix-nodump linux-dontdump linux-peercred linux-fdpass linux-udp6 linux-statvfs linux-mount
       NATIVE_TESTS: >-
         linux_clock::tests::read_clock_boot_advances_and_never_goes_back
         linux_clock::tests::read_clock_awake_advances_and_never_goes_back
@@ -492,6 +525,7 @@ jobs:
         linux_udp6::tests::kernel::a_port_held_by_another_ipv6_socket_is_in_use_and_nothing_stays_open
         linux_statvfs::tests::kernel::the_answer_for_proc_is_what_stat_says
         linux_statvfs::tests::kernel::a_descriptor_that_is_not_a_directory_s_is_refused_and_nothing_stays_open
+        linux_mount::tests::kernel::a_target_with_nul_is_refused_by_the_wrapper
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -544,6 +578,14 @@ jobs:
           for test in $NATIVE_TESTS; do
             grep -Eq "PASS .* ironafs-os $test\$" nextest.log
           done
+          # Exercise libc mount even when the container has no FUSE device.
+          test=linux_mount::tests::kernel::the_mount_call_returns_eperm_in_a_restricted_container
+          status=0
+          "$HOME/.cargo/bin/cargo" nextest run -p ironafs-os --target "$TARGET" --profile ci --retries 0 \
+            --no-tests fail --locked --run-ignored only -E "test(=$test)" > mount-denied.log 2>&1 || status=$?
+          cat mount-denied.log
+          test "$status" -eq 0
+          grep -Eq "PASS .* ironafs-os $test\$" mount-denied.log
       - name: Run ironafs-os's doctests on glibc 2.28
         run: |
           "$HOME/.cargo/bin/cargo" test -p ironafs-os --doc --target "$TARGET" --locked > doc.log 2>&1 || { cat doc.log; exit 1; }
@@ -552,7 +594,8 @@ jobs:
       - name: Prove the declarations against glibc 2.28's headers
         # The lane requires partial evidence for linux-fdpass with only
         # SCM_PIDFD missing and complete evidence for every other row
-        # (ADR 0005, sheet 14).
+        # (ADR 0005, sheet 14). A glibc 2.28 FUSE mount needs a separate
+        # Linux venue with /dev/fuse and a private mount namespace.
         run: |
           "$HOME/.cargo/bin/cargo" --locked xtask check-abi --target "$TARGET" --legacy-glibc-2-28 > check-abi.log
           cat check-abi.log
@@ -623,6 +666,9 @@ jobs:
               linux_dontdump::tests::stand_in::a_failed_exclusion_hands_out_no_buffer \
               linux_dontdump::tests::stand_in::a_dropped_buffer_is_all_zero_when_its_memory_is_released \
               linux_fdpass::tests::stand_in::an_interrupted_send_and_receive_are_each_made_again \
+              linux_mount::tests::stand_in::mount_passes_fixed_flags_and_exact_c_strings \
+              linux_mount::tests::stand_in::a_target_with_nul_is_refused_before_the_call \
+              linux_mount::tests::stand_in::every_nonzero_result_returns_the_calls_errno \
               mem_wipe::tests::wipe_zeroes_every_byte_of_every_length_from_0_to_257; do
               grep -q "^test $test \.\.\. ok$" "miri-$target.log"
             done

@@ -72,7 +72,7 @@ mod clock;
 #[cfg(not(miri))]
 mod descriptors;
 mod dump;
-// The errno of the Miri stand-ins of `linux_udp6` and `linux_statvfs`.
+// The errno of the Linux Miri stand-ins.
 #[cfg(miri)]
 #[cfg(target_os = "linux")]
 mod stand_in_errno;
@@ -98,6 +98,8 @@ mod linux_dontdump;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod linux_fdpass;
 #[cfg(target_os = "linux")]
+mod linux_mount;
+#[cfg(target_os = "linux")]
 mod linux_peercred;
 #[cfg(target_os = "linux")]
 mod linux_random;
@@ -119,6 +121,8 @@ pub use linux_clock::read_clock;
 pub use linux_dontdump::SecretBuffer;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use linux_fdpass::{receive_fd, send_fd};
+#[cfg(target_os = "linux")]
+pub use linux_mount::mount_fuse;
 #[cfg(target_os = "linux")]
 pub use linux_peercred::peer_credentials;
 #[cfg(target_os = "linux")]
