@@ -518,6 +518,33 @@ fn workspace_check_reports_exact_written_implementations() {
 use super::census::self_test::{census_fixture, census_output, implementation_rows};
 
 #[test]
+fn census_resolves_direct_crate_imports() {
+    let output = census_with_library(
+        "seam-census-crate-imports",
+        "pub mod aliased {\n\
+         use ironafs_time as timing;\n\
+         pub struct Aliased;\n\
+         impl timing::Clock for Aliased {}\n\
+         }\n\
+         pub mod bare {\n\
+         use ironafs_time;\n\
+         pub struct Bare;\n\
+         impl ironafs_time::Clock for Bare {}\n\
+         }\n",
+    );
+    assert_eq!(
+        implementation_rows(&output),
+        [
+            "check-seams: implementation ironafs-time::Clock | ironafs-time | test:double | crate | impl Clock for Double | crates/ironafs-time/tests/double.rs:3",
+            "check-seams: implementation ironafs-time::Clock | outside-role | lib:outside_role | crate::aliased | impl timing::Clock for Aliased | crates/outside-role/src/lib.rs:4",
+            "check-seams: implementation ironafs-time::Clock | outside-role | lib:outside_role | crate::bare | impl ironafs_time::Clock for Bare | crates/outside-role/src/lib.rs:9",
+        ],
+        "{output}"
+    );
+    assert!(output.contains("check-seams: written-source census resolved"));
+}
+
+#[test]
 fn census_distinguishes_written_rows_from_unresolved_source() {
     let dir = crate::fixture::fresh_dir(&std::env::temp_dir(), "seam-census-scopes").unwrap();
     let result = (|| -> Result<_, crate::Error> {

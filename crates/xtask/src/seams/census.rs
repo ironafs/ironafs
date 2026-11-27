@@ -657,8 +657,13 @@ impl Census<'_> {
         end: usize,
     ) -> Result<(), Error> {
         let tree = tokens.get(at..end).unwrap_or_default();
+        let conditional = !cfg_at(&[], tokens, at).is_empty();
         for item in rust_source::use_items(tree) {
             if !item.plain {
+                if !conditional && let Some(path) = self.direct_crate_alias(scope, tree) {
+                    self.bind(scope, tree, 2, Binding::Import(path))?;
+                    continue;
+                }
                 for (index, _) in tree.iter().enumerate() {
                     if keyword(tree, index) == Some("as")
                         && let Some(name) = ident(tree.get(index + 1))
@@ -684,7 +689,6 @@ impl Census<'_> {
                 }
                 continue;
             }
-            let conditional = !cfg_at(&[], tokens, at).is_empty();
             for mut path in item.paths {
                 let Some(name) = path.last().cloned() else {
                     continue;
@@ -708,6 +712,25 @@ impl Census<'_> {
             }
         }
         Ok(())
+    }
+
+    fn direct_crate_alias(&self, scope: ScopeId, tree: &[Token]) -> Option<Vec<String>> {
+        let [_, source, _, alias, end] = tree else {
+            return None;
+        };
+        let name = ident(Some(source))?;
+        if keyword(tree, 2) != Some("as")
+            || ident(Some(alias))? == "_"
+            || punct(Some(end)) != Some(';')
+        {
+            return None;
+        }
+        let current = *self.roots.get(self.scopes.get(scope)?.root)?;
+        if current.member.renamed.iter().any(|renamed| renamed == name) {
+            return None;
+        }
+        self.dependency_library(current, name)?;
+        Some(vec![name.to_owned()])
     }
 
     fn trait_at(
@@ -879,6 +902,20 @@ impl Census<'_> {
             return self.resolve(source, rest, false, depth + 1);
         }
         let result = match self.binding(scope, name, lexical) {
+            Some((origin, [Binding::Import(imported)]))
+                if imported == std::slice::from_ref(name) =>
+            {
+                // A bare import cannot supply its own source binding.
+                let parent = self.scopes.get(origin).and_then(|scope| scope.block_parent);
+                let source = match parent {
+                    Some(parent) => self.resolve(parent, imported, true, depth + 1),
+                    None => self.external(origin, imported, depth),
+                };
+                match source {
+                    Binding::Other => Binding::Unresolved,
+                    found => found,
+                }
+            }
             Some((origin, [Binding::Import(imported)])) => {
                 self.resolve(origin, imported, true, depth + 1)
             }
@@ -909,21 +946,30 @@ impl Census<'_> {
         if current.member.renamed.contains(name) {
             return Binding::Unresolved;
         }
-        for (root, candidate) in self.roots.iter().copied().enumerate() {
-            if !candidate.library() || candidate.target.name != *name {
-                continue;
-            }
-            let dependency = candidate.member.name == current.member.name && !current.library()
-                || current.member.declared_dependencies.iter().any(|entry| {
-                    entry
-                        .split_once(' ')
-                        .is_some_and(|(_, name)| name == candidate.member.name)
-                });
-            if dependency && let Some(scope) = self.root_scopes.get(root) {
-                return self.resolve(*scope, rest, false, depth + 1);
-            }
+        let Some(&library) = self
+            .dependency_library(*current, name)
+            .and_then(|root| self.root_scopes.get(root))
+        else {
+            return Binding::Other;
+        };
+        if rest.is_empty() {
+            Binding::Module(library)
+        } else {
+            self.resolve(library, rest, false, depth + 1)
         }
-        Binding::Other
+    }
+
+    fn dependency_library(&self, current: Root<'_>, name: &str) -> Option<usize> {
+        self.roots.iter().copied().position(|candidate| {
+            candidate.library()
+                && candidate.target.name == name
+                && (candidate.member.name == current.member.name && !current.library()
+                    || current.member.declared_dependencies.iter().any(|entry| {
+                        entry
+                            .split_once(' ')
+                            .is_some_and(|(_, name)| name == candidate.member.name)
+                    }))
+        })
     }
 
     fn finish(mut self, output: &mut impl Write) -> Result<(), Error> {
