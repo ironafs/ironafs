@@ -82,6 +82,7 @@ the evidence that refutes it.
 | [2026-11-26-200-blocking-standards](2026-11-26-200-blocking-standards.md) | Issue #200: align coding standards rules 14 and 18 with the blocking model |
 | [2026-11-26-xdr-fixture-coverage-split](2026-11-26-xdr-fixture-coverage-split.md) | Class I: split XDR unit and golden test coverage around one shared Shaded fixture |
 | [2026-11-27-156-early-seam-census](2026-11-27-156-early-seam-census.md) | Issue #156: the early written-source seam census and its import resolution checks |
+| [2026-11-27-67-vfs-name-error](2026-11-27-67-vfs-name-error.md) | Issue #67: VFS name and error vocabulary split |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
