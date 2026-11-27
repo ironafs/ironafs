@@ -57,8 +57,11 @@
 //! both, and the self-test records them as passes. Clippy's ban on the two
 //! constructors (`check-bans`) is the second net.
 
+mod census;
 mod self_test;
 
+use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1527,37 +1530,140 @@ fn names_only_in_constructor_arguments(
     }
 }
 
-/// Reads every workspace member's non-test source, with a violation for
-/// each file that is not readable as Rust.
-///
-/// # Errors
-///
-/// Returns an error if a directory cannot be listed or a file read.
-fn workspace_files(workspace: &Workspace) -> Result<(Vec<SourceFile>, Vec<Violation>), Error> {
-    let mut sources = Vec::new();
-    let mut unreadable = Vec::new();
+/// Shared source reads before the architecture checker removes test code.
+type WorkspaceSources = BTreeMap<PathBuf, Result<census::Source, String>>;
+
+struct WorkspaceFiles {
+    canonical_root: PathBuf,
+    architecture: Vec<SourceFile>,
+    unreadable: Vec<Violation>,
+    sources: WorkspaceSources,
+}
+
+fn workspace_files(workspace: &Workspace) -> Result<WorkspaceFiles, Error> {
+    let canonical_root = workspace
+        .root
+        .canonicalize()
+        .map_err(Error::path_io("locate workspace root", &workspace.root))?;
+    let mut found = WorkspaceFiles {
+        canonical_root,
+        architecture: Vec::new(),
+        unreadable: Vec::new(),
+        sources: BTreeMap::new(),
+    };
     for member in &workspace.members {
+        let canonical_dir = member
+            .dir
+            .canonicalize()
+            .map_err(Error::path_io("locate member directory", &member.dir))?;
+        if !canonical_dir.starts_with(&found.canonical_root) {
+            return Err(unsupported_source(&workspace.root, &member.dir));
+        }
+        let skipped = Cell::new(None);
+        let mut files = Vec::new();
+        rust_source::files(
+            &member.dir,
+            &|path| {
+                if path == workspace.target_dir {
+                    return true;
+                }
+                if path.is_symlink() {
+                    if path.is_dir() || path.extension().is_some_and(|extension| extension == "rs")
+                    {
+                        skipped.set(Some(path.to_path_buf()));
+                    }
+                    return true;
+                }
+                false
+            },
+            &mut files,
+        )?;
+        if let Some(path) = skipped.into_inner() {
+            return Err(unsupported_source(&workspace.root, &path));
+        }
+        for file in &files {
+            if let std::collections::btree_map::Entry::Vacant(entry) = found
+                .sources
+                .entry(canonical_dir.join(file.strip_prefix(&member.dir).unwrap_or(file)))
+            {
+                let canonical = file
+                    .canonicalize()
+                    .map_err(Error::path_io("locate source", file))?;
+                if !canonical.starts_with(&found.canonical_root) {
+                    return Err(unsupported_source(&workspace.root, file));
+                }
+                entry.insert(census::Source::read(&canonical)?);
+            }
+        }
+        found.project_architecture(member, &canonical_dir, &workspace.root, files);
+    }
+    Ok(found)
+}
+
+fn unsupported_source(root: &Path, path: &Path) -> Error {
+    let shown = path.strip_prefix(root).unwrap_or(path);
+    Error::Rules {
+        check: CHECK,
+        violations: vec![format!(
+            "{}: unsupported symbolic link or source outside the workspace",
+            shown.display()
+        )],
+    }
+}
+
+impl WorkspaceFiles {
+    fn project_architecture(
+        &mut self,
+        member: &Member,
+        canonical_dir: &Path,
+        workspace_root: &Path,
+        files: Vec<PathBuf>,
+    ) {
         let pure = deps::kind_of(&member.name) == Some(Kind::Pure);
         let lib_root = member.lib_root.as_deref();
         let lib_dir = member.lib_dir();
         let tests_dir = member.dir.join("tests");
         let benches_dir = member.dir.join("benches");
-        let mut files = Vec::new();
-        rust_source::files(
-            &member.dir,
-            &|path| {
-                path == workspace.target_dir
-                    || path == tests_dir
-                    || path == benches_dir
-                    || matches!((lib_dir, lib_root), (Some(dir), Some(root))
-                        if path != root
-                            && deps::pure_source::is_gated_test_module(path, dir, root))
-            },
-            &mut files,
-        )?;
         for file in files {
+            if file.starts_with(&tests_dir) || file.starts_with(&benches_dir) {
+                continue;
+            }
+            let source = |path: &Path| {
+                let relative = path.strip_prefix(&member.dir).ok()?;
+                self.sources.get(&canonical_dir.join(relative))
+            };
+            if let (Some(dir), Some(root)) = (lib_dir, lib_root)
+                && file != root
+                && file
+                    .ancestors()
+                    .take_while(|ancestor| ancestor.starts_with(&member.dir))
+                    .filter_map(|ancestor| {
+                        deps::pure_source::test_module_parent(ancestor, dir, root)
+                    })
+                    .any(|parent| {
+                        source(&parent).is_some_and(|read| {
+                            read.as_ref().is_ok_and(|source| {
+                                deps::pure_source::gates_every_test_module(&source.tokens)
+                            })
+                        })
+                    })
+            {
+                continue;
+            }
+            let Some(read) = source(&file) else { continue };
+            let tokens = read
+                .as_ref()
+                .map(|source| {
+                    source
+                        .tokens
+                        .iter()
+                        .filter(|token| !matches!(token.kind, TokenKind::Str(_)))
+                        .cloned()
+                        .collect()
+                })
+                .map_err(Clone::clone);
             let shown = file
-                .strip_prefix(&workspace.root)
+                .strip_prefix(workspace_root)
                 .unwrap_or(&file)
                 .to_path_buf();
             match file_from(
@@ -1569,14 +1675,13 @@ fn workspace_files(workspace: &Workspace) -> Result<(Vec<SourceFile>, Vec<Violat
                 lib_dir
                     .and_then(|dir| file.strip_prefix(dir).ok())
                     .map(Path::to_path_buf),
-                rust_source::read(&file)?,
+                tokens,
             ) {
-                Ok(source) => sources.push(source),
-                Err(violation) => unreadable.push(violation),
+                Ok(source) => self.architecture.push(source),
+                Err(violation) => self.unreadable.push(violation),
             }
         }
     }
-    Ok((sources, unreadable))
 }
 
 /// Checks this repository's workspace, or with `self_test` proves on
@@ -1587,10 +1692,20 @@ fn workspace_files(workspace: &Workspace) -> Result<(Vec<SourceFile>, Vec<Violat
 /// Returns the violations found, or why the check could not run.
 pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error> {
     if self_test {
-        return self_test::run(output);
+        self_test::run(output)?;
+        return census::self_test::run(output);
     }
     let workspace = metadata::load(None, &[])?;
-    let (files, mut violations) = workspace_files(&workspace)?;
+    run_workspace(&workspace, output)
+}
+
+fn run_workspace(workspace: &Workspace, output: &mut impl Write) -> Result<(), Error> {
+    let WorkspaceFiles {
+        canonical_root,
+        architecture: files,
+        unreadable: mut violations,
+        sources,
+    } = workspace_files(workspace)?;
     violations.extend(renamed_dependencies(&workspace.members));
     violations.extend(check(&files, SAMPLING));
     if !violations.is_empty() {
@@ -1599,6 +1714,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
             violations: violations.iter().map(ToString::to_string).collect(),
         });
     }
+    census::report(workspace, &canonical_root, &sources, output)?;
     let pure = files.iter().filter(|file| file.pure).count();
     writeln!(
         output,

@@ -34,6 +34,7 @@ pub(crate) struct Member {
     /// The build script's source file, as Cargo registers it, if the
     /// member has one.
     pub(crate) build_script: Option<PathBuf>,
+    pub(crate) targets: Vec<Target>,
     /// The kinds of every target, such as `lib`, `bin`, `custom-build` (a
     /// build script) or `test`.
     pub(crate) target_kinds: Vec<String>,
@@ -49,6 +50,15 @@ pub(crate) struct Member {
     /// rename in a manifest, whatever its TOML spelling, or a library
     /// target named otherwise.
     pub(crate) renamed: Vec<String>,
+}
+
+/// One Cargo target bearing Rust source.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Target {
+    pub(crate) name: String,
+    pub(crate) kinds: Vec<String>,
+    pub(crate) root: PathBuf,
+    pub(crate) required_features: Vec<String>,
 }
 
 impl Member {
@@ -156,6 +166,7 @@ struct Targets {
     build_script: Option<PathBuf>,
     kinds: Vec<String>,
     editions: Vec<String>,
+    sources: Vec<Target>,
 }
 
 impl Targets {
@@ -165,14 +176,34 @@ impl Targets {
             build_script: None,
             kinds: Vec::new(),
             editions: Vec::new(),
+            sources: Vec::new(),
         };
         for target in array(package, "targets")? {
             targets.editions.push(string(target, "edition")?.to_owned());
-            for kind in kinds_of(target)? {
-                let source = || string(target, "src_path").map(PathBuf::from);
+            let source = PathBuf::from(string(target, "src_path")?);
+            let kinds = kinds_of(target)?;
+            let required_features = match target.get("required-features") {
+                None => Vec::new(),
+                Some(_) => array(target, "required-features")?
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .ok_or(Error::UnexpectedOutput(COMMAND))
+                    })
+                    .collect::<Result<_, _>>()?,
+            };
+            targets.sources.push(Target {
+                name: string(target, "name")?.to_owned(),
+                kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
+                root: source.clone(),
+                required_features,
+            });
+            for kind in kinds {
                 match kind {
-                    "lib" => targets.lib_root = Some(source()?),
-                    "custom-build" => targets.build_script = Some(source()?),
+                    "lib" => targets.lib_root = Some(source.clone()),
+                    "custom-build" => targets.build_script = Some(source.clone()),
                     _ => {}
                 }
                 targets.kinds.push(kind.to_owned());
@@ -226,6 +257,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             dir,
             lib_root: targets.lib_root,
             build_script: targets.build_script,
+            targets: targets.sources,
             target_kinds: targets.kinds,
             editions: targets.editions,
             declared_dependencies: declared(package)?,

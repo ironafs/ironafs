@@ -57,6 +57,7 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                 id: id(name),
                 dir: PathBuf::from(format!("/w/crates/{name}")),
                 lib_root: None,
+                targets: Vec::new(),
                 target_kinds: vec!["lib".into()],
                 editions: vec!["2024".into()],
                 build_script: None,

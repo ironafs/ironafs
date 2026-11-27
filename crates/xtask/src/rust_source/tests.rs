@@ -64,22 +64,26 @@ fn tokens_count_lines_through_multi_line_comments_and_strings() {
             Token {
                 kind: TokenKind::Ident("a".into()),
                 line: 1,
-                raw: false
+                raw: false,
+                start: 0
             },
             Token {
                 kind: TokenKind::Ident("b".into()),
                 line: 3,
-                raw: false
+                raw: false,
+                start: 16
             },
             Token {
                 kind: TokenKind::Ident("c".into()),
                 line: 4,
-                raw: false
+                raw: false,
+                start: 24
             },
             Token {
                 kind: TokenKind::PathSep,
                 line: 5,
-                raw: false
+                raw: false,
+                start: 26
             },
         ]
     );

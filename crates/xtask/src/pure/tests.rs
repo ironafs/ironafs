@@ -464,6 +464,7 @@ fn workspace(packages: Vec<Package>) -> Workspace {
                     "/w/crates/{}/src/lib.rs",
                     package.name
                 ))),
+                targets: Vec::new(),
                 target_kinds: package.target_kinds.clone(),
                 editions: vec!["2024".into()],
                 build_script: None,
