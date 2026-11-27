@@ -85,6 +85,7 @@ the evidence that refutes it.
 | [2026-11-27-156-early-seam-census](2026-11-27-156-early-seam-census.md) | Issue #156: the early written-source seam census and its import resolution checks |
 | [2026-11-27-67-vfs-name-error](2026-11-27-67-vfs-name-error.md) | Issue #67: VFS name and error vocabulary split |
 | [2026-11-27-48-glm54-document-calibration](2026-11-27-48-glm54-document-calibration.md) | [#48](https://github.com/ironafs/ironafs/issues/48): GLM-5.4 High document-review calibration: 6/6 complete, 11/12 planted, 6/6 critical, 0 false blockers, 0 false majors; hold-out sealed |
+| [2026-11-27-173-seam-fixture-errors](2026-11-27-173-seam-fixture-errors.md) | Issue #173: fail the seam self-test on unreadable fixtures |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
