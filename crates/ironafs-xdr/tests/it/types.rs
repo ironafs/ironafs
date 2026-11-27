@@ -50,7 +50,6 @@
 
 use core::mem::size_of;
 
-use ironafs_xdr as xdr;
 use ironafs_xdr::limits::INLINE_MAX;
 use ironafs_xdr::{
     BorrowedBytes, BorrowedWord, Cap, Classified, Decode, Decoder, Encode, Encoder, Error, Message,
@@ -74,12 +73,9 @@ macro_rules! inline_fits {
     };
 }
 
-#[path = "../../src/encode/tests/shaded.rs"]
-mod shaded;
-
 #[cfg(test)]
-pub(crate) use shaded::{SHADE, SHADED, ShadedArm};
-pub(crate) use shaded::{Shade, Shaded};
+pub(crate) use super::shaded::{SHADE, SHADED, ShadedArm};
+pub(crate) use super::shaded::{Shade, Shaded};
 
 /// `bool` on its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
