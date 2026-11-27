@@ -1236,8 +1236,8 @@ freshness check, the runner and the reporter (#75); the flaky-test rule
 and the retries check (#76); the fuzz crate and its manifest check (#45);
 the simulator (#79, #96); the timed-benchmark harness (#38); the
 pure-crate test-support source check (#155, an addition to #46); the
-pull-request workflow check (#155, an addition to #1); and, in issues
-not yet filed, the seam conformance bodies (for the seams of #71 and #99),
+pull-request workflow check (#155, an addition to #1); the seam conformance
+bodies (#156, for the seams of #71 and #99); and, in issues not yet filed,
 the refusal-coverage check, the differential listing check, the release-build
 check of the fault feature, and the seam and ban census. Each issue not
 yet filed is named here by its number when it is filed.
