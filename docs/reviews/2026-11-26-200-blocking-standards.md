@@ -58,4 +58,32 @@ signatures and shutdown clauses against the sources pinned for the
 initial review. No runtime mechanism or implementation guarantee is
 claimed from this documentation comparison.
 
+## Final verification
+
+The substantive change was reviewed at `f19a8b291776c17eb9be642b20d3d536de0ca71a` against
+`2285fc45b604119616c4bcc11d31b954febeac30`. The controller and independent consistency seat compared
+the full wrapped before/after rules with the cited sources. The actual
+change governs documentation. It adds or changes no Rust function.
+The controller checked the complete standards file for obsolete
+`JoinSet`, `select!` and async shutdown prescriptions.
+
+| Seat | Model | Verdict | Quota headroom |
+| --- | --- | --- | --- |
+| First reviewer and consistency | gemini `gemini-4-carbon-high` (uncalibrated on IronAFS in this framing) | PASS, zero findings | Not reported |
+| Security review | gemini `gemini-4-carbon-medium` | PASS, zero findings | Not reported |
+
+Both seats are from a family outside the controller and author family.
+The security read used the calibrated Carbon Medium pin. The invoked
+model and terminal markers matched both inlined briefs. The CLI envelope
+omits a separate served-model field. Review did not depend on any new
+request contract or on verification of production runtime behavior.
+
+**EXECUTED.** The controller reproduced the documentation conflict
+by comparing the full rules at the base and repeated the comparison at
+the implementation. `git diff --check`, `cargo xtask check`, formatting
+and `cargo clippy --locked --all-targets --workspace -- -D warnings`
+passed on arm64 macOS. The workflow check ran 1,040 workspace tests
+and 46 doctests successfully. Dependency checks passed with warnings
+for unused license allowances.
+
 Written by codex:gpt-6.2-sol.
