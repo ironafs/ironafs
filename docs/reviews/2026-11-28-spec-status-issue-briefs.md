@@ -98,7 +98,7 @@ The appendix lists every finding with its origin, kind, severity and the round t
   - The rule brief's departure rule.
   - The correction brief's coverage re-check, whose new clause introduced the recorded blocker.
 
-All findings are contract or consistency points about acceptance evidence and order. None is a wrong fact at source.
+Almost all findings are contract or consistency points about acceptance evidence and order. The exceptions are two correctness findings, CB1.6 and CB3.4, each a wrong claim the correction brief made about a source, and three of kind other (RB3.1, CB3.2 and CB3.3).
 
 ## Judgement
 
@@ -117,7 +117,9 @@ The OpenAI seat's majors open after round 4 went to the judgement seat. These we
 
 The reviewer was not named.
 
-**The rulings.** The status was complete. It ruled A (holds) on all four, each with an exact fix:
+**The rulings.** The status was complete. It ruled A (holds) on all four, giving for each the defect and its consequence. Its result carries no fix text, although the brief asked for one. The fixes applied in fix round 4 were the findings' own, as quoted below; J2 needed none of its own beyond J3's.
+
+The four findings it upheld:
 
 - **J1** (rule brief, criterion 3). A material departure from the pinned design needed only to have "gone through" a review. It must instead have a conclusive passing non-author verdict, pinned to the revised design, and the final candidate must be compared with that design.
 - **J2** (rule brief, criterion 6 and Order). The release sequence to the companion was unresolved, because of the closure cycle in J3.
@@ -145,23 +147,23 @@ Open findings after each round, per brief and seat, computed from the appendix. 
 
 | Round | A: blockers and majors | A: correctness or contract, any severity | A: all findings | B: blockers and majors | B: correctness or contract, any severity | B: all findings |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 8 | 8 | 8 | 2 | 6 | 6 |
-| 2 | 8 | 10 | 10 | 0 | 1 | 1 |
-| 3 | 3 | 5 | 5 | 0 | 1 | 2 |
-| 4 | 4 | 7 | 7 | 0 | 1 | 1 |
-| 5 | 2 | 4 | 4 | 0 | 1 | 1 |
+| 1 | 8 | 7 | 8 | 2 | 2 | 6 |
+| 2 | 8 | 9 | 10 | 0 | 1 | 1 |
+| 3 | 3 | 5 | 5 | 0 | 0 | 2 |
+| 4 | 4 | 6 | 7 | 0 | 1 | 1 |
+| 5 | 2 | 4 | 4 | 0 | 0 | 1 |
 | 6 | 1 | 3 | 3 | 0 | 0 | 0 |
 
 **Correction brief**
 
 | Round | A: blockers and majors | A: correctness or contract, any severity | A: all findings | B: blockers and majors | B: correctness or contract, any severity | B: all findings |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 6 | 7 | 7 | 2 | 8 | 8 |
-| 2 | 7 | 7 | 7 | 0 | 5 | 5 |
-| 3 | 5 | 7 | 7 | 0 | 2 | 4 |
-| 4 | 1 | 2 | 2 | 0 | 2 | 2 |
-| 5 | 0 | 0 | 0 | 0 | 1 | 1 |
-| 6 | 1 | 1 | 1 | 0 | 1 | 1 |
+| 1 | 6 | 6 | 7 | 2 | 7 | 8 |
+| 2 | 7 | 7 | 7 | 0 | 2 | 5 |
+| 3 | 5 | 7 | 7 | 0 | 1 | 4 |
+| 4 | 1 | 2 | 2 | 0 | 1 | 2 |
+| 5 | 0 | 0 | 0 | 0 | 0 | 1 |
+| 6 | 1 | 0 | 1 | 0 | 0 | 1 |
 
 In the correction brief's round 3, the GLM seat also confirmed the OpenAI seat's open major, CA2.3. It is counted once, under A.
 
@@ -181,7 +183,7 @@ The controller's convergence notes are below, with their errors.
 
 - **After round 3:**
   - The rule brief's three round-2 majors were open, not attempted in fix round 2.
-  - The correction brief had two majors open: CA2.3, never attempted, and CA3.1, introduced by fix round 2.
+  - The correction brief had two majors open: CA2.3, never attempted, and CA3.1, introduced by fix round 2. That count is wrong: CA1.2, CA2.1 and CA2.2 were also open, as partly fixed (five blockers and majors, in the table above).
   - Fix round 2 introduced minors on the rule brief, and one major and minors on the correction brief.
   - The kinds narrowed to landing mechanics, closing keywords and the carrying of gates to later consumers.
 - **After round 4:**
@@ -192,7 +194,7 @@ The controller's convergence notes are below, with their errors.
   - This note's rule-brief line left out RA1.5's residual and RA3.2's partly fixed minor.
 - **After round 5:**
   - The correction brief passed at both seats, with GLM's minor CB4.2 open.
-  - The rule brief had one major left, J1's residual, introduced by fix round 4.
+  - The rule brief had one major left, J1's residual, introduced by fix round 4. That count is wrong: RA1.5 was also open (two, in the table above).
 - **After round 6:**
   - The note recorded the rule brief as converged, "no open finding at either seat". That is wrong: RA1.5, RA3.2 and RA4.2 are open.
   - The correction brief had one new major introduced by fix round 5, recorded as its blocker.
@@ -206,13 +208,13 @@ Fix rounds past the second, with the owner's permission (`docs/workflow.md` §3,
   - Owner, 2026-11-27: "permit fix round 3 on both spec-status briefs".
   - The scope recorded with the answer: the listed open items only; if a major remained after verification, it would be recorded as a blocker, with no further request.
 - **Fix round 4.**
-  - Request: an optional scoped round applying the judgement seat's four fixes verbatim, plus GLM's two minors on the filing record's permission entries, then verification.
+  - Request: an optional scoped round applying the fixes of the four upheld findings, in the findings' own words, plus GLM's two minors on the filing record's permission entries, then verification.
   - The controller's check: it updated the note with round 4 and the ruling before asking. That note omitted RA1.5's residual and RA3.2.
   - Recommendation: none is recorded. After round 3 the controller had told the owner no further round would be requested, and the request called this round optional.
   - Owner, 2026-11-27: "permit fix round 4 on both spec-status briefs, judgement fixes only".
 - **Fix round 5.**
   - Request: the rule brief's J1 residual and GLM's minor on the same sentence, and the correction brief's minor CB4.2.
-  - The controller's check: it updated the note with round 5 before asking. The correction brief passed at both seats; the rule brief had one major left, introduced by fix round 4.
+  - The controller's check: it updated the note with round 5 before asking. The correction brief passed at both seats; the rule brief had one major left, introduced by fix round 4 (wrong: RA1.5 was also open).
   - Recommendation: none is recorded.
   - Owner, 2026-11-27: "Lets do one more round on it".
   - The answer names no brief. The controller applied it to both, as the request had listed items on both. The rule `docs/workflow.md` §3, step 3 states is a permission "for that brief alone", so this reading is the controller's.
@@ -288,7 +290,7 @@ Neither the author nor the controller refuted any finding. Round 6 raised none o
 | RB3.2 | 3 | FR2 | minor | consistency between parts | The unmerged-review case undetermined on a candidate tree | FR3 |
 | RA4.1 | 4 | FR3 | major | consistency between parts | Manual closure both evidence for criterion 6 and after it in Order (J3) | FR4 |
 | RA4.2 | 4 | FR3 | minor | contract | No valid mixed-status control (a frozen version beside a draft version) for the malformed-metadata refusal | **open** (not re-checked since round 4) |
-| RA4.3 | 4 | FR3 | minor | contract | "Before filing" did not require the fix-round permission entries | FR4 |
+| RA4.3 | 4 | FR3 | minor | contract | "Before filing" did not require the fix-round permission entries | FR4 (the OpenAI seat was not asked again; closed by the GLM seat's verification of the same text, RB4.1) |
 | RB4.1 | 4 | FR3 | minor | contract | The same as RA4.3 | FR4 |
 | RB5.1 | 5 | FR4 | minor | consistency between parts | Criterion 3 relied on criterion 2 to record the departure's first commit, which criterion 2 did not | FR5 |
 
@@ -340,7 +342,20 @@ No judgement is pending.
 
 ## Record review
 
-This record has not been reviewed yet.
+| Round, record commit | Seat | Verdict |
+| --- | --- | --- |
+| 1, `e5a4b27` | `glm:glm-5.4` High, focused pass, read-only repository tools with the 30 verdicts, the judgement run and both final briefs given as evidence; uncalibrated on IronAFS for this role | FAIL: one major, three minors |
+
+Quota headroom was not reported. The served model and the lane's terminal marker are attested by the lane log.
+
+Round 1 found:
+
+- **Major, consistency between parts, fixed:** the convergence tables' "correctness or contract" columns counted findings of kind "consistency between parts". Thirteen cells were wrong. The controller's recomputation found a fourteenth (the rule brief, seat A, round 1: RA1.3 is a consistency finding). All fourteen are corrected.
+- **Minor, correctness, fixed:** the judgement section credited the seat with "an exact fix" for each finding. Its result carries none; the fixes were the findings' own.
+- **Minor, consistency between parts, fixed:** two of the controller's convergence-note counts (after rounds 3 and 5) contradicted the tables and were not flagged as errors.
+- **Minor, consistency between parts, fixed:** the kinds summary said every finding was contract or consistency; two are correctness and three are other.
+
+The controller's brief to that seat gave the record's commit as a full hash it had extended by hand from the abbreviation, which does not exist. The seat reviewed the real commit, `e5a4b2741bd303070b92635020a5f1941cc7c9a6`.
 
 ## Measures
 
