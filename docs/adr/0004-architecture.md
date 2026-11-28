@@ -993,7 +993,13 @@ The full record, with every finding and its disposition, is
     3 also states who may turn `fault` on: it is declared, off by
     default, requested only by `xtask` in its dependency's feature list,
     forwarded from no crate's own features, and compiled into no shipped
-    build. Point 4 gains three rules: no pure crate, layer or
+    build. It makes `ironafs-disk`, `ironafs-net` and `ironafs-sim`
+    known by their names, for points 3 and 4: `check-deps` reads
+    `cargo metadata` with every feature on and no platform filter; no
+    package it reports outside the workspace bears one of the names,
+    whatever its source; and each declaration of one, edge or no edge,
+    is read as one of the workspace crate of that name and needs that
+    member. Point 4 gains three rules: no pure crate, layer or
     `ironafs-client` reaches `ironafs-disk` through normal or build
     dependencies; no shipped crate reaches
     `ironafs-sim` or `ironafs-test-support` through normal or build
@@ -1024,23 +1030,37 @@ The full record, with every finding and its disposition, is
     pure crate, a layer and `ironafs-client` on `ironafs-disk`, and a
     layer reaching it through another crate; an undeclared `fault`,
     `fault` on by default directly or through another feature, a request
-    from any package of the resolved graph other than `xtask`, on an
-    optional or renamed dependency or from a third-party crate included,
-    and forwarding from a package's own features, `xtask`'s and through
-    an optional dependency included. Only declarations that resolve to
-    the workspace's `ironafs-disk` count. A shipped crate's development
+    from any reported package other than `xtask`, on an optional or
+    renamed dependency, from a binary-only crate, from a third-party
+    crate or behind a feature no one turns on included, and forwarding
+    from a package's own features, `xtask`'s and through an optional
+    dependency included; a reported package outside the workspace named
+    `ironafs-disk`, `ironafs-net` or `ironafs-sim`, from a registry or a
+    local path (a git source in a unit test); a declaration of one of
+    those names with no member of that name; and a normal or build
+    declaration that Cargo left without an edge, counted as an edge
+    (`ironafs-sim` reaching `ironafs-net` through a third-party crate's
+    inactive dependency). Every declaration of one of the three names
+    counts, edge or no edge, and the metadata command's every-feature,
+    no-platform-filter shape is a unit-tested property. The workspace
+    with none of the three crates and no declaration of them passes. A
+    shipped crate's development
     dependency on `ironafs-test-support` still passes, as do
     `ironafs-test-support` reaching `ironafs-disk` through another crate
-    and a crate's development dependency on itself. The driver phase's list is
-    `check-deps`'s change in that pull request (#99); the fault
+    and a crate's development dependency on itself. The driver phase's
+    list is `check-deps`'s change in that pull request (#99); the fault
     feature's gate, its absence evidence and its shipped-build
     rejection are the S4 pull request's (#156); the release-build check
     of the test strategy, section 8, point 2, is unchanged.
   - Review rounds. [Review record: to be linked by the maintainer.] The
     amendment text was reviewed before any code, in three fix rounds
     with the owner's permission for the third, and the owner accepted
-    the exact text on 2026-11-27 by the SHA-256 of its diff. [Code
-    review rounds: to be filled in by the maintainer.]
+    the exact text on 2026-11-27 by the SHA-256 of its diff. After two
+    code fix rounds the owner chose a redesign: a further amendment,
+    the paragraph that makes the three names an identity, reviewed in
+    its own round and one fix round, and accepted by the owner on
+    2026-11-27 by the SHA-256 of the cumulative C4 diff. [Code review
+    rounds: to be filled in by the maintainer.]
   - Sweep on 2026-11-27: the repository was searched for "C4" with and
     without its points, "ADR 0004" where it cites C4, "ironafs-disk",
     "fault feature", "ironafs-fault", "depend on one another", "shipped
