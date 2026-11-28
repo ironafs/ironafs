@@ -236,7 +236,6 @@ fn member(root: &Path, name: &str, files: &[(&str, &str)]) -> Member {
         editions: vec!["2024".into()],
         build_script: None,
         declarations: Vec::new(),
-        features: Vec::new(),
         renamed: Vec::new(),
     }
 }
@@ -333,7 +332,6 @@ fn scan_fails_ironafs_client_without_a_library_or_with_unreadable_source() {
             editions: vec!["2024".into()],
             build_script: None,
             declarations: Vec::new(),
-            features: Vec::new(),
             renamed: Vec::new(),
         }]
     });

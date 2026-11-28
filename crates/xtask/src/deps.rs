@@ -95,8 +95,9 @@ const CLIENT_SIDE: &[&str] = &["ironafs-client", "ironafs-cache", "ironafs-vfs"]
 /// typed outcomes.
 const RX_MAY_USE: &[&str] = &["ironafs-xdr", "ironafs-time", "ironafs-crypto"];
 
-/// What a layer crate never reaches (ADR 0004, C4, point 4).
-const BEHIND_THE_CORE: &[&str] = &["ironafs-client", "ironafs-cache"];
+/// What a layer crate never reaches through normal or build dependencies
+/// (ADR 0004, C4, point 4).
+const BEHIND_THE_CORE: &[&str] = &["ironafs-client", "ironafs-cache", "ironafs-disk"];
 
 /// The only workspace crates a layer crate depends on directly (ADR 0004,
 /// C4, point 4): the contract, events, IPC, cryptography, time, and its
@@ -127,14 +128,14 @@ const DRIVER_MAY_USE: &[(&str, &[&str])] = &[
 ];
 
 /// For each crate, the third-party crates it may depend on directly.
-pub(crate) type ThirdPartyLists = &'static [(&'static str, &'static [&'static str])];
+pub(crate) type ThirdPartyLists<'a> = &'a [(&'static str, &'static [&'static str])];
 
 /// The third-party crates each shipped crate may depend on directly. Every
 /// list starts empty: a third-party crate is added only after the owner's
 /// decision (coding standards rule 21), and a shipped crate missing from
 /// this table may use none. A foreign-function crate that `ironafs-gss`
 /// uses is named here even when it is reached through another crate.
-const THIRD_PARTY: ThirdPartyLists = &[
+const THIRD_PARTY: ThirdPartyLists<'static> = &[
     ("ironafs-xdr", &[]),
     ("ironafs-rx", &[]),
     ("ironafs-rxkad", &[]),
@@ -388,7 +389,8 @@ impl Rule {
                 "a pure crate depends only on pure crates (ADR 0004, C4, points 1 and 4)"
             }
             Self::LayerBypassesCore => {
-                "no layer crate depends on ironafs-client or ironafs-cache (ADR 0004, C4, point 4)"
+                "no layer crate depends on ironafs-client or ironafs-cache, or reaches \
+                 ironafs-disk through normal or build dependencies (ADR 0004, C4, point 4)"
             }
             Self::LayerOutsideList => {
                 "of the workspace a layer crate depends only on ironafs-vfs, ironafs-events, \
@@ -622,7 +624,7 @@ pub(crate) fn kind_of(name: &str) -> Option<Kind> {
 fn third_party_allowed(
     name: &str,
     kind: Kind,
-    lists: ThirdPartyLists,
+    lists: ThirdPartyLists<'_>,
 ) -> Option<&'static [&'static str]> {
     (!matches!(kind, Kind::TestOnly | Kind::Automation)).then(|| {
         lists
@@ -632,11 +634,14 @@ fn third_party_allowed(
     })
 }
 
+/// Whether two distinct crates are both among `REAL_AND_SIMULATED`.
+fn real_and_simulated(from: &str, to: &str) -> bool {
+    from != to && REAL_AND_SIMULATED.contains(&from) && REAL_AND_SIMULATED.contains(&to)
+}
+
 fn broken_rule(from: &str, from_kind: Kind, to: &str, to_kind: Kind) -> Option<Rule> {
-    if REAL_AND_SIMULATED.contains(&from) && REAL_AND_SIMULATED.contains(&to) {
+    if real_and_simulated(from, to) {
         Some(Rule::RealAndSimulatedLinked)
-    } else if from == DISK_SUPPORT && to == FAULT_HOME {
-        Some(Rule::SupportOnDisk)
     } else if to_kind == Kind::TestOnly && !matches!(from_kind, Kind::TestOnly | Kind::Automation) {
         Some(Rule::ShippedOnTestOnly)
     } else if to_kind == Kind::Automation && from_kind != Kind::Automation {
@@ -667,7 +672,7 @@ fn package<'a>(workspace: &'a Workspace, id: &str) -> Option<&'a Package> {
 /// resolved graph, workspace member or not.
 pub(crate) fn graph_violations(
     workspace: &Workspace,
-    third_party: ThirdPartyLists,
+    third_party: ThirdPartyLists<'_>,
 ) -> Vec<Violation> {
     if workspace.members.is_empty() {
         return vec![Violation::EmptyWorkspace];
@@ -741,20 +746,18 @@ pub(crate) fn graph_violations(
     violations
 }
 
-/// The edge rules that count a development dependency too, read from the
-/// member's declarations: the graph above follows only normal and build
-/// edges, so it reports those, and this reports the development ones.
+/// The edge rules read from a member's declarations. The reverse edge
+/// from `DISK_SUPPORT` is a rule on what it declares, of any kind. The
+/// graph above follows only normal and build edges, so of the rule on
+/// `REAL_AND_SIMULATED` it reports those, and this reports the development
+/// ones.
 fn declared_edge_violations(member: &Member) -> Vec<Violation> {
     let mut violations = Vec::new();
     for declared in &member.declarations {
-        let rule = if declared.kind != "dev" {
-            None
-        } else if REAL_AND_SIMULATED.contains(&member.name.as_str())
-            && REAL_AND_SIMULATED.contains(&declared.package.as_str())
-        {
-            Some(Rule::RealAndSimulatedLinked)
-        } else if member.name == DISK_SUPPORT && declared.package == FAULT_HOME {
+        let rule = if member.name == DISK_SUPPORT && declared.package == FAULT_HOME {
             Some(Rule::SupportOnDisk)
+        } else if declared.kind == "dev" && real_and_simulated(&member.name, &declared.package) {
+            Some(Rule::RealAndSimulatedLinked)
         } else {
             None
         };
@@ -777,7 +780,7 @@ fn direct_violations(
     workspace: &Workspace,
     member: &Member,
     kind: Kind,
-    third_party: ThirdPartyLists,
+    third_party: ThirdPartyLists<'_>,
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
     let dependencies =
@@ -1210,7 +1213,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
 /// Returns an error if a manifest or a source file cannot be read.
 fn check(
     workspace: &Workspace,
-    third_party: ThirdPartyLists,
+    third_party: ThirdPartyLists<'_>,
     no_tables: &[&str],
 ) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
     let mut violations = graph_violations(workspace, third_party);

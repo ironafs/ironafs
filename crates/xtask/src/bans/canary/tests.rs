@@ -278,6 +278,8 @@ fn package(id: &str, dependencies: &[&str]) -> Package {
         target_kinds: vec!["lib".to_owned()],
         links: None,
         features: Vec::new(),
+        declarations: Vec::new(),
+        named: Vec::new(),
     }
 }
 

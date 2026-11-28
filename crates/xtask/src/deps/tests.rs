@@ -28,6 +28,8 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
             target_kinds: vec!["lib".into()],
             links: None,
             features: Vec::new(),
+            declarations: Vec::new(),
+            named: Vec::new(),
         })
         .collect();
     for (_, dependencies) in members {
@@ -43,6 +45,8 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                     target_kinds: vec!["lib".into()],
                     links: None,
                     features: Vec::new(),
+                    declarations: Vec::new(),
+                    named: Vec::new(),
                 });
             }
         }
@@ -62,7 +66,6 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                 editions: vec!["2024".into()],
                 build_script: None,
                 declarations: Vec::new(),
-                features: Vec::new(),
                 renamed: Vec::new(),
             })
             .collect(),
@@ -184,7 +187,7 @@ fn graph_violations_pass_the_allowed_shape() {
     ]);
 
     // The repository's lists are empty; these admit what the shape uses.
-    let lists: ThirdPartyLists = &[("ironafs-os", &["libc"]), ("ironafs-net", &["outside"])];
+    let lists: ThirdPartyLists<'_> = &[("ironafs-os", &["libc"]), ("ironafs-net", &["outside"])];
     assert_eq!(graph_violations(&allowed, lists), []);
 }
 
@@ -373,7 +376,7 @@ fn graph_violations_limit_third_party_crates_of_every_shipped_crate() {
             third_party("ironafs-cli", "bytes"),
         ]
     );
-    let lists: ThirdPartyLists = &[("ironafs-client", &["bytes"])];
+    let lists: ThirdPartyLists<'_> = &[("ironafs-client", &["bytes"])];
     assert_eq!(graph_violations(&graph, lists).len(), 4);
 }
 
@@ -390,7 +393,7 @@ fn graph_violations_keep_cryptography_and_bindings_in_their_homes() {
             found.dependencies = vec!["id libc".into()];
         }
     }
-    let lists: ThirdPartyLists = &[
+    let lists: ThirdPartyLists<'_> = &[
         ("ironafs-crypto", &["ring"]),
         ("ironafs-os", &["libc"]),
         ("ironafs-net", &["wrapper"]),
@@ -435,8 +438,10 @@ fn graph_violations_let_ironafs_gss_reach_only_the_bindings_its_list_names() {
         target_kinds: vec!["lib".into()],
         links: None,
         features: Vec::new(),
+        declarations: Vec::new(),
+        named: Vec::new(),
     });
-    let lists: ThirdPartyLists = &[
+    let lists: ThirdPartyLists<'_> = &[
         ("ironafs-gss", &["gss-ffi", "libc"]),
         ("ironafs-net", &["gss-ffi", "libc"]),
     ];

@@ -2,26 +2,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Who may turn the fault feature on (ADR 0004, C4, point 3): its home
-//! declares it, off by default, and of every other crate only `xtask` asks
-//! for it, and only in its dependency's feature list. A crate's own feature
-//! that enables it is forwarding, which every crate is refused.
+//! declares it, off by default, and of every other package only `xtask`
+//! asks for it, and only in its dependency's feature list. A package's own
+//! feature that enables it is forwarding, which every package is refused.
 //!
-//! These rules read what each manifest asks for. The feature being on
-//! without a crate's own request, under the all-features lint or by
-//! Cargo's feature unification, is not a request.
+//! These rules read what each manifest in the resolved graph asks for,
+//! workspace member or not, and count only declarations that resolve to the
+//! home itself. The feature being on without a package's own request, under
+//! the all-features lint or by Cargo's feature unification, is not a
+//! request.
 
 use super::{FAULT, FAULT_HOME, Violation};
-use crate::metadata::{Member, Workspace};
+use crate::metadata::{Declaration, Package, Workspace};
 
 #[cfg(test)]
 mod tests;
 
-/// The only crate that may ask for the fault feature.
+/// The only package that may ask for the fault feature: the workspace's
+/// automation.
 const REQUESTER: &str = "xtask";
 
 /// Each feature of `home` that turns the fault feature on, the feature
 /// itself included, with the features between it and `fault` on one path.
-fn enabling(home: &Member) -> Vec<(&str, Vec<String>)> {
+fn enabling(home: &Package) -> Vec<(&str, Vec<String>)> {
     home.features
         .iter()
         .filter_map(|(name, _)| path_to_fault(home, name).map(|via| (name.as_str(), via)))
@@ -30,7 +33,7 @@ fn enabling(home: &Member) -> Vec<(&str, Vec<String>)> {
 
 /// The features `feature` passes through to reach `fault` in `home`'s own
 /// feature map, if it reaches it: empty when it is `fault`.
-fn path_to_fault(home: &Member, feature: &str) -> Option<Vec<String>> {
+fn path_to_fault(home: &Package, feature: &str) -> Option<Vec<String>> {
     let mut frontier: Vec<(&str, Vec<String>)> = vec![(feature, Vec::new())];
     let mut seen: Vec<&str> = vec![feature];
     let mut next = 0;
@@ -59,16 +62,56 @@ fn path_to_fault(home: &Member, feature: &str) -> Option<Vec<String>> {
     None
 }
 
-/// The fault feature's rules over the workspace. With no member named
-/// `FAULT_HOME` there is nothing to request.
+/// The declarations of `package` that resolve to the home. The resolved
+/// graph names each dependency by its rename, or else by its library's
+/// name, with `-` as `_`; a declaration of another package named like the
+/// home resolves elsewhere and is not counted.
+fn on_home<'a>(package: &'a Package, home: &Package, home_lib: &str) -> Vec<&'a Declaration> {
+    let names: Vec<&str> = package
+        .named
+        .iter()
+        .filter(|(_, id)| *id == home.id)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    package
+        .declarations
+        .iter()
+        .filter(|declared| declared.package == FAULT_HOME)
+        .filter(|declared| {
+            let name = if declared.name == declared.package {
+                home_lib.to_owned()
+            } else {
+                declared.name.replace('-', "_")
+            };
+            names.contains(&name.as_str())
+        })
+        .collect()
+}
+
+/// The fault feature's rules over the resolved graph. With no workspace
+/// member named `FAULT_HOME` there is nothing to request.
 pub(super) fn violations(workspace: &Workspace) -> Vec<Violation> {
     let Some(home) = workspace
-        .members
+        .packages
         .iter()
-        .find(|member| member.name == FAULT_HOME)
+        .find(|package| package.member && package.name == FAULT_HOME)
     else {
         return Vec::new();
     };
+    let home_lib = workspace
+        .members
+        .iter()
+        .find(|member| member.id == home.id)
+        .and_then(|member| {
+            member
+                .targets
+                .iter()
+                .find(|target| target.kinds.iter().any(|kind| kind == "lib"))
+        })
+        .map_or_else(
+            || FAULT_HOME.replace('-', "_"),
+            |target| target.name.clone(),
+        );
     let mut violations = Vec::new();
     if !home.features.iter().any(|(name, _)| name == FAULT) {
         violations.push(Violation::FaultUndeclared(home.name.clone()));
@@ -81,46 +124,51 @@ pub(super) fn violations(workspace: &Workspace) -> Vec<Violation> {
             via: via.clone(),
         });
     }
-    for member in workspace
-        .members
+    for package in workspace
+        .packages
         .iter()
-        .filter(|member| member.name != FAULT_HOME)
+        .filter(|package| package.id != home.id)
     {
-        let on_home: Vec<_> = member
-            .declarations
-            .iter()
-            .filter(|declared| declared.package == FAULT_HOME)
-            .collect();
-        // A request in a dependency's feature list. On an optional
-        // dependency it takes effect only through the feature that turns
-        // the dependency on, which is forwarding (below).
-        for declared in on_home.iter().filter(|declared| !declared.optional) {
+        let on_home = on_home(package, home, &home_lib);
+        let requester = package.member && package.name == REQUESTER;
+        let asks = |declared: &Declaration| declared.features.iter().any(|asked| turns_on(asked));
+        // A request in a dependency's feature list, optional or not.
+        for declared in &on_home {
             for feature in declared.features.iter().filter(|feature| turns_on(feature)) {
-                if member.name != REQUESTER {
+                if !requester {
                     violations.push(Violation::FaultRequested {
-                        from: member.name.clone(),
+                        from: package.name.clone(),
                         feature: feature.clone(),
                     });
                 }
             }
         }
-        for (feature, enables) in &member.features {
+        // A feature of the package's own that turns it on: forwarding.
+        let named = |name: &str, holds: &dyn Fn(&Declaration) -> bool| {
+            on_home
+                .iter()
+                .any(|declared| declared.name == name && holds(declared))
+        };
+        for (feature, enables) in &package.features {
             for enabled in enables {
                 let forwards = if let Some(name) = enabled.strip_prefix("dep:") {
-                    on_home.iter().any(|declared| {
-                        declared.optional
-                            && declared.name == name
-                            && declared.features.iter().any(|asked| turns_on(asked))
-                    })
+                    named(name, &|declared| declared.optional && asks(declared))
                 } else if let Some((name, asked)) = enabled.split_once('/') {
-                    let name = name.strip_suffix('?').unwrap_or(name);
-                    turns_on(asked) && on_home.iter().any(|declared| declared.name == name)
+                    match name.strip_suffix('?') {
+                        // A weak request turns on no optional dependency.
+                        Some(weak) => turns_on(asked) && named(weak, &|_| true),
+                        // A strong one also turns the dependency on, with
+                        // the features its declaration asks for.
+                        None => named(name, &|declared| {
+                            turns_on(asked) || declared.optional && asks(declared)
+                        }),
+                    }
                 } else {
                     false
                 };
                 if forwards {
                     violations.push(Violation::FaultForwarded {
-                        from: member.name.clone(),
+                        from: package.name.clone(),
                         feature: feature.clone(),
                         enables: enabled.clone(),
                     });

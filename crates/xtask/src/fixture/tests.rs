@@ -117,3 +117,22 @@ fn remove_dependency_line_drops_only_that_line() {
     );
     remove_dir(&dir).unwrap();
 }
+
+#[test]
+fn workspace_tail_follows_the_workspace_manifest() {
+    let dir =
+        std::env::temp_dir().join(format!("ironafs-xtask-fixture-tail-{}", std::process::id()));
+    remove_dir(&dir).unwrap();
+    let mut fixture = Fixture::default();
+    fixture.add_crate("ironafs-time", &[]);
+    fixture.workspace_tail("\n[patch.crates-io]\nx = { path = \"crates/x\" }\n");
+
+    let manifest = fixture.write(&dir).unwrap();
+
+    assert!(
+        fs::read_to_string(manifest).unwrap().ends_with(
+            "unsafe_code = \"forbid\"\n\n[patch.crates-io]\nx = { path = \"crates/x\" }\n"
+        )
+    );
+    remove_dir(&dir).unwrap();
+}

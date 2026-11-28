@@ -56,6 +56,8 @@ pub(crate) struct Fixture {
     crates: Vec<FixtureCrate>,
     /// Files outside every crate, relative to the workspace root.
     root_files: Vec<(String, String)>,
+    /// Tables appended to the workspace manifest.
+    workspace_tail: String,
 }
 
 /// Where the workspace, the local crates outside it and the third-party
@@ -137,6 +139,12 @@ impl Fixture {
         if let Some(found) = self.find(name) {
             found.dependencies.push(Dependency::Line(line.to_owned()));
         }
+    }
+
+    /// Appends tables, such as a `[patch]` table, to the workspace
+    /// manifest.
+    pub(crate) fn workspace_tail(&mut self, text: &str) {
+        self.workspace_tail.push_str(text);
     }
 
     /// Removes a raw line that `dependency_line` added to a crate.
@@ -236,7 +244,10 @@ impl Fixture {
     /// Returns an error if a file cannot be written.
     pub(crate) fn write(&self, dir: &Path) -> Result<PathBuf, Error> {
         let manifest = dir.join(WORKSPACE).join("Cargo.toml");
-        write_file(&manifest, WORKSPACE_MANIFEST)?;
+        write_file(
+            &manifest,
+            &format!("{WORKSPACE_MANIFEST}{}", self.workspace_tail),
+        )?;
         for (path, contents) in &self.root_files {
             write_file(&dir.join(WORKSPACE).join(path), contents)?;
         }

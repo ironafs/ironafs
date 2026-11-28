@@ -72,7 +72,6 @@ fn workspace(root: &Path) -> Workspace {
             editions: vec!["2024".into()],
             build_script: None,
             declarations: Vec::new(),
-            features: Vec::new(),
             renamed: Vec::new(),
         }],
         packages: vec![],

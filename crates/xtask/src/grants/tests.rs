@@ -67,7 +67,6 @@ fn member(root: &Path, name: &str, files: &[(&str, &str)]) -> Member {
         editions: vec!["2024".into()],
         build_script: None,
         declarations: Vec::new(),
-        features: Vec::new(),
         renamed: Vec::new(),
     }
 }

@@ -45,9 +45,6 @@ pub(crate) struct Member {
     /// resolved graph, this keeps development dependencies, and what each
     /// declaration asks of its dependency.
     pub(crate) declarations: Vec<Declaration>,
-    /// The member's features, each with what it enables, as the manifest
-    /// states them (implicit features of optional dependencies included).
-    pub(crate) features: Vec<(String, Vec<String>)>,
     /// The names the member's source gives dependencies (of every kind)
     /// that are not the dependency's package name with `-` as `_`: a
     /// rename in a manifest, whatever its TOML spelling, or a library
@@ -111,9 +108,14 @@ pub(crate) struct Package {
     pub(crate) target_kinds: Vec<String>,
     /// The native library the package says it links, if any.
     pub(crate) links: Option<String>,
-    /// The names of the features the package declares, implicit ones from
-    /// optional dependencies included.
-    pub(crate) features: Vec<String>,
+    /// The package's features, each with what it enables, as its manifest
+    /// states them (implicit features of optional dependencies included).
+    pub(crate) features: Vec<(String, Vec<String>)>,
+    /// Every dependency its manifest declares, as for a member.
+    pub(crate) declarations: Vec<Declaration>,
+    /// The name the resolved graph gives each dependency, of every kind,
+    /// with the id of the package it resolved to.
+    pub(crate) named: Vec<(String, String)>,
 }
 
 const COMMAND: &str = "cargo metadata";
@@ -305,7 +307,6 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             target_kinds: targets.kinds,
             editions: targets.editions,
             declarations: declared(package)?,
-            features: feature_map(package)?,
             renamed: renamed(node, packages)?,
         });
     }
@@ -324,6 +325,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
         };
         let mut dependencies = Vec::new();
         let mut dev_dependencies = Vec::new();
+        let mut named = Vec::new();
         for dependency in array(node, "deps")? {
             let mut shipped = false;
             for kind in array(dependency, "dep_kinds")? {
@@ -336,6 +338,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             }
             let target = string(dependency, "pkg")?;
             find_package(target)?;
+            named.push((string(dependency, "name")?.to_owned(), target.to_owned()));
             if shipped {
                 dependencies.push(target.to_owned());
             } else {
@@ -351,7 +354,9 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             dev_dependencies,
             target_kinds: target_kinds(package)?,
             links: links(package)?,
-            features: features(package)?,
+            features: feature_map(package)?,
+            declarations: declared(package)?,
+            named,
         });
     }
     Ok(Workspace {
@@ -416,16 +421,6 @@ fn feature_map(package: &Value) -> Result<Vec<(String, Vec<String>)>, Error> {
                 Ok((name.clone(), strings(enables)?))
             })
             .collect(),
-        _ => Err(Error::UnexpectedOutput(COMMAND)),
-    }
-}
-
-/// The names of the features a package declares.
-fn features(package: &Value) -> Result<Vec<String>, Error> {
-    match package.get("features") {
-        Some(Value::Object(features)) => {
-            Ok(features.iter().map(|(name, _)| name.clone()).collect())
-        }
         _ => Err(Error::UnexpectedOutput(COMMAND)),
     }
 }

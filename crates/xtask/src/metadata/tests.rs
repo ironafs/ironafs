@@ -76,6 +76,8 @@ fn package(name: &str, path: bool, member: bool, dependencies: &[&str]) -> Packa
         target_kinds: vec!["lib".into()],
         links: None,
         features: Vec::new(),
+        declarations: Vec::new(),
+        named: Vec::new(),
     }
 }
 
@@ -113,7 +115,6 @@ fn member(name: &str, lib: Option<&str>, target_kinds: &[&str]) -> Member {
         editions: target_kinds.iter().map(|_| "2024".into()).collect(),
         build_script: None,
         declarations: Vec::new(),
-        features: Vec::new(),
         renamed: Vec::new(),
     }
 }
@@ -134,6 +135,16 @@ fn declaration(
     }
 }
 
+fn a_declarations() -> Vec<Declaration> {
+    vec![
+        declaration("normal", "ironafs-b", "bee", false, &["std"]),
+        declaration("dev", "ironafs-c", "ironafs-c", false, &[]),
+        declaration("build", "outside", "outside", false, &[]),
+        declaration("dev", "ironafs-d", "ironafs-d", false, &[]),
+        declaration("normal", "ironafs-d", "ironafs-d", true, &[]),
+    ]
+}
+
 #[test]
 fn parse_workspace_follows_package_ids_and_keeps_development_edges_apart() {
     let workspace = parse_workspace(METADATA).unwrap();
@@ -147,21 +158,11 @@ fn parse_workspace_follows_package_ids_and_keeps_development_edges_apart() {
                 // `bee` is ironafs-b under another name.
                 Member {
                     renamed: vec!["bee".into()],
-                    declarations: vec![
-                        declaration("normal", "ironafs-b", "bee", false, &["std"]),
-                        declaration("dev", "ironafs-c", "ironafs-c", false, &[]),
-                        declaration("build", "outside", "outside", false, &[]),
-                        declaration("dev", "ironafs-d", "ironafs-d", false, &[]),
-                        declaration("normal", "ironafs-d", "ironafs-d", true, &[]),
-                    ],
+                    declarations: a_declarations(),
                     ..member("ironafs-a", Some("src/lib.rs"), &["lib"])
                 },
                 Member {
                     declarations: vec![declaration("normal", "outside", "outside", false, &[])],
-                    features: vec![
-                        ("std".into(), Vec::new()),
-                        ("default".into(), vec!["std".into()]),
-                    ],
                     ..member("ironafs-b", Some("src/lib.rs"), &["lib"])
                 },
                 member("ironafs-c", None, &["bin"]),
@@ -174,6 +175,13 @@ fn parse_workspace_follows_package_ids_and_keeps_development_edges_apart() {
             packages: vec![
                 Package {
                     dev_dependencies: vec![id("ironafs-c")],
+                    declarations: a_declarations(),
+                    named: vec![
+                        ("bee".into(), id("ironafs-b")),
+                        ("ironafs_c".into(), id("ironafs-c")),
+                        ("outside".into(), id("outside")),
+                        ("ironafs_d".into(), id("ironafs-d")),
+                    ],
                     ..package(
                         "ironafs-a",
                         true,
@@ -182,7 +190,12 @@ fn parse_workspace_follows_package_ids_and_keeps_development_edges_apart() {
                     )
                 },
                 Package {
-                    features: vec!["std".into(), "default".into()],
+                    features: vec![
+                        ("std".into(), Vec::new()),
+                        ("default".into(), vec!["std".into()]),
+                    ],
+                    declarations: vec![declaration("normal", "outside", "outside", false, &[])],
+                    named: vec![("outside".into(), id("outside"))],
                     ..package("ironafs-b", true, true, &["outside"])
                 },
                 Package {

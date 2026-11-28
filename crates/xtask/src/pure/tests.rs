@@ -446,6 +446,8 @@ fn package(name: &str, member: bool, dependencies: &[&str]) -> Package {
         target_kinds: vec!["lib".into()],
         links: None,
         features: Vec::new(),
+        declarations: Vec::new(),
+        named: Vec::new(),
     }
 }
 
@@ -469,7 +471,6 @@ fn workspace(packages: Vec<Package>) -> Workspace {
                 editions: vec!["2024".into()],
                 build_script: None,
                 declarations: Vec::new(),
-                features: Vec::new(),
                 renamed: Vec::new(),
             })
             .collect(),
@@ -482,7 +483,7 @@ fn closure_violations_keep_a_pure_crate_to_pure_crates_without_build_time_code()
     let graph = workspace(vec![
         package("ironafs-rx", true, &["ironafs-xdr", "ironafs-client"]),
         Package {
-            features: vec!["std".into()],
+            features: vec![("std".into(), Vec::new())],
             ..package("ironafs-xdr", true, &["ironafs-time", "outside"])
         },
         Package {
