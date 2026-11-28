@@ -1052,15 +1052,22 @@ The full record, with every finding and its disposition, is
     feature's gate, its absence evidence and its shipped-build
     rejection are the S4 pull request's (#156); the release-build check
     of the test strategy, section 8, point 2, is unchanged.
-  - Review rounds. [Review record: to be linked by the maintainer.] The
-    amendment text was reviewed before any code, in three fix rounds
+  - Review rounds. The record is
+    [2026-11-27-213-c4-disk-amendment](../reviews/2026-11-27-213-c4-disk-amendment.md).
+    The amendment text was reviewed before any code, in three fix rounds
     with the owner's permission for the third, and the owner accepted
     the exact text on 2026-11-27 by the SHA-256 of its diff. After two
     code fix rounds the owner chose a redesign: a further amendment,
     the paragraph that makes the three names an identity, reviewed in
     its own round and one fix round, and accepted by the owner on
-    2026-11-27 by the SHA-256 of the cumulative C4 diff. [Code review
-    rounds: to be filled in by the maintainer.]
+    2026-11-27 by the SHA-256 of the cumulative C4 diff. The code was
+    reviewed by `codex:gpt-6.2-astra` xhigh, `glm:glm-5.4` High with the
+    consistency pass, and `gemini:gemini-4-carbon-medium` as the
+    security seat: three rounds of the binding approach, two of them
+    fix rounds with the owner's permission, then two rounds of the
+    redesign. The last round passed at all three seats, with four
+    minors fixed afterwards under the stop rule; four refuted majors
+    were upheld by the refutation seat.
   - Sweep on 2026-11-27: the repository was searched for "C4" with and
     without its points, "ADR 0004" where it cites C4, "ironafs-disk",
     "fault feature", "ironafs-fault", "depend on one another", "shipped
