@@ -7,10 +7,10 @@
 
 - Class: I
 - Issue: [#48](https://github.com/ironafs/ironafs/issues/48)
-- Scope: ordinary Class S code review
+- Scope: ordinary Class S code review, in the measured form only: one tool-free API request per change, with the change and its governing specification sections inlined, on changes of 80 to 400 lines to `ironafs-vfs`, `ironafs-time` and `ironafs-config`
 - Served model: `gpt-6.2-sol`
 - Effort: xhigh
-- Route: OpenAI Responses API through the maintainer's read-only lane, one request per case, no repository access, nothing stored by the provider, standard service tier
+- Route: OpenAI Responses API through the maintainer's read-only lane, one request per case, no repository access, `store=false`, the API's `default` service tier
 - Case author and custodian: Anthropic Opus 5.5 High, a separate model family from the reviewing seat. No OpenAI model wrote, chose, attested or scored a case.
 - Measured base: `21f46b1fade4aee4db506bd5b491d9c8fdd39b67`
 - Registration SHA-256: `cfd3e23270e55beee3c452abba4c831ce89e43effabef20287065f8d4fae5585`
@@ -25,8 +25,8 @@
 3. Each case was sent once as one self-contained packet: a neutral brief, the diff, the full head text of every changed source file, the touched package's manifest and crate root, and fixed specification sections chosen per package before any case was read. The custodian attested that every planted defect and the clean case can be judged from its packet alone. The reviewer had no repository, no memory and no tool but its verdict.
 4. A review counted only if finished: served model, effort, tier and limits as registered, one request, a complete structured verdict, and the per-run and per-packet terminal codes. All responses were locked by hash before scoring.
 5. Findings were matched to plants by file and line or containing item, and by the defect's nature. A critical plant counted only at blocker or major severity. Each finding could credit one plant. Unassigned findings were judged as valid unplanted defects or false findings at their stated severity.
-6. Registered threshold: six finished reviews, at least nine of twelve plants, all six critical plants, no false blocker and at most one false major. Exactly one critical miss, with every other gate met, could trigger one held-out attempt after a separate owner decision.
-7. Before registration, Gemini Carbon High reviewed the registration, packet builder, finished-review check and launcher. The first revision failed with three blockers, four majors and one minor. All were fixed, and the same seat passed the second revision with no findings. The owner approved the dispatch, its six calls and its spend bound before any request.
+6. Registered threshold: six finished reviews, at least nine of twelve plants, all six critical plants, no false blocker, at most one false major, and no genuine defect found in the clean case (which would make the result inconclusive). Exactly one critical miss, with every other gate met, could trigger one held-out attempt after a separate owner decision.
+7. Before registration, Gemini Carbon High (uncalibrated on IronAFS) reviewed the registration, packet builder, finished-review check and launcher. The first revision failed with three blockers, four majors and one minor. All were fixed, and the same seat passed the second revision with no findings. The owner approved the dispatch, its six calls and its spend bound before any request.
 
 ## Results
 
@@ -52,7 +52,7 @@ Adjudication notes:
 
 ## Scoring audit
 
-Gemini Carbon High audited the scoring against the registered rules, the primary key and the six reviews, inlined and without tools: PASS, no findings. It could not check the cited test lines of two unplanted findings without the code, and recorded that as uncertain.
+Gemini Carbon High (uncalibrated on IronAFS) audited the scoring against the registered rules, the primary key and the six reviews, inlined and without tools: PASS, no findings. It could not check the cited test lines of two unplanted findings without the code, and recorded that as uncertain.
 
 ## Resources
 
@@ -63,7 +63,7 @@ Gemini Carbon High audited the scoring against the registered rules, the primary
 
 ## Effort attestation
 
-Each request in the frozen transcripts carries effort `xhigh`, the 64,000-token output limit and only the verdict tool. Each provider response names `gpt-6.2-sol` and the standard tier.
+Each request in the frozen transcripts carries effort `xhigh`, the 64,000-token output limit and only the verdict tool. Each provider response names `gpt-6.2-sol` and the `default` service tier.
 
 ## Custody
 
@@ -75,7 +75,7 @@ There were no critical misses, so the held-out trigger did not fire. The held-ou
 
 ## Existing scopes
 
-This result covers `gpt-6.2-sol` at xhigh in ordinary Class S code review only. It does not cover another effort, Astra, design or security review, or the open remainder of #48. The earlier GLM 5.4 High document calibration keeps its own scope.
+This result covers `gpt-6.2-sol` at xhigh in ordinary Class S code review in the measured form only: one tool-free request on an inlined packet, on changes of the measured size to the three measured crates. The codex CLI route, the API route with repository tools, larger changes, other crates, and reviews where the model must find the governing specification itself remain uncalibrated on IronAFS, as do other efforts, Astra, design and security review, and the open remainder of #48. The earlier GLM 5.4 High document calibration keeps its own scope.
 
 ## References
 
