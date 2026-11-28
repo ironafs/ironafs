@@ -10,7 +10,7 @@ use super::{
     dependency_table_violations, edition_violations, graph_violations, inherits_workspace_edition,
     inherits_workspace_lints, kind_of, lint_violations, own_lints_differences,
 };
-use crate::metadata::{Member, Package, Workspace};
+use crate::metadata::{Declaration, Member, Package, Workspace};
 
 /// A workspace of the named members, each under `crates/`; every other
 /// name a member depends on is a third-party package with no dependencies.
@@ -61,7 +61,8 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                 target_kinds: vec!["lib".into()],
                 editions: vec!["2024".into()],
                 build_script: None,
-                declared_dependencies: Vec::new(),
+                declarations: Vec::new(),
+                features: Vec::new(),
                 renamed: Vec::new(),
             })
             .collect(),
@@ -720,7 +721,13 @@ fn dependency_tables_are_cargo_s_declared_dependencies_not_manifest_text() {
     }
     assert_eq!(dependency_table_violations(&graph, &["ironafs-os"]), []);
     if let Some(member) = graph.members.first_mut() {
-        member.declared_dependencies = vec!["dev ironafs-time".into()];
+        member.declarations = vec![Declaration {
+            kind: "dev".into(),
+            package: "ironafs-time".into(),
+            name: "ironafs-time".into(),
+            optional: false,
+            features: Vec::new(),
+        }];
     }
     assert_eq!(
         dependency_table_violations(&graph, &["ironafs-os"]),

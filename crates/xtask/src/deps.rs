@@ -172,7 +172,7 @@ pub(crate) const OWN_LINTS: &[&str] = &["ironafs-os"];
 /// Crates that may declare no dependency at all, normal, development,
 /// build or target-specific (ADR 0005, point 1.4). The resolved graph
 /// leaves development dependencies out, so this is read from what Cargo
-/// parsed of the manifest (`Member::declared_dependencies`), whatever the
+/// parsed of the manifest (`Member::declarations`), whatever the
 /// spelling of its keys. An empty table declares nothing and is not
 /// refused: the ADR forbids dependencies, not tables.
 const NO_DEPENDENCY_TABLES: &[&str] = &["ironafs-os"];
@@ -866,7 +866,7 @@ fn dependency_table_violations(workspace: &Workspace, names: &[&str]) -> Vec<Vio
         // dependency, however its key is spelled (an escaped quoted key
         // included).
         if let Some(line) = member
-            .declared_dependencies
+            .declarations
             .first()
             .map(|dependency| format!("declares the {dependency}"))
         {

@@ -425,7 +425,8 @@ fn member(name: &str, renamed: &[&str]) -> Member {
         target_kinds: vec!["lib".into()],
         editions: vec!["2024".into()],
         build_script: None,
-        declared_dependencies: Vec::new(),
+        declarations: Vec::new(),
+        features: Vec::new(),
         renamed: renamed.iter().map(|name| (*name).into()).collect(),
     }
 }

@@ -41,15 +41,38 @@ pub(crate) struct Member {
     /// The edition of each target, in the order of `target_kinds`' targets.
     pub(crate) editions: Vec<String>,
     /// Every dependency the manifest declares, as cargo parsed it: normal,
-    /// development, build, optional and target-specific alike, each as
-    /// `<kind> <name>` (`normal` when cargo gives no kind). Unlike the
-    /// resolved graph, this keeps development dependencies.
-    pub(crate) declared_dependencies: Vec<String>,
+    /// development, build, optional and target-specific alike. Unlike the
+    /// resolved graph, this keeps development dependencies, and what each
+    /// declaration asks of its dependency.
+    pub(crate) declarations: Vec<Declaration>,
+    /// The member's features, each with what it enables, as the manifest
+    /// states them (implicit features of optional dependencies included).
+    pub(crate) features: Vec<(String, Vec<String>)>,
     /// The names the member's source gives dependencies (of every kind)
     /// that are not the dependency's package name with `-` as `_`: a
     /// rename in a manifest, whatever its TOML spelling, or a library
     /// target named otherwise.
     pub(crate) renamed: Vec<String>,
+}
+
+/// One dependency a member's manifest declares.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Declaration {
+    /// `normal`, `dev` or `build` (`normal` when cargo gives no kind).
+    pub(crate) kind: String,
+    /// The dependency's package name.
+    pub(crate) package: String,
+    /// The name the manifest gives it: its rename, or the package name.
+    pub(crate) name: String,
+    pub(crate) optional: bool,
+    /// The features the declaration asks of the dependency.
+    pub(crate) features: Vec<String>,
+}
+
+impl std::fmt::Display for Declaration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} {}", self.kind, self.package)
+    }
 }
 
 /// One Cargo target bearing Rust source.
@@ -140,13 +163,14 @@ pub(crate) fn load_in(
     parse_workspace(&text)
 }
 
-/// A package's declared dependencies, each as `<kind> <name>`.
+/// A package's declared dependencies.
 ///
 /// # Errors
 ///
-/// Returns an error if the package has no `dependencies` array or a kind
-/// that is not a string or null.
-fn declared(package: &Value) -> Result<Vec<String>, Error> {
+/// Returns an error if the package has no `dependencies` array, or a
+/// declaration's kind, rename, optional flag or features are not what
+/// cargo writes.
+fn declared(package: &Value) -> Result<Vec<Declaration>, Error> {
     let mut found = Vec::new();
     for dependency in array(package, "dependencies")? {
         let kind = match dependency.get("kind") {
@@ -154,9 +178,37 @@ fn declared(package: &Value) -> Result<Vec<String>, Error> {
             Some(Value::String(kind)) => kind.as_str(),
             Some(_) => return Err(Error::UnexpectedOutput(COMMAND)),
         };
-        found.push(format!("{kind} {}", string(dependency, "name")?));
+        let package = string(dependency, "name")?;
+        let name = match dependency.get("rename") {
+            Some(Value::Null) => package,
+            Some(Value::String(rename)) => rename.as_str(),
+            _ => return Err(Error::UnexpectedOutput(COMMAND)),
+        };
+        let Some(Value::Bool(optional)) = dependency.get("optional") else {
+            return Err(Error::UnexpectedOutput(COMMAND));
+        };
+        found.push(Declaration {
+            kind: kind.to_owned(),
+            package: package.to_owned(),
+            name: name.to_owned(),
+            optional: *optional,
+            features: strings(array(dependency, "features")?)?,
+        });
     }
     Ok(found)
+}
+
+/// A JSON array of strings.
+fn strings(values: &[Value]) -> Result<Vec<String>, Error> {
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or(Error::UnexpectedOutput(COMMAND))
+        })
+        .collect()
 }
 
 /// What a member's targets say: its library root, its build script, and
@@ -184,15 +236,7 @@ impl Targets {
             let kinds = kinds_of(target)?;
             let required_features = match target.get("required-features") {
                 None => Vec::new(),
-                Some(_) => array(target, "required-features")?
-                    .iter()
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .map(str::to_owned)
-                            .ok_or(Error::UnexpectedOutput(COMMAND))
-                    })
-                    .collect::<Result<_, _>>()?,
+                Some(_) => strings(array(target, "required-features")?)?,
             };
             targets.sources.push(Target {
                 name: string(target, "name")?.to_owned(),
@@ -260,7 +304,8 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             targets: targets.sources,
             target_kinds: targets.kinds,
             editions: targets.editions,
-            declared_dependencies: declared(package)?,
+            declarations: declared(package)?,
+            features: feature_map(package)?,
             renamed: renamed(node, packages)?,
         });
     }
@@ -357,6 +402,20 @@ fn links(package: &Value) -> Result<Option<String>, Error> {
     match package.get("links") {
         Some(Value::Null) => Ok(None),
         Some(Value::String(links)) => Ok(Some(links.clone())),
+        _ => Err(Error::UnexpectedOutput(COMMAND)),
+    }
+}
+
+/// A package's features, each with what it enables.
+fn feature_map(package: &Value) -> Result<Vec<(String, Vec<String>)>, Error> {
+    match package.get("features") {
+        Some(Value::Object(features)) => features
+            .iter()
+            .map(|(name, enables)| {
+                let enables = enables.as_array().ok_or(Error::UnexpectedOutput(COMMAND))?;
+                Ok((name.clone(), strings(enables)?))
+            })
+            .collect(),
         _ => Err(Error::UnexpectedOutput(COMMAND)),
     }
 }

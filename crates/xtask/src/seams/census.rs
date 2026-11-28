@@ -968,11 +968,11 @@ impl Census<'_> {
             candidate.library()
                 && candidate.target.name == name
                 && (candidate.member.name == current.member.name && !current.library()
-                    || current.member.declared_dependencies.iter().any(|entry| {
-                        entry
-                            .split_once(' ')
-                            .is_some_and(|(_, name)| name == candidate.member.name)
-                    }))
+                    || current
+                        .member
+                        .declarations
+                        .iter()
+                        .any(|declared| declared.package == candidate.member.name))
         })
     }
 
