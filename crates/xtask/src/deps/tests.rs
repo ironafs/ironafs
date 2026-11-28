@@ -29,8 +29,6 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
             links: None,
             features: Vec::new(),
             declarations: Vec::new(),
-            edges: Vec::new(),
-            lib_name: None,
         })
         .collect();
     for (_, dependencies) in members {
@@ -47,8 +45,6 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                     links: None,
                     features: Vec::new(),
                     declarations: Vec::new(),
-                    edges: Vec::new(),
-                    lib_name: None,
                 });
             }
         }
@@ -441,8 +437,6 @@ fn graph_violations_let_ironafs_gss_reach_only_the_bindings_its_list_names() {
         links: None,
         features: Vec::new(),
         declarations: Vec::new(),
-        edges: Vec::new(),
-        lib_name: None,
     });
     let lists: ThirdPartyLists<'_> = &[
         ("ironafs-gss", &["gss-ffi", "libc"]),
@@ -735,8 +729,6 @@ fn dependency_tables_are_cargo_s_declared_dependencies_not_manifest_text() {
             kind: "dev".into(),
             package: "ironafs-time".into(),
             name: "ironafs-time".into(),
-            renamed: false,
-            target: None,
             optional: false,
             features: Vec::new(),
         }];
@@ -750,4 +742,49 @@ fn dependency_tables_are_cargo_s_declared_dependencies_not_manifest_text() {
         }]
     );
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn name_violations_refuse_a_namesake_whatever_its_source_and_a_declaration_with_no_member() {
+    // A git package named ironafs-net beside the member, and a declaration
+    // of ironafs-sim, which is no member here.
+    let mut graph = workspace(&[("ironafs-net", &[]), ("xtask", &[])]);
+    graph.packages.push(Package {
+        id: "git+https://example.invalid/fork#ironafs-net@0.1.0".into(),
+        name: "ironafs-net".into(),
+        path: None,
+        member: false,
+        dependencies: Vec::new(),
+        dev_dependencies: Vec::new(),
+        target_kinds: vec!["lib".into()],
+        links: None,
+        features: Vec::new(),
+        declarations: Vec::new(),
+    });
+    if let Some(xtask) = graph
+        .packages
+        .iter_mut()
+        .find(|found| found.name == "xtask")
+    {
+        xtask.declarations = vec![Declaration {
+            kind: "normal".into(),
+            package: "ironafs-sim".into(),
+            name: "sim".into(),
+            optional: true,
+            features: Vec::new(),
+        }];
+    }
+    assert_eq!(
+        super::name_violations(&graph),
+        [
+            Violation::Namesake {
+                name: "ironafs-net".into(),
+                id: "git+https://example.invalid/fork#ironafs-net@0.1.0".into(),
+            },
+            Violation::NoMemberForName {
+                from: "xtask".into(),
+                name: "ironafs-sim".into(),
+            },
+        ]
+    );
 }

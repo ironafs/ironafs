@@ -20,6 +20,8 @@ struct FixtureCrate {
     name: String,
     place: Place,
     dependencies: Vec<Dependency>,
+    /// The package's version, if not the default for its place.
+    version: Option<String>,
     /// The `[package]` table's edition line.
     edition: String,
     /// Lines added to the `[package]` table.
@@ -116,6 +118,7 @@ impl Fixture {
             name: name.to_owned(),
             place,
             edition: edition.to_owned(),
+            version: None,
             dependencies: Vec::new(),
             package_lines: String::new(),
             manifest_tail: String::new(),
@@ -161,6 +164,13 @@ impl Fixture {
         if let Some(found) = self.find(name) {
             found.package_lines.push_str(line);
             found.package_lines.push('\n');
+        }
+    }
+
+    /// Replaces a crate's version.
+    pub(crate) fn version(&mut self, name: &str, version: &str) {
+        if let Some(found) = self.find(name) {
+            found.version = Some(version.to_owned());
         }
     }
 
@@ -253,11 +263,14 @@ impl Fixture {
         }
         for found in &self.crates {
             let crate_dir = dir.join(Self::dir_of(found));
-            let version = if found.place == Place::ThirdParty {
-                "1.0.0"
-            } else {
-                "0.0.0"
-            };
+            let version = found
+                .version
+                .as_deref()
+                .unwrap_or(if found.place == Place::ThirdParty {
+                    "1.0.0"
+                } else {
+                    "0.0.0"
+                });
             let mut text = format!(
                 "[package]\nname = \"{}\"\nversion = \"{version}\"\n{}\n{}\n[dependencies]\n",
                 found.name, found.edition, found.package_lines

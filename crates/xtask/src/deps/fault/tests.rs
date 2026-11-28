@@ -7,27 +7,18 @@ use std::path::PathBuf;
 
 use super::{enabling, violations};
 use crate::deps::Violation;
-use crate::metadata::{Declaration, Edge, Package, Workspace};
+use crate::metadata::{Declaration, Package, Workspace};
 
 const HOME_ID: &str = "path+file:///w/crates/ironafs-disk#0.0.0";
 
-/// A package; each of its declarations on `ironafs-disk` resolves to the
-/// workspace's home, under its rename or the home's library name.
+/// A package. A declaration of `ironafs-disk` is one of the home, edge or
+/// no edge: the package carries no edges.
 fn package(
     name: &str,
     member: bool,
     features: &[(&str, &[&str])],
     declarations: Vec<Declaration>,
 ) -> Package {
-    let edges = declarations
-        .iter()
-        .filter(|declared| declared.package == "ironafs-disk")
-        .map(|declared| Edge {
-            name: declared.name.replace('-', "_"),
-            package: HOME_ID.to_owned(),
-            kinds: vec![("normal".to_owned(), None)],
-        })
-        .collect();
     Package {
         id: if name == "ironafs-disk" {
             HOME_ID.into()
@@ -51,8 +42,6 @@ fn package(
             })
             .collect(),
         declarations,
-        edges,
-        lib_name: Some(name.replace('-', "_")),
     }
 }
 
@@ -65,8 +54,6 @@ fn on_disk(name: &str, optional: bool, features: &[&str]) -> Declaration {
         kind: "normal".into(),
         package: "ironafs-disk".into(),
         name: name.into(),
-        renamed: name != "ironafs-disk",
-        target: None,
         optional,
         features: features.iter().map(|feature| (*feature).into()).collect(),
     }
@@ -230,22 +217,22 @@ fn violations_refuse_a_request_from_a_package_outside_the_workspace() {
 }
 
 #[test]
-fn violations_ignore_a_package_named_like_the_home_that_resolves_elsewhere() {
-    // The declaration names `ironafs-disk`, but the graph resolves it to
-    // another package, whose `extra` turns nothing on.
-    let mut canary = package(
+fn violations_read_a_declaration_of_the_home_s_name_as_one_of_the_home() {
+    // Whatever package Cargo would take it to, a declaration of
+    // `ironafs-disk` is one of the workspace crate: its `extra` turns
+    // `fault` on, so the request is refused. The namesake itself is
+    // refused by the name rule.
+    let canary = package(
         "ironafs-bans-canary",
         true,
         &[],
         vec![on_disk("ironafs-disk", false, &["extra"])],
     );
-    canary.edges = vec![Edge {
-        name: "ironafs_disk".into(),
-        package: "registry+https://example.invalid#ironafs-disk@1.0.0".into(),
-        kinds: vec![("normal".into(), None)],
-    }];
     let disk = home(&[("fault", &[]), ("extra", &["fault"])]);
-    assert_eq!(violations(&workspace(vec![disk, canary])), []);
+    assert_eq!(
+        violations(&workspace(vec![disk, canary])),
+        [requested("ironafs-bans-canary", "extra")]
+    );
 }
 
 #[test]

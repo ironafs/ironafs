@@ -6,14 +6,14 @@
 //! asks for it, and only in its dependency's feature list. A package's own
 //! feature that enables it is forwarding, which every package is refused.
 //!
-//! These rules read what each manifest in the resolved graph asks for,
-//! workspace member or not, and count only declarations that resolve to the
-//! home itself. The feature being on without a package's own request, under
-//! the all-features lint or by Cargo's feature unification, is not a
-//! request.
+//! These rules read what each manifest `cargo metadata` reports asks for,
+//! workspace member or not, and count every declaration of the home's
+//! name, whether or not Cargo resolved it to an edge. The feature being on
+//! without a package's own request, under the all-features lint or by
+//! Cargo's feature unification, is not a request.
 
 use super::{FAULT, FAULT_HOME, Violation};
-use crate::metadata::{self, Declaration, Package, Workspace};
+use crate::metadata::{Declaration, Package, Workspace};
 
 #[cfg(test)]
 mod tests;
@@ -62,19 +62,14 @@ fn path_to_fault(home: &Package, feature: &str) -> Option<Vec<String>> {
     None
 }
 
-/// The declarations of `package` whose own edge resolves to the home,
-/// as `metadata::resolved` binds them by Cargo's own names and ids. A
-/// declaration of another package named like the home resolves elsewhere,
-/// and one Cargo did not resolve is bound to nothing; neither is counted.
-fn on_home<'a>(
-    workspace: &'a Workspace,
-    package: &'a Package,
-    home: &Package,
-) -> Vec<&'a Declaration> {
-    metadata::resolved(workspace, package)
-        .into_iter()
-        .filter(|(_, to)| to.id == home.id)
-        .map(|(declared, _)| declared)
+/// The declarations of `package` of the home: every declaration of a
+/// package named `FAULT_HOME`, edge or no edge, since that name is the
+/// workspace crate's alone (ADR 0004, C4, point 3).
+fn on_home(package: &Package) -> Vec<&Declaration> {
+    package
+        .declarations
+        .iter()
+        .filter(|declared| declared.package == FAULT_HOME)
         .collect()
 }
 
@@ -105,7 +100,7 @@ pub(super) fn violations(workspace: &Workspace) -> Vec<Violation> {
         .iter()
         .filter(|package| package.id != home.id)
     {
-        let on_home = on_home(workspace, package, home);
+        let on_home = on_home(package);
         let requester = package.member && package.name == REQUESTER;
         let asks = |declared: &Declaration| declared.features.iter().any(|asked| turns_on(asked));
         // A request in a dependency's feature list, optional or not.

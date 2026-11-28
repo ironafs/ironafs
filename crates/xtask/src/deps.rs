@@ -165,6 +165,11 @@ const THIRD_PARTY: ThirdPartyLists<'static> = &[
 /// of which depends on another (ADR 0004, C4, point 4).
 const REAL_AND_SIMULATED: &[&str] = &["ironafs-net", "ironafs-disk", "ironafs-sim"];
 
+/// The crates known by their names (ADR 0004, C4, point 3): no package
+/// outside the workspace bears one, and each declaration of one is one of
+/// the workspace crate of that name, whether or not Cargo resolved it.
+const RESERVED: &[&str] = &["ironafs-disk", "ironafs-net", "ironafs-sim"];
+
 /// The test-only crate the fault feature's home depends on, which never
 /// depends on it (ADR 0004, C4, point 3).
 const DISK_SUPPORT: &str = "ironafs-test-support";
@@ -354,6 +359,17 @@ pub(crate) enum Violation {
         file: PathBuf,
         line: usize,
         word: &'static str,
+    },
+    /// A package outside the workspace bearing one of `RESERVED`'s names.
+    Namesake {
+        name: String,
+        id: String,
+    },
+    /// A declaration of one of `RESERVED`'s names with no workspace member
+    /// of that name.
+    NoMemberForName {
+        from: String,
+        name: String,
     },
     /// The fault feature's home does not declare it.
     FaultUndeclared(String),
@@ -566,6 +582,18 @@ impl fmt::Display for Violation {
                  (ADR 0004, C4, point 2)",
                 file.display()
             ),
+            Self::Namesake { name, id } => write!(
+                formatter,
+                "{id} is a package named {name} outside the workspace: no package outside it \
+                 may bear the name of ironafs-disk, ironafs-net or ironafs-sim, whatever its \
+                 source; rename that package, or amend ADR 0004, C4 (point 3)"
+            ),
+            Self::NoMemberForName { from, name } => write!(
+                formatter,
+                "{from} declares {name}, which is no workspace member: a declaration of \
+                 ironafs-disk, ironafs-net or ironafs-sim is one of the workspace crate of that \
+                 name, and needs it (ADR 0004, C4, point 3)"
+            ),
             Self::FaultUndeclared(name) => write!(
                 formatter,
                 "{name} does not declare the feature `{FAULT}`: it is the feature's one home \
@@ -700,13 +728,14 @@ pub(crate) fn graph_violations(
             violations.push(Violation::Unclassified(member.name.clone()));
         }
     }
+    violations.extend(name_violations(workspace));
     for member in &workspace.members {
         let Some(from_kind) = kind_of(&member.name) else {
             continue;
         };
         violations.extend(direct_violations(workspace, member, from_kind, third_party));
-        violations.extend(declared_edge_violations(workspace, member));
-        for (to, via) in reachable(workspace, &member.id, &|_| true) {
+        violations.extend(declared_edge_violations(member));
+        for (to, via) in walk(workspace, &member.id, &|_| true, true) {
             let Some(to_kind) = kind_of(&to.name).filter(|_| to.member) else {
                 continue;
             };
@@ -751,19 +780,14 @@ pub(crate) fn graph_violations(
 /// graph above follows only normal and build edges, so of the rule on
 /// `REAL_AND_SIMULATED` it reports those, and this reports the development
 /// ones.
-fn declared_edge_violations(workspace: &Workspace, member: &Member) -> Vec<Violation> {
+fn declared_edge_violations(member: &Member) -> Vec<Violation> {
     let mut violations = Vec::new();
-    let Some(from) = package(workspace, &member.id) else {
-        return violations;
-    };
-    // Each declaration with the package its own edge resolved to, so a
-    // package that only shares a workspace crate's name is not taken for it.
-    for (declared, to) in metadata::resolved(workspace, from) {
-        let rule = if !to.member {
-            None
-        } else if member.name == DISK_SUPPORT && to.name == FAULT_HOME {
+    // A declaration of one of `RESERVED`'s names is one of the workspace
+    // crate of that name, so it is matched by name (ADR 0004, C4, point 3).
+    for declared in &member.declarations {
+        let rule = if member.name == DISK_SUPPORT && declared.package == FAULT_HOME {
             Some(Rule::SupportOnDisk)
-        } else if declared.kind == "dev" && real_and_simulated(&member.name, &to.name) {
+        } else if declared.kind == "dev" && real_and_simulated(&member.name, &declared.package) {
             Some(Rule::RealAndSimulatedLinked)
         } else {
             None
@@ -772,9 +796,40 @@ fn declared_edge_violations(workspace: &Workspace, member: &Member) -> Vec<Viola
             violations.push(Violation::Edge {
                 from: member.name.clone(),
                 via: Vec::new(),
-                to: to.name.clone(),
+                to: declared.package.clone(),
                 rule,
             });
+        }
+    }
+    violations
+}
+
+/// The rules on `RESERVED`'s names (ADR 0004, C4, point 3): a package
+/// `cargo metadata` reports outside the workspace may bear none, whatever
+/// its source, and a declaration of one, in any reported package, needs the
+/// workspace member of that name.
+fn name_violations(workspace: &Workspace) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    for found in &workspace.packages {
+        if !found.member && RESERVED.contains(&found.name.as_str()) {
+            violations.push(Violation::Namesake {
+                name: found.name.clone(),
+                id: found.id.clone(),
+            });
+        }
+    }
+    for found in &workspace.packages {
+        let mut reported: Vec<&str> = Vec::new();
+        for declared in &found.declarations {
+            let name = declared.package.as_str();
+            let member = workspace.members.iter().any(|member| member.name == name);
+            if RESERVED.contains(&name) && !member && !reported.contains(&name) {
+                reported.push(name);
+                violations.push(Violation::NoMemberForName {
+                    from: found.name.clone(),
+                    name: name.to_owned(),
+                });
+            }
         }
     }
     violations
@@ -1147,6 +1202,34 @@ pub(crate) fn reachable<'a>(
     start: &str,
     expand: &dyn Fn(&Package) -> bool,
 ) -> Vec<(&'a Package, Vec<String>)> {
+    walk(workspace, start, expand, false)
+}
+
+/// The workspace member a package's normal or build declaration of one of
+/// `RESERVED`'s names stands for, whether or not Cargo resolved it to an
+/// edge (ADR 0004, C4, point 3).
+fn declared_reserved<'a>(workspace: &'a Workspace, from: &Package) -> Vec<&'a Package> {
+    from.declarations
+        .iter()
+        .filter(|declared| declared.kind != "dev" && RESERVED.contains(&declared.package.as_str()))
+        .filter_map(|declared| {
+            workspace
+                .packages
+                .iter()
+                .find(|found| found.member && found.name == declared.package)
+        })
+        .collect()
+}
+
+/// As `reachable`; with `declared`, a normal or build declaration of one
+/// of `RESERVED`'s names counts as an edge to the workspace crate of that
+/// name, edge or no edge.
+fn walk<'a>(
+    workspace: &'a Workspace,
+    start: &str,
+    expand: &dyn Fn(&Package) -> bool,
+    declared: bool,
+) -> Vec<(&'a Package, Vec<String>)> {
     let mut found: Vec<(&Package, Vec<String>)> = Vec::new();
     let mut next = 0;
     let mut frontier: Vec<(String, Vec<String>)> = vec![(start.to_owned(), Vec::new())];
@@ -1158,10 +1241,16 @@ pub(crate) fn reachable<'a>(
         if id != start && !expand(current) {
             continue;
         }
+        let extra = if declared {
+            declared_reserved(workspace, current)
+        } else {
+            Vec::new()
+        };
         for dependency in current
             .dependencies
             .iter()
             .filter_map(|id| package(workspace, id))
+            .chain(extra)
         {
             let seen =
                 dependency.id == start || found.iter().any(|(seen, _)| seen.id == dependency.id);

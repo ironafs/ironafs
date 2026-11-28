@@ -136,3 +136,24 @@ fn workspace_tail_follows_the_workspace_manifest() {
     );
     remove_dir(&dir).unwrap();
 }
+
+#[test]
+fn version_replaces_a_crate_s_version() {
+    let dir = std::env::temp_dir().join(format!(
+        "ironafs-xtask-fixture-version-{}",
+        std::process::id()
+    ));
+    remove_dir(&dir).unwrap();
+    let mut fixture = Fixture::default();
+    fixture.add_outside_crate("helper", &[]);
+    fixture.version("helper", "2.0.0");
+
+    fixture.write(&dir).unwrap();
+
+    assert!(
+        fs::read_to_string(dir.join("outside/helper/Cargo.toml"))
+            .unwrap()
+            .starts_with("[package]\nname = \"helper\"\nversion = \"2.0.0\"\n")
+    );
+    remove_dir(&dir).unwrap();
+}
