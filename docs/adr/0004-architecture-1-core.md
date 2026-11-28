@@ -224,10 +224,11 @@ specification fixes (5.2, point 4).
    `ironafs-disk` is the one home of the Cargo feature `fault`. The
    feature is defined in this package, and every fault and crash-point
    entry point of the `Disk` driver is written here, behind it. No other
-   package defines a fault feature for the driver or forwards one to it;
-   review of each pull request to the package keeps this, and
-   `check-deps` refuses another crate's request for the feature (below).
-   What the feature compiles, and its one gate, are the
+   package defines a fault feature for the driver or forwards one to it
+   from its own features. Review of each pull request to the package, or
+   to a crate that depends on it, keeps this, and `check-deps` refuses
+   every forwarding and every request this point does not allow
+   (below). What the feature compiles, and its one gate, are the
    [test strategy](../specs/testing.md)'s (S4, #156). Renaming the
    feature changes this point.
    - **The gate-only phase** lasts from the package's creation until the
@@ -264,9 +265,11 @@ specification fixes (5.2, point 4).
      `ironafs-test-support` on `ironafs-disk`, with or without a feature
      request. It has no third-party dependency. `check-deps` switches
      from the gate-only rules to this list in that pull request, which
-     shows the list passing these edges and refusing a
-     crate outside it and an edge of another kind. Any other edge needs
-     an amendment of this point. The driver calls a new or changed
+     shows the list passing these edges and refusing a crate outside it
+     and an edge of another kind, and shows, in its own fixture, a
+     development dependency of `ironafs-test-support` on `ironafs-disk`
+     that requests no feature refused with the reverse-edge diagnostic.
+     Any other edge needs an amendment of this point. The driver calls a new or changed
      `ironafs-os` site only once that site's ADR 0005 amendment is
      accepted (ADR 0005, Decision 7).
    - **Who may turn `fault` on.** Each rule has its owner, its positive
@@ -277,17 +280,20 @@ specification fixes (5.2, point 4).
      - it is off by default: `check-deps` passes `fault` when the
        default features do not reach it, and refuses it when they do,
        directly or through another feature;
-     - only `xtask` may request `fault`. A crate requests it through a
-       dependency on `ironafs-disk`, under whatever name the dependency
-       is given, either in that dependency's own feature list or from
-       its own features (`ironafs-disk/fault`, or a feature of
-       `ironafs-disk` that enables it). No shipped crate may request
-       it, in any dependency table, development included. `check-deps`
-       passes `xtask`'s request and refuses one, by either route, from
-       any other crate, a test-only crate the graph rules allow
-       included. The excluded `fuzz` crate, which `check-deps` does not
-       read, requests it neither; review of its manifest, which is
-       checked by hand (coding standards rule 20), keeps this.
+     - only `xtask` may request `fault`, and only in the feature list
+       of its dependency on `ironafs-disk`. A crate's own feature that
+       enables `fault` (`ironafs-disk/fault`, or a feature of
+       `ironafs-disk` that enables it), under whatever name the
+       dependency is given, is forwarding, which every crate is refused,
+       `xtask` included. No shipped crate may request it, in any
+       dependency table, development included. `check-deps` passes
+       `xtask`'s request in its dependency's feature list and refuses
+       the same request made from `xtask`'s own features, and refuses
+       either route from any other crate, a test-only crate the graph
+       rules allow included. The excluded `fuzz` crate, which
+       `check-deps` does not read, requests it neither; review of its
+       manifest, which is checked by hand (coding standards rule 20),
+       keeps this.
        `ironafs-sim` may not depend on the driver (point 4), and
        `ironafs-test-support` is its development dependency, so neither
        is listed. The feature being on without a crate's own
