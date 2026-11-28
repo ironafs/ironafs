@@ -1132,7 +1132,7 @@ arithmetic, which D7 tests.
 | C3, point 2 | 5.2.2, M1 to M4 | a planted divergence in a cache type, caught by M1 or M3; the transition-coverage check on an uncovered pair |
 | C3, point 6; O45, point 3 | 5.3, point 3; 5.4, points 1 and 8 | an uncaught invariant mutation switch; a case-manifest entry at count zero; the two-process replay test |
 | C4, point 4 | `check-deps` | a shipped crate reaching `ironafs-sim` or `ironafs-test-support` through normal or build dependencies, directly or through other crates (a development dependency is outside this rule) |
-| C4, point 7 | 8, point 2 | a test-only switch found in the release build of a shipped binary |
+| C4, point 7 | `check-deps`, by C4, point 4's rule on test-only crates; separately, 8, point 2's check over each shipped binary's release build, which proves its test-only switches absent and says nothing of the simulator's other code | a shipped crate reaching `ironafs-sim` through normal or build dependencies; a test-only switch in a shipped binary's release build |
 | O22; O46, points 1 and 3 | 5.2.8, N1 to N3 | the refusal-coverage check; an unmapped point, or a missing or failed gate result, keeps the mode out |
 | O45, point 6 | 5.3, point 3; 5.5, point 5 | the event-sequence fuzz target is a registered fuzz target, so its missing run line fails the fuzz manifest check |
 | O47, point 1 | 5.2.2, M1; 5.2.4, C2 | a planted divergence between client and model |

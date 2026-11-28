@@ -994,7 +994,8 @@ The full record, with every finding and its disposition, is
     default, requested only by `xtask` in its dependency's feature list,
     forwarded from no crate's own features, and compiled into no shipped
     build. Point 4 gains three rules: no pure crate, layer or
-    `ironafs-client` reaches `ironafs-disk`; no shipped crate reaches
+    `ironafs-client` reaches `ironafs-disk` through normal or build
+    dependencies; no shipped crate reaches
     `ironafs-sim` or `ironafs-test-support` through normal or build
     dependencies; and `ironafs-net`, `ironafs-disk` and `ironafs-sim` do
     not depend on one another, development dependencies included. Its
@@ -1009,22 +1010,28 @@ The full record, with every finding and its disposition, is
     no row for `ironafs-disk`, which the seams specification's section
     13, Q2, made a precondition of creating it. Defining the feature in
     one package and its sites in another would need a second selector,
-    on which the S4 design review returned a blocker. A dedicated fault-provider crate
-    and deferring the feature to the driver were the alternatives
-    considered (#213).
+    on which the S4 design review returned a blocker. A dedicated
+    fault-provider crate and deferring the feature to the driver were
+    the alternatives considered (#213).
   - Enforcement. `check-deps` classifies `ironafs-disk` as a driver in
     its gate-only phase and refuses, each with its own planted
     self-test case: any declared dependency of the gate-only package, by
     the declared-dependency rule `ironafs-os` already has; a dependency
     of any kind of `ironafs-test-support` on `ironafs-disk`; each of the
-    six legs among `ironafs-net`, `ironafs-disk` and `ironafs-sim`,
-    directly and through another crate; a pure crate, a layer and
-    `ironafs-client` on `ironafs-disk`; an undeclared `fault`, `fault`
-    on by default directly or through another feature, a request from
-    any crate other than `xtask`, renamed dependencies included, and
-    forwarding from a crate's own features, `xtask`'s and an optional
-    dependency's included. A shipped crate's development dependency on
-    `ironafs-test-support` still passes. The driver phase's list is
+    six legs among `ironafs-net`, `ironafs-disk` and `ironafs-sim` as a
+    direct dependency, and, as representative paths through another
+    crate, `ironafs-sim` reaching `ironafs-net` and `ironafs-disk`; a
+    pure crate, a layer and `ironafs-client` on `ironafs-disk`, and a
+    layer reaching it through another crate; an undeclared `fault`,
+    `fault` on by default directly or through another feature, a request
+    from any package of the resolved graph other than `xtask`, on an
+    optional or renamed dependency or from a third-party crate included,
+    and forwarding from a package's own features, `xtask`'s and through
+    an optional dependency included. Only declarations that resolve to
+    the workspace's `ironafs-disk` count. A shipped crate's development
+    dependency on `ironafs-test-support` still passes, as do
+    `ironafs-test-support` reaching `ironafs-disk` through another crate
+    and a crate's development dependency on itself. The driver phase's list is
     `check-deps`'s change in that pull request (#99); the fault
     feature's gate, its absence evidence and its shipped-build
     rejection are the S4 pull request's (#156); the release-build check
