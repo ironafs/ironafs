@@ -3,7 +3,7 @@
 
 # Issue brief review: a phased `ironafs-disk` row in ADR 0004 C4
 
-The proposed Class S design issue asks for a Working-decision amendment of ADR 0004 C4, and the matching `check-deps` change, so that #156's S4 fault feature can be defined in an `ironafs-disk` crate before #99 adds the `Disk` driver. The brief settles the authority only; S4's gate mechanism stays with #156. Both independent families checked the brief at base `21f46b1fade4aee4db506bd5b491d9c8fdd39b67` (round 1) and `d1ea48b9798df666d786de22bd1dbd6f1509e8f7` (rounds 2 to 5), whose only change between them is testing.md 10.6 naming #156 and one review record. The reviewed revision 5 SHA-256 is `ae5deba6c24d59a8aa2647a31dd9618b1313458de5de078948a92d238f6e5db4`. The filing text differs from it only by naming this record's path in its "Before filing" paragraph, SHA-256 `da215469d124e8dcbce6429b82c4d0cbac8495b957f3561ed1d9e0f8aff25b23`.
+The proposed Class S design issue asks for a Working-decision amendment of ADR 0004 C4, and the matching `check-deps` change, so that #156's S4 fault feature can be defined in an `ironafs-disk` crate before #99 adds the `Disk` driver. The brief settles the authority only; S4's gate mechanism stays with #156. Both independent families checked the brief at base `21f46b1fade4aee4db506bd5b491d9c8fdd39b67` (round 1) and `d1ea48b9798df666d786de22bd1dbd6f1509e8f7` (rounds 2 to 5). The reviewed revision 5 SHA-256 is `ae5deba6c24d59a8aa2647a31dd9618b1313458de5de078948a92d238f6e5db4`. The filing text differs from it only by naming this record's path in its "Before filing" paragraph, SHA-256 `da215469d124e8dcbce6429b82c4d0cbac8495b957f3561ed1d9e0f8aff25b23`.
 
 The brief was written by `claude-code:claude-opus-5-5`.
 
@@ -29,10 +29,12 @@ The OpenAI and GLM lane logs attest the served model, and every run echoed its t
 
 ## Findings by origin and kind
 
-- Round 1 (origin: pre-existing). Contract: a ban on the precursor's development dependencies stated as if the existing rule forbade all such edges, when it allows them for shipped crates; a driver-phase edge to the conformance body left out; seams Q17 and 5.2 point 4 left blocking the crate. Missing mechanism: which check owns each property. Other: review, sweep and closure criteria, and citations of the ADR 0004 overview, ADR 0005 and the workflow. All fixed in fix round 1.
-- Round 2 (origin: fix round 1). Correctness: a fallback that contradicted the precursor's zero-dependency rule, and a wrong owner (`check-deps`) for "no `unsafe`". Contract: the S4 wait recorded as unchanged while the brief added one; the driver allowlist and consumer allowlist proven only by green runs. Fixed in fix round 2.
-- Round 3 (origin: fix round 2). Contract: the checker's test path must exercise production's policy selection; a dependency allowlist does not prove that no shipped build enables the feature; "no `unsafe`" must cover source no build compiles. Minors: wording, an evidence item that cannot come from the named command, and contract lists. Fixed in fix round 3.
-- Round 4 (origin: fix round 3). Contract: the dependency-authorization rule stated in terms of the feature being enabled, which the all-features lint or Cargo's feature unification does without any consumer's request. Minors: six reports, four distinct (both GLM minors matched OpenAI minors): the target inventory proves only the build-script claim; the testing §9 row must state the rule accurately, not only re-cite it; Q17's bullet under the wrong checkbox; a prerequisite missing from criterion 5. Fixed in fix round 4.
+Every finding was checked at source by the controller before it went to the author; none was refuted.
+
+- Round 1 (origin: pre-existing). Contract: a ban on the precursor's development dependencies stated as if the existing rule forbade all such edges, when it allows them for shipped crates; a driver-phase edge to the conformance body left out; seams Q17 and 5.2 point 4 left blocking the crate; the precursor's phase limits proven by no named evidence. Missing mechanism: which check owns each property. Other: review, sweep and closure criteria, and citations of the ADR 0004 overview, ADR 0005 and the workflow. Fix round 1 closed all but three OpenAI items, which round 2 found partly fixed: the proof of the precursor's declaration ban (contract), the owner of the default-off and activation rules (contract) and the evidence labels (other). Fix round 2 closed the activation-rule item; the other two were still partly fixed in round 3 and fix round 3 closed them.
+- Round 2 (origin: fix round 1). Correctness: a fallback that contradicted the precursor's zero-dependency rule, and a wrong owner (`check-deps`) for "no `unsafe`". Contract: the S4 wait recorded as unchanged while the brief added one; the driver-phase and consumer allowlists proven only by green runs; the shipped-only rule without its normal-and-build reachability wording. Other: the metadata description in the re-check. Fix round 2 closed all of them.
+- Round 3 (origin: fix round 2). Contract: a dependency allowlist does not prove that no shipped build enables the feature; "no `unsafe`" must cover source no build compiles; an evidence item that cannot come from the command it names; the contracts list missing seams 5.2 point 5 and the testing §9 row; criterion 5 inspecting an order no repository text states. Consistency between parts: "it reads no source" contradicted the scan of the composition crate. Other: "target inventory" undefined; §9 missing from the re-check and sources. Fix round 3 closed all of them, with the two carried items above.
+- Round 4 (origin: fix round 3). Contract: the dependency-authorization rule stated in terms of the feature being enabled, which the all-features lint or Cargo's feature unification does without any consumer's request (upheld by the judgement seat); the target inventory asked to prove more than the build-script claim; the testing §9 row only re-cited, not restated; a prerequisite missing from criterion 5. Consistency between parts: Q17's bullet under the wrong checkbox. Six minor reports, four distinct: both GLM minors matched OpenAI minors. Fix round 4 closed all of them, and round 5 verified each at both seats.
 - Round 5: none.
 
 ## Judgement
@@ -42,6 +44,8 @@ The disputed text was property 5's rule "only the named crates depend on `ironaf
 EXECUTED by the controller: rustc 1.97.1 refuses both `#[expect(unsafe_code)]` and `#[allow(unsafe_code)]` under a crate-level `forbid(unsafe_code)` (error E0453), which the brief's property 2 relies on.
 
 ## Convergence
+
+All findings counted here were confirmed at source as correctness, contract, consistency or missing-mechanism findings; no editorial-only finding was raised.
 
 | Round | OpenAI seat: open blockers and majors | OpenAI seat: open confirmed findings, any severity | GLM seat: open blockers and majors | GLM seat: open confirmed findings, any severity |
 | --- | --- | --- | --- | --- |
@@ -55,8 +59,8 @@ Introduced by each fix round, OpenAI seat: five majors and two minors; two major
 
 Fix rounds past the second, with the owner's permission:
 
-- Fix round 3. Request: one scoped round limited to the items open after round 3, verified by both seats on the v3 to v4 diff. Controller's check of the note before asking: open majors at the OpenAI seat 6, 7, 3 and none at GLM; the last fix introduced fewer defects than the one before; the kinds narrowing. Recommendation: permit. Owner, 2026-11-27: "permit fix round 3 on the C4 brief".
-- Fix round 4. Request: apply the judgement seat's wording verbatim and fix the four distinct open minors, nothing else, with the OpenAI seat verifying the major and the GLM seat the minors on the v4 to v5 diff. Controller's check: open majors 6, 7, 3, 1; the wording came from the judgement seat. Recommendation: permit. Owner, 2026-11-27: "permit fix round 4 on the C4 brief".
+- Fix round 3. Request: one scoped round limited to the items open after round 3, verified by both seats on the v3 to v4 diff. The controller wrote the convergence note from the round-3 results before asking, and its check is the note's content: open majors at the OpenAI seat 6, 7, 3 and none at GLM; the last fix introduced fewer defects than the one before; the kinds narrowing. Recommendation: permit. Owner, 2026-11-27: "permit fix round 3 on the C4 brief".
+- Fix round 4. Request: apply the judgement seat's wording verbatim and fix the four distinct open minors, nothing else, with the OpenAI seat verifying the major and the GLM seat the minors on the v4 to v5 diff. The controller updated the note with round 4 and the judgement before asking: open majors 6, 7, 3, 1; the wording came from the judgement seat. Recommendation: permit. Owner, 2026-11-27: "permit fix round 4 on the C4 brief".
 
 No blocker, major or confirmed correctness or contract finding is open, and no judgement is pending.
 
