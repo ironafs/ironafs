@@ -29,7 +29,7 @@ The OpenAI and GLM lane logs attest the served model, and every run echoed its t
 
 ## Findings by origin and kind
 
-The appendix lists every finding with its origin, kind and the round that closed it. In short: round 1's findings (pre-existing) were wrong or missing rules and missing review, sweep and citation criteria; three of the OpenAI seat's items were only partly fixed and closed in fix rounds 2 and 3. Round 2's (introduced by fix round 1) were contradictions and wrong owners for checks. Round 3's (introduced by fix round 2, one GLM minor first raised then on fix round 1's text) were the precision of acceptance evidence. Round 4's (introduced by fix round 3) were one wording point in the dependency-authorization rule, upheld by the judgement seat, and four distinct minors in six reports. Each fix was limited to the findings it answered.
+The appendix lists every finding with its origin, kind and the round that closed it. In short: round 1's findings (pre-existing) were wrong or missing rules and missing review, sweep and citation criteria; three of the OpenAI seat's items were only partly fixed and closed in fix rounds 2 and 3. Round 2's (introduced by fix round 1) were contradictions and wrong owners for checks. Round 3's (introduced by fix round 2, except one GLM minor on text present since revision 1) were the precision of acceptance evidence. Round 4's (introduced by fix round 3) were one wording point in the dependency-authorization rule, upheld by the judgement seat, and four distinct minors in six reports. Each fix was limited to the findings it answered.
 
 ## Judgement
 
@@ -49,14 +49,14 @@ Open findings after each round, per seat, computed from the appendix (a finding 
 | 4 | 1 | 4 | 5 | 0 | 1 | 2 |
 | 5 | 0 | 0 | 0 | 0 | 0 | 0 |
 
-Introduced by each fix round, OpenAI seat: five majors and two minors; two majors and three minors; one major and four minors; none. GLM seat: one minor (first raised in round 3); two minors; two minors; none. The kinds narrowed from wrong rules to the wording of acceptance evidence.
+Introduced by each fix round, OpenAI seat: five majors and two minors; two majors and three minors; one major and four minors; none. GLM seat: none; two minors; two minors; none (one pre-existing minor was first raised in round 3). The kinds narrowed from wrong rules to the wording of acceptance evidence.
 
 Fix rounds past the second, with the owner's permission:
 
 - Fix round 3. Request: one scoped round limited to the items open after round 3, verified by both seats on the v3 to v4 diff. The controller wrote the convergence note from the round-3 results before asking, and its check is the note's content: open blockers and majors at the OpenAI seat 6, 7, 3 and none at GLM; the last fix introduced fewer defects than the one before; the kinds narrowing. Recommendation: permit. Owner, 2026-11-27: "permit fix round 3 on the C4 brief".
 - Fix round 4. Request: apply the judgement seat's wording verbatim and fix the four distinct open minors, nothing else, with the OpenAI seat verifying the major and the GLM seat the minors on the v4 to v5 diff. The controller updated the note with round 4 and the judgement before asking: open blockers and majors 6, 7, 3, 1; the wording came from the judgement seat. Recommendation: permit. Owner, 2026-11-27: "permit fix round 4 on the C4 brief".
 
-Departure from `docs/workflow.md` §3, step 7: before each of these two requests the controller checked the blocker and major counts, the defects each fix introduced and the kinds, but not the per-seat series of open correctness or contract findings. That series was computed afterwards from the appendix, for this record; it was falling at the OpenAI seat (7, 7, 5, 4) and at one or none at the GLM seat after round 1, so it would not have changed either recommendation.
+Departure from `docs/workflow.md` §3, step 7: before each of these two requests the controller checked the blocker and major counts, the defects each fix introduced and the kinds, but not the per-seat series of open correctness or contract findings. That series was computed afterwards from the appendix, for this record: 7, 7, 5, 4 at the OpenAI seat, and 7, 0, 1, 1 at the GLM seat, where a pre-existing minor first raised in round 3 kept it at one. This is a retrospective account, not the check the step asks for.
 
 No blocker, major or confirmed correctness or contract finding is open, and no judgement is pending.
 
@@ -99,7 +99,7 @@ A is the OpenAI seat, B the GLM seat; FR*n* is fix round *n*. Every finding was 
 | A3.5 | 3 | FR2 | minor | consistency between parts | The contracts list missing seams 5.2 point 5 and the testing §9 row | FR3 |
 | B3.1 | 3 | FR2 | minor | other | "Target inventory" undefined | FR3 |
 | B3.2 | 3 | FR2 | minor | consistency between parts | Testing §9 missing from the re-check, sources and outcome | FR3 |
-| B3.3 | 3 | FR1 (first raised in round 3; the round-3 review labels it "carried over from v2, not introduced") | minor | contract | Criterion 5 asked a repository diff to show an order stated only on GitHub | FR3 |
+| B3.3 | 3 | pre-existing (the same text is in revision 1; first raised in round 3, whose review labels it "carried over from v2, not introduced") | minor | contract | Criterion 5 asked a repository diff to show an order stated only on GitHub | FR3 |
 | A4.1 | 4 | FR3 | major | contract | The dependency-authorization rule stated in terms of the feature being enabled, not requested (upheld by the judgement seat) | FR4 |
 | A4.2 | 4 | FR3 | minor | contract | The target inventory asked to prove more than the build-script claim | FR4 |
 | A4.3 | 4 | FR3 | minor | contract | The testing §9 row only re-cited, not restated with the development exception | FR4 |
@@ -107,6 +107,20 @@ A is the OpenAI seat, B the GLM seat; FR*n* is fix round *n*. Every finding was 
 | A4.5 | 4 | FR3 | minor | contract | Criterion 5's prerequisite list missing criterion 6's comments | FR4 |
 | B4.1 | 4 | FR3 | minor | consistency between parts | The same as A4.4 | FR4 |
 | B4.2 | 4 | FR3 | minor | contract | The same as A4.5, and INSPECTED cannot show a future merge | FR4 |
+
+## Record review
+
+The record's own review: `codex:gpt-6.2-sol` High through the OpenAI Responses API with read-only repository tools, given the controller's convergence note as evidence because the brief revisions and raw reviews stay private. Uncalibrated on IronAFS for this role.
+
+| Round | Range | Result |
+| --- | --- | --- |
+| 1 | `d1ea48b..6cdbd3b` | FAIL: two majors, three minors |
+| 2 | `6cdbd3b..d821d92` (record fix round 1) | FAIL: two majors partly fixed, one new minor |
+| 3 | `d821d92..bab6bf8` (record fix round 2) | FAIL: two majors partly fixed, one new minor |
+| 4 | `bab6bf8..d7b7a53` (record fix round 3, owner-permitted) | FAIL: one major partly fixed |
+| 5 | `d7b7a53..e2dc228` (record fix round 4, owner-permitted) | PASS, one minor |
+
+The last round's minor (a counterfactual in the departure paragraph) and its note on B3.3's origin were fixed afterwards and recorded here, as the stop rule allows for minor findings: B3.3's text is in revision 1, so its origin is pre-existing. Permissions: "permit fix round 3 on the C4 brief record" and "permit fix round 4 on the C4 brief record", both 2026-11-27.
 
 ## Measures
 
