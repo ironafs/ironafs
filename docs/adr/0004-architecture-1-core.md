@@ -225,8 +225,9 @@ specification fixes (5.2, point 4).
    feature is defined in this package, and every fault and crash-point
    entry point of the `Disk` driver is written here, behind it. No other
    package defines a fault feature for the driver or forwards one to it;
-   review of each pull request to the package keeps this. What the
-   feature compiles, and its one gate, are the
+   review of each pull request to the package keeps this, and
+   `check-deps` refuses another crate's request for the feature (below).
+   What the feature compiles, and its one gate, are the
    [test strategy](../specs/testing.md)'s (S4, #156). Renaming the
    feature changes this point.
    - **The gate-only phase** lasts from the package's creation until the
@@ -249,48 +250,61 @@ specification fixes (5.2, point 4).
        allow a build script or a dependency with a written reason or an
        owner decision; this phase allows neither.
    - **The driver phase** starts with the first pull request that adds
-     a driver operation. The package gains the driver operations and the
-     crash sites, compiled only with `fault` and reached through the same
-     gate. It may depend on these workspace crates, each with the kind
-     given, and on no other: `ironafs-cache`, normal, for the `Disk` trait
-     (seams specification, 5.2, point 1); `ironafs-os`, normal, for its
-     sites (5.2, point 4); and `ironafs-test-support`, development
-     only, so that the `Disk` conformance body runs against this driver
-     (5.9, point 1). `ironafs-disk` depends on `ironafs-test-support`,
-     never the reverse. It has no third-party dependency. `check-deps`
-     switches from the gate-only rules to this list in that pull
-     request, which shows the list passing these edges and refusing a
+     a driver operation. The package gains the driver operations, which
+     work with `fault` off, and the crash sites. Only the fault and
+     crash-point entry points need `fault`: they are compiled only with
+     it and reached through the same gate. It may depend on these
+     workspace crates, each with the kind given, and on no other:
+     `ironafs-cache`, normal, for the `Disk` trait (seams specification,
+     5.2, point 1); `ironafs-os`, normal, for its sites (5.2, point 4);
+     and `ironafs-test-support`, development only, so that the `Disk`
+     conformance body runs against this driver (5.9, point 1).
+     `ironafs-disk` depends on `ironafs-test-support`, never the
+     reverse: `check-deps` refuses a dependency of any kind of
+     `ironafs-test-support` on `ironafs-disk`, with or without a feature
+     request. It has no third-party dependency. `check-deps` switches
+     from the gate-only rules to this list in that pull request, which
+     shows the list passing these edges and refusing a
      crate outside it and an edge of another kind. Any other edge needs
      an amendment of this point. The driver calls a new or changed
      `ironafs-os` site only once that site's ADR 0005 amendment is
      accepted (ADR 0005, Decision 7).
    - **Who may turn `fault` on.** Each rule has its owner, its positive
-     control and its negative:
+     control and its negative. Each covers `fault` and any feature of
+     `ironafs-disk` that enables it:
      - the feature is declared: `check-deps` passes an `ironafs-disk`
        that declares `fault` and refuses one that does not;
-     - it is off by default: `check-deps` passes `fault` outside the
-       default features and refuses it inside them;
-     - only `xtask` may request `fault` through a dependency on
-       `ironafs-disk`. No shipped crate may, in any dependency table,
-       development included. `check-deps` reads the request from each
-       crate's declared dependencies, passes `xtask`'s, and refuses one
-       from any other crate, a test-only crate the graph rules allow
-       included. `ironafs-sim` may not depend on the driver (point 4),
-       and `ironafs-test-support` is its development dependency, so
-       neither is listed. The feature being on without a crate's own
+     - it is off by default: `check-deps` passes `fault` when the
+       default features do not reach it, and refuses it when they do,
+       directly or through another feature;
+     - only `xtask` may request `fault`. A crate requests it through a
+       dependency on `ironafs-disk`, under whatever name the dependency
+       is given, either in that dependency's own feature list or from
+       its own features (`ironafs-disk/fault`, or a feature of
+       `ironafs-disk` that enables it). No shipped crate may request
+       it, in any dependency table, development included. `check-deps`
+       passes `xtask`'s request and refuses one, by either route, from
+       any other crate, a test-only crate the graph rules allow
+       included. The excluded `fuzz` crate, which `check-deps` does not
+       read, requests it neither; review of its manifest, which is
+       checked by hand (coding standards rule 20), keeps this.
+       `ironafs-sim` may not depend on the driver (point 4), and
+       `ironafs-test-support` is its development dependency, so neither
+       is listed. The feature being on without a crate's own
        request, under `check-bans`' all-features lint or by Cargo's
        feature unification, is not a request by that crate, and that
        lint stays as it is;
      - no shipped build compiles `fault`, however it would be selected.
-       The fault-feature pull request's checks (S4) show it on their
-       builds, against a positive control that reaches an entry point
-       through the gate. The check over the release build of every
-       shipped binary (test strategy, section 8, point 2) stays the
-       independent release evidence; this point neither replaces nor
-       narrows it.
+       The fault-feature pull request's checks (S4) show both an
+       allowed build that reaches an entry point through the gate and
+       the rejection of a shipping candidate that compiles `fault`, even
+       one that no forbidden request selected; how is S4's. The check
+       over the release build of every shipped binary (test strategy,
+       section 8, point 2) stays the independent release evidence; this
+       point neither replaces nor narrows it.
 
-     A route that selects the feature other than through a dependency
-     is part of the gate's design, which S4 settles.
+     A route that selects the feature other than by another crate's
+     request is part of the gate's design, which S4 settles.
 
 4. **Rules the dependency graph keeps:**
    - no pure crate depends on a driver or on `ironafs-client`;
@@ -303,8 +317,9 @@ specification fixes (5.2, point 4).
      `ironafs-disk` through normal or build dependencies;
    - no shipped crate reaches `ironafs-sim` or `ironafs-test-support`
      through normal or build dependencies, directly or through other
-     crates. A development dependency on either is allowed, except in
-     `ironafs-disk`'s gate-only phase (point 3);
+     crates. This rule does not follow development-only edges; the
+     rules that forbid a declaration of any kind still apply (the
+     gate-only phase, point 3; the next rule; ADR 0005, point 1.4);
    - `ironafs-net`, `ironafs-disk` and `ironafs-sim` do not depend on one
      another, in any of the six directions: none declares a dependency of
      any kind on another, development included, and none reaches another
@@ -315,7 +330,11 @@ specification fixes (5.2, point 4).
      one: the conformance bodies reach both sides through
      `ironafs-test-support` (seams specification, 5.9, point 1).
 
-   `check-deps` refuses a break of each of these rules.
+   `check-deps` refuses each declaration and graph path these rules
+   forbid; for the rules on `ironafs-disk` and `ironafs-sim`, from the
+   checker change that comes with them (#213). What a crate's own source
+   holds, such as `ironafs-rx` knowing nothing of AFS beyond its
+   dependencies, is kept by review.
 5. The macOS extension is written in Swift, uses codecs generated from the
    IPC definition (C44) and contains no Rust.
 6. Where the first-party DNS client of C33 lives is settled with its
