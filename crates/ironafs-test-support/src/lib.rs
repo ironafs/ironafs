@@ -61,10 +61,16 @@
 //!
 //! [`measure_awake`] times a benchmark operation through an injected clock.
 //!
+//! [`check_json_schema`] checks the shape and version of a JSON object
+//! printed by a process.
+//!
 //! This crate is a dev-dependency only: no shipped crate depends on it.
 
 mod capture;
 mod clock;
+#[path = "../../xtask/src/json/parser.rs"]
+mod json;
+mod json_schema;
 mod property;
 mod rng;
 mod shrink;
@@ -75,6 +81,7 @@ mod timing;
 pub mod wire;
 
 pub use clock::{SeededClock, TimeOverflow};
+pub use json_schema::{JsonSchemaError, JsonShape, check_json_schema};
 pub use property::{Counterexample, Property, Verdict};
 pub use rng::SeededRng;
 pub use source::Source;
