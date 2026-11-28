@@ -13,7 +13,7 @@
 //! request.
 
 use super::{FAULT, FAULT_HOME, Violation};
-use crate::metadata::{Declaration, Package, Workspace};
+use crate::metadata::{self, Declaration, Package, Workspace};
 
 #[cfg(test)]
 mod tests;
@@ -62,29 +62,19 @@ fn path_to_fault(home: &Package, feature: &str) -> Option<Vec<String>> {
     None
 }
 
-/// The declarations of `package` that resolve to the home. The resolved
-/// graph names each dependency by its rename, or else by its library's
-/// name, with `-` as `_`; a declaration of another package named like the
-/// home resolves elsewhere and is not counted.
-fn on_home<'a>(package: &'a Package, home: &Package, home_lib: &str) -> Vec<&'a Declaration> {
-    let names: Vec<&str> = package
-        .named
-        .iter()
-        .filter(|(_, id)| *id == home.id)
-        .map(|(name, _)| name.as_str())
-        .collect();
-    package
-        .declarations
-        .iter()
-        .filter(|declared| declared.package == FAULT_HOME)
-        .filter(|declared| {
-            let name = if declared.name == declared.package {
-                home_lib.to_owned()
-            } else {
-                declared.name.replace('-', "_")
-            };
-            names.contains(&name.as_str())
-        })
+/// The declarations of `package` whose own edge resolves to the home,
+/// as `metadata::resolved` binds them by Cargo's own names and ids. A
+/// declaration of another package named like the home resolves elsewhere,
+/// and one Cargo did not resolve is bound to nothing; neither is counted.
+fn on_home<'a>(
+    workspace: &'a Workspace,
+    package: &'a Package,
+    home: &Package,
+) -> Vec<&'a Declaration> {
+    metadata::resolved(workspace, package)
+        .into_iter()
+        .filter(|(_, to)| to.id == home.id)
+        .map(|(declared, _)| declared)
         .collect()
 }
 
@@ -98,20 +88,6 @@ pub(super) fn violations(workspace: &Workspace) -> Vec<Violation> {
     else {
         return Vec::new();
     };
-    let home_lib = workspace
-        .members
-        .iter()
-        .find(|member| member.id == home.id)
-        .and_then(|member| {
-            member
-                .targets
-                .iter()
-                .find(|target| target.kinds.iter().any(|kind| kind == "lib"))
-        })
-        .map_or_else(
-            || FAULT_HOME.replace('-', "_"),
-            |target| target.name.clone(),
-        );
     let mut violations = Vec::new();
     if !home.features.iter().any(|(name, _)| name == FAULT) {
         violations.push(Violation::FaultUndeclared(home.name.clone()));
@@ -129,7 +105,7 @@ pub(super) fn violations(workspace: &Workspace) -> Vec<Violation> {
         .iter()
         .filter(|package| package.id != home.id)
     {
-        let on_home = on_home(package, home, &home_lib);
+        let on_home = on_home(workspace, package, home);
         let requester = package.member && package.name == REQUESTER;
         let asks = |declared: &Declaration| declared.features.iter().any(|asked| turns_on(asked));
         // A request in a dependency's feature list, optional or not.

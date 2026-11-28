@@ -705,7 +705,7 @@ pub(crate) fn graph_violations(
             continue;
         };
         violations.extend(direct_violations(workspace, member, from_kind, third_party));
-        violations.extend(declared_edge_violations(member));
+        violations.extend(declared_edge_violations(workspace, member));
         for (to, via) in reachable(workspace, &member.id, &|_| true) {
             let Some(to_kind) = kind_of(&to.name).filter(|_| to.member) else {
                 continue;
@@ -751,12 +751,19 @@ pub(crate) fn graph_violations(
 /// graph above follows only normal and build edges, so of the rule on
 /// `REAL_AND_SIMULATED` it reports those, and this reports the development
 /// ones.
-fn declared_edge_violations(member: &Member) -> Vec<Violation> {
+fn declared_edge_violations(workspace: &Workspace, member: &Member) -> Vec<Violation> {
     let mut violations = Vec::new();
-    for declared in &member.declarations {
-        let rule = if member.name == DISK_SUPPORT && declared.package == FAULT_HOME {
+    let Some(from) = package(workspace, &member.id) else {
+        return violations;
+    };
+    // Each declaration with the package its own edge resolved to, so a
+    // package that only shares a workspace crate's name is not taken for it.
+    for (declared, to) in metadata::resolved(workspace, from) {
+        let rule = if !to.member {
+            None
+        } else if member.name == DISK_SUPPORT && to.name == FAULT_HOME {
             Some(Rule::SupportOnDisk)
-        } else if declared.kind == "dev" && real_and_simulated(&member.name, &declared.package) {
+        } else if declared.kind == "dev" && real_and_simulated(&member.name, &to.name) {
             Some(Rule::RealAndSimulatedLinked)
         } else {
             None
@@ -765,7 +772,7 @@ fn declared_edge_violations(member: &Member) -> Vec<Violation> {
             violations.push(Violation::Edge {
                 from: member.name.clone(),
                 via: Vec::new(),
-                to: declared.package.clone(),
+                to: to.name.clone(),
                 rule,
             });
         }

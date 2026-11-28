@@ -447,7 +447,8 @@ fn package(name: &str, member: bool, dependencies: &[&str]) -> Package {
         links: None,
         features: Vec::new(),
         declarations: Vec::new(),
-        named: Vec::new(),
+        edges: Vec::new(),
+        lib_name: None,
     }
 }
 

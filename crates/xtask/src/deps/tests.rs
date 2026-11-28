@@ -29,7 +29,8 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
             links: None,
             features: Vec::new(),
             declarations: Vec::new(),
-            named: Vec::new(),
+            edges: Vec::new(),
+            lib_name: None,
         })
         .collect();
     for (_, dependencies) in members {
@@ -46,7 +47,8 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                     links: None,
                     features: Vec::new(),
                     declarations: Vec::new(),
-                    named: Vec::new(),
+                    edges: Vec::new(),
+                    lib_name: None,
                 });
             }
         }
@@ -439,7 +441,8 @@ fn graph_violations_let_ironafs_gss_reach_only_the_bindings_its_list_names() {
         links: None,
         features: Vec::new(),
         declarations: Vec::new(),
-        named: Vec::new(),
+        edges: Vec::new(),
+        lib_name: None,
     });
     let lists: ThirdPartyLists<'_> = &[
         ("ironafs-gss", &["gss-ffi", "libc"]),
@@ -732,6 +735,8 @@ fn dependency_tables_are_cargo_s_declared_dependencies_not_manifest_text() {
             kind: "dev".into(),
             package: "ironafs-time".into(),
             name: "ironafs-time".into(),
+            renamed: false,
+            target: None,
             optional: false,
             features: Vec::new(),
         }];

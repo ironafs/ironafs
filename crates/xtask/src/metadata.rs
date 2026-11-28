@@ -61,6 +61,11 @@ pub(crate) struct Declaration {
     pub(crate) package: String,
     /// The name the manifest gives it: its rename, or the package name.
     pub(crate) name: String,
+    /// Whether the manifest renames it, a rename to its own package name
+    /// included.
+    pub(crate) renamed: bool,
+    /// The platform it is declared for, as Cargo writes it.
+    pub(crate) target: Option<String>,
     pub(crate) optional: bool,
     /// The features the declaration asks of the dependency.
     pub(crate) features: Vec<String>,
@@ -70,6 +75,16 @@ impl std::fmt::Display for Declaration {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{} {}", self.kind, self.package)
     }
+}
+
+/// One edge of the resolved graph: the name the dependent's code gives the
+/// dependency, the package it resolved to, and each kind (`normal`, `dev`
+/// or `build`) and platform it is a dependency of.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Edge {
+    pub(crate) name: String,
+    pub(crate) package: String,
+    pub(crate) kinds: Vec<(String, Option<String>)>,
 }
 
 /// One Cargo target bearing Rust source.
@@ -113,9 +128,11 @@ pub(crate) struct Package {
     pub(crate) features: Vec<(String, Vec<String>)>,
     /// Every dependency its manifest declares, as for a member.
     pub(crate) declarations: Vec<Declaration>,
-    /// The name the resolved graph gives each dependency, of every kind,
-    /// with the id of the package it resolved to.
-    pub(crate) named: Vec<(String, String)>,
+    /// The package's edges in the resolved graph, of every kind.
+    pub(crate) edges: Vec<Edge>,
+    /// The name of its library target, which names it in the code of a
+    /// dependent that does not rename it.
+    pub(crate) lib_name: Option<String>,
 }
 
 const COMMAND: &str = "cargo metadata";
@@ -181,9 +198,14 @@ fn declared(package: &Value) -> Result<Vec<Declaration>, Error> {
             Some(_) => return Err(Error::UnexpectedOutput(COMMAND)),
         };
         let package = string(dependency, "name")?;
-        let name = match dependency.get("rename") {
-            Some(Value::Null) => package,
-            Some(Value::String(rename)) => rename.as_str(),
+        let (name, renamed) = match dependency.get("rename") {
+            Some(Value::Null) => (package, false),
+            Some(Value::String(rename)) => (rename.as_str(), true),
+            _ => return Err(Error::UnexpectedOutput(COMMAND)),
+        };
+        let target = match dependency.get("target") {
+            Some(Value::Null) => None,
+            Some(Value::String(target)) => Some(target.clone()),
             _ => return Err(Error::UnexpectedOutput(COMMAND)),
         };
         let Some(Value::Bool(optional)) = dependency.get("optional") else {
@@ -193,6 +215,8 @@ fn declared(package: &Value) -> Result<Vec<Declaration>, Error> {
             kind: kind.to_owned(),
             package: package.to_owned(),
             name: name.to_owned(),
+            renamed,
+            target,
             optional: *optional,
             features: strings(array(dependency, "features")?)?,
         });
@@ -323,28 +347,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             Some(Value::String(_)) => None,
             Some(_) => return Err(unexpected()),
         };
-        let mut dependencies = Vec::new();
-        let mut dev_dependencies = Vec::new();
-        let mut named = Vec::new();
-        for dependency in array(node, "deps")? {
-            let mut shipped = false;
-            for kind in array(dependency, "dep_kinds")? {
-                match kind.get("kind") {
-                    Some(Value::Null) => shipped = true,
-                    Some(Value::String(kind)) if kind == "build" => shipped = true,
-                    Some(Value::String(kind)) if kind == "dev" => {}
-                    _ => return Err(unexpected()),
-                }
-            }
-            let target = string(dependency, "pkg")?;
-            find_package(target)?;
-            named.push((string(dependency, "name")?.to_owned(), target.to_owned()));
-            if shipped {
-                dependencies.push(target.to_owned());
-            } else {
-                dev_dependencies.push(target.to_owned());
-            }
-        }
+        let (dependencies, dev_dependencies, edges) = node_edges(node, &find_package)?;
         resolved.push(Package {
             id: id.to_owned(),
             name: string(package, "name")?.to_owned(),
@@ -356,7 +359,8 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             links: links(package)?,
             features: feature_map(package)?,
             declarations: declared(package)?,
-            named,
+            edges,
+            lib_name: lib_name(package)?,
         });
     }
     Ok(Workspace {
@@ -365,6 +369,51 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
         members,
         packages: resolved,
     })
+}
+
+/// A resolved node's edges, and the ids of its normal and build
+/// dependencies and of those reached only as development dependencies.
+type NodeEdges = (Vec<String>, Vec<String>, Vec<Edge>);
+
+fn node_edges<'a>(
+    node: &Value,
+    find_package: &impl Fn(&str) -> Result<&'a Value, Error>,
+) -> Result<NodeEdges, Error> {
+    let mut dependencies = Vec::new();
+    let mut dev_dependencies = Vec::new();
+    let mut edges = Vec::new();
+    for dependency in array(node, "deps")? {
+        let mut shipped = false;
+        let mut kinds = Vec::new();
+        for kind in array(dependency, "dep_kinds")? {
+            let name = match kind.get("kind") {
+                Some(Value::Null) => "normal",
+                Some(Value::String(kind)) if kind == "build" => "build",
+                Some(Value::String(kind)) if kind == "dev" => "dev",
+                _ => return Err(Error::UnexpectedOutput(COMMAND)),
+            };
+            shipped |= name != "dev";
+            let platform = match kind.get("target") {
+                Some(Value::Null) => None,
+                Some(Value::String(platform)) => Some(platform.clone()),
+                _ => return Err(Error::UnexpectedOutput(COMMAND)),
+            };
+            kinds.push((name.to_owned(), platform));
+        }
+        let target = string(dependency, "pkg")?;
+        find_package(target)?;
+        edges.push(Edge {
+            name: string(dependency, "name")?.to_owned(),
+            package: target.to_owned(),
+            kinds,
+        });
+        if shipped {
+            dependencies.push(target.to_owned());
+        } else {
+            dev_dependencies.push(target.to_owned());
+        }
+    }
+    Ok((dependencies, dev_dependencies, edges))
 }
 
 /// The names a resolved node gives its dependencies that are not their
@@ -383,6 +432,77 @@ fn renamed(node: &Value, packages: &[Value]) -> Result<Vec<String>, Error> {
         }
     }
     Ok(renamed)
+}
+
+/// The target kinds that make a target a package's library.
+const LIBRARY_KINDS: &[&str] = &["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"];
+
+/// The name of a package's library target, if it has one.
+fn lib_name(package: &Value) -> Result<Option<String>, Error> {
+    for target in array(package, "targets")? {
+        if kinds_of(target)?
+            .iter()
+            .any(|kind| LIBRARY_KINDS.contains(kind))
+        {
+            return Ok(Some(string(target, "name")?.to_owned()));
+        }
+    }
+    Ok(None)
+}
+
+/// Each declaration of `package` with the package its own edge resolved
+/// to. A renamed declaration is named in the graph by its rename, and an
+/// unrenamed one by its dependency's library, with `-` as `_`; the edge
+/// must also carry the declaration's kind and platform, and resolve to a
+/// package of the declared name. An edge a renamed declaration takes is
+/// not given to an unrenamed one, so each edge binds one declaration of a
+/// kind. A declaration Cargo did not resolve, such as an optional one no
+/// feature turned on, is bound to nothing.
+pub(crate) fn resolved<'a>(
+    workspace: &'a Workspace,
+    package: &'a Package,
+) -> Vec<(&'a Declaration, &'a Package)> {
+    let kind_of = |declared: &Declaration| (declared.kind.clone(), declared.target.clone());
+    let find = |id: &str| workspace.packages.iter().find(|found| found.id == id);
+    let mut taken: Vec<(&str, (String, Option<String>))> = Vec::new();
+    let mut bound = Vec::new();
+    for renamed in [true, false] {
+        for declared in package
+            .declarations
+            .iter()
+            .filter(|declared| declared.renamed == renamed)
+        {
+            let kind = kind_of(declared);
+            for edge in &package.edges {
+                let Some(to) = find(&edge.package) else {
+                    continue;
+                };
+                let name = if renamed {
+                    Some(declared.name.replace('-', "_"))
+                } else {
+                    to.lib_name.as_ref().map(|name| name.replace('-', "_"))
+                };
+                let taken_here = taken
+                    .iter()
+                    .any(|(name, taken)| *name == edge.name && *taken == kind);
+                if to.name == declared.package
+                    && name.as_deref() == Some(edge.name.as_str())
+                    && edge.kinds.contains(&kind)
+                    && !taken_here
+                {
+                    taken.push((edge.name.as_str(), kind.clone()));
+                    bound.push((declared, to));
+                }
+            }
+        }
+    }
+    bound.sort_by_key(|(declared, _)| {
+        package
+            .declarations
+            .iter()
+            .position(|found| std::ptr::eq(found, *declared))
+    });
+    bound
 }
 
 /// The kinds of a package's targets.

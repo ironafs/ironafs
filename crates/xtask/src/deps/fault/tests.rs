@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use super::{enabling, violations};
 use crate::deps::Violation;
-use crate::metadata::{Declaration, Package, Workspace};
+use crate::metadata::{Declaration, Edge, Package, Workspace};
 
 const HOME_ID: &str = "path+file:///w/crates/ironafs-disk#0.0.0";
 
@@ -19,10 +19,14 @@ fn package(
     features: &[(&str, &[&str])],
     declarations: Vec<Declaration>,
 ) -> Package {
-    let named = declarations
+    let edges = declarations
         .iter()
         .filter(|declared| declared.package == "ironafs-disk")
-        .map(|declared| (declared.name.replace('-', "_"), HOME_ID.to_owned()))
+        .map(|declared| Edge {
+            name: declared.name.replace('-', "_"),
+            package: HOME_ID.to_owned(),
+            kinds: vec![("normal".to_owned(), None)],
+        })
         .collect();
     Package {
         id: if name == "ironafs-disk" {
@@ -47,7 +51,8 @@ fn package(
             })
             .collect(),
         declarations,
-        named,
+        edges,
+        lib_name: Some(name.replace('-', "_")),
     }
 }
 
@@ -60,6 +65,8 @@ fn on_disk(name: &str, optional: bool, features: &[&str]) -> Declaration {
         kind: "normal".into(),
         package: "ironafs-disk".into(),
         name: name.into(),
+        renamed: name != "ironafs-disk",
+        target: None,
         optional,
         features: features.iter().map(|feature| (*feature).into()).collect(),
     }
@@ -232,10 +239,11 @@ fn violations_ignore_a_package_named_like_the_home_that_resolves_elsewhere() {
         &[],
         vec![on_disk("ironafs-disk", false, &["extra"])],
     );
-    canary.named = vec![(
-        "ironafs_disk".into(),
-        "registry+https://example.invalid#ironafs-disk@1.0.0".into(),
-    )];
+    canary.edges = vec![Edge {
+        name: "ironafs_disk".into(),
+        package: "registry+https://example.invalid#ironafs-disk@1.0.0".into(),
+        kinds: vec![("normal".into(), None)],
+    }];
     let disk = home(&[("fault", &[]), ("extra", &["fault"])]);
     assert_eq!(violations(&workspace(vec![disk, canary])), []);
 }

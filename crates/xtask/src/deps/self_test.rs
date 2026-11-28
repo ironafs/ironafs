@@ -233,6 +233,25 @@ fn is_forwarded(violation: &Violation, from: &str, feature: &str, enabled: &str)
         if found == from && own == feature && enables == enabled)
 }
 
+/// Writes a third-party package named `name`, version 1.0.0, into the
+/// fixture's local registry copy under a directory of its own, so a case
+/// can depend on a package that shares a workspace crate's name. `tail`
+/// follows its `[package]` table.
+fn vendor_same_name(fixture: &mut Fixture, name: &str, tail: &str) {
+    // Any third-party crate makes the fixture serve its registry copy.
+    fixture.add_third_party("plain", &[]);
+    let dir = format!("../vendor/registry-{name}");
+    fixture.root_file(
+        &format!("{dir}/Cargo.toml"),
+        &format!("[package]\nname = \"{name}\"\nversion = \"1.0.0\"\nedition = \"2024\"\n{tail}"),
+    );
+    fixture.root_file(&format!("{dir}/src/lib.rs"), "");
+    fixture.root_file(
+        &format!("{dir}/.cargo-checksum.json"),
+        "{\"files\":{},\"package\":null}",
+    );
+}
+
 /// The third-party lists the fixtures are checked with: the repository's,
 /// with only the two of `FIXTURE_THIRD_PARTY` replaced, so a case on any
 /// other crate is checked under the list production uses.
@@ -1545,6 +1564,28 @@ const CASES: &[Case] = &[
         },
         expect: &[|found| is_requested(found, "helper", "fault")],
     },
+    Case {
+        name: "a shipped crate asking for the fault feature of a custom-named rlib",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-disk",
+                "\n[lib]\nname = \"gate\"\ncrate-type = [\"rlib\"]\n",
+            );
+            fixture.dependency_line("ironafsd", on_disk!(", features = [\"fault\"]"));
+        },
+        expect: &[|found| is_requested(found, "ironafsd", "fault")],
+    },
+    Case {
+        name: "a shipped crate asking for the fault feature under its own name as a rename",
+        plant: |fixture| {
+            fixture.manifest_tail("ironafs-disk", "\n[lib]\nname = \"gate\"\n");
+            fixture.dependency_line(
+                "ironafsd",
+                "ironafs-disk = { package = \"ironafs-disk\", path = \"../ironafs-disk\", features = [\"fault\"] }",
+            );
+        },
+        expect: &[|found| is_requested(found, "ironafsd", "fault")],
+    },
 ];
 
 /// A plant the rules allow: its fixture must still pass.
@@ -1559,6 +1600,41 @@ const CONTROLS: &[Control] = &[
         plant: |fixture| {
             fixture.depend("ironafsd", "ironafs-disk");
             fixture.depend("ironafs-test-support", "ironafsd");
+        },
+    },
+    Control {
+        name: "a crate asking a registry package named ironafs-disk for a feature the home's \
+               namesake turns fault on with",
+        plant: |fixture| {
+            // The workspace disk, renamed `d`, has a library named `d` too.
+            fixture.manifest_tail(
+                "ironafs-disk",
+                "extra = [\"fault\"]\n\n[lib]\nname = \"d\"\n",
+            );
+            vendor_same_name(fixture, "ironafs-disk", "\n[features]\nextra = []\n");
+            fixture.add_crate("ironafs-bans-canary", &[]);
+            fixture.dependency_line(
+                "ironafs-bans-canary",
+                "d = { package = \"ironafs-disk\", path = \"../ironafs-disk\" }",
+            );
+            fixture.dependency_line(
+                "ironafs-bans-canary",
+                "ironafs-disk = { version = \"1\", features = [\"extra\"] }",
+            );
+        },
+    },
+    Control {
+        name: "ironafs-test-support on a registry package named ironafs-disk",
+        plant: |fixture| {
+            vendor_same_name(fixture, "ironafs-disk", "");
+            fixture.dependency_line("ironafs-test-support", "ironafs-disk = \"1\"");
+        },
+    },
+    Control {
+        name: "ironafs-net with a development dependency on a registry package named ironafs-sim",
+        plant: |fixture| {
+            vendor_same_name(fixture, "ironafs-sim", "");
+            fixture.manifest_tail("ironafs-net", "\n[dev-dependencies]\nironafs-sim = \"1\"\n");
         },
     },
     Control {
