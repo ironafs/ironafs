@@ -83,6 +83,24 @@ This result covers `gpt-6.2-sol` at xhigh in ordinary Class S code review in the
 - [Workflow: model routing](../workflow.md#model-routing)
 - [GLM-5.4 High document calibration](2026-11-27-48-glm54-document-calibration.md)
 
+## Record review
+
+Class I. The change adds this record and one index row.
+
+| Round | Range | Seat | Served model | Effort | Route | Result |
+|---|---|---|---|---|---|---|
+| 1 | `d1ea48b9798df666d786de22bd1dbd6f1509e8f7..83ede0cc64cc71da03e0ac1e1d39841f0297374b` | Required | `glm-5.4` | High | Z.ai Coding Plan, headless Claude Code, read-only repository tools | FAIL: one major, two minors |
+| 1 | same | Supplemental | `gemini-4-carbon-medium` | Medium | Google Antigravity, inlined and tool-free | PASS, no findings |
+| 2 | `83ede0cc64cc71da03e0ac1e1d39841f0297374b..37ee92b50312a663dcd97009ee347866c15dedb5` | Required, fix verification | `glm-5.4` | High | as round 1 | PASS: all three findings fixed, no new finding |
+
+Both seats are from families other than the Anthropic author and the OpenAI subject. They checked the record against a redacted summary of the frozen ledger and the scoring, because the cases, key and reviews stay private. Quota headroom was not reported.
+
+- Major (origin: pre-existing; kind: contract): the scope claimed was wider than the measured form. Fixed: the summary and "Existing scopes" now bound the result to one tool-free request on an inlined packet, on the measured size and crates, and name the routes and material that remain uncalibrated.
+- Minor (origin: pre-existing; kind: consistency): Gemini Carbon High's verdicts lacked "uncalibrated on IronAFS". Fixed.
+- Minor (origin: pre-existing; kind: contract): the stated threshold omitted the clean-case gate. Fixed.
+
+The supplemental seat was given the wrong excerpt of `docs/workflow.md` (an earlier mention of "Model routing", not the section), so it could not check the record against those rules; the required seat read the section in the repository. Its verdict covers round 1's text only.
+
 ## Disclosure
 
 This record was written by `claude-code:claude-opus-5-5` for the maintainer.
