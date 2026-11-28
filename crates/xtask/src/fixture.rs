@@ -139,6 +139,15 @@ impl Fixture {
         }
     }
 
+    /// Removes a raw line that `dependency_line` added to a crate.
+    pub(crate) fn remove_dependency_line(&mut self, name: &str, line: &str) {
+        if let Some(found) = self.find(name) {
+            found.dependencies.retain(
+                |dependency| !matches!(dependency, Dependency::Line(existing) if existing == line),
+            );
+        }
+    }
+
     /// Adds a line to a crate's `[package]` table.
     pub(crate) fn package_line(&mut self, name: &str, line: &str) {
         if let Some(found) = self.find(name) {

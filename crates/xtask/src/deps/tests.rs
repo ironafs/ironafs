@@ -116,6 +116,7 @@ fn crate_table_names_every_crate_of_the_architecture_once() {
         "ironafs-cloudfiles",
         "ironafs-gss",
         "ironafs-os",
+        "ironafs-disk",
         "ironafsd",
         "ironafs-cli",
         "xtask",
@@ -129,6 +130,7 @@ fn crate_table_names_every_crate_of_the_architecture_once() {
     assert_eq!(kind_of("ironafs-client"), Some(Kind::Composition));
     assert_eq!(kind_of("ironafs-smb"), Some(Kind::Layer));
     assert_eq!(kind_of("ironafs-os"), Some(Kind::Driver));
+    assert_eq!(kind_of("ironafs-disk"), Some(Kind::Driver));
     assert_eq!(kind_of("ironafs-sim"), Some(Kind::TestOnly));
     assert_eq!(kind_of("xtask"), Some(Kind::Automation));
     assert_eq!(kind_of("ironafs-unknown"), None);

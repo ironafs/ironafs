@@ -26,8 +26,10 @@ const FIXTURE_THIRD_PARTY: ThirdPartyLists = &[
 /// A workspace the rules allow, with one crate of each kind, a development
 /// dependency on a test-only crate, a foreign-function crate in
 /// `ironafs-os` and, through a crate its list names, in `ironafs-gss`, a
-/// pure crate whose source this check does not read, and the
-/// `ironafs-client` of `clean_sources`.
+/// pure crate whose source this check does not read, the
+/// `ironafs-client` of `clean_sources`, `ironafs-disk` in its gate-only
+/// phase with the fault feature off by default, and `xtask` asking for
+/// that feature in its dependency's feature list.
 fn clean() -> Fixture {
     let mut fixture = Fixture::default();
     for (name, dependencies) in [
@@ -88,9 +90,12 @@ fn clean() -> Fixture {
         ("ironafs-test-support", &[]),
         ("ironafs-sim", &["ironafs-client", "ironafs-time"]),
         ("xtask", &["ironafs-sim"]),
+        ("ironafs-disk", &[]),
     ] {
         fixture.add_crate(name, dependencies);
     }
+    fixture.lints("ironafs-disk", DISK_LINTS_AND_FEATURES);
+    fixture.dependency_line("xtask", XTASK_ASKS_FOR_FAULT);
     fixture.add_third_party("libc", &[]);
     fixture.add_third_party("gss-ffi", &["libc"]);
     fixture.lints("ironafs-os", OS_LINTS);
@@ -153,6 +158,23 @@ fn clean_sources(fixture: &mut Fixture) {
     );
 }
 
+/// The gate-only `ironafs-disk`'s inherited lints and its features in the
+/// fixture. A case adds a feature by appending its line to the manifest,
+/// which follows this table.
+const DISK_LINTS_AND_FEATURES: &str = "\n[lints]\nworkspace = true\n\n[features]\nfault = []\n";
+
+/// `xtask`'s request for the fault feature, the one C4 allows.
+const XTASK_ASKS_FOR_FAULT: &str =
+    "ironafs-disk = { path = \"../ironafs-disk\", features = [\"fault\"] }";
+
+/// A dependency line on `ironafs-disk` from another crate under
+/// `crates/`, with the rest of its entry.
+macro_rules! on_disk {
+    ($rest:literal) => {
+        concat!("ironafs-disk = { path = \"../ironafs-disk\"", $rest, " }")
+    };
+}
+
 /// `ironafs-os`'s own lint table in the fixture: the fixture workspace's
 /// one lint, with unsafe code denied instead of forbidden.
 const OS_LINTS: &str = "\n[lints.rust]\nunsafe_code = \"deny\"\n";
@@ -190,6 +212,25 @@ fn is_planted_unreadable(violation: &Violation) -> bool {
 fn is_planted_text(violation: &Violation, line: usize, word: &str) -> bool {
     matches!(violation, Violation::NamedInText { file, line: at, word: found }
         if file == Path::new(PLANTED) && *at == line && *found == word)
+}
+
+fn is_gate_only_table(violation: &Violation, declared: &str) -> bool {
+    matches!(violation, Violation::DependencyTable { name, line, .. }
+        if name == "ironafs-disk" && line == &format!("declares the {declared}"))
+}
+
+fn is_linked(violation: &Violation, from: &str, to: &str) -> bool {
+    is_edge(violation, from, to, Rule::RealAndSimulatedLinked)
+}
+
+fn is_requested(violation: &Violation, from: &str, feature: &str) -> bool {
+    matches!(violation, Violation::FaultRequested { from: found, feature: asked }
+        if found == from && asked == feature)
+}
+
+fn is_forwarded(violation: &Violation, from: &str, feature: &str) -> bool {
+    matches!(violation, Violation::FaultForwarded { from: found, feature: own, .. }
+        if found == from && own == feature)
 }
 
 fn is_third_party(violation: &Violation, from: &str, to: &str) -> bool {
@@ -327,10 +368,12 @@ const CASES: &[Case] = &[
     Case {
         name: "ironafs-client on a driver",
         plant: |fixture| fixture.depend("ironafs-client", "ironafs-net"),
-        // ironafs-net brings ironafs-os with it: both are reported.
+        // ironafs-net brings ironafs-os with it: both are reported. The
+        // simulator, which uses ironafs-client, then reaches ironafs-net.
         expect: &[
             |found| is_edge(found, "ironafs-client", "ironafs-net", Rule::CoreOnDriver),
             |found| is_edge(found, "ironafs-client", "ironafs-os", Rule::CoreOnDriver),
+            |found| is_linked(found, "ironafs-sim", "ironafs-net"),
         ],
     },
     Case {
@@ -1094,6 +1137,339 @@ const CASES: &[Case] = &[
             );
         },
         expect: &[|found| is_without_lints(found, "ironafs-net")],
+    },
+    Case {
+        name: "the gate-only ironafs-disk with a normal dependency",
+        plant: |fixture| fixture.depend("ironafs-disk", "ironafs-time"),
+        // Its driver list is empty in this phase: both rules report it.
+        expect: &[
+            |found| is_gate_only_table(found, "normal ironafs-time"),
+            |found| {
+                is_edge(
+                    found,
+                    "ironafs-disk",
+                    "ironafs-time",
+                    Rule::DriverOutsideList,
+                )
+            },
+        ],
+    },
+    Case {
+        name: "the gate-only ironafs-disk with a build dependency",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-disk",
+                "\n[build-dependencies]\nironafs-time = { path = \"../ironafs-time\" }\n",
+            );
+        },
+        expect: &[
+            |found| is_gate_only_table(found, "build ironafs-time"),
+            |found| {
+                is_edge(
+                    found,
+                    "ironafs-disk",
+                    "ironafs-time",
+                    Rule::DriverOutsideList,
+                )
+            },
+        ],
+    },
+    Case {
+        name: "the gate-only ironafs-disk with a development dependency",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-disk",
+                "\n[dev-dependencies]\nironafs-test-support = { path = \"../ironafs-test-support\" }\n",
+            );
+        },
+        expect: &[|found| is_gate_only_table(found, "dev ironafs-test-support")],
+    },
+    Case {
+        name: "the gate-only ironafs-disk with a target-specific development dependency",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-disk",
+                "\n[target.'cfg(unix)'.dev-dependencies]\nironafs-time = { path = \"../ironafs-time\" }\n",
+            );
+        },
+        expect: &[|found| is_gate_only_table(found, "dev ironafs-time")],
+    },
+    Case {
+        name: "the gate-only ironafs-disk with a third-party development dependency",
+        plant: |fixture| {
+            fixture.add_third_party("plain", &[]);
+            fixture.manifest_tail("ironafs-disk", "\n[dev-dependencies]\nplain = \"1\"\n");
+        },
+        expect: &[|found| is_gate_only_table(found, "dev plain")],
+    },
+    Case {
+        name: "the gate-only ironafs-disk with a third-party dependency",
+        plant: |fixture| {
+            fixture.add_third_party("plain", &[]);
+            fixture.depend("ironafs-disk", "plain");
+        },
+        expect: &[
+            |found| is_gate_only_table(found, "normal plain"),
+            |found| is_third_party(found, "ironafs-disk", "plain"),
+        ],
+    },
+    Case {
+        name: "ironafs-disk with its own lints table",
+        plant: |fixture| {
+            fixture.lints(
+                "ironafs-disk",
+                "\n[lints.rust]\nunsafe_code = \"allow\"\n\n[features]\nfault = []\n",
+            );
+        },
+        expect: &[|found| is_without_lints(found, "ironafs-disk")],
+    },
+    Case {
+        name: "ironafs-test-support with a featureless development dependency on ironafs-disk",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-test-support",
+                concat!("\n[dev-dependencies]\n", on_disk!(""), "\n"),
+            );
+        },
+        expect: &[|found| {
+            is_edge(
+                found,
+                "ironafs-test-support",
+                "ironafs-disk",
+                Rule::SupportOnDisk,
+            )
+        }],
+    },
+    Case {
+        name: "ironafs-test-support depending on ironafs-disk",
+        plant: |fixture| fixture.depend("ironafs-test-support", "ironafs-disk"),
+        expect: &[|found| {
+            is_edge(
+                found,
+                "ironafs-test-support",
+                "ironafs-disk",
+                Rule::SupportOnDisk,
+            )
+        }],
+    },
+    Case {
+        name: "ironafs-net with a development dependency on ironafs-disk",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-net",
+                concat!("\n[dev-dependencies]\n", on_disk!(""), "\n"),
+            );
+        },
+        expect: &[|found| is_linked(found, "ironafs-net", "ironafs-disk")],
+    },
+    Case {
+        name: "ironafs-disk with a development dependency on ironafs-net",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-disk",
+                "\n[dev-dependencies]\nironafs-net = { path = \"../ironafs-net\" }\n",
+            );
+        },
+        // The gate-only phase refuses every dependency as well.
+        expect: &[
+            |found| is_linked(found, "ironafs-disk", "ironafs-net"),
+            |found| is_gate_only_table(found, "dev ironafs-net"),
+        ],
+    },
+    Case {
+        name: "ironafs-disk with a development dependency on ironafs-sim",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-disk",
+                "\n[dev-dependencies]\nironafs-sim = { path = \"../ironafs-sim\" }\n",
+            );
+        },
+        expect: &[
+            |found| is_linked(found, "ironafs-disk", "ironafs-sim"),
+            |found| is_gate_only_table(found, "dev ironafs-sim"),
+        ],
+    },
+    Case {
+        name: "ironafs-sim on ironafs-disk",
+        plant: |fixture| fixture.depend("ironafs-sim", "ironafs-disk"),
+        expect: &[|found| is_linked(found, "ironafs-sim", "ironafs-disk")],
+    },
+    Case {
+        name: "ironafs-sim with a development dependency on ironafs-net",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-sim",
+                "\n[dev-dependencies]\nironafs-net = { path = \"../ironafs-net\" }\n",
+            );
+        },
+        expect: &[|found| is_linked(found, "ironafs-sim", "ironafs-net")],
+    },
+    Case {
+        name: "ironafs-net with a development dependency on ironafs-sim",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-net",
+                "\n[dev-dependencies]\nironafs-sim = { path = \"../ironafs-sim\" }\n",
+            );
+        },
+        expect: &[|found| is_linked(found, "ironafs-net", "ironafs-sim")],
+    },
+    Case {
+        name: "ironafs-sim reaching ironafs-net through a binary",
+        plant: |fixture| fixture.depend("ironafs-sim", "ironafsd"),
+        expect: &[|found| {
+            matches!(found, Violation::Edge { from, via, to, rule: Rule::RealAndSimulatedLinked }
+                if from == "ironafs-sim" && to == "ironafs-net" && via == &["ironafsd"])
+        }],
+    },
+    Case {
+        name: "a pure crate on ironafs-disk",
+        plant: |fixture| fixture.depend("ironafs-auth", "ironafs-disk"),
+        expect: &[|found| is_edge(found, "ironafs-auth", "ironafs-disk", Rule::PureOnNonPure)],
+    },
+    Case {
+        name: "a layer crate on ironafs-disk",
+        plant: |fixture| fixture.depend("ironafs-fuse", "ironafs-disk"),
+        expect: &[|found| {
+            is_edge(
+                found,
+                "ironafs-fuse",
+                "ironafs-disk",
+                Rule::LayerOutsideList,
+            )
+        }],
+    },
+    Case {
+        name: "ironafs-client on ironafs-disk",
+        plant: |fixture| fixture.depend("ironafs-client", "ironafs-disk"),
+        // The simulator, which uses ironafs-client, then reaches it too.
+        expect: &[
+            |found| is_edge(found, "ironafs-client", "ironafs-disk", Rule::CoreOnDriver),
+            |found| is_linked(found, "ironafs-sim", "ironafs-disk"),
+        ],
+    },
+    Case {
+        name: "ironafs-disk without the fault feature",
+        plant: |fixture| {
+            fixture.remove_dependency_line("xtask", XTASK_ASKS_FOR_FAULT);
+            fixture.lints(
+                "ironafs-disk",
+                "\n[lints]\nworkspace = true\n\n[features]\nother = []\n",
+            );
+        },
+        expect: &[
+            |found| matches!(found, Violation::FaultUndeclared(name) if name == "ironafs-disk"),
+        ],
+    },
+    Case {
+        name: "the fault feature on by default",
+        plant: |fixture| fixture.manifest_tail("ironafs-disk", "default = [\"fault\"]\n"),
+        expect: &[|found| {
+            matches!(found, Violation::FaultByDefault { name, via }
+                if name == "ironafs-disk" && via.is_empty())
+        }],
+    },
+    Case {
+        name: "the fault feature on by default through another feature",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-disk",
+                "default = [\"extra\"]\nextra = [\"fault\"]\n",
+            );
+        },
+        expect: &[|found| {
+            matches!(found, Violation::FaultByDefault { name, via }
+                if name == "ironafs-disk" && via == &["extra"])
+        }],
+    },
+    Case {
+        name: "a test-only crate the graph rules allow asking for the fault feature",
+        plant: |fixture| {
+            fixture.add_crate("ironafs-bans-canary", &[]);
+            fixture.dependency_line("ironafs-bans-canary", on_disk!(", features = [\"fault\"]"));
+        },
+        expect: &[|found| is_requested(found, "ironafs-bans-canary", "fault")],
+    },
+    Case {
+        name: "a shipped crate asking for the fault feature",
+        plant: |fixture| fixture.dependency_line("ironafsd", on_disk!(", features = [\"fault\"]")),
+        expect: &[|found| is_requested(found, "ironafsd", "fault")],
+    },
+    Case {
+        name: "a shipped crate asking for the fault feature in a development dependency",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-cache",
+                concat!(on_disk!(", features = [\"fault\"]"), "\n"),
+            );
+        },
+        expect: &[|found| is_requested(found, "ironafs-cache", "fault")],
+    },
+    Case {
+        name: "a shipped crate asking for a feature that turns the fault feature on",
+        plant: |fixture| {
+            fixture.manifest_tail("ironafs-disk", "extra = [\"fault\"]\n");
+            fixture.dependency_line("ironafsd", on_disk!(", features = [\"extra\"]"));
+        },
+        expect: &[|found| is_requested(found, "ironafsd", "extra")],
+    },
+    Case {
+        name: "a shipped crate asking for the fault feature under another name",
+        plant: |fixture| {
+            fixture.dependency_line(
+                "ironafsd",
+                "disk = { package = \"ironafs-disk\", path = \"../ironafs-disk\", features = [\"fault\"] }",
+            );
+        },
+        expect: &[|found| is_requested(found, "ironafsd", "fault")],
+    },
+    Case {
+        name: "xtask forwarding the fault feature from its own features",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "xtask",
+                "\n[features]\nexercise = [\"ironafs-disk/fault\"]\n",
+            );
+        },
+        expect: &[|found| is_forwarded(found, "xtask", "exercise")],
+    },
+    Case {
+        name: "xtask turning on an optional dependency that asks for the fault feature",
+        plant: |fixture| {
+            fixture.remove_dependency_line("xtask", XTASK_ASKS_FOR_FAULT);
+            fixture.dependency_line(
+                "xtask",
+                on_disk!(", optional = true, features = [\"fault\"]"),
+            );
+            fixture.manifest_tail("xtask", "\n[features]\nexercise = [\"dep:ironafs-disk\"]\n");
+        },
+        expect: &[|found| is_forwarded(found, "xtask", "exercise")],
+    },
+    Case {
+        name: "a shipped crate forwarding the fault feature from its own features",
+        plant: |fixture| {
+            fixture.dependency_line("ironafsd", on_disk!(""));
+            fixture.manifest_tail(
+                "ironafsd",
+                "\n[features]\nfaults = [\"ironafs-disk/fault\"]\n",
+            );
+        },
+        expect: &[|found| is_forwarded(found, "ironafsd", "faults")],
+    },
+    Case {
+        name: "a test-only crate forwarding the fault feature weakly under another name",
+        plant: |fixture| {
+            fixture.add_crate("ironafs-bans-canary", &[]);
+            fixture.dependency_line(
+                "ironafs-bans-canary",
+                "d = { package = \"ironafs-disk\", path = \"../ironafs-disk\", optional = true }",
+            );
+            fixture.manifest_tail(
+                "ironafs-bans-canary",
+                "\n[features]\nx = [\"dep:d\", \"d?/fault\"]\n",
+            );
+        },
+        expect: &[|found| is_forwarded(found, "ironafs-bans-canary", "x")],
     },
 ];
 

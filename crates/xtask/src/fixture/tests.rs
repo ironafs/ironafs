@@ -91,3 +91,29 @@ fn fixture_writes_manifests_dependencies_and_files() {
     remove_dir(&dir).unwrap();
     remove_dir(&dir).unwrap();
 }
+
+#[test]
+fn remove_dependency_line_drops_only_that_line() {
+    let dir = std::env::temp_dir().join(format!(
+        "ironafs-xtask-fixture-remove-{}",
+        std::process::id()
+    ));
+    remove_dir(&dir).unwrap();
+    let mut fixture = Fixture::default();
+    fixture.add_crate("ironafs-time", &[]);
+    fixture.add_crate("ironafs-xdr", &["ironafs-time"]);
+    fixture.dependency_line("ironafs-xdr", "kept = \"1\"");
+    fixture.dependency_line("ironafs-xdr", "dropped = \"1\"");
+
+    fixture.remove_dependency_line("ironafs-xdr", "dropped = \"1\"");
+
+    fixture.write(&dir).unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.join("workspace/crates/ironafs-xdr/Cargo.toml")).unwrap(),
+        "[package]\nname = \"ironafs-xdr\"\nversion = \"0.0.0\"\nedition.workspace = true\n\n\
+         [dependencies]\nironafs-time = { path = \"../../../workspace/crates/ironafs-time\" }\n\
+         kept = \"1\"\n\
+         \n[lints]\nworkspace = true\n"
+    );
+    remove_dir(&dir).unwrap();
+}
