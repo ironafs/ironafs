@@ -88,6 +88,7 @@ the evidence that refutes it.
 | [2026-11-27-173-seam-fixture-errors](2026-11-27-173-seam-fixture-errors.md) | Issue #173: fail the seam self-test on unreadable fixtures |
 | [2026-11-27-156-testing-cross-reference](2026-11-27-156-testing-cross-reference.md) | Issue #156: testing.md 10.6 names #156 for the seam conformance bodies |
 | [2026-11-27-48-sol-xhigh-code-calibration](2026-11-27-48-sol-xhigh-code-calibration.md) | [#48](https://github.com/ironafs/ironafs/issues/48): GPT-6.2 Sol xhigh code-review calibration: 6/6 finished, 12/12 planted, 6/6 critical, 0 false blockers, 0 false majors; hold-out sealed |
+| [2026-11-27-156-c4-disk-precursor-issue-brief](2026-11-27-156-c4-disk-precursor-issue-brief.md) | Issue #156: review of the brief for a phased `ironafs-disk` row in ADR 0004 C4 |
 
 ADRs carry their review records in their own Review sections
 ([docs/adr/](../adr/README.md)).
