@@ -8,7 +8,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::{Rule, THIRD_PARTY, ThirdPartyLists, Violation, check, graph_violations};
+use super::{NO_DEPENDENCY_TABLES, Rule, THIRD_PARTY, ThirdPartyLists, Violation, check};
 use crate::Error;
 use crate::fixture::{self, Fixture};
 use crate::metadata::Workspace;
@@ -223,37 +223,26 @@ fn is_linked(violation: &Violation, from: &str, to: &str) -> bool {
     is_edge(violation, from, to, Rule::RealAndSimulatedLinked)
 }
 
-fn is_namesake(violation: &Violation, name: &str) -> bool {
-    matches!(violation, Violation::Namesake { name: found, .. } if found == name)
+/// Whether the violation is the namesake `name` whose package id contains
+/// `source`, so it names the non-member, not the workspace crate.
+fn is_namesake(violation: &Violation, name: &str, source: &str) -> bool {
+    matches!(violation, Violation::Namesake { name: found, id }
+        if found == name && id.contains(source) && !id.contains("/workspace/crates/"))
 }
 
+/// The id fragment of a fixture's registry package and of its local crates
+/// outside the workspace.
+const REGISTRY: &str = "registry+";
+const OUTSIDE: &str = "/outside/";
+
 fn is_requested(violation: &Violation, from: &str, feature: &str) -> bool {
-    matches!(violation, Violation::FaultRequested { from: found, feature: asked }
+    matches!(violation, Violation::FaultRequested { from: found, feature: asked, .. }
         if found == from && asked == feature)
 }
 
 fn is_forwarded(violation: &Violation, from: &str, feature: &str, enabled: &str) -> bool {
     matches!(violation, Violation::FaultForwarded { from: found, feature: own, enables }
         if found == from && own == feature && enables == enabled)
-}
-
-/// Writes a third-party package named `name`, version 1.0.0, into the
-/// fixture's local registry copy under a directory of its own, so a case
-/// can depend on a package that shares a workspace crate's name. `tail`
-/// follows its `[package]` table.
-fn vendor_same_name(fixture: &mut Fixture, name: &str, tail: &str) {
-    // Any third-party crate makes the fixture serve its registry copy.
-    fixture.add_third_party("plain", &[]);
-    let dir = format!("../vendor/registry-{name}");
-    fixture.root_file(
-        &format!("{dir}/Cargo.toml"),
-        &format!("[package]\nname = \"{name}\"\nversion = \"1.0.0\"\nedition = \"2024\"\n{tail}"),
-    );
-    fixture.root_file(&format!("{dir}/src/lib.rs"), "");
-    fixture.root_file(
-        &format!("{dir}/.cargo-checksum.json"),
-        "{\"files\":{},\"package\":null}",
-    );
 }
 
 /// The third-party lists the fixtures are checked with: the repository's,
@@ -1228,7 +1217,7 @@ const CASES: &[Case] = &[
         plant: |fixture| {
             fixture.manifest_tail(
                 "ironafs-disk",
-                "\n[target.'cfg(unix)'.dev-dependencies]\nironafs-time = { path = \"../ironafs-time\" }\n",
+                "\n[target.'cfg(all(unix, windows))'.dev-dependencies]\nironafs-time = { path = \"../ironafs-time\" }\n",
             );
         },
         expect: &[|found| is_gate_only_table(found, "dev ironafs-time")],
@@ -1599,7 +1588,8 @@ const CASES: &[Case] = &[
                 "ironafs-disk",
                 "extra = [\"fault\"]\n\n[lib]\nname = \"d\"\n",
             );
-            vendor_same_name(fixture, "ironafs-disk", "\n[features]\nextra = []\n");
+            fixture.add_third_party("ironafs-disk", &[]);
+            fixture.third_party_tail("ironafs-disk", "\n[features]\nextra = []\n");
             fixture.add_crate("ironafs-bans-canary", &[]);
             fixture.dependency_line(
                 "ironafs-bans-canary",
@@ -1613,18 +1603,18 @@ const CASES: &[Case] = &[
         // The namesake is refused, and the declaration is read as one of the
         // workspace crate, whose `extra` turns `fault` on.
         expect: &[
-            |found| is_namesake(found, "ironafs-disk"),
+            |found| is_namesake(found, "ironafs-disk", REGISTRY),
             |found| is_requested(found, "ironafs-bans-canary", "extra"),
         ],
     },
     Case {
         name: "ironafs-test-support on a registry namesake of ironafs-disk",
         plant: |fixture| {
-            vendor_same_name(fixture, "ironafs-disk", "");
+            fixture.add_third_party("ironafs-disk", &[]);
             fixture.dependency_line("ironafs-test-support", "ironafs-disk = \"1\"");
         },
         expect: &[
-            |found| is_namesake(found, "ironafs-disk"),
+            |found| is_namesake(found, "ironafs-disk", REGISTRY),
             |found| {
                 is_edge(
                     found,
@@ -1638,31 +1628,31 @@ const CASES: &[Case] = &[
     Case {
         name: "ironafs-net with a development dependency on a registry namesake of ironafs-sim",
         plant: |fixture| {
-            vendor_same_name(fixture, "ironafs-sim", "");
+            fixture.add_third_party("ironafs-sim", &[]);
             fixture.manifest_tail("ironafs-net", "\n[dev-dependencies]\nironafs-sim = \"1\"\n");
         },
         expect: &[
-            |found| is_namesake(found, "ironafs-sim"),
+            |found| is_namesake(found, "ironafs-sim", REGISTRY),
             |found| is_linked(found, "ironafs-net", "ironafs-sim"),
         ],
     },
     Case {
         name: "xtask on a registry namesake of ironafs-sim",
         plant: |fixture| {
-            vendor_same_name(fixture, "ironafs-sim", "");
+            fixture.add_third_party("ironafs-sim", &[]);
             fixture.dependency_line(
                 "xtask",
                 "sim = { package = \"ironafs-sim\", version = \"1\" }",
             );
         },
-        expect: &[|found| is_namesake(found, "ironafs-sim")],
+        expect: &[|found| is_namesake(found, "ironafs-sim", REGISTRY)],
     },
     Case {
         name: "xtask on a local namesake of ironafs-net outside the workspace",
         plant: |fixture| {
             fixture.add_outside_crate("ironafs-net", &[]);
             // Cargo refuses two local packages of one name and version.
-            fixture.version("ironafs-net", "9.0.0");
+            fixture.outside_version("ironafs-net", "9.0.0");
             fixture.dependency_line(
                 "xtask",
                 "net = { package = \"ironafs-net\", path = \"../../../outside/ironafs-net\" }",
@@ -1670,45 +1660,8 @@ const CASES: &[Case] = &[
         },
         expect: &[
             |found| matches!(found, Violation::NotAMember { name, .. } if name == "ironafs-net"),
-            |found| is_namesake(found, "ironafs-net"),
+            |found| is_namesake(found, "ironafs-net", OUTSIDE),
         ],
-    },
-    Case {
-        name: "a third-party crate asking for the fault feature behind a feature no one turns on",
-        plant: |fixture| {
-            fixture.add_third_party("helper", &[]);
-            fixture.dependency_line(
-                "helper",
-                "ironafs-disk = { version = \"0.0.0\", optional = true, features = [\"fault\"] }",
-            );
-            fixture.manifest_tail("helper", "\n[features]\nx = [\"dep:ironafs-disk\"]\n");
-            fixture.depend("xtask", "helper");
-            fixture.workspace_tail(
-                "\n[patch.crates-io]\nironafs-disk = { path = \"crates/ironafs-disk\" }\n",
-            );
-        },
-        expect: &[
-            |found| is_requested(found, "helper", "fault"),
-            |found| is_forwarded(found, "helper", "x", "dep:ironafs-disk"),
-        ],
-    },
-    Case {
-        name: "ironafs-sim reaching ironafs-net through a third-party crate's inactive dependency",
-        plant: |fixture| {
-            fixture.add_third_party("relay", &[]);
-            fixture.dependency_line(
-                "relay",
-                "ironafs-net = { version = \"0.0.0\", optional = true }",
-            );
-            fixture.depend("ironafs-sim", "relay");
-            fixture.workspace_tail(
-                "\n[patch.crates-io]\nironafs-net = { path = \"crates/ironafs-net\" }\n",
-            );
-        },
-        expect: &[|found| {
-            matches!(found, Violation::Edge { from, via, to, rule: Rule::RealAndSimulatedLinked }
-                if from == "ironafs-sim" && to == "ironafs-net" && via == &["relay"])
-        }],
     },
     Case {
         name: "a binary-only crate asking for the fault feature in a development dependency",
@@ -1742,6 +1695,175 @@ const CASES: &[Case] = &[
         },
         expect: &[|found| is_requested(found, "ironafsd", "fault")],
     },
+    Case {
+        name: "a layer crate whose declaration of ironafs-net resolves to a registry namesake",
+        plant: |fixture| {
+            fixture.add_third_party("ironafs-net", &[]);
+            fixture.dependency_line("ironafs-fuse", "ironafs-net = \"1\"");
+        },
+        // The declaration is one of the workspace ironafs-net, which is
+        // outside a layer's list, whatever Cargo resolved it to.
+        expect: &[
+            |found| is_namesake(found, "ironafs-net", REGISTRY),
+            |found| is_third_party(found, "ironafs-fuse", "ironafs-net"),
+            |found| is_edge(found, "ironafs-fuse", "ironafs-net", Rule::LayerOutsideList),
+        ],
+    },
+    Case {
+        name: "ironafs-disk asking itself for the fault feature in a development dependency",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-disk",
+                "\n[dev-dependencies]\nironafs-disk = { path = \".\", features = [\"fault\"] }\n",
+            );
+        },
+        expect: &[
+            |found| is_gate_only_table(found, "dev ironafs-disk"),
+            |found| is_requested(found, "ironafs-disk", "fault"),
+        ],
+    },
+    Case {
+        name: "a shipped crate forwarding a feature of ironafs-disk that turns fault on",
+        plant: |fixture| {
+            fixture.manifest_tail("ironafs-disk", "extra = [\"fault\"]\n");
+            fixture.dependency_line("ironafsd", on_disk!(""));
+            fixture.manifest_tail("ironafsd", "\n[features]\nf = [\"ironafs-disk/extra\"]\n");
+        },
+        expect: &[|found| is_forwarded(found, "ironafsd", "f", "ironafs-disk/extra")],
+    },
+    Case {
+        name: "xtask turning on an optional dependency that asks for a feature turning fault on",
+        plant: |fixture| {
+            fixture.remove_dependency_line("xtask", XTASK_ASKS_FOR_FAULT);
+            fixture.manifest_tail("ironafs-disk", "extra = [\"fault\"]\n");
+            fixture.dependency_line(
+                "xtask",
+                on_disk!(", optional = true, features = [\"extra\"]"),
+            );
+            fixture.manifest_tail("xtask", "\n[features]\ngo = [\"dep:ironafs-disk\"]\n");
+        },
+        expect: &[|found| is_forwarded(found, "xtask", "go", "dep:ironafs-disk")],
+    },
+    Case {
+        name: "a shipped crate asking for the fault feature in a build dependency",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafsd",
+                concat!(
+                    "\n[build-dependencies]\n",
+                    on_disk!(", features = [\"fault\"]"),
+                    "\n"
+                ),
+            );
+        },
+        expect: &[|found| is_requested(found, "ironafsd", "fault")],
+    },
+    Case {
+        name: "a shipped crate asking for the fault feature on a platform no build targets",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafsd",
+                concat!(
+                    "\n[target.'cfg(all(unix, windows))'.dependencies]\n",
+                    on_disk!(", features = [\"fault\"]"),
+                    "\n"
+                ),
+            );
+        },
+        expect: &[|found| is_requested(found, "ironafsd", "fault")],
+    },
+    Case {
+        name: "ironafs-sim on ironafs-net on a platform no build targets",
+        plant: |fixture| {
+            fixture.manifest_tail(
+                "ironafs-sim",
+                "\n[target.'cfg(all(unix, windows))'.dependencies]\n\
+                 ironafs-net = { path = \"../ironafs-net\" }\n",
+            );
+        },
+        expect: &[|found| is_linked(found, "ironafs-sim", "ironafs-net")],
+    },
+];
+
+/// A planted case whose declaration Cargo leaves without an edge: the
+/// package `from` declares `to`, and before the rules run the loaded graph
+/// is shown to hold that declaration and no edge from `from` to the member
+/// `to`, so what the case proves is the declaration rule, not the graph.
+struct Inactive {
+    case: Case,
+    from: &'static str,
+    to: &'static str,
+}
+
+const INACTIVE: &[Inactive] = &[
+    Inactive {
+        case: Case {
+            name: "a third-party crate asking for the fault feature behind a feature no one turns on",
+            plant: |fixture| {
+                fixture.add_third_party("helper", &[]);
+                fixture.dependency_line(
+                    "helper",
+                    "ironafs-disk = { version = \"0.0.0\", optional = true, features = [\"fault\"] }",
+                );
+                fixture.manifest_tail("helper", "\n[features]\nx = [\"dep:ironafs-disk\"]\n");
+                fixture.depend("xtask", "helper");
+                fixture.workspace_tail(
+                    "\n[patch.crates-io]\nironafs-disk = { path = \"crates/ironafs-disk\" }\n",
+                );
+            },
+            expect: &[
+                |found| is_requested(found, "helper", "fault"),
+                |found| is_forwarded(found, "helper", "x", "dep:ironafs-disk"),
+            ],
+        },
+        from: "helper",
+        to: "ironafs-disk",
+    },
+    Inactive {
+        case: Case {
+            name: "ironafs-sim reaching ironafs-net through a third-party crate's inactive dependency",
+            plant: |fixture| {
+                fixture.add_third_party("relay", &[]);
+                fixture.dependency_line(
+                    "relay",
+                    "ironafs-net = { version = \"0.0.0\", optional = true }",
+                );
+                fixture.depend("ironafs-sim", "relay");
+                fixture.workspace_tail(
+                    "\n[patch.crates-io]\nironafs-net = { path = \"crates/ironafs-net\" }\n",
+                );
+            },
+            expect: &[|found| {
+                matches!(found, Violation::Edge { from, via, to, rule: Rule::RealAndSimulatedLinked }
+                    if from == "ironafs-sim" && to == "ironafs-net" && via == &["relay"])
+            }],
+        },
+        from: "relay",
+        to: "ironafs-net",
+    },
+    Inactive {
+        case: Case {
+            name: "ironafs-sim reaching ironafs-net through a third-party crate's inactive build \
+                   dependency",
+            plant: |fixture| {
+                fixture.add_third_party("relay", &[]);
+                fixture.manifest_tail(
+                    "relay",
+                    "\n[build-dependencies]\nironafs-net = { version = \"0.0.0\", optional = true }\n",
+                );
+                fixture.depend("ironafs-sim", "relay");
+                fixture.workspace_tail(
+                    "\n[patch.crates-io]\nironafs-net = { path = \"crates/ironafs-net\" }\n",
+                );
+            },
+            expect: &[|found| {
+                matches!(found, Violation::Edge { from, via, to, rule: Rule::RealAndSimulatedLinked }
+                    if from == "ironafs-sim" && to == "ironafs-net" && via == &["relay"])
+            }],
+        },
+        from: "relay",
+        to: "ironafs-net",
+    },
 ];
 
 /// A plant the rules allow: its fixture must still pass.
@@ -1756,6 +1878,17 @@ const CONTROLS: &[Control] = &[
         plant: |fixture| {
             fixture.depend("ironafsd", "ironafs-disk");
             fixture.depend("ironafs-test-support", "ironafsd");
+        },
+    },
+    Control {
+        name: "ironafs-sim reaching itself back through a third-party crate's inactive dependency",
+        plant: |fixture| {
+            fixture.add_third_party("relay", &[]);
+            fixture.dependency_line(
+                "relay",
+                "ironafs-sim = { version = \"0.0.0\", optional = true }",
+            );
+            fixture.depend("ironafs-sim", "relay");
         },
     },
     Control {
@@ -1880,7 +2013,7 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         members: Vec::new(),
         packages: Vec::new(),
     };
-    let found = graph_violations(&empty, &fixture_third_party());
+    let (found, _) = check(&empty, &fixture_third_party(), NO_DEPENDENCY_TABLES)?;
     if found != [Violation::EmptyWorkspace] {
         return Err(failure("an empty workspace", &found));
     }
@@ -1891,9 +2024,60 @@ fn run_in(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
             "check-deps --self-test: the clean fixture and {} controls passed and {} planted \
              cases failed as planted",
             CONTROLS.len() + 1,
-            CASES.len() + 5
+            CASES.len() + INACTIVE.len() + 5
         ),
     )
+}
+
+/// The `INACTIVE` cases, each shown to leave its declaration without an
+/// edge before the rules run on it.
+///
+/// # Errors
+///
+/// Returns the first case that did not end as planted.
+fn run_inactive(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
+    let report = |output: &mut dyn Write, line: String| {
+        writeln!(output, "{line}").map_err(Error::io("report check-deps self-test"))
+    };
+    for (index, inactive) in INACTIVE.iter().enumerate() {
+        let name = inactive.case.name;
+        let mut planted = clean();
+        (inactive.case.plant)(&mut planted);
+        let workspace = planted.load(&dir.join(format!("inactive-{index}")), CHECK, name)?;
+        let from = workspace
+            .packages
+            .iter()
+            .find(|found| found.name == inactive.from);
+        let member = workspace
+            .packages
+            .iter()
+            .find(|found| found.member && found.name == inactive.to);
+        let unresolved = from.zip(member).is_some_and(|(from, member)| {
+            from.declarations
+                .iter()
+                .any(|declared| declared.package == inactive.to)
+                && !from.dependencies.contains(&member.id)
+                && !from.dev_dependencies.contains(&member.id)
+        });
+        if !unresolved {
+            return Err(Error::SelfTest {
+                check: CHECK,
+                case: name,
+                found: vec![format!(
+                    "{} does not declare {} with no edge to it",
+                    inactive.from, inactive.to
+                )],
+            });
+        }
+        let (found, _) = check(&workspace, &fixture_third_party(), &[])?;
+        match found.first() {
+            Some(first) if as_planted(&inactive.case, &found) => {
+                report(output, format!("caught: {name}: {first}"))?;
+            }
+            _ => return Err(failure(name, &found)),
+        }
+    }
+    Ok(())
 }
 
 /// The cases that need a fixture of their own rather than the clean one.
@@ -1905,11 +2089,13 @@ fn run_own_fixtures(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
     let report = |output: &mut dyn Write, line: String| {
         writeln!(output, "{line}").map_err(Error::io("report check-deps self-test"))
     };
+    run_inactive(dir, output)?;
+
     // The clean fixture's ironafs-os depends on libc, which its list allows;
     // under the repository's rule that ironafs-os has no dependency table at
     // all, that is caught.
     let workspace = clean().load(&dir.join("tables"), CHECK, "dependency tables")?;
-    let (found, _) = check(&workspace, &fixture_third_party(), &["ironafs-os"])?;
+    let (found, _) = check(&workspace, &fixture_third_party(), NO_DEPENDENCY_TABLES)?;
     let as_planted = matches!(found.as_slice(), [Violation::DependencyTable { name, .. }] if name == "ironafs-os");
     if !as_planted {
         return Err(failure("ironafs-os with a dependency table", &found));
@@ -1930,7 +2116,7 @@ fn run_own_fixtures(dir: &Path, output: &mut impl Write) -> Result<(), Error> {
         "\n[\"dev-depend\\u0065ncies\"]\nironafs-time = { path = \"../ironafs-time\" }\n",
     );
     let workspace = escaped.load(&dir.join("escaped"), CHECK, "an escaped dependency key")?;
-    let found = super::dependency_table_violations(&workspace, &["ironafs-os"]);
+    let (found, _) = check(&workspace, &fixture_third_party(), NO_DEPENDENCY_TABLES)?;
     let as_planted = matches!(found.as_slice(), [Violation::DependencyTable { name, line, .. }]
         if name == "ironafs-os" && line == "declares the dev ironafs-time");
     if !as_planted {

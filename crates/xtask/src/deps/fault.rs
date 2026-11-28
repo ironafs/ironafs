@@ -32,7 +32,9 @@ fn enabling(home: &Package) -> Vec<(&str, Vec<String>)> {
 }
 
 /// The features `feature` passes through to reach `fault` in `home`'s own
-/// feature map, if it reaches it: empty when it is `fault`.
+/// feature map, if it reaches it: empty when it is `fault`. A strong
+/// `dep/feature` value reaches the feature named `dep` (Cargo turns on an
+/// optional dependency's implicit feature with it).
 fn path_to_fault(home: &Package, feature: &str) -> Option<Vec<String>> {
     let mut frontier: Vec<(&str, Vec<String>)> = vec![(feature, Vec::new())];
     let mut seen: Vec<&str> = vec![feature];
@@ -47,7 +49,17 @@ fn path_to_fault(home: &Package, feature: &str) -> Option<Vec<String>> {
             .iter()
             .find(|(name, _)| name == current)
             .map_or(&[][..], |(_, enables)| enables.as_slice());
-        for name in enables.iter().map(String::as_str) {
+        // A strong `dep/feature` also turns on the feature named `dep`, an
+        // optional dependency's implicit feature; a weak `dep?/feature` and
+        // `dep:dep` turn on no feature of the home.
+        let turned_on = enables
+            .iter()
+            .filter_map(|enabled| match enabled.split_once('/') {
+                Some((name, _)) if !name.ends_with('?') => Some(name),
+                Some(_) => None,
+                None => (!enabled.starts_with("dep:")).then_some(enabled.as_str()),
+            });
+        for name in turned_on {
             if seen.contains(&name) {
                 continue;
             }
@@ -95,11 +107,11 @@ pub(super) fn violations(workspace: &Workspace) -> Vec<Violation> {
             via: via.clone(),
         });
     }
-    for package in workspace
-        .packages
-        .iter()
-        .filter(|package| package.id != home.id)
-    {
+    // Every reported package's declarations of the home, the home's own
+    // included: a dependency of the home on itself that asks for `fault` is
+    // a request like any other. The home's own features that enable `fault`
+    // are its definition, read above, and are not forwarding.
+    for package in &workspace.packages {
         let on_home = on_home(package);
         let requester = package.member && package.name == REQUESTER;
         let asks = |declared: &Declaration| declared.features.iter().any(|asked| turns_on(asked));
@@ -109,6 +121,7 @@ pub(super) fn violations(workspace: &Workspace) -> Vec<Violation> {
                 if !requester {
                     violations.push(Violation::FaultRequested {
                         from: package.name.clone(),
+                        outside: (!package.member).then(|| package.id.clone()),
                         feature: feature.clone(),
                     });
                 }

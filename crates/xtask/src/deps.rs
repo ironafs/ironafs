@@ -380,6 +380,8 @@ pub(crate) enum Violation {
     /// dependency's feature list.
     FaultRequested {
         from: String,
+        /// The package's id, when it is outside the workspace.
+        outside: Option<String>,
         feature: String,
     },
     /// A crate's own feature turns the fault feature on.
@@ -602,12 +604,22 @@ impl fmt::Display for Violation {
                 through(formatter, via)?;
                 write!(formatter, ": it is off by default (ADR 0004, C4, point 3)")
             }
-            Self::FaultRequested { from, feature } => write!(
-                formatter,
-                "{from} asks {FAULT_HOME} for `{feature}`, which turns `{FAULT}` on: only xtask \
-                 may request it, and only in its dependency's feature list; no shipped crate \
-                 may, in any dependency table (ADR 0004, C4, point 3)"
-            ),
+            Self::FaultRequested {
+                from,
+                outside,
+                feature,
+            } => {
+                write!(formatter, "{from}")?;
+                if let Some(id) = outside {
+                    write!(formatter, " ({id}, outside the workspace)")?;
+                }
+                write!(
+                    formatter,
+                    " asks {FAULT_HOME} for `{feature}`, which turns `{FAULT}` on: only the \
+                     workspace member xtask may request it, and only in its dependency's feature \
+                     list; no shipped crate may, in any dependency table (ADR 0004, C4, point 3)"
+                )
+            }
             Self::FaultForwarded {
                 from,
                 feature,
@@ -843,12 +855,12 @@ fn direct_violations(
     third_party: ThirdPartyLists<'_>,
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
-    let dependencies =
-        package(workspace, &member.id).map_or(&[][..], |found| found.dependencies.as_slice());
+    let dependencies = package(workspace, &member.id)
+        .map_or_else(Vec::new, |found| effective_dependencies(workspace, found));
     let driver_list = DRIVER_MAY_USE
         .iter()
         .find_map(|(name, allowed)| (*name == member.name).then_some(*allowed));
-    for dependency in dependencies.iter().filter_map(|id| package(workspace, id)) {
+    for dependency in dependencies {
         let to = dependency.name.as_str();
         if NO_DEPENDENCIES.contains(&member.name.as_str()) {
             violations.push(Violation::HasDependency {
@@ -1218,6 +1230,25 @@ fn declared_reserved<'a>(workspace: &'a Workspace, from: &Package) -> Vec<&'a Pa
         .collect()
 }
 
+/// A package's normal and build dependencies as the dependency rules read
+/// them: its resolved ones, and, edge or no edge, the workspace crate each
+/// normal or build declaration of one of `RESERVED`'s names stands for
+/// (ADR 0004, C4, point 3), each once.
+fn effective_dependencies<'a>(workspace: &'a Workspace, from: &Package) -> Vec<&'a Package> {
+    let mut found: Vec<&Package> = Vec::new();
+    for dependency in from
+        .dependencies
+        .iter()
+        .filter_map(|id| package(workspace, id))
+        .chain(declared_reserved(workspace, from))
+    {
+        if !found.iter().any(|seen| seen.id == dependency.id) {
+            found.push(dependency);
+        }
+    }
+    found
+}
+
 /// As `reachable`; with `declared`, a normal or build declaration of one
 /// of `RESERVED`'s names counts as an edge to the workspace crate of that
 /// name, edge or no edge.
@@ -1238,17 +1269,16 @@ fn walk<'a>(
         if id != start && !expand(current) {
             continue;
         }
-        let extra = if declared {
-            declared_reserved(workspace, current)
+        let neighbours = if declared {
+            effective_dependencies(workspace, current)
         } else {
-            Vec::new()
+            current
+                .dependencies
+                .iter()
+                .filter_map(|id| package(workspace, id))
+                .collect()
         };
-        for dependency in current
-            .dependencies
-            .iter()
-            .filter_map(|id| package(workspace, id))
-            .chain(extra)
-        {
+        for dependency in neighbours {
             let seen =
                 dependency.id == start || found.iter().any(|(seen, _)| seen.id == dependency.id);
             if seen {

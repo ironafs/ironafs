@@ -71,6 +71,16 @@ fn workspace(packages: Vec<Package>) -> Workspace {
 fn requested(from: &str, feature: &str) -> Violation {
     Violation::FaultRequested {
         from: from.into(),
+        outside: None,
+        feature: feature.into(),
+    }
+}
+
+/// A request from a package outside the workspace, named by its id.
+fn requested_outside(from: &str, feature: &str) -> Violation {
+    Violation::FaultRequested {
+        from: from.into(),
+        outside: Some(format!("id {from}")),
         feature: feature.into(),
     }
 }
@@ -105,13 +115,15 @@ fn enabling_follows_the_home_s_own_features_and_survives_a_cycle() {
 
 #[test]
 fn violations_need_no_home_to_pass() {
-    let xtask = package(
-        "xtask",
+    // With no workspace ironafs-disk, the fault rules have nothing to read;
+    // a declaration of its name is refused by the name rule instead.
+    let other = package(
+        "ironafsd",
         true,
-        &[],
+        &[("f", &["ironafs-disk/fault"])],
         vec![on_disk("ironafs-disk", false, &["fault"])],
     );
-    assert_eq!(violations(&workspace(vec![xtask])), []);
+    assert_eq!(violations(&workspace(vec![other])), []);
 }
 
 #[test]
@@ -212,7 +224,10 @@ fn violations_refuse_a_request_from_a_package_outside_the_workspace() {
             helper,
             registry_xtask
         ])),
-        [requested("helper", "fault"), requested("xtask", "fault")]
+        [
+            requested_outside("helper", "fault"),
+            requested_outside("xtask", "fault")
+        ]
     );
 }
 
@@ -253,4 +268,68 @@ fn violations_find_the_home_s_own_rules() {
             via: vec!["extra".into()],
         }]
     );
+}
+
+#[test]
+fn violations_forward_through_any_feature_of_the_home_that_turns_fault_on() {
+    // `extra` turns `fault` on: a strong or weak path to it, and an optional
+    // dependency asking for it that a feature turns on, all forward it.
+    let disk = home(&[("fault", &[]), ("extra", &["fault"])]);
+    let shipped = package(
+        "ironafsd",
+        true,
+        &[("strong", &["ironafs-disk/extra"]), ("weak", &["d?/extra"])],
+        vec![on_disk("ironafs-disk", false, &[]), on_disk("d", true, &[])],
+    );
+    let xtask = package(
+        "xtask",
+        true,
+        &[("go", &["dep:e"]), ("path", &["e/harmless"])],
+        vec![on_disk("e", true, &["extra"])],
+    );
+    assert_eq!(
+        violations(&workspace(vec![disk, shipped, xtask])),
+        [
+            forwarded("ironafsd", "strong", "ironafs-disk/extra"),
+            forwarded("ironafsd", "weak", "d?/extra"),
+            forwarded("xtask", "go", "dep:e"),
+            forwarded("xtask", "path", "e/harmless"),
+        ]
+    );
+}
+
+#[test]
+fn violations_are_not_hidden_by_another_declaration_of_the_same_name() {
+    // Two declarations named `d`: a harmless one first, then one asking for
+    // `fault`. Turning `d` on forwards through the second.
+    let xtask = package(
+        "xtask",
+        true,
+        &[("go", &["dep:d"])],
+        vec![
+            on_disk("d", true, &[]),
+            Declaration {
+                kind: "build".into(),
+                ..on_disk("d", true, &["fault"])
+            },
+        ],
+    );
+    assert_eq!(
+        violations(&workspace(vec![home(&[("fault", &[])]), xtask])),
+        [forwarded("xtask", "go", "dep:d")]
+    );
+}
+
+#[test]
+fn enabling_follows_a_strong_path_through_an_implicit_feature_of_the_home() {
+    // An optional dependency of the home named `fault` has the implicit
+    // feature `fault`; `fault/sub` turns it on, so `default` reaches it.
+    let disk = home(&[
+        ("fault", &["dep:fault"]),
+        ("default", &["fault/sub"]),
+        ("weak", &["fault?/sub"]),
+    ]);
+    let mut found = enabling(&disk);
+    found.sort();
+    assert_eq!(found, [("default", Vec::new()), ("fault", Vec::new())]);
 }

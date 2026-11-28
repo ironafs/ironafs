@@ -787,3 +787,49 @@ fn name_violations_refuse_a_namesake_whatever_its_source_and_a_declaration_with_
         ]
     );
 }
+
+#[test]
+fn graph_violations_end_on_a_cycle_of_declared_edges_and_report_a_diamond_once() {
+    // ironafs-sim depends on relay and fork; relay declares ironafs-sim back
+    // and ironafs-net, fork declares ironafs-net, none of it resolved. The
+    // walk ends, reports no path from ironafs-sim to itself, and reports
+    // ironafs-sim reaching ironafs-net once, by the shorter path.
+    let mut graph = workspace(&[("ironafs-sim", &["relay", "fork"]), ("ironafs-net", &[])]);
+    let declaration = |package: &str| Declaration {
+        kind: "normal".into(),
+        package: package.into(),
+        name: package.into(),
+        optional: true,
+        features: Vec::new(),
+    };
+    for found in &mut graph.packages {
+        match found.name.as_str() {
+            "relay" => {
+                found.declarations = vec![declaration("ironafs-sim"), declaration("ironafs-net")];
+            }
+            "fork" => found.declarations = vec![declaration("ironafs-net")],
+            _ => {}
+        }
+    }
+    let linked: Vec<Violation> = graph_violations_of(&graph)
+        .into_iter()
+        .filter(|found| {
+            matches!(
+                found,
+                Violation::Edge {
+                    rule: Rule::RealAndSimulatedLinked,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(
+        linked,
+        [edge(
+            "ironafs-sim",
+            &["relay"],
+            "ironafs-net",
+            Rule::RealAndSimulatedLinked
+        )]
+    );
+}

@@ -138,15 +138,17 @@ fn workspace_tail_follows_the_workspace_manifest() {
 }
 
 #[test]
-fn version_replaces_a_crate_s_version() {
+fn outside_version_replaces_only_the_outside_crate_s_version() {
     let dir = std::env::temp_dir().join(format!(
         "ironafs-xtask-fixture-version-{}",
         std::process::id()
     ));
     remove_dir(&dir).unwrap();
+    // The outside crate shares a workspace crate's name: only it changes.
     let mut fixture = Fixture::default();
+    fixture.add_crate("helper", &[]);
     fixture.add_outside_crate("helper", &[]);
-    fixture.version("helper", "2.0.0");
+    fixture.outside_version("helper", "2.0.0");
 
     fixture.write(&dir).unwrap();
 
@@ -155,5 +157,30 @@ fn version_replaces_a_crate_s_version() {
             .unwrap()
             .starts_with("[package]\nname = \"helper\"\nversion = \"2.0.0\"\n")
     );
+    assert!(
+        fs::read_to_string(dir.join("workspace/crates/helper/Cargo.toml"))
+            .unwrap()
+            .starts_with("[package]\nname = \"helper\"\nversion = \"0.0.0\"\n")
+    );
+    remove_dir(&dir).unwrap();
+}
+
+#[test]
+fn third_party_tail_changes_only_the_third_party_crate_of_a_shared_name() {
+    let dir = std::env::temp_dir().join(format!(
+        "ironafs-xtask-fixture-third-party-tail-{}",
+        std::process::id()
+    ));
+    remove_dir(&dir).unwrap();
+    let mut fixture = Fixture::default();
+    fixture.add_crate("ironafs-disk", &[]);
+    fixture.add_third_party("ironafs-disk", &[]);
+    fixture.third_party_tail("ironafs-disk", "[features]\nextra = []\n");
+
+    fixture.write(&dir).unwrap();
+
+    let read = |path: &str| fs::read_to_string(dir.join(path)).unwrap();
+    assert!(read("vendor/ironafs-disk/Cargo.toml").ends_with("[features]\nextra = []\n"));
+    assert!(!read("workspace/crates/ironafs-disk/Cargo.toml").contains("extra"));
     remove_dir(&dir).unwrap();
 }

@@ -167,10 +167,19 @@ impl Fixture {
         }
     }
 
-    /// Replaces a crate's version.
-    pub(crate) fn version(&mut self, name: &str, version: &str) {
-        if let Some(found) = self.find(name) {
+    /// Replaces the version of the local crate outside the workspace named
+    /// `name`, even if a workspace crate shares its name.
+    pub(crate) fn outside_version(&mut self, name: &str, version: &str) {
+        if let Some(found) = self.find_at(name, &Place::Outside) {
             found.version = Some(version.to_owned());
+        }
+    }
+
+    /// Appends tables to the manifest of the third-party crate named
+    /// `name`, even if a workspace crate shares its name.
+    pub(crate) fn third_party_tail(&mut self, name: &str, text: &str) {
+        if let Some(found) = self.find_at(name, &Place::ThirdParty) {
+            found.manifest_tail.push_str(text);
         }
     }
 
@@ -222,6 +231,12 @@ impl Fixture {
 
     fn find(&mut self, name: &str) -> Option<&mut FixtureCrate> {
         self.crates.iter_mut().find(|found| found.name == name)
+    }
+
+    fn find_at(&mut self, name: &str, place: &Place) -> Option<&mut FixtureCrate> {
+        self.crates
+            .iter_mut()
+            .find(|found| found.name == name && found.place == *place)
     }
 
     /// A crate's directory relative to the fixture's directory.
