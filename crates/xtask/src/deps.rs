@@ -124,7 +124,7 @@ const DRIVER_MAY_USE: &[(&str, &[&str])] = &[
     ("ironafs-gss", &["ironafs-time", "ironafs-os"]),
     // ADR 0004, C4, point 3: none in the gate-only phase. The driver phase's
     // list replaces this one in the pull request that adds the driver.
-    ("ironafs-disk", &[]),
+    (FAULT_HOME, &[]),
 ];
 
 /// For each crate, the third-party crates it may depend on directly.
@@ -162,13 +162,11 @@ const THIRD_PARTY: ThirdPartyLists<'static> = &[
 ];
 
 /// The two drivers of real I/O and the simulator that replaces both, none
-/// of which depends on another (ADR 0004, C4, point 4).
-const REAL_AND_SIMULATED: &[&str] = &["ironafs-net", "ironafs-disk", "ironafs-sim"];
-
-/// The crates known by their names (ADR 0004, C4, point 3): no package
-/// outside the workspace bears one, and each declaration of one is one of
-/// the workspace crate of that name, whether or not Cargo resolved it.
-const RESERVED: &[&str] = &["ironafs-disk", "ironafs-net", "ironafs-sim"];
+/// of which depends on another (ADR 0004, C4, point 4). They are the crates
+/// known by their names (C4, point 3): no package outside the workspace
+/// bears one, and each declaration of one is one of the workspace crate of
+/// that name, whether or not Cargo resolved it. One list serves both rules.
+const RESERVED: &[&str] = &["ironafs-net", FAULT_HOME, "ironafs-sim"];
 
 /// The test-only crate the fault feature's home depends on, which never
 /// depends on it (ADR 0004, C4, point 3).
@@ -201,7 +199,7 @@ const NO_DEPENDENCY_TABLES: &[&str] = &["ironafs-os"];
 /// same rule (ADR 0004, C4, point 3). Unlike `NO_DEPENDENCY_TABLES`, the
 /// self-test cannot replace this list: its fixtures are checked under the
 /// list production uses.
-const GATE_ONLY: &[&str] = &["ironafs-disk"];
+const GATE_ONLY: &[&str] = &[FAULT_HOME];
 
 /// The crate that is the one home of the fault feature, and the feature
 /// (ADR 0004, C4, point 3).
@@ -662,9 +660,9 @@ fn third_party_allowed(
     })
 }
 
-/// Whether two distinct crates are both among `REAL_AND_SIMULATED`.
+/// Whether two distinct crates are both among `RESERVED`.
 fn real_and_simulated(from: &str, to: &str) -> bool {
-    from != to && REAL_AND_SIMULATED.contains(&from) && REAL_AND_SIMULATED.contains(&to)
+    from != to && RESERVED.contains(&from) && RESERVED.contains(&to)
 }
 
 fn broken_rule(from: &str, from_kind: Kind, to: &str, to_kind: Kind) -> Option<Rule> {
@@ -734,7 +732,7 @@ pub(crate) fn graph_violations(
             continue;
         };
         violations.extend(direct_violations(workspace, member, from_kind, third_party));
-        violations.extend(declared_edge_violations(member));
+        violations.extend(declared_edge_violations(workspace, member));
         for (to, via) in walk(workspace, &member.id, &|_| true, true) {
             let Some(to_kind) = kind_of(&to.name).filter(|_| to.member) else {
                 continue;
@@ -778,13 +776,13 @@ pub(crate) fn graph_violations(
 /// The edge rules read from a member's declarations. The reverse edge
 /// from `DISK_SUPPORT` is a rule on what it declares, of any kind. The
 /// graph above follows only normal and build edges, so of the rule on
-/// `REAL_AND_SIMULATED` it reports those, and this reports the development
+/// `RESERVED` it reports those, and this reports the development
 /// ones.
-fn declared_edge_violations(member: &Member) -> Vec<Violation> {
+fn declared_edge_violations(workspace: &Workspace, member: &Member) -> Vec<Violation> {
     let mut violations = Vec::new();
     // A declaration of one of `RESERVED`'s names is one of the workspace
     // crate of that name, so it is matched by name (ADR 0004, C4, point 3).
-    for declared in &member.declarations {
+    for declared in metadata::declarations(workspace, member) {
         let rule = if member.name == DISK_SUPPORT && declared.package == FAULT_HOME {
             Some(Rule::SupportOnDisk)
         } else if declared.kind == "dev" && real_and_simulated(&member.name, &declared.package) {
@@ -1048,8 +1046,7 @@ fn dependency_table_violations(workspace: &Workspace, names: &[&str]) -> Vec<Vio
         // Cargo's own reading of the manifest catches every declared
         // dependency, however its key is spelled (an escaped quoted key
         // included).
-        if let Some(line) = member
-            .declarations
+        if let Some(line) = metadata::declarations(workspace, member)
             .first()
             .map(|dependency| format!("declares the {dependency}"))
         {

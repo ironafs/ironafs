@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use super::{CHECK, SEAMS, attribute_end, closing, is_punct, item_end, keyword, line};
 use crate::Error;
-use crate::metadata::{Member, Target, Workspace};
+use crate::metadata::{self, Member, Target, Workspace};
 use crate::rust_source::{self, Token, TokenKind, ident, punct};
 
 #[derive(Clone, Copy)]
@@ -968,9 +968,7 @@ impl Census<'_> {
             candidate.library()
                 && candidate.target.name == name
                 && (candidate.member.name == current.member.name && !current.library()
-                    || current
-                        .member
-                        .declarations
+                    || metadata::declarations(self.workspace, current.member)
                         .iter()
                         .any(|declared| declared.package == candidate.member.name))
         })

@@ -40,16 +40,20 @@ pub(crate) struct Member {
     pub(crate) target_kinds: Vec<String>,
     /// The edition of each target, in the order of `target_kinds`' targets.
     pub(crate) editions: Vec<String>,
-    /// Every dependency the manifest declares, as cargo parsed it: normal,
-    /// development, build, optional and target-specific alike. Unlike the
-    /// resolved graph, this keeps development dependencies, and what each
-    /// declaration asks of its dependency.
-    pub(crate) declarations: Vec<Declaration>,
     /// The names the member's source gives dependencies (of every kind)
     /// that are not the dependency's package name with `-` as `_`: a
     /// rename in a manifest, whatever its TOML spelling, or a library
     /// target named otherwise.
     pub(crate) renamed: Vec<String>,
+}
+
+/// A member's declarations: those of its package, the one list of them.
+pub(crate) fn declarations<'a>(workspace: &'a Workspace, member: &Member) -> &'a [Declaration] {
+    workspace
+        .packages
+        .iter()
+        .find(|package| package.id == member.id)
+        .map_or(&[][..], |package| package.declarations.as_slice())
 }
 
 /// One dependency a member's manifest declares.
@@ -111,7 +115,11 @@ pub(crate) struct Package {
     /// The package's features, each with what it enables, as its manifest
     /// states them (implicit features of optional dependencies included).
     pub(crate) features: Vec<(String, Vec<String>)>,
-    /// Every dependency its manifest declares, as for a member.
+    /// Every dependency its manifest declares, as cargo parsed it: normal,
+    /// development, build, optional and target-specific alike. Unlike the
+    /// resolved graph, this keeps development dependencies, every
+    /// declaration whether or not Cargo resolved it to an edge, and what
+    /// each asks of its dependency.
     pub(crate) declarations: Vec<Declaration>,
 }
 
@@ -311,7 +319,6 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             targets: targets.sources,
             target_kinds: targets.kinds,
             editions: targets.editions,
-            declarations: declared(package)?,
             renamed: renamed(node, packages)?,
         });
     }

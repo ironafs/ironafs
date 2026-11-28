@@ -117,7 +117,6 @@ fn member(name: &str, lib: Option<&str>, target_kinds: &[&str]) -> Member {
         target_kinds: target_kinds.iter().map(|kind| (*kind).into()).collect(),
         editions: target_kinds.iter().map(|_| "2024".into()).collect(),
         build_script: None,
-        declarations: Vec::new(),
         renamed: Vec::new(),
     }
 }
@@ -161,13 +160,9 @@ fn parse_workspace_follows_package_ids_and_keeps_development_edges_apart() {
                 // `bee` is ironafs-b under another name.
                 Member {
                     renamed: vec!["bee".into()],
-                    declarations: a_declarations(),
                     ..member("ironafs-a", Some("src/lib.rs"), &["lib"])
                 },
-                Member {
-                    declarations: vec![declaration("normal", "outside", "outside", false, &[])],
-                    ..member("ironafs-b", Some("src/lib.rs"), &["lib"])
-                },
+                member("ironafs-b", Some("src/lib.rs"), &["lib"]),
                 member("ironafs-c", None, &["bin"]),
                 Member {
                     editions: vec!["2024".into(), "2018".into()],

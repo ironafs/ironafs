@@ -71,7 +71,6 @@ fn workspace(root: &Path) -> Workspace {
             target_kinds: vec!["lib".into()],
             editions: vec!["2024".into()],
             build_script: None,
-            declarations: Vec::new(),
             renamed: Vec::new(),
         }],
         packages: vec![],

@@ -63,7 +63,6 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                 target_kinds: vec!["lib".into()],
                 editions: vec!["2024".into()],
                 build_script: None,
-                declarations: Vec::new(),
                 renamed: Vec::new(),
             })
             .collect(),
@@ -724,8 +723,8 @@ fn dependency_tables_are_cargo_s_declared_dependencies_not_manifest_text() {
         .unwrap();
     }
     assert_eq!(dependency_table_violations(&graph, &["ironafs-os"]), []);
-    if let Some(member) = graph.members.first_mut() {
-        member.declarations = vec![Declaration {
+    if let Some(package) = graph.packages.first_mut() {
+        package.declarations = vec![Declaration {
             kind: "dev".into(),
             package: "ironafs-time".into(),
             name: "ironafs-time".into(),
