@@ -345,6 +345,7 @@ No judgement is pending.
 | Round, record commit | Seat | Verdict |
 | --- | --- | --- |
 | 1, `e5a4b27` | `glm:glm-5.4` High, focused pass, read-only repository tools with the 30 verdicts, the judgement run and both final briefs given as evidence; uncalibrated on IronAFS for this role | FAIL: one major, three minors |
+| 2, `7f1b03f` (the fix commit's diff) | the same seat, its session resumed, the original terminal marker echoed | PASS: all four findings fixed and the fourteenth cell confirmed; every cell of both tables recomputed from the appendix; no new finding |
 
 Quota headroom was not reported. The served model and the lane's terminal marker are attested by the lane log.
 
