@@ -316,14 +316,23 @@ specification fixes (5.2, point 4).
      request is part of the gate's design, which S4 settles.
 
    `ironafs-disk`, `ironafs-net` and `ironafs-sim` are known by their
-   names. No package that is not a workspace member may bear one of
-   these names: `check-deps` refuses one, whatever its source. Each
-   declaration of one of these crates is read as a declaration of the
-   workspace crate of that name, whether or not Cargo resolved it to an
-   edge, so an optional dependency no feature turned on is still a
-   declaration, and its request is checked. A manifest alias changes no
-   package's name. The remedy for a shared name is a rename of the crate
-   or an amendment of this point.
+   names, in this point and in point 4 alike. `check-deps` reads
+   `cargo metadata` for the root workspace with every feature on and no
+   platform filter. No package it reports that is not a workspace
+   member may bear one of these names: `check-deps` refuses one,
+   whatever its source. Each declaration of one of these crates, in any
+   package it reports, is read as a declaration of the workspace crate
+   of that name, whether or not Cargo resolved it to an edge, so an
+   optional dependency no feature turned on is still a declaration: its
+   request and its forwarding are checked, and a normal or build one
+   counts in point 4 as an edge of that kind. A declaration of one of
+   these names needs a workspace member of that name, and `check-deps`
+   refuses it otherwise; the name's absence, with no declaration of it,
+   is not refused. A manifest alias changes no package's name. Where
+   another package shares one of these names, the remedy is a rename of
+   that package or an amendment of C4, which renaming one of the three
+   workspace crates also needs. The excluded `fuzz` crate's graph is
+   outside this paragraph, as it is outside `check-deps` (above).
 
 4. **Rules the dependency graph keeps:**
    - no pure crate depends on a driver or on `ironafs-client`;
