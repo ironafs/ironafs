@@ -285,15 +285,18 @@ specification fixes (5.2, point 4).
        enables `fault` (`ironafs-disk/fault`, or a feature of
        `ironafs-disk` that enables it), under whatever name the
        dependency is given, is forwarding, which every crate is refused,
-       `xtask` included. No shipped crate may request it, in any
+       `xtask` included. So is an optional dependency that carries
+       `fault` in its feature list and is turned on by one of the
+       crate's own features, since that feature then enables `fault`.
+       No shipped crate may request it, in any
        dependency table, development included. `check-deps` passes
        `xtask`'s request in its dependency's feature list and refuses
        the same request made from `xtask`'s own features, and refuses
        either route from any other crate, a test-only crate the graph
        rules allow included. The excluded `fuzz` crate, which
-       `check-deps` does not read, requests it neither; review of its
-       manifest, which is checked by hand (coding standards rule 20),
-       keeps this.
+       `check-deps` does not read, requests or forwards it neither;
+       review of its manifest, which is checked by hand (coding
+       standards rule 20), keeps this.
        `ironafs-sim` may not depend on the driver (point 4), and
        `ironafs-test-support` is its development dependency, so neither
        is listed. The feature being on without a crate's own
