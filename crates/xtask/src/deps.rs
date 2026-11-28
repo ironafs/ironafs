@@ -8,6 +8,7 @@
 //! edition, and every target is in the edition the source checks' token
 //! reader follows.
 
+mod fault;
 pub(crate) mod pure_source;
 mod self_test;
 
@@ -62,6 +63,7 @@ pub(crate) const CRATES: &[(&str, Kind)] = &[
     ("ironafs-net", Kind::Driver),
     ("ironafs-gss", Kind::Driver),
     ("ironafs-os", Kind::Driver),
+    ("ironafs-disk", Kind::Driver),
     ("ironafs-fuse", Kind::Layer),
     ("ironafs-smb", Kind::Layer),
     ("ironafs-cloudfiles", Kind::Layer),
@@ -93,8 +95,9 @@ const CLIENT_SIDE: &[&str] = &["ironafs-client", "ironafs-cache", "ironafs-vfs"]
 /// typed outcomes.
 const RX_MAY_USE: &[&str] = &["ironafs-xdr", "ironafs-time", "ironafs-crypto"];
 
-/// What a layer crate never reaches (ADR 0004, C4, point 4).
-const BEHIND_THE_CORE: &[&str] = &["ironafs-client", "ironafs-cache"];
+/// What a layer crate never reaches through normal or build dependencies
+/// (ADR 0004, C4, point 4).
+const BEHIND_THE_CORE: &[&str] = &["ironafs-client", "ironafs-cache", "ironafs-disk"];
 
 /// The only workspace crates a layer crate depends on directly (ADR 0004,
 /// C4, point 4): the contract, events, IPC, cryptography, time, and its
@@ -119,17 +122,20 @@ const DRIVER_MAY_USE: &[(&str, &[&str])] = &[
     ("ironafs-os", &[]),
     ("ironafs-net", &["ironafs-rx", "ironafs-time", "ironafs-os"]),
     ("ironafs-gss", &["ironafs-time", "ironafs-os"]),
+    // ADR 0004, C4, point 3: none in the gate-only phase. The driver phase's
+    // list replaces this one in the pull request that adds the driver.
+    (FAULT_HOME, &[]),
 ];
 
 /// For each crate, the third-party crates it may depend on directly.
-pub(crate) type ThirdPartyLists = &'static [(&'static str, &'static [&'static str])];
+pub(crate) type ThirdPartyLists<'a> = &'a [(&'static str, &'static [&'static str])];
 
 /// The third-party crates each shipped crate may depend on directly. Every
 /// list starts empty: a third-party crate is added only after the owner's
 /// decision (coding standards rule 21), and a shipped crate missing from
 /// this table may use none. A foreign-function crate that `ironafs-gss`
 /// uses is named here even when it is reached through another crate.
-const THIRD_PARTY: ThirdPartyLists = &[
+const THIRD_PARTY: ThirdPartyLists<'static> = &[
     ("ironafs-xdr", &[]),
     ("ironafs-rx", &[]),
     ("ironafs-rxkad", &[]),
@@ -147,12 +153,24 @@ const THIRD_PARTY: ThirdPartyLists = &[
     ("ironafs-net", &[]),
     ("ironafs-gss", &[]),
     ("ironafs-os", &[]),
+    ("ironafs-disk", &[]),
     ("ironafs-fuse", &[]),
     ("ironafs-smb", &[]),
     ("ironafs-cloudfiles", &[]),
     ("ironafsd", &[]),
     ("ironafs-cli", &[]),
 ];
+
+/// The two drivers of real I/O and the simulator that replaces both, none
+/// of which depends on another (ADR 0004, C4, point 4). They are the crates
+/// known by their names (C4, point 3): no package outside the workspace
+/// bears one, and each declaration of one is one of the workspace crate of
+/// that name, whether or not Cargo resolved it. One list serves both rules.
+const RESERVED: &[&str] = &["ironafs-net", FAULT_HOME, "ironafs-sim"];
+
+/// The test-only crate the fault feature's home depends on, which never
+/// depends on it (ADR 0004, C4, point 3).
+const DISK_SUPPORT: &str = "ironafs-test-support";
 
 /// The only crates through which cryptography and foreign-function crates
 /// enter the build (ADR 0004, C4, point 4, and C5).
@@ -172,10 +190,21 @@ pub(crate) const OWN_LINTS: &[&str] = &["ironafs-os"];
 /// Crates that may declare no dependency at all, normal, development,
 /// build or target-specific (ADR 0005, point 1.4). The resolved graph
 /// leaves development dependencies out, so this is read from what Cargo
-/// parsed of the manifest (`Member::declared_dependencies`), whatever the
+/// parsed of the manifest (`Member::declarations`), whatever the
 /// spelling of its keys. An empty table declares nothing and is not
 /// refused: the ADR forbids dependencies, not tables.
 const NO_DEPENDENCY_TABLES: &[&str] = &["ironafs-os"];
+
+/// Crates in a gate-only phase, which declare no dependency at all by the
+/// same rule (ADR 0004, C4, point 3). Unlike `NO_DEPENDENCY_TABLES`, the
+/// self-test cannot replace this list: its fixtures are checked under the
+/// list production uses.
+const GATE_ONLY: &[&str] = &[FAULT_HOME];
+
+/// The crate that is the one home of the fault feature, and the feature
+/// (ADR 0004, C4, point 3).
+const FAULT_HOME: &str = "ironafs-disk";
+const FAULT: &str = "fault";
 
 /// The edition every target of the workspace is compiled in: the one whose
 /// lexical rules the token reader of `rust_source` follows.
@@ -253,6 +282,8 @@ pub(crate) enum Rule {
     CoreOnDriver,
     OnAutomation,
     DriverOutsideList,
+    RealAndSimulatedLinked,
+    SupportOnDisk,
 }
 
 /// One broken rule.
@@ -327,6 +358,38 @@ pub(crate) enum Violation {
         line: usize,
         word: &'static str,
     },
+    /// A package outside the workspace bearing one of `RESERVED`'s names.
+    Namesake {
+        name: String,
+        id: String,
+    },
+    /// A declaration of one of `RESERVED`'s names with no workspace member
+    /// of that name.
+    NoMemberForName {
+        from: String,
+        name: String,
+    },
+    /// The fault feature's home does not declare it.
+    FaultUndeclared(String),
+    /// The fault feature's home turns it on by default, through `via`.
+    FaultByDefault {
+        name: String,
+        via: Vec<String>,
+    },
+    /// A crate other than the one allowed asks for the fault feature in a
+    /// dependency's feature list.
+    FaultRequested {
+        from: String,
+        /// The package's id, when it is outside the workspace.
+        outside: Option<String>,
+        feature: String,
+    },
+    /// A crate's own feature turns the fault feature on.
+    FaultForwarded {
+        from: String,
+        feature: String,
+        enables: String,
+    },
     NoLibrary(String),
     NoSource(String),
     Unreadable {
@@ -342,7 +405,8 @@ impl Rule {
                 "a pure crate depends only on pure crates (ADR 0004, C4, points 1 and 4)"
             }
             Self::LayerBypassesCore => {
-                "no layer crate depends on ironafs-client or ironafs-cache (ADR 0004, C4, point 4)"
+                "no layer crate depends on ironafs-client or ironafs-cache, or reaches \
+                 ironafs-disk through normal or build dependencies (ADR 0004, C4, point 4)"
             }
             Self::LayerOutsideList => {
                 "of the workspace a layer crate depends only on ironafs-vfs, ironafs-events, \
@@ -358,8 +422,9 @@ impl Rule {
                  ironafs-vfs) (ADR 0004, C4, point 4)"
             }
             Self::ShippedOnTestOnly => {
-                "no shipped crate depends on a test-only crate, except as a development \
-                 dependency (ADR 0004, C4, point 7)"
+                "no shipped crate reaches a test-only crate through normal or build \
+                 dependencies, directly or through other crates; this rule does not follow \
+                 development-only edges (ADR 0004, C4, point 4)"
             }
             Self::CoreOnDriver => {
                 "ironafs-client depends on no driver, layer or binary crate: it makes no socket \
@@ -373,6 +438,16 @@ impl Rule {
                 "a driver is thin: of the workspace it depends only on the crates its list in \
                  crates/xtask/src/deps.rs names, so a layer cannot reach the rest through \
                  ironafs-os (ADR 0004, C4, points 3 and 4)"
+            }
+            Self::RealAndSimulatedLinked => {
+                "ironafs-net, ironafs-disk and ironafs-sim do not depend on one another: none \
+                 declares a dependency of any kind on another, development included, and none \
+                 reaches another through normal or build dependencies (ADR 0004, C4, point 4)"
+            }
+            Self::SupportOnDisk => {
+                "ironafs-disk depends on ironafs-test-support, never the reverse: \
+                 ironafs-test-support declares no dependency of any kind on ironafs-disk, \
+                 with or without a feature request (ADR 0004, C4, point 3)"
             }
         }
     }
@@ -465,8 +540,9 @@ impl fmt::Display for Violation {
                 line,
             } => write!(
                 formatter,
-                "{}: {name} has no dependencies in any table (ADR 0005, point 1.4), but its \
-                 manifest says `{line}`",
+                "{}: {name} has no dependencies in any table (ADR 0005, point 1.4, and, for \
+                 ironafs-disk's gate-only phase, ADR 0004, C4, point 3), but its manifest says \
+                 `{line}`",
                 manifest.display()
             ),
             Self::NoWorkspaceLints { name, manifest } => write!(
@@ -506,6 +582,54 @@ impl fmt::Display for Violation {
                  (ADR 0004, C4, point 2)",
                 file.display()
             ),
+            Self::Namesake { name, id } => write!(
+                formatter,
+                "{id} is a package named {name} outside the workspace: no package outside it \
+                 may bear the name of ironafs-disk, ironafs-net or ironafs-sim, whatever its \
+                 source; rename that package, or amend ADR 0004, C4 (point 3)"
+            ),
+            Self::NoMemberForName { from, name } => write!(
+                formatter,
+                "{from} declares {name}, which is no workspace member: a declaration of \
+                 ironafs-disk, ironafs-net or ironafs-sim is one of the workspace crate of that \
+                 name, and needs it (ADR 0004, C4, point 3)"
+            ),
+            Self::FaultUndeclared(name) => write!(
+                formatter,
+                "{name} does not declare the feature `{FAULT}`: it is the feature's one home \
+                 (ADR 0004, C4, point 3)"
+            ),
+            Self::FaultByDefault { name, via } => {
+                write!(formatter, "{name}'s default features turn `{FAULT}` on")?;
+                through(formatter, via)?;
+                write!(formatter, ": it is off by default (ADR 0004, C4, point 3)")
+            }
+            Self::FaultRequested {
+                from,
+                outside,
+                feature,
+            } => {
+                write!(formatter, "{from}")?;
+                if let Some(id) = outside {
+                    write!(formatter, " ({id}, outside the workspace)")?;
+                }
+                write!(
+                    formatter,
+                    " asks {FAULT_HOME} for `{feature}`, which turns `{FAULT}` on: only the \
+                     workspace member xtask may request it, and only in its dependency's feature \
+                     list; no shipped crate may, in any dependency table (ADR 0004, C4, point 3)"
+                )
+            }
+            Self::FaultForwarded {
+                from,
+                feature,
+                enables,
+            } => write!(
+                formatter,
+                "{from}'s feature `{feature}` enables `{enables}`, which turns {FAULT_HOME}'s \
+                 `{FAULT}` on: no crate forwards it from its own features, xtask included \
+                 (ADR 0004, C4, point 3)"
+            ),
             Self::NoLibrary(name) => write!(
                 formatter,
                 "{name} is a crate whose source is checked, with no library target"
@@ -538,7 +662,7 @@ pub(crate) fn kind_of(name: &str) -> Option<Kind> {
 fn third_party_allowed(
     name: &str,
     kind: Kind,
-    lists: ThirdPartyLists,
+    lists: ThirdPartyLists<'_>,
 ) -> Option<&'static [&'static str]> {
     (!matches!(kind, Kind::TestOnly | Kind::Automation)).then(|| {
         lists
@@ -548,8 +672,15 @@ fn third_party_allowed(
     })
 }
 
+/// Whether two distinct crates are both among `RESERVED`.
+fn real_and_simulated(from: &str, to: &str) -> bool {
+    from != to && RESERVED.contains(&from) && RESERVED.contains(&to)
+}
+
 fn broken_rule(from: &str, from_kind: Kind, to: &str, to_kind: Kind) -> Option<Rule> {
-    if to_kind == Kind::TestOnly && !matches!(from_kind, Kind::TestOnly | Kind::Automation) {
+    if real_and_simulated(from, to) {
+        Some(Rule::RealAndSimulatedLinked)
+    } else if to_kind == Kind::TestOnly && !matches!(from_kind, Kind::TestOnly | Kind::Automation) {
         Some(Rule::ShippedOnTestOnly)
     } else if to_kind == Kind::Automation && from_kind != Kind::Automation {
         Some(Rule::OnAutomation)
@@ -579,7 +710,7 @@ fn package<'a>(workspace: &'a Workspace, id: &str) -> Option<&'a Package> {
 /// resolved graph, workspace member or not.
 pub(crate) fn graph_violations(
     workspace: &Workspace,
-    third_party: ThirdPartyLists,
+    third_party: ThirdPartyLists<'_>,
 ) -> Vec<Violation> {
     if workspace.members.is_empty() {
         return vec![Violation::EmptyWorkspace];
@@ -607,12 +738,14 @@ pub(crate) fn graph_violations(
             violations.push(Violation::Unclassified(member.name.clone()));
         }
     }
+    violations.extend(name_violations(workspace));
     for member in &workspace.members {
         let Some(from_kind) = kind_of(&member.name) else {
             continue;
         };
         violations.extend(direct_violations(workspace, member, from_kind, third_party));
-        for (to, via) in reachable(workspace, &member.id, &|_| true) {
+        violations.extend(declared_edge_violations(workspace, member));
+        for (to, via) in walk(workspace, &member.id, &|_| true, true) {
             let Some(to_kind) = kind_of(&to.name).filter(|_| to.member) else {
                 continue;
             };
@@ -652,6 +785,66 @@ pub(crate) fn graph_violations(
     violations
 }
 
+/// The edge rules read from a member's declarations. The reverse edge
+/// from `DISK_SUPPORT` is a rule on what it declares, of any kind. The
+/// graph above follows only normal and build edges, so of the rule on
+/// `RESERVED` it reports those, and this reports the development
+/// ones.
+fn declared_edge_violations(workspace: &Workspace, member: &Member) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    // A declaration of one of `RESERVED`'s names is one of the workspace
+    // crate of that name, so it is matched by name (ADR 0004, C4, point 3).
+    for declared in metadata::declarations(workspace, member) {
+        let rule = if member.name == DISK_SUPPORT && declared.package == FAULT_HOME {
+            Some(Rule::SupportOnDisk)
+        } else if declared.kind == "dev" && real_and_simulated(&member.name, &declared.package) {
+            Some(Rule::RealAndSimulatedLinked)
+        } else {
+            None
+        };
+        if let Some(rule) = rule {
+            violations.push(Violation::Edge {
+                from: member.name.clone(),
+                via: Vec::new(),
+                to: declared.package.clone(),
+                rule,
+            });
+        }
+    }
+    violations
+}
+
+/// The rules on `RESERVED`'s names (ADR 0004, C4, point 3): a package
+/// `cargo metadata` reports outside the workspace may bear none, whatever
+/// its source, and a declaration of one, in any reported package, needs the
+/// workspace member of that name.
+fn name_violations(workspace: &Workspace) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    for found in &workspace.packages {
+        if !found.member && RESERVED.contains(&found.name.as_str()) {
+            violations.push(Violation::Namesake {
+                name: found.name.clone(),
+                id: found.id.clone(),
+            });
+        }
+    }
+    for found in &workspace.packages {
+        let mut reported: Vec<&str> = Vec::new();
+        for declared in &found.declarations {
+            let name = declared.package.as_str();
+            let member = workspace.members.iter().any(|member| member.name == name);
+            if RESERVED.contains(&name) && !member && !reported.contains(&name) {
+                reported.push(name);
+                violations.push(Violation::NoMemberForName {
+                    from: found.name.clone(),
+                    name: name.to_owned(),
+                });
+            }
+        }
+    }
+    violations
+}
+
 /// The rules on a member's direct dependencies: none at all for some
 /// crates, a third-party list for every shipped crate, and the workspace
 /// crates a layer or a driver may use.
@@ -659,15 +852,15 @@ fn direct_violations(
     workspace: &Workspace,
     member: &Member,
     kind: Kind,
-    third_party: ThirdPartyLists,
+    third_party: ThirdPartyLists<'_>,
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
-    let dependencies =
-        package(workspace, &member.id).map_or(&[][..], |found| found.dependencies.as_slice());
+    let dependencies = package(workspace, &member.id)
+        .map_or_else(Vec::new, |found| effective_dependencies(workspace, found));
     let driver_list = DRIVER_MAY_USE
         .iter()
         .find_map(|(name, allowed)| (*name == member.name).then_some(*allowed));
-    for dependency in dependencies.iter().filter_map(|id| package(workspace, id)) {
+    for dependency in dependencies {
         let to = dependency.name.as_str();
         if NO_DEPENDENCIES.contains(&member.name.as_str()) {
             violations.push(Violation::HasDependency {
@@ -865,8 +1058,7 @@ fn dependency_table_violations(workspace: &Workspace, names: &[&str]) -> Vec<Vio
         // Cargo's own reading of the manifest catches every declared
         // dependency, however its key is spelled (an escaped quoted key
         // included).
-        if let Some(line) = member
-            .declared_dependencies
+        if let Some(line) = metadata::declarations(workspace, member)
             .first()
             .map(|dependency| format!("declares the {dependency}"))
         {
@@ -1019,6 +1211,53 @@ pub(crate) fn reachable<'a>(
     start: &str,
     expand: &dyn Fn(&Package) -> bool,
 ) -> Vec<(&'a Package, Vec<String>)> {
+    walk(workspace, start, expand, false)
+}
+
+/// The workspace member a package's normal or build declaration of one of
+/// `RESERVED`'s names stands for, whether or not Cargo resolved it to an
+/// edge (ADR 0004, C4, point 3).
+fn declared_reserved<'a>(workspace: &'a Workspace, from: &Package) -> Vec<&'a Package> {
+    from.declarations
+        .iter()
+        .filter(|declared| declared.kind != "dev" && RESERVED.contains(&declared.package.as_str()))
+        .filter_map(|declared| {
+            workspace
+                .packages
+                .iter()
+                .find(|found| found.member && found.name == declared.package)
+        })
+        .collect()
+}
+
+/// A package's normal and build dependencies as the dependency rules read
+/// them: its resolved ones, and, edge or no edge, the workspace crate each
+/// normal or build declaration of one of `RESERVED`'s names stands for
+/// (ADR 0004, C4, point 3), each once.
+fn effective_dependencies<'a>(workspace: &'a Workspace, from: &Package) -> Vec<&'a Package> {
+    let mut found: Vec<&Package> = Vec::new();
+    for dependency in from
+        .dependencies
+        .iter()
+        .filter_map(|id| package(workspace, id))
+        .chain(declared_reserved(workspace, from))
+    {
+        if !found.iter().any(|seen| seen.id == dependency.id) {
+            found.push(dependency);
+        }
+    }
+    found
+}
+
+/// As `reachable`; with `declared`, a normal or build declaration of one
+/// of `RESERVED`'s names counts as an edge to the workspace crate of that
+/// name, edge or no edge.
+fn walk<'a>(
+    workspace: &'a Workspace,
+    start: &str,
+    expand: &dyn Fn(&Package) -> bool,
+    declared: bool,
+) -> Vec<(&'a Package, Vec<String>)> {
     let mut found: Vec<(&Package, Vec<String>)> = Vec::new();
     let mut next = 0;
     let mut frontier: Vec<(String, Vec<String>)> = vec![(start.to_owned(), Vec::new())];
@@ -1030,11 +1269,16 @@ pub(crate) fn reachable<'a>(
         if id != start && !expand(current) {
             continue;
         }
-        for dependency in current
-            .dependencies
-            .iter()
-            .filter_map(|id| package(workspace, id))
-        {
+        let neighbours = if declared {
+            effective_dependencies(workspace, current)
+        } else {
+            current
+                .dependencies
+                .iter()
+                .filter_map(|id| package(workspace, id))
+                .collect()
+        };
+        for dependency in neighbours {
             let seen =
                 dependency.id == start || found.iter().any(|(seen, _)| seen.id == dependency.id);
             if seen {
@@ -1062,7 +1306,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     if self_test {
         return self_test::run(&workspace.target_dir, output);
     }
-    let (violations, scanned) = check(&workspace, THIRD_PARTY, NO_DEPENDENCY_TABLES)?;
+    let (violations, scanned) = check_production(&workspace)?;
     if !violations.is_empty() {
         return Err(Error::Rules {
             check: "check-deps",
@@ -1084,6 +1328,16 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     .map_err(Error::io("report check-deps"))
 }
 
+/// Runs every rule on a workspace under the lists production uses: the one
+/// entry point `run` and the self-test's production-policy fixtures share.
+///
+/// # Errors
+///
+/// Returns an error if a manifest or a source file cannot be read.
+fn check_production(workspace: &Workspace) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
+    check(workspace, THIRD_PARTY, NO_DEPENDENCY_TABLES)
+}
+
 /// Runs every rule on a workspace; returns the violations and the source
 /// files read.
 ///
@@ -1092,13 +1346,15 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
 /// Returns an error if a manifest or a source file cannot be read.
 fn check(
     workspace: &Workspace,
-    third_party: ThirdPartyLists,
+    third_party: ThirdPartyLists<'_>,
     no_tables: &[&str],
 ) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
     let mut violations = graph_violations(workspace, third_party);
     violations.extend(lint_violations(workspace, OWN_LINTS)?);
-    violations.extend(dependency_table_violations(workspace, no_tables));
+    let no_tables: Vec<&str> = no_tables.iter().chain(GATE_ONLY).copied().collect();
+    violations.extend(dependency_table_violations(workspace, &no_tables));
     violations.extend(edition_violations(workspace)?);
+    violations.extend(fault::violations(workspace));
     let (found, scanned) = pure_source::scan(workspace)?;
     violations.extend(found);
     Ok((violations, scanned))

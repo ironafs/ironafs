@@ -4,8 +4,8 @@
 # 0004: The architecture
 
 Status: accepted (2026-11-20), by the owner, after the review rounds
-recorded below. Raised in issue #20. Amended 2026-11-20 (#32) and
-2026-11-21 (#101, #53). Partly superseded by [ADR 0006](0006-rx-unprotected-packets.md)
+recorded below. Raised in issue #20. Amended 2026-11-20 (#32),
+2026-11-21 (#101, #53) and 2026-11-27 (#213). Partly superseded by [ADR 0006](0006-rx-unprotected-packets.md)
 (C30, C31, C32 and O23, as its "What it supersedes" states), 2026-11-21.
 
 ## Context
@@ -979,3 +979,123 @@ The full record, with every finding and its disposition, is
       history above. C44, point 1, names one definition set. The IPC
       specification (5.6.1, point 7) gives the exact digest input over
       that whole set for both endpoints.
+- **Amendment, 2026-11-27 (#213): C4, points 3 and 4, and its "Revisit
+  if": a phased `ironafs-disk` row.** C4 is Working and stays Working; no
+  firm decision changes.
+  - What changed. Point 3's table gains `ironafs-disk`, the `Disk`
+    driver, as the one home of the Cargo feature `fault`, in two phases:
+    a gate-only phase that holds only the feature and its one gate, and
+    declares no dependency of any kind, no `unsafe`, no build script and
+    no disk I/O; and a driver phase, from the first pull request that
+    adds a driver operation, with a normal dependency on `ironafs-cache`
+    and on `ironafs-os` and a development dependency on
+    `ironafs-test-support`, which never depends on `ironafs-disk`. Point
+    3 also states who may turn `fault` on: it is declared, off by
+    default, requested only by `xtask` in its dependency's feature list,
+    forwarded from no crate's own features, and compiled into no shipped
+    build. It makes `ironafs-disk`, `ironafs-net` and `ironafs-sim`
+    known by their names, for points 3 and 4: `check-deps` reads
+    `cargo metadata` with every feature on and no platform filter; no
+    package it reports outside the workspace bears one of the names,
+    whatever its source; and each declaration of one, edge or no edge,
+    is read as one of the workspace crate of that name and needs that
+    member. Point 4 gains three rules: no pure crate, layer or
+    `ironafs-client` reaches `ironafs-disk` through normal or build
+    dependencies; no shipped crate reaches
+    `ironafs-sim` or `ironafs-test-support` through normal or build
+    dependencies; and `ironafs-net`, `ironafs-disk` and `ironafs-sim` do
+    not depend on one another, development dependencies included. Its
+    closing sentence scopes what `check-deps` keeps to declarations and
+    graph paths, and gives what a crate's own source holds to review.
+    Three triggers are added beside the existing ones, and the text says
+    why the gate-only phase does not fire "no content of its own".
+  - Evidence. The test strategy's S4 and the seams specification, 5.9,
+    point 3, need the fault entry points of a production driver behind
+    one Cargo feature. C4, point 1, forbids features in every pure crate,
+    including `ironafs-cache`, which holds the `Disk` trait, and C4 had
+    no row for `ironafs-disk`, which the seams specification's section
+    13, Q2, made a precondition of creating it. Defining the feature in
+    one package and its sites in another would need a second selector,
+    on which the S4 design review returned a blocker. A dedicated
+    fault-provider crate and deferring the feature to the driver were
+    the alternatives considered (#213).
+  - Enforcement. `check-deps` classifies `ironafs-disk` as a driver in
+    its gate-only phase and refuses, each with its own planted
+    self-test case: any declared dependency of the gate-only package, by
+    the declared-dependency rule `ironafs-os` already has; a dependency
+    of any kind of `ironafs-test-support` on `ironafs-disk`; each of the
+    six legs among `ironafs-net`, `ironafs-disk` and `ironafs-sim` as a
+    direct dependency, and, as representative paths through another
+    crate, `ironafs-sim` reaching `ironafs-net` and `ironafs-disk`; a
+    pure crate, a layer and `ironafs-client` on `ironafs-disk`, and a
+    layer reaching it through another crate; an undeclared `fault`,
+    `fault` on by default directly or through another feature, a request
+    from any reported package other than `xtask`, on an optional or
+    renamed dependency, from a binary-only crate, from a third-party
+    crate or behind a feature no one turns on included, and forwarding
+    from a package's own features, `xtask`'s and through an optional
+    dependency included; a reported package outside the workspace named
+    `ironafs-disk`, `ironafs-net` or `ironafs-sim`, from a registry or a
+    local path (a git source in a unit test); a declaration of one of
+    those names with no member of that name; and a normal or build
+    declaration that Cargo left without an edge, counted as an edge
+    (`ironafs-sim` reaching `ironafs-net` through a third-party crate's
+    inactive dependency). Every declaration of one of the three names
+    counts, edge or no edge, and the metadata command's every-feature,
+    no-platform-filter shape is a unit-tested property. The workspace
+    with none of the three crates and no declaration of them passes. A
+    shipped crate's development
+    dependency on `ironafs-test-support` still passes, as do
+    `ironafs-test-support` reaching `ironafs-disk` through another crate
+    and a crate's development dependency on itself. The driver phase's
+    list is `check-deps`'s change in that pull request (#99); the fault
+    feature's gate, its absence evidence and its shipped-build
+    rejection are the S4 pull request's (#156); the release-build check
+    of the test strategy, section 8, point 2, is unchanged.
+  - Review rounds. The record is
+    [2026-11-27-213-c4-disk-amendment](../reviews/2026-11-27-213-c4-disk-amendment.md).
+    The amendment text was reviewed before any code, in three fix rounds
+    with the owner's permission for the third, and the owner accepted
+    the exact text on 2026-11-27 by the SHA-256 of its diff. After two
+    code fix rounds the owner chose a redesign: a further amendment,
+    the paragraph that makes the three names an identity, reviewed in
+    its own round and one fix round, and accepted by the owner on
+    2026-11-27 by the SHA-256 of the cumulative C4 diff. The code was
+    reviewed by `codex:gpt-6.2-astra` xhigh, `glm:glm-5.4` High with the
+    consistency pass, and `gemini:gemini-4-carbon-medium` as the
+    security seat: three rounds of the binding approach, two of them
+    fix rounds with the owner's permission, then two rounds of the
+    redesign. The last round passed at all three seats, with four
+    minors fixed afterwards under the stop rule; four refuted majors
+    were upheld by the refutation seat.
+  - Sweep on 2026-11-27: the repository was searched for "C4" with and
+    without its points, "ADR 0004" where it cites C4, "ironafs-disk",
+    "fault feature", "ironafs-fault", "depend on one another", "shipped
+    crate depends", "never shipped", "section 13, Q2" and "Q17".
+    - Rewritten: the seams specification, its quoted decisions, 5.2,
+      points 4 and 5, section 8, point 5, section 9's C4 row, its C4
+      "Revisit if" quote, and section 13, Q2 (split: `ironafs-sync` and
+      the call owner's home stay open, tracked in #71) and Q17; the
+      test strategy's quoted decisions, its section 9 row (now C4,
+      point 4, with the release-build evidence of section 8, point 2,
+      in its own row under C4, point 7) and its C4 "Revisit if" quote;
+      the specification index rows of both; `check-deps`'s
+      `ShippedOnTestOnly` diagnostic (now C4, point 4, with the
+      development exception stated); and the comment on `check-bans`'
+      all-features lint, which said that no crate but the pure ones
+      has features to combine.
+    - Agree, unchanged: the "Revisit if" quotes of C4 in the
+      configuration syntax, directory format, DNS client, Rx and XDR
+      specifications, which quote its first sentence; the citations of
+      C4, points 1, 3, 4 and 7 in the crate manifests and sources, in
+      `check-pure`, the seams census and `check-deps`, in ADR 0005, in
+      the OS-layers part of this ADR and in the specifications; the
+      seams specification's 5.2, point 2 (`ironafs-sync` still needs
+      its row), 5.4, point 7 (the call owner's home), 5.9 and its other
+      mentions of `ironafs-disk`; the test strategy's S4 and 10.6 (the
+      release-build check of the fault feature, still not filed); and
+      `ironafs-test-support`'s note that no shipped crate depends on it.
+    - Actors: the rule binds the maintainer's session, contributors and
+      their agents alike through `check-deps` in `cargo xtask check`
+      and CI, and a bot's pull request, such as a dependency update,
+      meets the same check in CI.

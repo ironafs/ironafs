@@ -91,3 +91,116 @@ fn fixture_writes_manifests_dependencies_and_files() {
     remove_dir(&dir).unwrap();
     remove_dir(&dir).unwrap();
 }
+
+#[test]
+fn remove_dependency_line_drops_only_that_line() {
+    let dir = std::env::temp_dir().join(format!(
+        "ironafs-xtask-fixture-remove-{}",
+        std::process::id()
+    ));
+    remove_dir(&dir).unwrap();
+    let mut fixture = Fixture::default();
+    fixture.add_crate("ironafs-time", &[]);
+    fixture.add_crate("ironafs-xdr", &["ironafs-time"]);
+    fixture.dependency_line("ironafs-xdr", "kept = \"1\"");
+    fixture.dependency_line("ironafs-xdr", "dropped = \"1\"");
+
+    fixture.remove_dependency_line("ironafs-xdr", "dropped = \"1\"");
+
+    fixture.write(&dir).unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.join("workspace/crates/ironafs-xdr/Cargo.toml")).unwrap(),
+        "[package]\nname = \"ironafs-xdr\"\nversion = \"0.0.0\"\nedition.workspace = true\n\n\
+         [dependencies]\nironafs-time = { path = \"../../../workspace/crates/ironafs-time\" }\n\
+         kept = \"1\"\n\
+         \n[lints]\nworkspace = true\n"
+    );
+    remove_dir(&dir).unwrap();
+}
+
+#[test]
+fn workspace_tail_follows_the_workspace_manifest() {
+    let dir =
+        std::env::temp_dir().join(format!("ironafs-xtask-fixture-tail-{}", std::process::id()));
+    remove_dir(&dir).unwrap();
+    let mut fixture = Fixture::default();
+    fixture.add_crate("ironafs-time", &[]);
+    fixture.workspace_tail("\n[patch.crates-io]\nx = { path = \"crates/x\" }\n");
+
+    let manifest = fixture.write(&dir).unwrap();
+
+    assert!(
+        fs::read_to_string(manifest).unwrap().ends_with(
+            "unsafe_code = \"forbid\"\n\n[patch.crates-io]\nx = { path = \"crates/x\" }\n"
+        )
+    );
+    remove_dir(&dir).unwrap();
+}
+
+#[test]
+fn outside_version_replaces_only_the_outside_crate_s_version() {
+    let dir = std::env::temp_dir().join(format!(
+        "ironafs-xtask-fixture-version-{}",
+        std::process::id()
+    ));
+    remove_dir(&dir).unwrap();
+    // The outside crate shares a workspace crate's name: only it changes.
+    let mut fixture = Fixture::default();
+    fixture.add_crate("helper", &[]);
+    fixture.add_outside_crate("helper", &[]);
+    fixture.outside_version("helper", "2.0.0");
+
+    fixture.write(&dir).unwrap();
+
+    assert!(
+        fs::read_to_string(dir.join("outside/helper/Cargo.toml"))
+            .unwrap()
+            .starts_with("[package]\nname = \"helper\"\nversion = \"2.0.0\"\n")
+    );
+    assert!(
+        fs::read_to_string(dir.join("workspace/crates/helper/Cargo.toml"))
+            .unwrap()
+            .starts_with("[package]\nname = \"helper\"\nversion = \"0.0.0\"\n")
+    );
+    remove_dir(&dir).unwrap();
+}
+
+#[test]
+fn third_party_tail_changes_only_the_third_party_crate_of_a_shared_name() {
+    let dir = std::env::temp_dir().join(format!(
+        "ironafs-xtask-fixture-third-party-tail-{}",
+        std::process::id()
+    ));
+    remove_dir(&dir).unwrap();
+    let mut fixture = Fixture::default();
+    fixture.add_crate("ironafs-disk", &[]);
+    fixture.add_third_party("ironafs-disk", &[]);
+    fixture.third_party_tail("ironafs-disk", "[features]\nextra = []\n");
+
+    fixture.write(&dir).unwrap();
+
+    let read = |path: &str| fs::read_to_string(dir.join(path)).unwrap();
+    assert!(read("vendor/ironafs-disk/Cargo.toml").ends_with("[features]\nextra = []\n"));
+    assert!(!read("workspace/crates/ironafs-disk/Cargo.toml").contains("extra"));
+    remove_dir(&dir).unwrap();
+}
+
+#[test]
+fn a_third_party_crate_sharing_a_workspace_crate_s_name_keeps_its_own_dependencies() {
+    let dir = std::env::temp_dir().join(format!(
+        "ironafs-xtask-fixture-shared-dependencies-{}",
+        std::process::id()
+    ));
+    remove_dir(&dir).unwrap();
+    let mut fixture = Fixture::default();
+    fixture.add_crate("ironafs-disk", &[]);
+    fixture.add_third_party("ironafs-disk", &["libc"]);
+    fixture.add_third_party("libc", &[]);
+
+    fixture.write(&dir).unwrap();
+
+    let read = |path: &str| fs::read_to_string(dir.join(path)).unwrap();
+    assert!(read("vendor/ironafs-disk/Cargo.toml").contains("[dependencies]\nlibc = \"1\"\n"));
+    assert!(!read("workspace/crates/ironafs-disk/Cargo.toml").contains("libc"));
+    remove_dir(&dir).unwrap();
+}

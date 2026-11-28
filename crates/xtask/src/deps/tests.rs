@@ -10,7 +10,7 @@ use super::{
     dependency_table_violations, edition_violations, graph_violations, inherits_workspace_edition,
     inherits_workspace_lints, kind_of, lint_violations, own_lints_differences,
 };
-use crate::metadata::{Member, Package, Workspace};
+use crate::metadata::{Declaration, Member, Package, Workspace};
 
 /// A workspace of the named members, each under `crates/`; every other
 /// name a member depends on is a third-party package with no dependencies.
@@ -28,6 +28,7 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
             target_kinds: vec!["lib".into()],
             links: None,
             features: Vec::new(),
+            declarations: Vec::new(),
         })
         .collect();
     for (_, dependencies) in members {
@@ -43,6 +44,7 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                     target_kinds: vec!["lib".into()],
                     links: None,
                     features: Vec::new(),
+                    declarations: Vec::new(),
                 });
             }
         }
@@ -61,7 +63,6 @@ fn workspace(members: &[(&str, &[&str])]) -> Workspace {
                 target_kinds: vec!["lib".into()],
                 editions: vec!["2024".into()],
                 build_script: None,
-                declared_dependencies: Vec::new(),
                 renamed: Vec::new(),
             })
             .collect(),
@@ -115,6 +116,7 @@ fn crate_table_names_every_crate_of_the_architecture_once() {
         "ironafs-cloudfiles",
         "ironafs-gss",
         "ironafs-os",
+        "ironafs-disk",
         "ironafsd",
         "ironafs-cli",
         "xtask",
@@ -128,6 +130,7 @@ fn crate_table_names_every_crate_of_the_architecture_once() {
     assert_eq!(kind_of("ironafs-client"), Some(Kind::Composition));
     assert_eq!(kind_of("ironafs-smb"), Some(Kind::Layer));
     assert_eq!(kind_of("ironafs-os"), Some(Kind::Driver));
+    assert_eq!(kind_of("ironafs-disk"), Some(Kind::Driver));
     assert_eq!(kind_of("ironafs-sim"), Some(Kind::TestOnly));
     assert_eq!(kind_of("xtask"), Some(Kind::Automation));
     assert_eq!(kind_of("ironafs-unknown"), None);
@@ -181,7 +184,7 @@ fn graph_violations_pass_the_allowed_shape() {
     ]);
 
     // The repository's lists are empty; these admit what the shape uses.
-    let lists: ThirdPartyLists = &[("ironafs-os", &["libc"]), ("ironafs-net", &["outside"])];
+    let lists: ThirdPartyLists<'_> = &[("ironafs-os", &["libc"]), ("ironafs-net", &["outside"])];
     assert_eq!(graph_violations(&allowed, lists), []);
 }
 
@@ -370,7 +373,7 @@ fn graph_violations_limit_third_party_crates_of_every_shipped_crate() {
             third_party("ironafs-cli", "bytes"),
         ]
     );
-    let lists: ThirdPartyLists = &[("ironafs-client", &["bytes"])];
+    let lists: ThirdPartyLists<'_> = &[("ironafs-client", &["bytes"])];
     assert_eq!(graph_violations(&graph, lists).len(), 4);
 }
 
@@ -387,7 +390,7 @@ fn graph_violations_keep_cryptography_and_bindings_in_their_homes() {
             found.dependencies = vec!["id libc".into()];
         }
     }
-    let lists: ThirdPartyLists = &[
+    let lists: ThirdPartyLists<'_> = &[
         ("ironafs-crypto", &["ring"]),
         ("ironafs-os", &["libc"]),
         ("ironafs-net", &["wrapper"]),
@@ -432,8 +435,9 @@ fn graph_violations_let_ironafs_gss_reach_only_the_bindings_its_list_names() {
         target_kinds: vec!["lib".into()],
         links: None,
         features: Vec::new(),
+        declarations: Vec::new(),
     });
-    let lists: ThirdPartyLists = &[
+    let lists: ThirdPartyLists<'_> = &[
         ("ironafs-gss", &["gss-ffi", "libc"]),
         ("ironafs-net", &["gss-ffi", "libc"]),
     ];
@@ -719,8 +723,14 @@ fn dependency_tables_are_cargo_s_declared_dependencies_not_manifest_text() {
         .unwrap();
     }
     assert_eq!(dependency_table_violations(&graph, &["ironafs-os"]), []);
-    if let Some(member) = graph.members.first_mut() {
-        member.declared_dependencies = vec!["dev ironafs-time".into()];
+    if let Some(package) = graph.packages.first_mut() {
+        package.declarations = vec![Declaration {
+            kind: "dev".into(),
+            package: "ironafs-time".into(),
+            name: "ironafs-time".into(),
+            optional: false,
+            features: Vec::new(),
+        }];
     }
     assert_eq!(
         dependency_table_violations(&graph, &["ironafs-os"]),
@@ -731,4 +741,95 @@ fn dependency_tables_are_cargo_s_declared_dependencies_not_manifest_text() {
         }]
     );
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn name_violations_refuse_a_namesake_whatever_its_source_and_a_declaration_with_no_member() {
+    // A git package named ironafs-net beside the member, and a declaration
+    // of ironafs-sim, which is no member here.
+    let mut graph = workspace(&[("ironafs-net", &[]), ("xtask", &[])]);
+    graph.packages.push(Package {
+        id: "git+https://example.invalid/fork#ironafs-net@0.1.0".into(),
+        name: "ironafs-net".into(),
+        path: None,
+        member: false,
+        dependencies: Vec::new(),
+        dev_dependencies: Vec::new(),
+        target_kinds: vec!["lib".into()],
+        links: None,
+        features: Vec::new(),
+        declarations: Vec::new(),
+    });
+    if let Some(xtask) = graph
+        .packages
+        .iter_mut()
+        .find(|found| found.name == "xtask")
+    {
+        xtask.declarations = vec![Declaration {
+            kind: "normal".into(),
+            package: "ironafs-sim".into(),
+            name: "sim".into(),
+            optional: true,
+            features: Vec::new(),
+        }];
+    }
+    assert_eq!(
+        super::name_violations(&graph),
+        [
+            Violation::Namesake {
+                name: "ironafs-net".into(),
+                id: "git+https://example.invalid/fork#ironafs-net@0.1.0".into(),
+            },
+            Violation::NoMemberForName {
+                from: "xtask".into(),
+                name: "ironafs-sim".into(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn graph_violations_end_on_a_cycle_of_declared_edges_and_report_a_diamond_once() {
+    // ironafs-sim depends on relay and fork; relay declares ironafs-sim back
+    // and ironafs-net, fork declares ironafs-net, none of it resolved. The
+    // walk ends, reports no path from ironafs-sim to itself, and reports
+    // ironafs-sim reaching ironafs-net once, by the shorter path.
+    let mut graph = workspace(&[("ironafs-sim", &["relay", "fork"]), ("ironafs-net", &[])]);
+    let declaration = |package: &str| Declaration {
+        kind: "normal".into(),
+        package: package.into(),
+        name: package.into(),
+        optional: true,
+        features: Vec::new(),
+    };
+    for found in &mut graph.packages {
+        match found.name.as_str() {
+            "relay" => {
+                found.declarations = vec![declaration("ironafs-sim"), declaration("ironafs-net")];
+            }
+            "fork" => found.declarations = vec![declaration("ironafs-net")],
+            _ => {}
+        }
+    }
+    let linked: Vec<Violation> = graph_violations_of(&graph)
+        .into_iter()
+        .filter(|found| {
+            matches!(
+                found,
+                Violation::Edge {
+                    rule: Rule::RealAndSimulatedLinked,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(
+        linked,
+        [edge(
+            "ironafs-sim",
+            &["relay"],
+            "ironafs-net",
+            Rule::RealAndSimulatedLinked
+        )]
+    );
 }

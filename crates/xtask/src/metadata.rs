@@ -40,16 +40,40 @@ pub(crate) struct Member {
     pub(crate) target_kinds: Vec<String>,
     /// The edition of each target, in the order of `target_kinds`' targets.
     pub(crate) editions: Vec<String>,
-    /// Every dependency the manifest declares, as cargo parsed it: normal,
-    /// development, build, optional and target-specific alike, each as
-    /// `<kind> <name>` (`normal` when cargo gives no kind). Unlike the
-    /// resolved graph, this keeps development dependencies.
-    pub(crate) declared_dependencies: Vec<String>,
     /// The names the member's source gives dependencies (of every kind)
     /// that are not the dependency's package name with `-` as `_`: a
     /// rename in a manifest, whatever its TOML spelling, or a library
     /// target named otherwise.
     pub(crate) renamed: Vec<String>,
+}
+
+/// A member's declarations: those of its package, the one list of them.
+pub(crate) fn declarations<'a>(workspace: &'a Workspace, member: &Member) -> &'a [Declaration] {
+    workspace
+        .packages
+        .iter()
+        .find(|package| package.id == member.id)
+        .map_or(&[][..], |package| package.declarations.as_slice())
+}
+
+/// One dependency a member's manifest declares.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Declaration {
+    /// `normal`, `dev` or `build` (`normal` when cargo gives no kind).
+    pub(crate) kind: String,
+    /// The dependency's package name.
+    pub(crate) package: String,
+    /// The name the manifest gives it: its rename, or the package name.
+    pub(crate) name: String,
+    pub(crate) optional: bool,
+    /// The features the declaration asks of the dependency.
+    pub(crate) features: Vec<String>,
+}
+
+impl std::fmt::Display for Declaration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} {}", self.kind, self.package)
+    }
 }
 
 /// One Cargo target bearing Rust source.
@@ -88,9 +112,15 @@ pub(crate) struct Package {
     pub(crate) target_kinds: Vec<String>,
     /// The native library the package says it links, if any.
     pub(crate) links: Option<String>,
-    /// The names of the features the package declares, implicit ones from
-    /// optional dependencies included.
-    pub(crate) features: Vec<String>,
+    /// The package's features, each with what it enables, as its manifest
+    /// states them (implicit features of optional dependencies included).
+    pub(crate) features: Vec<(String, Vec<String>)>,
+    /// Every dependency its manifest declares, as cargo parsed it: normal,
+    /// development, build, optional and target-specific alike. Unlike the
+    /// resolved graph, this keeps development dependencies, every
+    /// declaration whether or not Cargo resolved it to an edge, and what
+    /// each asks of its dependency.
+    pub(crate) declarations: Vec<Declaration>,
 }
 
 const COMMAND: &str = "cargo metadata";
@@ -107,19 +137,11 @@ pub(crate) fn load(manifest: Option<&Path>, config: &[String]) -> Result<Workspa
     load_in(manifest, config, |_| {})
 }
 
-/// As `load`, with `prepare` applied to the `cargo metadata` command first
-/// (to set the compiler it runs, for one).
-///
-/// # Errors
-///
-/// Returns an error if cargo fails or its output is not the expected graph.
-pub(crate) fn load_in(
-    manifest: Option<&Path>,
-    config: &[String],
-    prepare: impl FnOnce(&mut Command),
-) -> Result<Workspace, Error> {
+/// The `cargo metadata` command: every feature of every member on, and no
+/// platform filter, so every package any feature or target of the
+/// workspace can compile is reported (ADR 0004, C4, point 3).
+pub(crate) fn command(manifest: Option<&Path>, config: &[String]) -> Command {
     let mut command = Command::new("cargo");
-    prepare(&mut command);
     command.args(["metadata", "--format-version", "1", "--all-features"]);
     for value in config {
         command.arg("--config").arg(value);
@@ -131,6 +153,22 @@ pub(crate) fn load_in(
             .arg(manifest),
         None => command.arg("--locked"),
     };
+    command
+}
+
+/// As `load`, with `prepare` applied to the `cargo metadata` command first
+/// (to set the compiler it runs, for one).
+///
+/// # Errors
+///
+/// Returns an error if cargo fails or its output is not the expected graph.
+pub(crate) fn load_in(
+    manifest: Option<&Path>,
+    config: &[String],
+    prepare: impl FnOnce(&mut Command),
+) -> Result<Workspace, Error> {
+    let mut command = command(manifest, config);
+    prepare(&mut command);
     let output = command
         .stderr(Stdio::inherit())
         .output()
@@ -140,13 +178,14 @@ pub(crate) fn load_in(
     parse_workspace(&text)
 }
 
-/// A package's declared dependencies, each as `<kind> <name>`.
+/// A package's declared dependencies.
 ///
 /// # Errors
 ///
-/// Returns an error if the package has no `dependencies` array or a kind
-/// that is not a string or null.
-fn declared(package: &Value) -> Result<Vec<String>, Error> {
+/// Returns an error if the package has no `dependencies` array, or a
+/// declaration's kind, rename, optional flag or features are not what
+/// cargo writes.
+fn declared(package: &Value) -> Result<Vec<Declaration>, Error> {
     let mut found = Vec::new();
     for dependency in array(package, "dependencies")? {
         let kind = match dependency.get("kind") {
@@ -154,9 +193,37 @@ fn declared(package: &Value) -> Result<Vec<String>, Error> {
             Some(Value::String(kind)) => kind.as_str(),
             Some(_) => return Err(Error::UnexpectedOutput(COMMAND)),
         };
-        found.push(format!("{kind} {}", string(dependency, "name")?));
+        let package = string(dependency, "name")?;
+        let name = match dependency.get("rename") {
+            Some(Value::Null) => package,
+            Some(Value::String(rename)) => rename.as_str(),
+            _ => return Err(Error::UnexpectedOutput(COMMAND)),
+        };
+        let Some(Value::Bool(optional)) = dependency.get("optional") else {
+            return Err(Error::UnexpectedOutput(COMMAND));
+        };
+        found.push(Declaration {
+            kind: kind.to_owned(),
+            package: package.to_owned(),
+            name: name.to_owned(),
+            optional: *optional,
+            features: strings(array(dependency, "features")?)?,
+        });
     }
     Ok(found)
+}
+
+/// A JSON array of strings.
+fn strings(values: &[Value]) -> Result<Vec<String>, Error> {
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or(Error::UnexpectedOutput(COMMAND))
+        })
+        .collect()
 }
 
 /// What a member's targets say: its library root, its build script, and
@@ -184,15 +251,7 @@ impl Targets {
             let kinds = kinds_of(target)?;
             let required_features = match target.get("required-features") {
                 None => Vec::new(),
-                Some(_) => array(target, "required-features")?
-                    .iter()
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .map(str::to_owned)
-                            .ok_or(Error::UnexpectedOutput(COMMAND))
-                    })
-                    .collect::<Result<_, _>>()?,
+                Some(_) => strings(array(target, "required-features")?)?,
             };
             targets.sources.push(Target {
                 name: string(target, "name")?.to_owned(),
@@ -260,7 +319,6 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             targets: targets.sources,
             target_kinds: targets.kinds,
             editions: targets.editions,
-            declared_dependencies: declared(package)?,
             renamed: renamed(node, packages)?,
         });
     }
@@ -277,26 +335,7 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             Some(Value::String(_)) => None,
             Some(_) => return Err(unexpected()),
         };
-        let mut dependencies = Vec::new();
-        let mut dev_dependencies = Vec::new();
-        for dependency in array(node, "deps")? {
-            let mut shipped = false;
-            for kind in array(dependency, "dep_kinds")? {
-                match kind.get("kind") {
-                    Some(Value::Null) => shipped = true,
-                    Some(Value::String(kind)) if kind == "build" => shipped = true,
-                    Some(Value::String(kind)) if kind == "dev" => {}
-                    _ => return Err(unexpected()),
-                }
-            }
-            let target = string(dependency, "pkg")?;
-            find_package(target)?;
-            if shipped {
-                dependencies.push(target.to_owned());
-            } else {
-                dev_dependencies.push(target.to_owned());
-            }
-        }
+        let (dependencies, dev_dependencies) = node_edges(node, &find_package)?;
         resolved.push(Package {
             id: id.to_owned(),
             name: string(package, "name")?.to_owned(),
@@ -306,7 +345,8 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
             dev_dependencies,
             target_kinds: target_kinds(package)?,
             links: links(package)?,
-            features: features(package)?,
+            features: feature_map(package)?,
+            declarations: declared(package)?,
         });
     }
     Ok(Workspace {
@@ -315,6 +355,35 @@ pub(crate) fn parse_workspace(text: &str) -> Result<Workspace, Error> {
         members,
         packages: resolved,
     })
+}
+
+/// The ids of a resolved node's normal and build dependencies, and of
+/// those it reaches only as development dependencies.
+fn node_edges<'a>(
+    node: &Value,
+    find_package: &impl Fn(&str) -> Result<&'a Value, Error>,
+) -> Result<(Vec<String>, Vec<String>), Error> {
+    let mut dependencies = Vec::new();
+    let mut dev_dependencies = Vec::new();
+    for dependency in array(node, "deps")? {
+        let mut shipped = false;
+        for kind in array(dependency, "dep_kinds")? {
+            match kind.get("kind") {
+                Some(Value::Null) => shipped = true,
+                Some(Value::String(kind)) if kind == "build" => shipped = true,
+                Some(Value::String(kind)) if kind == "dev" => {}
+                _ => return Err(Error::UnexpectedOutput(COMMAND)),
+            }
+        }
+        let target = string(dependency, "pkg")?;
+        find_package(target)?;
+        if shipped {
+            dependencies.push(target.to_owned());
+        } else {
+            dev_dependencies.push(target.to_owned());
+        }
+    }
+    Ok((dependencies, dev_dependencies))
 }
 
 /// The names a resolved node gives its dependencies that are not their
@@ -361,12 +430,16 @@ fn links(package: &Value) -> Result<Option<String>, Error> {
     }
 }
 
-/// The names of the features a package declares.
-fn features(package: &Value) -> Result<Vec<String>, Error> {
+/// A package's features, each with what it enables.
+fn feature_map(package: &Value) -> Result<Vec<(String, Vec<String>)>, Error> {
     match package.get("features") {
-        Some(Value::Object(features)) => {
-            Ok(features.iter().map(|(name, _)| name.clone()).collect())
-        }
+        Some(Value::Object(features)) => features
+            .iter()
+            .map(|(name, enables)| {
+                let enables = enables.as_array().ok_or(Error::UnexpectedOutput(COMMAND))?;
+                Ok((name.clone(), strings(enables)?))
+            })
+            .collect(),
         _ => Err(Error::UnexpectedOutput(COMMAND)),
     }
 }

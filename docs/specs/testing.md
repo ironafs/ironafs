@@ -35,7 +35,17 @@ ADR 0004, C3 (**Working**), points 2 and 6:
 > 6. One deterministic simulator drives points 1 to 3 through the injected
 >    interfaces. It is a deliverable of M2a (O45).
 
-ADR 0004, C4 (**Working**), point 7, its third sentence:
+ADR 0004, C4 (**Working**), point 3, the first sentence of its
+`ironafs-disk` paragraph; point 4, its fifth item; point 7, its third
+sentence:
+
+> `ironafs-disk` is the one home of the Cargo feature `fault`.
+
+> - no shipped crate reaches `ironafs-sim` or `ironafs-test-support`
+>   through normal or build dependencies, directly or through other
+>   crates. This rule does not follow development-only edges; the
+>   rules that forbid a declaration of any kind still apply (the
+>   gate-only phase, point 3; the next rule; ADR 0005, point 1.4);
 
 > The simulator is a test-only workspace crate, `ironafs-sim`, which is
 > never shipped.
@@ -1121,7 +1131,8 @@ arithmetic, which D7 tests.
 | Constraint 4 | 5.2.1, D2, D4, D5, D9; 5.3, point 2 | the reject corpus; the fuzz target's assertions; a decoder with no fuzz target (a check lists decoders and targets) |
 | C3, point 2 | 5.2.2, M1 to M4 | a planted divergence in a cache type, caught by M1 or M3; the transition-coverage check on an uncovered pair |
 | C3, point 6; O45, point 3 | 5.3, point 3; 5.4, points 1 and 8 | an uncaught invariant mutation switch; a case-manifest entry at count zero; the two-process replay test |
-| C4, point 7 | `check-deps`; 8, point 2 | a shipped crate depending on `ironafs-sim` or `ironafs-test-support` |
+| C4, point 4 | `check-deps` | a shipped crate reaching `ironafs-sim` or `ironafs-test-support` through normal or build dependencies, directly or through other crates (a development dependency is outside this rule) |
+| C4, point 7 | `check-deps`, by C4, point 4's rule on test-only crates; separately, 8, point 2's check over each shipped binary's release build, which proves its test-only switches absent and says nothing of the simulator's other code | a shipped crate reaching `ironafs-sim` through normal or build dependencies; a test-only switch in a shipped binary's release build |
 | O22; O46, points 1 and 3 | 5.2.8, N1 to N3 | the refusal-coverage check; an unmapped point, or a missing or failed gate result, keeps the mode out |
 | O45, point 6 | 5.3, point 3; 5.5, point 5 | the event-sequence fuzz target is a registered fuzz target, so its missing run line fails the fuzz manifest check |
 | O47, point 1 | 5.2.2, M1; 5.2.4, C2 | a planted divergence between client and model |
@@ -1252,7 +1263,12 @@ From the working decisions this page rests on:
 - **C4:** "a boundary below forces a dependency that point 4 forbids, the
   first implementation of a crate shows it has no content of its own, or
   no log sink outside Linux still needs a site in `ironafs-os` (then the
-  safe log transport could live in a crate without `unsafe`)."
+  safe log transport could live in a crate without `unsafe`). For
+  `ironafs-disk` (point 3), also revisit if: a second production driver
+  needs fault or crash-point entry points (then a fault-provider crate
+  shared by the drivers is reconsidered), the `Disk` driver needs an edge
+  point 3 does not list, or #99 closes with the crate still in its
+  gate-only phase."
 - **O45:** "the simulator cannot reproduce a failure seen against a real
   cell, or keeping its server models in step with observed behaviour
   costs more than the tests return."

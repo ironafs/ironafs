@@ -20,6 +20,8 @@ struct FixtureCrate {
     name: String,
     place: Place,
     dependencies: Vec<Dependency>,
+    /// The package's version, if not the default for its place.
+    version: Option<String>,
     /// The `[package]` table's edition line.
     edition: String,
     /// Lines added to the `[package]` table.
@@ -56,6 +58,8 @@ pub(crate) struct Fixture {
     crates: Vec<FixtureCrate>,
     /// Files outside every crate, relative to the workspace root.
     root_files: Vec<(String, String)>,
+    /// Tables appended to the workspace manifest.
+    workspace_tail: String,
 }
 
 /// Where the workspace, the local crates outside it and the third-party
@@ -114,15 +118,18 @@ impl Fixture {
             name: name.to_owned(),
             place,
             edition: edition.to_owned(),
-            dependencies: Vec::new(),
+            version: None,
+            // Set here, not through `depend`, which finds a crate by name
+            // and so the first of two that share one.
+            dependencies: dependencies
+                .iter()
+                .map(|to| Dependency::On((*to).to_owned()))
+                .collect(),
             package_lines: String::new(),
             manifest_tail: String::new(),
             lints: INHERITED_LINTS.to_owned(),
             files: vec![("src/lib.rs".to_owned(), String::new())],
         });
-        for dependency in dependencies {
-            self.depend(name, dependency);
-        }
     }
 
     /// Adds a normal dependency on another crate of the fixture.
@@ -139,11 +146,42 @@ impl Fixture {
         }
     }
 
+    /// Appends tables, such as a `[patch]` table, to the workspace
+    /// manifest.
+    pub(crate) fn workspace_tail(&mut self, text: &str) {
+        self.workspace_tail.push_str(text);
+    }
+
+    /// Removes a raw line that `dependency_line` added to a crate.
+    pub(crate) fn remove_dependency_line(&mut self, name: &str, line: &str) {
+        if let Some(found) = self.find(name) {
+            found.dependencies.retain(
+                |dependency| !matches!(dependency, Dependency::Line(existing) if existing == line),
+            );
+        }
+    }
+
     /// Adds a line to a crate's `[package]` table.
     pub(crate) fn package_line(&mut self, name: &str, line: &str) {
         if let Some(found) = self.find(name) {
             found.package_lines.push_str(line);
             found.package_lines.push('\n');
+        }
+    }
+
+    /// Replaces the version of the local crate outside the workspace named
+    /// `name`, even if a workspace crate shares its name.
+    pub(crate) fn outside_version(&mut self, name: &str, version: &str) {
+        if let Some(found) = self.find_at(name, &Place::Outside) {
+            found.version = Some(version.to_owned());
+        }
+    }
+
+    /// Appends tables to the manifest of the third-party crate named
+    /// `name`, even if a workspace crate shares its name.
+    pub(crate) fn third_party_tail(&mut self, name: &str, text: &str) {
+        if let Some(found) = self.find_at(name, &Place::ThirdParty) {
+            found.manifest_tail.push_str(text);
         }
     }
 
@@ -197,6 +235,12 @@ impl Fixture {
         self.crates.iter_mut().find(|found| found.name == name)
     }
 
+    fn find_at(&mut self, name: &str, place: &Place) -> Option<&mut FixtureCrate> {
+        self.crates
+            .iter_mut()
+            .find(|found| found.name == name && found.place == *place)
+    }
+
     /// A crate's directory relative to the fixture's directory.
     fn dir_of(found: &FixtureCrate) -> String {
         match &found.place {
@@ -227,17 +271,23 @@ impl Fixture {
     /// Returns an error if a file cannot be written.
     pub(crate) fn write(&self, dir: &Path) -> Result<PathBuf, Error> {
         let manifest = dir.join(WORKSPACE).join("Cargo.toml");
-        write_file(&manifest, WORKSPACE_MANIFEST)?;
+        write_file(
+            &manifest,
+            &format!("{WORKSPACE_MANIFEST}{}", self.workspace_tail),
+        )?;
         for (path, contents) in &self.root_files {
             write_file(&dir.join(WORKSPACE).join(path), contents)?;
         }
         for found in &self.crates {
             let crate_dir = dir.join(Self::dir_of(found));
-            let version = if found.place == Place::ThirdParty {
-                "1.0.0"
-            } else {
-                "0.0.0"
-            };
+            let version = found
+                .version
+                .as_deref()
+                .unwrap_or(if found.place == Place::ThirdParty {
+                    "1.0.0"
+                } else {
+                    "0.0.0"
+                });
             let mut text = format!(
                 "[package]\nname = \"{}\"\nversion = \"{version}\"\n{}\n{}\n[dependencies]\n",
                 found.name, found.edition, found.package_lines

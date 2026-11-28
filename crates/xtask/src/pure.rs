@@ -946,7 +946,11 @@ fn closure_violations(workspace: &Workspace, member: &Member) -> Vec<Violation> 
         if !package.features.is_empty() {
             violations.push(Violation::Features {
                 name: package.name.clone(),
-                features: package.features.clone(),
+                features: package
+                    .features
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect(),
             });
         }
     }

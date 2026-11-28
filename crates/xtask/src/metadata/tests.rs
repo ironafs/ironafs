@@ -5,19 +5,28 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Member, Package, Target, Workspace, parse_workspace};
+use super::{Declaration, Member, Package, Target, Workspace, parse_workspace};
 use crate::Error;
 
 const METADATA: &str = r#"{
   "packages": [
     {"name": "ironafs-a", "id": "path+file:///w/crates/ironafs-a#0.0.0", "source": null,
      "features": {}, "links": null, "manifest_path": "/w/crates/ironafs-a/Cargo.toml",
-     "dependencies": [{"name": "ironafs-b", "kind": null}, {"name": "ironafs-c", "kind": "dev"},
-                      {"name": "outside", "kind": "build"}, {"name": "ironafs-d", "kind": "dev"},
-                      {"name": "ironafs-d", "kind": null}],
+     "dependencies": [{"name": "ironafs-b", "kind": null, "rename": "bee", "optional": false,
+                       "features": ["std"], "target": null},
+                      {"name": "ironafs-c", "kind": "dev", "rename": null, "optional": false, "features": [],
+                       "target": null},
+                      {"name": "outside", "kind": "build", "rename": null, "optional": false, "features": [],
+                       "target": null},
+                      {"name": "ironafs-d", "kind": "dev", "rename": null, "optional": false, "features": [],
+                       "target": null},
+                      {"name": "ironafs-d", "kind": null, "rename": null, "optional": true,
+                       "features": [], "target": "cfg(windows)"}],
      "targets": [{"kind": ["lib"], "name": "lib", "src_path": "/w/crates/ironafs-a/src/lib.rs", "edition": "2024"}]},
     {"name": "ironafs-b", "id": "path+file:///w/crates/ironafs-b#0.0.0",
-     "features": {"std": [], "default": ["std"]}, "links": null, "manifest_path": "/w/crates/ironafs-b/Cargo.toml", "dependencies": [],
+     "features": {"std": [], "default": ["std"]}, "links": null, "manifest_path": "/w/crates/ironafs-b/Cargo.toml",
+     "dependencies": [{"name": "outside", "kind": null, "rename": null, "optional": false, "features": [],
+                       "target": null}],
      "targets": [{"kind": ["lib"], "name": "lib", "src_path": "/w/crates/ironafs-b/src/lib.rs", "edition": "2024"}]},
     {"name": "ironafs-c", "id": "path+file:///w/crates/ironafs-c#0.0.0",
      "features": {}, "links": null, "manifest_path": "/w/crates/ironafs-c/Cargo.toml", "dependencies": [],
@@ -29,7 +38,7 @@ const METADATA: &str = r#"{
     {"name": "outside", "id": "registry+https://example.invalid#outside@1.0.0",
      "source": "registry+https://example.invalid", "manifest_path": "/r/outside/Cargo.toml", "dependencies": [],
      "features": {}, "links": null,
-     "targets": [{"kind": ["proc-macro"], "src_path": "/r/outside/src/lib.rs"}]}
+     "targets": [{"kind": ["proc-macro"], "name": "outside", "src_path": "/r/outside/src/lib.rs"}]}
   ],
   "workspace_members": [
     "path+file:///w/crates/ironafs-a#0.0.0",
@@ -71,6 +80,7 @@ fn package(name: &str, path: bool, member: bool, dependencies: &[&str]) -> Packa
         target_kinds: vec!["lib".into()],
         links: None,
         features: Vec::new(),
+        declarations: Vec::new(),
     }
 }
 
@@ -107,9 +117,34 @@ fn member(name: &str, lib: Option<&str>, target_kinds: &[&str]) -> Member {
         target_kinds: target_kinds.iter().map(|kind| (*kind).into()).collect(),
         editions: target_kinds.iter().map(|_| "2024".into()).collect(),
         build_script: None,
-        declared_dependencies: Vec::new(),
         renamed: Vec::new(),
     }
+}
+
+fn declaration(
+    kind: &str,
+    package: &str,
+    name: &str,
+    optional: bool,
+    features: &[&str],
+) -> Declaration {
+    Declaration {
+        kind: kind.into(),
+        package: package.into(),
+        name: name.into(),
+        optional,
+        features: features.iter().map(|feature| (*feature).into()).collect(),
+    }
+}
+
+fn a_declarations() -> Vec<Declaration> {
+    vec![
+        declaration("normal", "ironafs-b", "bee", false, &["std"]),
+        declaration("dev", "ironafs-c", "ironafs-c", false, &[]),
+        declaration("build", "outside", "outside", false, &[]),
+        declaration("dev", "ironafs-d", "ironafs-d", false, &[]),
+        declaration("normal", "ironafs-d", "ironafs-d", true, &[]),
+    ]
 }
 
 #[test]
@@ -125,13 +160,6 @@ fn parse_workspace_follows_package_ids_and_keeps_development_edges_apart() {
                 // `bee` is ironafs-b under another name.
                 Member {
                     renamed: vec!["bee".into()],
-                    declared_dependencies: vec![
-                        "normal ironafs-b".into(),
-                        "dev ironafs-c".into(),
-                        "build outside".into(),
-                        "dev ironafs-d".into(),
-                        "normal ironafs-d".into(),
-                    ],
                     ..member("ironafs-a", Some("src/lib.rs"), &["lib"])
                 },
                 member("ironafs-b", Some("src/lib.rs"), &["lib"]),
@@ -139,13 +167,13 @@ fn parse_workspace_follows_package_ids_and_keeps_development_edges_apart() {
                 Member {
                     editions: vec!["2024".into(), "2018".into()],
                     build_script: Some(PathBuf::from("/w/crates/ironafs-d/build.rs")),
-                    declared_dependencies: Vec::new(),
                     ..member("ironafs-d", Some("src/lib.rs"), &["lib", "custom-build"])
                 },
             ],
             packages: vec![
                 Package {
                     dev_dependencies: vec![id("ironafs-c")],
+                    declarations: a_declarations(),
                     ..package(
                         "ironafs-a",
                         true,
@@ -154,7 +182,11 @@ fn parse_workspace_follows_package_ids_and_keeps_development_edges_apart() {
                     )
                 },
                 Package {
-                    features: vec!["std".into(), "default".into()],
+                    features: vec![
+                        ("std".into(), Vec::new()),
+                        ("default".into(), vec!["std".into()]),
+                    ],
+                    declarations: vec![declaration("normal", "outside", "outside", false, &[])],
                     ..package("ironafs-b", true, true, &["outside"])
                 },
                 Package {
@@ -199,6 +231,10 @@ fn parse_workspace_rejects_output_without_a_resolved_graph() {
         ),
         &METADATA.replace("\"links\": \"native\"", "\"links\": 1"),
         &METADATA.replace(", \"edition\": \"2018\"", ""),
+        &METADATA.replace("\"rename\": \"bee\"", "\"rename\": 1"),
+        &METADATA.replace("\"optional\": true", "\"optional\": null"),
+        &METADATA.replace("\"features\": [\"std\"]", "\"features\": [1]"),
+        &METADATA.replace("\"default\": [\"std\"]", "\"default\": \"std\""),
     ] {
         assert!(
             matches!(
@@ -206,6 +242,26 @@ fn parse_workspace_rejects_output_without_a_resolved_graph() {
                 Err(Error::UnexpectedOutput("cargo metadata"))
             ),
             "input {text}"
+        );
+    }
+}
+
+#[test]
+fn metadata_command_turns_every_feature_on_with_no_platform_filter() {
+    // ADR 0004, C4, point 3: the dependency rules read the packages Cargo
+    // reports with every feature on and for every platform.
+    for manifest in [None, Some(Path::new("/w/Cargo.toml"))] {
+        let command = super::command(manifest, &[]);
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.iter().any(|arg| arg == "--all-features"), "{args:?}");
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("--filter-platform")
+                || arg.starts_with("--features")
+                || arg == "--no-default-features"),
+            "{args:?}"
         );
     }
 }
