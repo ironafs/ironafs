@@ -184,3 +184,23 @@ fn third_party_tail_changes_only_the_third_party_crate_of_a_shared_name() {
     assert!(!read("workspace/crates/ironafs-disk/Cargo.toml").contains("extra"));
     remove_dir(&dir).unwrap();
 }
+
+#[test]
+fn a_third_party_crate_sharing_a_workspace_crate_s_name_keeps_its_own_dependencies() {
+    let dir = std::env::temp_dir().join(format!(
+        "ironafs-xtask-fixture-shared-dependencies-{}",
+        std::process::id()
+    ));
+    remove_dir(&dir).unwrap();
+    let mut fixture = Fixture::default();
+    fixture.add_crate("ironafs-disk", &[]);
+    fixture.add_third_party("ironafs-disk", &["libc"]);
+    fixture.add_third_party("libc", &[]);
+
+    fixture.write(&dir).unwrap();
+
+    let read = |path: &str| fs::read_to_string(dir.join(path)).unwrap();
+    assert!(read("vendor/ironafs-disk/Cargo.toml").contains("[dependencies]\nlibc = \"1\"\n"));
+    assert!(!read("workspace/crates/ironafs-disk/Cargo.toml").contains("libc"));
+    remove_dir(&dir).unwrap();
+}

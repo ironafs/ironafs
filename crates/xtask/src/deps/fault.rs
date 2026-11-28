@@ -33,8 +33,8 @@ fn enabling(home: &Package) -> Vec<(&str, Vec<String>)> {
 
 /// The features `feature` passes through to reach `fault` in `home`'s own
 /// feature map, if it reaches it: empty when it is `fault`. A strong
-/// `dep/feature` value reaches the feature named `dep` (Cargo turns on an
-/// optional dependency's implicit feature with it).
+/// `dep/feature` value reaches the feature named `dep` only when that is an
+/// optional dependency's implicit feature, which Cargo turns on with it.
 fn path_to_fault(home: &Package, feature: &str) -> Option<Vec<String>> {
     let mut frontier: Vec<(&str, Vec<String>)> = vec![(feature, Vec::new())];
     let mut seen: Vec<&str> = vec![feature];
@@ -49,13 +49,21 @@ fn path_to_fault(home: &Package, feature: &str) -> Option<Vec<String>> {
             .iter()
             .find(|(name, _)| name == current)
             .map_or(&[][..], |(_, enables)| enables.as_slice());
-        // A strong `dep/feature` also turns on the feature named `dep`, an
-        // optional dependency's implicit feature; a weak `dep?/feature` and
-        // `dep:dep` turn on no feature of the home.
+        // A strong `dep/feature` also turns on the feature named `dep` when
+        // that is the implicit feature of an optional dependency of the home
+        // under that name: the home declares one, and has a key of that
+        // name. A weak `dep?/feature`, `dep:dep`, and a path to a required
+        // dependency turn on no feature of the home.
+        let implicit = |name: &str| {
+            home.declarations
+                .iter()
+                .any(|declared| declared.optional && declared.name == name)
+                && home.features.iter().any(|(key, _)| key == name)
+        };
         let turned_on = enables
             .iter()
             .filter_map(|enabled| match enabled.split_once('/') {
-                Some((name, _)) if !name.ends_with('?') => Some(name),
+                Some((name, _)) if !name.ends_with('?') && implicit(name) => Some(name),
                 Some(_) => None,
                 None => (!enabled.starts_with("dep:")).then_some(enabled.as_str()),
             });

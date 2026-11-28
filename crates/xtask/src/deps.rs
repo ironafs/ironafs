@@ -1306,7 +1306,7 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
     if self_test {
         return self_test::run(&workspace.target_dir, output);
     }
-    let (violations, scanned) = check(&workspace, THIRD_PARTY, NO_DEPENDENCY_TABLES)?;
+    let (violations, scanned) = check_production(&workspace)?;
     if !violations.is_empty() {
         return Err(Error::Rules {
             check: "check-deps",
@@ -1326,6 +1326,16 @@ pub(super) fn run(self_test: bool, output: &mut impl Write) -> Result<(), Error>
         scanned.len()
     )
     .map_err(Error::io("report check-deps"))
+}
+
+/// Runs every rule on a workspace under the lists production uses: the one
+/// entry point `run` and the self-test's production-policy fixtures share.
+///
+/// # Errors
+///
+/// Returns an error if a manifest or a source file cannot be read.
+fn check_production(workspace: &Workspace) -> Result<(Vec<Violation>, Vec<PathBuf>), Error> {
+    check(workspace, THIRD_PARTY, NO_DEPENDENCY_TABLES)
 }
 
 /// Runs every rule on a workspace; returns the violations and the source

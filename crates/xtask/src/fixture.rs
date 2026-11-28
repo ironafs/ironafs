@@ -119,15 +119,17 @@ impl Fixture {
             place,
             edition: edition.to_owned(),
             version: None,
-            dependencies: Vec::new(),
+            // Set here, not through `depend`, which finds a crate by name
+            // and so the first of two that share one.
+            dependencies: dependencies
+                .iter()
+                .map(|to| Dependency::On((*to).to_owned()))
+                .collect(),
             package_lines: String::new(),
             manifest_tail: String::new(),
             lints: INHERITED_LINTS.to_owned(),
             files: vec![("src/lib.rs".to_owned(), String::new())],
         });
-        for dependency in dependencies {
-            self.depend(name, dependency);
-        }
     }
 
     /// Adds a normal dependency on another crate of the fixture.

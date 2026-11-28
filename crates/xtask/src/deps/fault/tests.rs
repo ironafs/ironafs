@@ -320,16 +320,46 @@ fn violations_are_not_hidden_by_another_declaration_of_the_same_name() {
     );
 }
 
+/// A dependency of the home named `fault`, on another package.
+fn named_fault(optional: bool) -> Declaration {
+    Declaration {
+        package: "ironafs-os".into(),
+        ..on_disk("fault", optional, &[])
+    }
+}
+
 #[test]
 fn enabling_follows_a_strong_path_through_an_implicit_feature_of_the_home() {
     // An optional dependency of the home named `fault` has the implicit
     // feature `fault`; `fault/sub` turns it on, so `default` reaches it.
-    let disk = home(&[
-        ("fault", &["dep:fault"]),
-        ("default", &["fault/sub"]),
-        ("weak", &["fault?/sub"]),
-    ]);
+    let disk = package(
+        "ironafs-disk",
+        true,
+        &[
+            ("fault", &["dep:fault"]),
+            ("default", &["fault/sub"]),
+            ("weak", &["fault?/sub"]),
+        ],
+        vec![named_fault(true)],
+    );
     let mut found = enabling(&disk);
     found.sort();
     assert_eq!(found, [("default", Vec::new()), ("fault", Vec::new())]);
+}
+
+#[test]
+fn enabling_does_not_follow_a_strong_path_to_a_required_dependency() {
+    // A required dependency named `fault` has no implicit feature, and the
+    // home has no `fault` key: `fault/sub` turns no feature `fault` on, and
+    // the feature is undeclared, not on by default.
+    let disk = package(
+        "ironafs-disk",
+        true,
+        &[("default", &["fault/sub"])],
+        vec![named_fault(false)],
+    );
+    assert_eq!(
+        violations(&workspace(vec![disk])),
+        [Violation::FaultUndeclared("ironafs-disk".into())]
+    );
 }
