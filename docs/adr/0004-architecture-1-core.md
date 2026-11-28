@@ -269,9 +269,9 @@ specification fixes (5.2, point 4).
      and an edge of another kind, and shows, in its own fixture, a
      development dependency of `ironafs-test-support` on `ironafs-disk`
      that requests no feature refused with the reverse-edge diagnostic.
-     Any other edge needs an amendment of this point. The driver calls a new or changed
-     `ironafs-os` site only once that site's ADR 0005 amendment is
-     accepted (ADR 0005, Decision 7).
+     Any other edge needs an amendment of this point. The driver calls
+     a new or changed `ironafs-os` site only once that site's ADR 0005
+     amendment is accepted (ADR 0005, Decision 7).
    - **Who may turn `fault` on.** Each rule has its owner, its positive
      control and its negative. Each covers `fault` and any feature of
      `ironafs-disk` that enables it:
