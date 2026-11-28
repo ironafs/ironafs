@@ -46,15 +46,29 @@ Points 1 and 3 to 6:
 > 6. One deterministic simulator drives points 1 to 3 through the injected
 >    interfaces. It is a deliverable of M2a (O45).
 
-ADR 0004, C4 (**Working**), point 1, its first sentence; point 4, its
-first and third items; point 7, its third sentence:
+ADR 0004, C4 (**Working**), point 1, its first sentence; point 3, the
+first sentence of its `ironafs-disk` paragraph; point 4, its first, third,
+fifth and sixth items, the sixth's first sentence; point 7, its third
+sentence:
 
 > **Pure crates** have no I/O and no `unsafe`, and are fuzzed where they
 > decode:
 
+> `ironafs-disk` is the one home of the Cargo feature `fault`.
+
 > - no pure crate depends on a driver or on `ironafs-client`;
 
-> - `ironafs-rx` knows nothing of AFS.
+> - `ironafs-rx` knows nothing of AFS;
+
+> - no shipped crate reaches `ironafs-sim` or `ironafs-test-support`
+>   through normal or build dependencies, directly or through other
+>   crates. This rule does not follow development-only edges; the
+>   rules that forbid a declaration of any kind still apply (the
+>   gate-only phase, point 3; the next rule; ADR 0005, point 1.4);
+> - `ironafs-net`, `ironafs-disk` and `ironafs-sim` do not depend on one
+>   another, in any of the six directions: none declares a dependency of
+>   any kind on another, development included, and none reaches another
+>   through normal or build dependencies.
 
 > The simulator is a test-only workspace crate, `ironafs-sim`, which is
 > never shipped.
@@ -391,8 +405,15 @@ encoding is the simulator's specification's.
    the sync of the root's parent at construction (5.5, point 6) [OWN: a
    separate crate keeps the safe file logic out of the `unsafe` crate's
    audit, and gives the production driver and the simulated disk one
-   shared conformance body (5.9)]. C4, point 3, has no row for it;
-   section 13, Q2, names the amendment. ADR 0005's closed list names the
+   shared conformance body (5.9)]. C4, point 3, lists it in two phases
+   [ADR 0004 C4.3: Working]. In the gate-only phase the package holds
+   only the feature `fault` and its one gate (5.9, point 3), and declares
+   no dependency of any kind. The driver phase starts with the first pull
+   request that adds a driver operation: the driver operations work with
+   `fault` off, only the fault and crash-point entry points need it, and
+   the package may depend on `ironafs-cache` and `ironafs-os` as normal
+   dependencies and on `ironafs-test-support` as a development
+   dependency, and on nothing else. ADR 0005's closed list names the
    free-space query on Linux only, and none of the other calls; section
    13, Q17, names that amendment.
 
@@ -471,9 +492,14 @@ encoding is the simulator's specification's.
      same lint, plus third-party crates the dependency decisions allow
      (none of which the core calls for I/O); a new transitive dependency
      or feature fails the check until it is reviewed;
-   - no shipped crate depends on `ironafs-sim` or `ironafs-test-support`;
+   - no shipped crate reaches `ironafs-sim` or `ironafs-test-support`
+     through normal or build dependencies. This rule does not follow
+     development-only edges, and the rules that forbid a declaration of
+     any kind still apply [ADR 0004 C4.4: Working];
    - `ironafs-net`, `ironafs-disk` and `ironafs-sim` do not depend on one
-     another.
+     another, in any direction: none declares a dependency of any kind on
+     another, development included, and none reaches another through
+     normal or build dependencies [ADR 0004 C4.4: Working].
 
    What a lint cannot see (an address, or a hashed order reaching a
    decision by arithmetic) is caught at run time by strict replay (5.6,
@@ -2205,8 +2231,8 @@ pub fn serve_read<R: Rpc, D: Disk, C: Clock>(cx: &Core<R, D, C>, req: &ReadReque
    through a keepalive reply's evidence (5.4, point 1), and a callback
    overload fences what it might have hidden (5.4, point 7).
 5. The baton, the observer, the supervisor, the crash marker and the
-   fault entry points are in no shipped artefact (C4, point 7; 5.9,
-   point 3).
+   fault entry points are in no shipped artefact (C4, points 3 and 7;
+   5.9, point 3).
 6. The danger here is a false pass: a blocking point the scheduler cannot
    see, a task that reads the host, or a test that cannot fail. 5.2,
    point 5, 5.3, point 6, 5.6, points 9 to 11, and the planted tests of
@@ -2222,7 +2248,7 @@ listed with its crate.
 | C3, points 1 and 3 | 5.2 to 5.5 | `xtask`: `seams::core_names_no_real_io` (planted, one per banned item, through a re-export and a wrapper) |
 | C3, points 4 and 5; O45, point 5 | 5.6, point 13; 5.7, point 3 | `xtask`: `seams::core_spawns_no_thread` (planted) |
 | C3, point 6, and its trigger | 5.6, points 4 and 11 | `ironafs-sim`: `replay::sample_read_replays_byte_identically`, `replay::planted_divergence_is_caught_at_its_decision` |
-| C4, points 1, 4 and 7 | 5.2, points 1, 2 and 5 | `xtask`: `check-deps --self-test`, `check-pure --self-test`, `seams::pure_crate_calls_no_seam` (planted, `ironafs-time` included: a `Clock` method called inside it fails; a seam taken, bound, implemented, renamed, re-exported or named through a module path, a raw identifier, an uppercase alias or glob of its home crate, a `::`-rooted path through an enum named like the home crate, a home enum's name used without its import, the home crate renamed like a home enum inside it, a module named like a local enum with that variant, and a `::`-rooted path through another crate; a seam renamed in its home crate's root re-export; a variant with a seam's name reached by any path but `Self::`; a seam after a `#[cfg(test)]` field, which hides nothing after it; in the production `Rng`'s crate, the seam held, called, renamed on import or re-exported, and another seam implemented; another pure crate implementing `Rng`; a pure crate's dependency renamed in cargo's resolved graph) |
+| C4, points 1, 3, 4 and 7 | 5.2, points 1, 2, 4 and 5 | `xtask`: `check-deps --self-test`, `check-pure --self-test`, `seams::pure_crate_calls_no_seam` (planted, `ironafs-time` included: a `Clock` method called inside it fails; a seam taken, bound, implemented, renamed, re-exported or named through a module path, a raw identifier, an uppercase alias or glob of its home crate, a `::`-rooted path through an enum named like the home crate, a home enum's name used without its import, the home crate renamed like a home enum inside it, a module named like a local enum with that variant, and a `::`-rooted path through another crate; a seam renamed in its home crate's root re-export; a variant with a seam's name reached by any path but `Self::`; a seam after a `#[cfg(test)]` field, which hides nothing after it; in the production `Rng`'s crate, the seam held, called, renamed on import or re-exported, and another seam implemented; another pure crate implementing `Rng`; a pure crate's dependency renamed in cargo's resolved graph) |
 | C16, points 2 and 3 | 5.8, points 2 and 3 | `ironafs-client`: `read::break_before_submission_is_fenced` (both binding roles) |
 | C16, points 1 and 6; C31 | 5.4, point 7; 5.8, point 2 | `ironafs-client`: `rpc::callback_overload_recorded_before_drop`, `read::overload_fences_install`, `read::no_ticket_over_pending_overload`; `binding::overload_pushes_epoch_advance` |
 | C24, point 1 | 5.4, point 2 | `ironafs-client`: `errors::unprotected_matching_abort_is_ambiguous`, `errors::abort_before_rxgk_is_never_authoritative` |
@@ -2625,7 +2651,12 @@ From the working decisions this page rests on:
 - **C4:** "a boundary below forces a dependency that point 4 forbids, the
   first implementation of a crate shows it has no content of its own, or
   no log sink outside Linux still needs a site in `ironafs-os` (then the
-  safe log transport could live in a crate without `unsafe`)."
+  safe log transport could live in a crate without `unsafe`). For
+  `ironafs-disk` (point 3), also revisit if: a second production driver
+  needs fault or crash-point entry points (then a fault-provider crate
+  shared by the drivers is reconsidered), the `Disk` driver needs an edge
+  point 3 does not list, or #99 closes with the crate still in its
+  gate-only phase."
 - **C39:** "M2 load tests show the fixed set starves a class of work, or
   lock-order checks find an RPC wait under a lock that cannot be
   restructured."
@@ -2710,14 +2741,15 @@ real platforms.
 
 ## 13. Open questions
 
-- **Q2. Two crates C4 does not list.** `ironafs-sync` (5.2, point 2) and
-  `ironafs-disk` (5.2, point 4) need rows in C4: `ironafs-disk` as a
-  driver in point 3's table, `ironafs-sync` as shared standard-library
-  support that is neither pure nor a driver, with point 4 gaining "no
-  shipped crate depends on `ironafs-sim` or `ironafs-test-support`" and
-  "`ironafs-net`, `ironafs-disk` and `ironafs-sim` do not depend on one
-  another". No pure crate depends on `ironafs-sync` (5.2, point 1), so
-  the pure set and `ironafs-rx`'s allowed dependencies are unchanged. The
+- **Q2. A crate C4 does not list, and the call owner's home.**
+  `ironafs-disk`'s part is settled: C4, point 3, lists it as a driver in
+  two phases, and point 4 gained the rule on shipped crates and test-only
+  crates and the rule that `ironafs-net`, `ironafs-disk` and
+  `ironafs-sim` do not depend on one another (issue #213) [ADR 0004 C4.3,
+  C4.4: Working]. Still open: `ironafs-sync` (5.2, point 2) needs a row
+  in C4 as shared standard-library support that is neither pure nor a
+  driver. No pure crate depends on `ironafs-sync` (5.2, point 1), so the
+  pure set and `ironafs-rx`'s allowed dependencies are unchanged. The
   same amendment names the crate that holds the call owner's code (5.4,
   point 7). `ironafs-sync` cannot, since it would need `ironafs-rx`'s
   types. The options are a small standard-library crate over
@@ -2729,8 +2761,8 @@ real platforms.
   issue ([ADR README](../adr/README.md), "Amending a working decision"),
   with `xtask`'s crate table updated in the same change, as issue #53
   amends C4's other points. Tracked in issue #71 until that issue is
-  filed. Blocks: creating `ironafs-sync`, `ironafs-disk` and the `rx`
-  loop. It blocks nothing else on this page.
+  filed. Blocks: creating `ironafs-sync` and the `rx` loop. It blocks
+  nothing else on this page.
 - **Q3. The clock of a request's deadline.** C39, point 3, says "counted
   from arrival"; C37, point 1, gives the boot clock to server-granted
   deadlines and the awake clock to round-trip and retransmission timers,
@@ -2817,8 +2849,12 @@ real platforms.
   standard library cannot open one, and free space on macOS and
   Windows. Each is a row added by ADR 0005's own amendment rule, with its
   proof, before `ironafs-disk` calls it; which calls they are is
-  UNVERIFIED until Q16 registers them. Blocks: `ironafs-disk` (issue
-  #99). Tracked in issue #99.
+  UNVERIFIED until Q16 registers them. Blocks: `ironafs-disk`'s driver
+  operations (issue #99), which wait for the gate-only package, for Q16's
+  registered facts, and for an accepted ADR 0005 amendment before the
+  code for any new or changed site. The gate-only package (C4, point 3,
+  created by the fault-feature pull request of issue #156) calls no site
+  and waits only for C4's row (issue #213). Tracked in issue #99.
 - **Q18. Where durable records live.** 5.5, point 6, acknowledges a
   durable record only in the root or in a directory created, with its
   parent synced, in this incarnation. The state directory's layout must

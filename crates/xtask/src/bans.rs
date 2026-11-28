@@ -1031,10 +1031,12 @@ fn as_clippy(command: &mut Command, driver: &Path) {
 /// The workspace's lint, the one `cargo xtask check` gates on: clippy on
 /// every target of every member with every feature on. That turns on the
 /// canary's `planted` feature, and it compiles code behind a feature no
-/// build enables, which no ban could otherwise reach. The pure crates have
-/// no features (ADR 0004, C4), so no feature can be one that only some
-/// builds may combine; one that cannot build with the others fails the
-/// lint, which is the safe side. Its warnings are not denied by cargo,
+/// build enables, which no ban could otherwise reach; so does
+/// `ironafs-disk`'s fault feature, which bans reach only this way (ADR
+/// 0004, C4, point 3). The pure crates have no features (C4, point 1),
+/// and the features outside them are meant to build with all the others,
+/// so no feature can be one that only some builds may combine; one that
+/// cannot build with the others fails the lint, which is the safe side. Its warnings are not denied by cargo,
 /// since the canary's must appear; `lint` denies every other one.
 pub(crate) fn workspace_clippy(driver: &Path) -> Command {
     let mut command = clippy_json(driver);
