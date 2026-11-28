@@ -56,6 +56,8 @@ Fix rounds past the second, with the owner's permission:
 - Fix round 3. Request: one scoped round limited to the items open after round 3, verified by both seats on the v3 to v4 diff. The controller wrote the convergence note from the round-3 results before asking, and its check is the note's content: open blockers and majors at the OpenAI seat 6, 7, 3 and none at GLM; the last fix introduced fewer defects than the one before; the kinds narrowing. Recommendation: permit. Owner, 2026-11-27: "permit fix round 3 on the C4 brief".
 - Fix round 4. Request: apply the judgement seat's wording verbatim and fix the four distinct open minors, nothing else, with the OpenAI seat verifying the major and the GLM seat the minors on the v4 to v5 diff. The controller updated the note with round 4 and the judgement before asking: open blockers and majors 6, 7, 3, 1; the wording came from the judgement seat. Recommendation: permit. Owner, 2026-11-27: "permit fix round 4 on the C4 brief".
 
+Departure from `docs/workflow.md` §3, step 7: before each of these two requests the controller checked the blocker and major counts, the defects each fix introduced and the kinds, but not the per-seat series of open correctness or contract findings. That series was computed afterwards from the appendix, for this record; it was falling at the OpenAI seat (7, 7, 5, 4) and at one or none at the GLM seat after round 1, so it would not have changed either recommendation.
+
 No blocker, major or confirmed correctness or contract finding is open, and no judgement is pending.
 
 ## Appendix: every finding
@@ -97,7 +99,7 @@ A is the OpenAI seat, B the GLM seat; FR*n* is fix round *n*. Every finding was 
 | A3.5 | 3 | FR2 | minor | consistency between parts | The contracts list missing seams 5.2 point 5 and the testing §9 row | FR3 |
 | B3.1 | 3 | FR2 | minor | other | "Target inventory" undefined | FR3 |
 | B3.2 | 3 | FR2 | minor | consistency between parts | Testing §9 missing from the re-check, sources and outcome | FR3 |
-| B3.3 | 3 | FR1 (first raised in round 3) | minor | contract | Criterion 5 asked a repository diff to show an order stated only on GitHub | FR3 |
+| B3.3 | 3 | FR1 (first raised in round 3; the round-3 review labels it "carried over from v2, not introduced") | minor | contract | Criterion 5 asked a repository diff to show an order stated only on GitHub | FR3 |
 | A4.1 | 4 | FR3 | major | contract | The dependency-authorization rule stated in terms of the feature being enabled, not requested (upheld by the judgement seat) | FR4 |
 | A4.2 | 4 | FR3 | minor | contract | The target inventory asked to prove more than the build-script claim | FR4 |
 | A4.3 | 4 | FR3 | minor | contract | The testing §9 row only re-cited, not restated with the development exception | FR4 |
