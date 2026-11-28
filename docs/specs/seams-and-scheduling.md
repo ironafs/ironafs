@@ -470,9 +470,12 @@ encoding is the simulator's specification's.
      a `use` cannot rename the macro) are refused, so no compiled file is
      out of their sight; a macro that assembles either from fragments is
      not seen (the macro limit of 5.3, point 2);
-   - no pure crate depends on `ironafs-sync`, `ironafs-net`,
-     `ironafs-disk` or `ironafs-sim` (the dependency check's pure-crate
-     rule, which already refuses any dependency outside the pure set);
+   - no pure crate reaches `ironafs-sync`, `ironafs-net`, `ironafs-disk`
+     or `ironafs-sim` through normal or build dependencies (the dependency
+     check's pure-crate rule, which already refuses any normal or build
+     dependency outside the pure set). A development dependency is outside
+     that rule; the rules that forbid a declaration of any kind still
+     apply (C4, points 3 and 4);
    - the core names none of: `std::fs`; `std::net`; `std::io`'s standard
      streams; `std::thread` (all of it: `spawn`, `Builder`, `scope`,
      `sleep`, `park`, `yield_now`, `current`, `available_parallelism`);
